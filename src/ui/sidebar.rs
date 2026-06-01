@@ -1,0 +1,469 @@
+use egui::{Align, Color32, Layout, RichText};
+use std::path::PathBuf;
+
+use crate::input::action::Action;
+use crate::state::app_state::{AppState, DragHoverTarget};
+use crate::state::profiles::{Bookmark, Profile, SectionKind, Tag, PRESET_COLORS};
+use crate::state::settings::Theme;
+
+/// Content only — the SidePanel wrapper is in layout.rs so it can be animated.
+pub fn show_sidebar_content(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action>) {
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        show_profile_selector(ui, state, actions);
+        ui.add_space(6.0);
+        show_sections(ui, state, actions);
+    });
+}
+
+// ── Profile selector ─────────────────────────────────────────────────────────
+
+fn show_profile_selector(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action>) {
+    let active_name = state.profiles.active().name.clone();
+
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt("profile_selector")
+            .width(ui.available_width() - 28.0)
+            .selected_text(&active_name)
+            .show_ui(ui, |ui| {
+                for idx in 0..state.profiles.profiles.len() {
+                    let name = state.profiles.profiles[idx].name.clone();
+                    let selected = idx == state.profiles.active_idx;
+                    if ui.selectable_label(selected, &name).clicked() && !selected {
+                        actions.push(Action::SwitchProfile(idx));
+                    }
+                }
+            });
+
+        if ui.small_button("+").on_hover_text("New profile").clicked() {
+            let new_name = format!("Profile {}", state.profiles.profiles.len() + 1);
+            state.profiles.profiles.push(Profile::new(new_name));
+            let new_idx = state.profiles.profiles.len() - 1;
+            actions.push(Action::SwitchProfile(new_idx));
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Name:");
+        let profile = &mut state.profiles.profiles[state.profiles.active_idx];
+        ui.text_edit_singleline(&mut profile.name);
+    });
+
+    // Theme selector — per profile
+    ui.horizontal(|ui| {
+        ui.label("Theme:");
+        let profile = &mut state.profiles.profiles[state.profiles.active_idx];
+        egui::ComboBox::from_id_salt("profile_theme")
+            .selected_text(match profile.theme {
+                Theme::Dark => "Dark",
+                Theme::Light => "Light",
+                Theme::CatppuccinMocha => "Catppuccin Mocha",
+                Theme::Nord => "Nord",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut profile.theme, Theme::Dark, "Dark");
+                ui.selectable_value(&mut profile.theme, Theme::Light, "Light");
+                ui.selectable_value(
+                    &mut profile.theme,
+                    Theme::CatppuccinMocha,
+                    "Catppuccin Mocha",
+                );
+                ui.selectable_value(&mut profile.theme, Theme::Nord, "Nord");
+            });
+    });
+
+    if state.profiles.profiles.len() > 1
+        && ui
+            .small_button("Delete profile")
+            .on_hover_text("Remove this profile and its session")
+            .clicked()
+    {
+        actions.push(Action::DeleteActiveProfile);
+    }
+}
+
+// ── Section loop ─────────────────────────────────────────────────────────────
+
+fn show_sections(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action>) {
+    let n = state.profiles.active().sidebar_sections.len();
+    let mut toggle_collapse: Option<usize> = None;
+    let mut swap_up: Option<usize> = None;
+    let mut swap_down: Option<usize> = None;
+
+    for i in 0..n {
+        let kind = state.profiles.active().sidebar_sections[i].kind.clone();
+        let collapsed = state.profiles.active().sidebar_sections[i].collapsed;
+
+        // Section header row
+        let header_resp = ui.horizontal(|ui| {
+            let arrow = if collapsed { "▶" } else { "▼" };
+            if ui.small_button(arrow).clicked() {
+                toggle_collapse = Some(i);
+            }
+            ui.label(RichText::new(kind.label()).small().strong());
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if i < n - 1
+                    && ui
+                        .small_button("↓")
+                        .on_hover_text("Move section down")
+                        .clicked()
+                {
+                    swap_down = Some(i);
+                }
+                if i > 0
+                    && ui
+                        .small_button("↑")
+                        .on_hover_text("Move section up")
+                        .clicked()
+                {
+                    swap_up = Some(i);
+                }
+            });
+        });
+        let _ = header_resp;
+
+        crate::ui::anim::collapse_vertical(
+            ui,
+            ("sidebar_sec", i, kind.label()),
+            !collapsed,
+            |ui| match kind {
+                SectionKind::Places => show_places(ui, state, actions),
+                SectionKind::Bookmarks => show_bookmarks(ui, state, actions),
+                SectionKind::Tags => show_tags(ui, state),
+                SectionKind::Drives => show_drives(ui, state, actions),
+                SectionKind::Recent => show_recent(ui, state, actions),
+            },
+        );
+
+        ui.add_space(2.0);
+    }
+
+    // Apply deferred mutations (avoid borrow conflict during the render loop)
+    if let Some(i) = toggle_collapse {
+        state.profiles.active_mut().sidebar_sections[i].collapsed ^= true;
+    }
+    if let Some(i) = swap_up {
+        state.profiles.active_mut().sidebar_sections.swap(i, i - 1);
+    }
+    if let Some(i) = swap_down {
+        state.profiles.active_mut().sidebar_sections.swap(i, i + 1);
+    }
+}
+
+// ── Places ───────────────────────────────────────────────────────────────────
+
+fn show_places(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action>) {
+    let places: &[(&str, Option<PathBuf>)] = &[
+        ("Home", dirs::home_dir()),
+        ("Desktop", dirs::desktop_dir()),
+        ("Downloads", dirs::download_dir()),
+        ("Documents", dirs::document_dir()),
+        ("Pictures", dirs::picture_dir()),
+        ("Videos", dirs::video_dir()),
+        ("Music", dirs::audio_dir()),
+    ];
+
+    for (label, path) in places {
+        if let Some(p) = path {
+            if p.exists() {
+                let response = ui.selectable_label(false, *label);
+                observe_drag_location(state, &response, p);
+                if response.clicked() {
+                    actions.push(Action::Navigate {
+                        tab: state.focused_tile,
+                        path: p.clone(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+// ── Bookmarks ────────────────────────────────────────────────────────────────
+
+fn show_bookmarks(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action>) {
+    let mut remove_idx: Option<usize> = None;
+
+    let count = state.profiles.active().bookmarks.len();
+    for i in 0..count {
+        let (name, path) = {
+            let b = &state.profiles.active().bookmarks[i];
+            (b.name.clone(), b.path.clone())
+        };
+
+        ui.horizontal(|ui| {
+            let response = ui.selectable_label(false, &name);
+            observe_drag_location(state, &response, &path);
+            if response.clicked() {
+                actions.push(Action::Navigate {
+                    tab: state.focused_tile,
+                    path: path.clone(),
+                });
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.small_button("✕").on_hover_text("Remove").clicked() {
+                    remove_idx = Some(i);
+                }
+            });
+        });
+        ui.label(
+            RichText::new(path.to_string_lossy().as_ref())
+                .small()
+                .weak(),
+        );
+    }
+
+    if let Some(idx) = remove_idx {
+        state.profiles.active_mut().bookmarks.remove(idx);
+    }
+
+    if state.profile_ui.adding_bookmark {
+        ui.horizontal(|ui| {
+            ui.label("Name:");
+            ui.text_edit_singleline(&mut state.profile_ui.new_bookmark_name);
+        });
+        ui.horizontal(|ui| {
+            let cur = current_dir(state);
+            if ui.button("Add current folder").clicked() {
+                let name = if state.profile_ui.new_bookmark_name.trim().is_empty() {
+                    cur.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "/".to_string())
+                } else {
+                    state.profile_ui.new_bookmark_name.trim().to_string()
+                };
+                state
+                    .profiles
+                    .active_mut()
+                    .bookmarks
+                    .push(Bookmark { name, path: cur });
+                state.profile_ui.adding_bookmark = false;
+                state.profile_ui.new_bookmark_name.clear();
+            }
+            if ui.button("Cancel").clicked() {
+                state.profile_ui.adding_bookmark = false;
+                state.profile_ui.new_bookmark_name.clear();
+            }
+        });
+    } else if ui.small_button("+ Add bookmark").clicked() {
+        state.profile_ui.adding_bookmark = true;
+        let path = current_dir(state);
+        state.profile_ui.new_bookmark_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+    }
+}
+
+// ── Tags ─────────────────────────────────────────────────────────────────────
+
+fn show_tags(ui: &mut egui::Ui, state: &mut AppState) {
+    let mut remove_profile: Option<usize> = None;
+    let mut remove_global: Option<usize> = None;
+
+    for i in 0..state.profiles.active().tags.len() {
+        let (name, color) = {
+            let t = &state.profiles.active().tags[i];
+            (
+                t.name.clone(),
+                Color32::from_rgb(t.color[0], t.color[1], t.color[2]),
+            )
+        };
+        tag_row(ui, &name, color, || remove_profile = Some(i));
+    }
+    if let Some(i) = remove_profile {
+        state.profiles.active_mut().tags.remove(i);
+    }
+
+    if !state.profiles.global_tags.is_empty() {
+        ui.label(RichText::new("global").small().weak().italics());
+    }
+    for i in 0..state.profiles.global_tags.len() {
+        let (name, color) = {
+            let t = &state.profiles.global_tags[i];
+            (
+                t.name.clone(),
+                Color32::from_rgb(t.color[0], t.color[1], t.color[2]),
+            )
+        };
+        tag_row(ui, &name, color, || remove_global = Some(i));
+    }
+    if let Some(i) = remove_global {
+        state.profiles.global_tags.remove(i);
+    }
+
+    if state.profile_ui.adding_tag {
+        show_add_tag_form(ui, state);
+    } else if ui.small_button("+ Add tag").clicked() {
+        state.profile_ui.adding_tag = true;
+        state.profile_ui.new_tag_name.clear();
+        state.profile_ui.new_tag_global = false;
+        state.profile_ui.new_tag_color = PRESET_COLORS[0];
+    }
+}
+
+fn tag_row(ui: &mut egui::Ui, name: &str, color: Color32, on_remove: impl FnOnce()) {
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+        ui.painter().circle_filled(rect.center(), 6.0, color);
+        ui.label(name);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ui.small_button("✕").clicked() {
+                on_remove();
+            }
+        });
+    });
+}
+
+fn show_add_tag_form(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.horizontal(|ui| {
+        ui.label("Name:");
+        ui.text_edit_singleline(&mut state.profile_ui.new_tag_name);
+    });
+    ui.horizontal(|ui| {
+        ui.label("Color:");
+        for &color in PRESET_COLORS {
+            let c32 = Color32::from_rgb(color[0], color[1], color[2]);
+            let selected = state.profile_ui.new_tag_color == color;
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+            ui.painter().circle_filled(rect.center(), 7.0, c32);
+            if selected {
+                ui.painter().circle_stroke(
+                    rect.center(),
+                    8.5,
+                    egui::Stroke::new(1.5, ui.visuals().text_color()),
+                );
+            }
+            if resp.clicked() {
+                state.profile_ui.new_tag_color = color;
+            }
+        }
+    });
+    ui.checkbox(
+        &mut state.profile_ui.new_tag_global,
+        "Global (all profiles)",
+    );
+    ui.horizontal(|ui| {
+        let can_add = !state.profile_ui.new_tag_name.trim().is_empty();
+        if ui.add_enabled(can_add, egui::Button::new("Add")).clicked() {
+            let tag = Tag {
+                name: state.profile_ui.new_tag_name.trim().to_string(),
+                color: state.profile_ui.new_tag_color,
+                global: state.profile_ui.new_tag_global,
+            };
+            if state.profile_ui.new_tag_global {
+                state.profiles.global_tags.push(tag);
+            } else {
+                state.profiles.active_mut().tags.push(tag);
+            }
+            state.profile_ui.adding_tag = false;
+            state.profile_ui.new_tag_name.clear();
+        }
+        if ui.button("Cancel").clicked() {
+            state.profile_ui.adding_tag = false;
+        }
+    });
+}
+
+// ── Drives ───────────────────────────────────────────────────────────────────
+
+fn show_drives(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action>) {
+    for mount in read_mounts() {
+        let response = ui.selectable_label(false, mount.to_string_lossy().as_ref());
+        observe_drag_location(state, &response, &mount);
+        if response.clicked() {
+            actions.push(Action::Navigate {
+                tab: state.focused_tile,
+                path: mount,
+            });
+        }
+    }
+}
+
+// ── Recent ───────────────────────────────────────────────────────────────────
+
+fn show_recent(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action>) {
+    if state.settings.recent_folders.is_empty() {
+        ui.label(RichText::new("No recent folders").small().weak());
+        return;
+    }
+    let recent: Vec<PathBuf> = state
+        .settings
+        .recent_folders
+        .iter()
+        .rev()
+        .take(15)
+        .cloned()
+        .collect();
+    for path in recent {
+        let label = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string_lossy().to_string());
+        let response = ui
+            .selectable_label(false, label)
+            .on_hover_text(path.to_string_lossy().as_ref());
+        observe_drag_location(state, &response, &path);
+        if response.clicked() {
+            actions.push(Action::Navigate {
+                tab: state.focused_tile,
+                path,
+            });
+        }
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn observe_drag_location(state: &mut AppState, response: &egui::Response, path: &std::path::Path) {
+    if response.contains_pointer()
+        && (state.dragged_files.is_some()
+            || response
+                .ctx
+                .input(|input| !input.raw.hovered_files.is_empty()))
+    {
+        let target = DragHoverTarget::Location {
+            tab: state.focused_tile,
+            path: path.to_path_buf(),
+        };
+        state.drag_hover.observed_target = Some(target.clone());
+        let now = response.ctx.input(|input| input.time);
+        if state.drag_hover.confirmation_visible(&target, now) {
+            response.ctx.debug_painter().rect_stroke(
+                response.rect.shrink(1.0),
+                3.0,
+                egui::Stroke::new(2.0, response.ctx.style().visuals.selection.stroke.color),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+}
+
+fn current_dir(state: &AppState) -> PathBuf {
+    state
+        .active_tab_data()
+        .map(|t| t.path.clone())
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+}
+
+fn read_mounts() -> Vec<PathBuf> {
+    let content = match std::fs::read_to_string("/proc/mounts") {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let real_fstypes = [
+        "ext2", "ext3", "ext4", "btrfs", "xfs", "f2fs", "jfs", "reiserfs", "ntfs", "ntfs-3g",
+        "vfat", "exfat", "fuseblk", "zfs",
+    ];
+    content
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let _dev = parts.next()?;
+            let mountpoint = parts.next()?;
+            let fstype = parts.next()?;
+            real_fstypes
+                .contains(&fstype)
+                .then(|| PathBuf::from(mountpoint))
+        })
+        .collect()
+}

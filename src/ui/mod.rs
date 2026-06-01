@@ -1,0 +1,15 @@
+pub mod anim;
+pub mod batch_rename;
+pub mod breadcrumb;
+pub mod command_palette;
+pub mod context_menu;
+pub mod drop_shelf;
+pub mod file_list;
+pub mod fuzzy_overlay;
+pub mod goto_bar;
+pub mod inspector;
+pub mod layout;
+pub mod settings_window;
+pub mod sidebar;
+pub mod status_bar;
+pub mod tabs_popup;
