@@ -2,9 +2,11 @@ use egui::{Align, Color32, Layout, RichText};
 use std::path::PathBuf;
 
 use crate::input::action::Action;
-use crate::state::app_state::{AppState, DragHoverTarget};
-use crate::state::profiles::{Bookmark, Profile, SectionKind, Tag, PRESET_COLORS};
+use crate::state::app_state::AppState;
+use crate::state::drag::{DragHoverTarget, SidebarDragItem};
+use crate::state::profiles::{Profile, SectionKind, PRESET_COLORS};
 use crate::state::settings::Theme;
+use crate::state::tag_cache::TagId;
 
 /// Content only — the SidePanel wrapper is in layout.rs so it can be animated.
 pub fn show_sidebar_content(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action>) {
@@ -12,6 +14,9 @@ pub fn show_sidebar_content(ui: &mut egui::Ui, state: &mut AppState, actions: &m
         show_profile_selector(ui, state, actions);
         ui.add_space(6.0);
         show_sections(ui, state, actions);
+
+        ui.add_space(16.0);
+        crate::ui::device_usage::show_device_usage(ui, state);
     });
 }
 
@@ -85,9 +90,7 @@ fn show_profile_selector(ui: &mut egui::Ui, state: &mut AppState, actions: &mut 
 
 fn show_sections(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action>) {
     let n = state.profiles.active().sidebar_sections.len();
-    let mut toggle_collapse: Option<usize> = None;
-    let mut swap_up: Option<usize> = None;
-    let mut swap_down: Option<usize> = None;
+
 
     for i in 0..n {
         let kind = state.profiles.active().sidebar_sections[i].kind.clone();
@@ -97,7 +100,7 @@ fn show_sections(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Acti
         let header_resp = ui.horizontal(|ui| {
             let arrow = if collapsed { "▶" } else { "▼" };
             if ui.small_button(arrow).clicked() {
-                toggle_collapse = Some(i);
+                actions.push(Action::ToggleSidebarSection(i));
             }
             ui.label(RichText::new(kind.label()).small().strong());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -107,7 +110,7 @@ fn show_sections(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Acti
                         .on_hover_text("Move section down")
                         .clicked()
                 {
-                    swap_down = Some(i);
+                    actions.push(Action::MoveSidebarSectionDown(i));
                 }
                 if i > 0
                     && ui
@@ -115,7 +118,7 @@ fn show_sections(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Acti
                         .on_hover_text("Move section up")
                         .clicked()
                 {
-                    swap_up = Some(i);
+                    actions.push(Action::MoveSidebarSectionUp(i));
                 }
             });
         });
@@ -128,7 +131,7 @@ fn show_sections(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Acti
             |ui| match kind {
                 SectionKind::Places => show_places(ui, state, actions),
                 SectionKind::Bookmarks => show_bookmarks(ui, state, actions),
-                SectionKind::Tags => show_tags(ui, state),
+                SectionKind::Tags => show_tags(ui, state, actions),
                 SectionKind::Drives => show_drives(ui, state, actions),
                 SectionKind::Recent => show_recent(ui, state, actions),
             },
@@ -137,16 +140,6 @@ fn show_sections(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Acti
         ui.add_space(2.0);
     }
 
-    // Apply deferred mutations (avoid borrow conflict during the render loop)
-    if let Some(i) = toggle_collapse {
-        state.profiles.active_mut().sidebar_sections[i].collapsed ^= true;
-    }
-    if let Some(i) = swap_up {
-        state.profiles.active_mut().sidebar_sections.swap(i, i - 1);
-    }
-    if let Some(i) = swap_down {
-        state.profiles.active_mut().sidebar_sections.swap(i, i + 1);
-    }
 }
 
 // ── Places ───────────────────────────────────────────────────────────────────
@@ -165,8 +158,11 @@ fn show_places(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action
     for (label, path) in places {
         if let Some(p) = path {
             if p.exists() {
-                let response = ui.selectable_label(false, *label);
+                let response = ui
+                    .selectable_label(false, *label)
+                    .interact(egui::Sense::click_and_drag());
                 observe_drag_location(state, &response, p);
+                set_sidebar_drag_source(state, &response, p);
                 if response.clicked() {
                     actions.push(Action::Navigate {
                         tab: state.focused_tile,
@@ -181,7 +177,7 @@ fn show_places(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action
 // ── Bookmarks ────────────────────────────────────────────────────────────────
 
 fn show_bookmarks(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action>) {
-    let mut remove_idx: Option<usize> = None;
+
 
     let count = state.profiles.active().bookmarks.len();
     for i in 0..count {
@@ -191,8 +187,11 @@ fn show_bookmarks(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Act
         };
 
         ui.horizontal(|ui| {
-            let response = ui.selectable_label(false, &name);
+            let response = ui
+                .selectable_label(false, &name)
+                .interact(egui::Sense::click_and_drag());
             observe_drag_location(state, &response, &path);
+            set_sidebar_drag_source(state, &response, &path);
             if response.clicked() {
                 actions.push(Action::Navigate {
                     tab: state.focused_tile,
@@ -201,7 +200,7 @@ fn show_bookmarks(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Act
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.small_button("✕").on_hover_text("Remove").clicked() {
-                    remove_idx = Some(i);
+                    actions.push(Action::RemoveBookmark(i));
                 }
             });
         });
@@ -212,9 +211,6 @@ fn show_bookmarks(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Act
         );
     }
 
-    if let Some(idx) = remove_idx {
-        state.profiles.active_mut().bookmarks.remove(idx);
-    }
 
     if state.profile_ui.adding_bookmark {
         ui.horizontal(|ui| {
@@ -225,17 +221,14 @@ fn show_bookmarks(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Act
             let cur = current_dir(state);
             if ui.button("Add current folder").clicked() {
                 let name = if state.profile_ui.new_bookmark_name.trim().is_empty() {
-                    cur.file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "/".to_string())
+                    crate::util::display::display_name(&cur)
                 } else {
                     state.profile_ui.new_bookmark_name.trim().to_string()
                 };
-                state
-                    .profiles
-                    .active_mut()
-                    .bookmarks
-                    .push(Bookmark { name, path: cur });
+                actions.push(Action::AddBookmark {
+                    name,
+                    path: cur,
+                });
                 state.profile_ui.adding_bookmark = false;
                 state.profile_ui.new_bookmark_name.clear();
             }
@@ -247,52 +240,55 @@ fn show_bookmarks(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Act
     } else if ui.small_button("+ Add bookmark").clicked() {
         state.profile_ui.adding_bookmark = true;
         let path = current_dir(state);
-        state.profile_ui.new_bookmark_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
+        state.profile_ui.new_bookmark_name = crate::util::display::display_name(&path);
     }
 }
 
 // ── Tags ─────────────────────────────────────────────────────────────────────
 
-fn show_tags(ui: &mut egui::Ui, state: &mut AppState) {
-    let mut remove_profile: Option<usize> = None;
-    let mut remove_global: Option<usize> = None;
+fn show_tags(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action>) {
+    let active_profile = state.profiles.active().name.clone();
+    // Snapshot the visible defs so we can borrow `state` mutably inside the loop.
+    let defs: Vec<(TagId, String, [u8; 3], bool)> = state
+        .tag_cache
+        .visible_defs(&active_profile)
+        .map(|d| (d.id, d.name.clone(), d.color, d.profile.is_none()))
+        .collect();
 
-    for i in 0..state.profiles.active().tags.len() {
-        let (name, color) = {
-            let t = &state.profiles.active().tags[i];
-            (
-                t.name.clone(),
-                Color32::from_rgb(t.color[0], t.color[1], t.color[2]),
-            )
-        };
-        tag_row(ui, &name, color, || remove_profile = Some(i));
-    }
-    if let Some(i) = remove_profile {
-        state.profiles.active_mut().tags.remove(i);
-    }
+    let dragging_files = state.drag_drop.dragged_files.is_some();
+    let released = ui.input(|i| i.pointer.any_released());
+    let mut global_header_shown = false;
 
-    if !state.profiles.global_tags.is_empty() {
-        ui.label(RichText::new("global").small().weak().italics());
-    }
-    for i in 0..state.profiles.global_tags.len() {
-        let (name, color) = {
-            let t = &state.profiles.global_tags[i];
-            (
-                t.name.clone(),
-                Color32::from_rgb(t.color[0], t.color[1], t.color[2]),
-            )
-        };
-        tag_row(ui, &name, color, || remove_global = Some(i));
-    }
-    if let Some(i) = remove_global {
-        state.profiles.global_tags.remove(i);
+    for (id, name, color, is_global) in defs {
+        if is_global && !global_header_shown {
+            ui.label(RichText::new("global").small().weak().italics());
+            global_header_shown = true;
+        }
+        let c = Color32::from_rgb(color[0], color[1], color[2]);
+        let (response, remove_clicked) = tag_row(ui, &name, c);
+        if remove_clicked {
+            actions.push(Action::DeleteTag(id));
+        }
+        // File(s) dropped onto a tag → assign it immediately (no spring-load).
+        if dragging_files && response.contains_pointer() {
+            crate::ui::drag_feedback::paint_drop_highlight(&response);
+            if released {
+                if let Some(files) = &state.drag_drop.dragged_files {
+                    actions.push(Action::AssignTagToFiles {
+                        tag: id,
+                        paths: files.paths.clone(),
+                    });
+                }
+            }
+        }
+        // Drag the tag out of the sidebar → opens its results in a new tab on release.
+        if response.drag_started() {
+            state.drag_drop.sidebar_drag = Some(SidebarDragItem::Tag(id));
+        }
     }
 
     if state.profile_ui.adding_tag {
-        show_add_tag_form(ui, state);
+        show_add_tag_form(ui, state, actions, &active_profile);
     } else if ui.small_button("+ Add tag").clicked() {
         state.profile_ui.adding_tag = true;
         state.profile_ui.new_tag_name.clear();
@@ -301,20 +297,29 @@ fn show_tags(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-fn tag_row(ui: &mut egui::Ui, name: &str, color: Color32, on_remove: impl FnOnce()) {
-    ui.horizontal(|ui| {
+/// Renders one tag row. Returns the (draggable) name response and whether ✕ was clicked.
+fn tag_row(ui: &mut egui::Ui, name: &str, color: Color32) -> (egui::Response, bool) {
+    let mut remove_clicked = false;
+    let inner = ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
         ui.painter().circle_filled(rect.center(), 6.0, color);
-        ui.label(name);
+        let label = ui.add(egui::Label::new(name).sense(egui::Sense::click_and_drag()));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui.small_button("✕").clicked() {
-                on_remove();
+                remove_clicked = true;
             }
         });
+        label
     });
+    (inner.inner, remove_clicked)
 }
 
-fn show_add_tag_form(ui: &mut egui::Ui, state: &mut AppState) {
+fn show_add_tag_form(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    actions: &mut Vec<Action>,
+    active_profile: &str,
+) {
     ui.horizontal(|ui| {
         ui.label("Name:");
         ui.text_edit_singleline(&mut state.profile_ui.new_tag_name);
@@ -345,16 +350,16 @@ fn show_add_tag_form(ui: &mut egui::Ui, state: &mut AppState) {
     ui.horizontal(|ui| {
         let can_add = !state.profile_ui.new_tag_name.trim().is_empty();
         if ui.add_enabled(can_add, egui::Button::new("Add")).clicked() {
-            let tag = Tag {
+            let profile = if state.profile_ui.new_tag_global {
+                None
+            } else {
+                Some(active_profile.to_string())
+            };
+            actions.push(Action::CreateTag {
                 name: state.profile_ui.new_tag_name.trim().to_string(),
                 color: state.profile_ui.new_tag_color,
-                global: state.profile_ui.new_tag_global,
-            };
-            if state.profile_ui.new_tag_global {
-                state.profiles.global_tags.push(tag);
-            } else {
-                state.profiles.active_mut().tags.push(tag);
-            }
+                profile,
+            });
             state.profile_ui.adding_tag = false;
             state.profile_ui.new_tag_name.clear();
         }
@@ -367,9 +372,12 @@ fn show_add_tag_form(ui: &mut egui::Ui, state: &mut AppState) {
 // ── Drives ───────────────────────────────────────────────────────────────────
 
 fn show_drives(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action>) {
-    for mount in read_mounts() {
-        let response = ui.selectable_label(false, mount.to_string_lossy().as_ref());
+    for mount in crate::fs::mounts::read_mounts() {
+        let response = ui
+            .selectable_label(false, mount.to_string_lossy().as_ref())
+            .interact(egui::Sense::click_and_drag());
         observe_drag_location(state, &response, &mount);
+        set_sidebar_drag_source(state, &response, &mount);
         if response.clicked() {
             actions.push(Action::Navigate {
                 tab: state.focused_tile,
@@ -395,14 +403,13 @@ fn show_recent(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action
         .cloned()
         .collect();
     for path in recent {
-        let label = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.to_string_lossy().to_string());
+        let label = crate::util::display::display_name(&path);
         let response = ui
             .selectable_label(false, label)
+            .interact(egui::Sense::click_and_drag())
             .on_hover_text(path.to_string_lossy().as_ref());
         observe_drag_location(state, &response, &path);
+        set_sidebar_drag_source(state, &response, &path);
         if response.clicked() {
             actions.push(Action::Navigate {
                 tab: state.focused_tile,
@@ -414,9 +421,17 @@ fn show_recent(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// If a sidebar row was just grabbed (not merely clicked), record it as the active
+/// sidebar drag so a drop over the view opens it in a new tab.
+fn set_sidebar_drag_source(state: &mut AppState, response: &egui::Response, path: &std::path::Path) {
+    if response.drag_started() {
+        state.drag_drop.sidebar_drag = Some(SidebarDragItem::Path(path.to_path_buf()));
+    }
+}
+
 fn observe_drag_location(state: &mut AppState, response: &egui::Response, path: &std::path::Path) {
     if response.contains_pointer()
-        && (state.dragged_files.is_some()
+        && (state.drag_drop.dragged_files.is_some()
             || response
                 .ctx
                 .input(|input| !input.raw.hovered_files.is_empty()))
@@ -425,16 +440,8 @@ fn observe_drag_location(state: &mut AppState, response: &egui::Response, path: 
             tab: state.focused_tile,
             path: path.to_path_buf(),
         };
-        state.drag_hover.observed_target = Some(target.clone());
-        let now = response.ctx.input(|input| input.time);
-        if state.drag_hover.confirmation_visible(&target, now) {
-            response.ctx.debug_painter().rect_stroke(
-                response.rect.shrink(1.0),
-                3.0,
-                egui::Stroke::new(2.0, response.ctx.style().visuals.selection.stroke.color),
-                egui::StrokeKind::Inside,
-            );
-        }
+        state.drag_drop.drag_hover.observed_target = Some(target.clone());
+        crate::ui::drag_feedback::paint_drag_hover_confirmation(response, &state.drag_drop.drag_hover, &target);
     }
 }
 
@@ -445,25 +452,4 @@ fn current_dir(state: &AppState) -> PathBuf {
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
 }
 
-fn read_mounts() -> Vec<PathBuf> {
-    let content = match std::fs::read_to_string("/proc/mounts") {
-        Ok(c) => c,
-        Err(_) => return vec![],
-    };
-    let real_fstypes = [
-        "ext2", "ext3", "ext4", "btrfs", "xfs", "f2fs", "jfs", "reiserfs", "ntfs", "ntfs-3g",
-        "vfat", "exfat", "fuseblk", "zfs",
-    ];
-    content
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            let _dev = parts.next()?;
-            let mountpoint = parts.next()?;
-            let fstype = parts.next()?;
-            real_fstypes
-                .contains(&fstype)
-                .then(|| PathBuf::from(mountpoint))
-        })
-        .collect()
-}
+

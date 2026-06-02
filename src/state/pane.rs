@@ -1,9 +1,27 @@
 use crate::state::file_entry::{SortColumn, SortDir};
 use crate::state::settings::ViewMode;
+use crate::state::tag_cache::TagId;
 use std::path::PathBuf;
 
 pub type PaneId = egui_tiles::TileId;
 pub type TabId = egui_tiles::TileId;
+
+/// What a tab is showing. Normal tabs list a real directory; virtual tabs (such as
+/// tag results) get their entries from somewhere other than `read_dir`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum TabSource {
+    /// List the real directory at `TabData.path`.
+    #[default]
+    Directory,
+    /// Show every file carrying the given tag. `TabData.path` is a display-only sentinel.
+    Tag(TagId),
+}
+
+impl TabSource {
+    pub fn is_directory(&self) -> bool {
+        matches!(self, TabSource::Directory)
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TabData {
@@ -18,6 +36,10 @@ pub struct TabData {
     pub thumbnail_size: f32,
     #[serde(default)]
     pub preview_enabled: bool,
+    /// What this tab shows (real directory vs. virtual results). Defaults to
+    /// `Directory` so sessions saved before this field deserialize unchanged.
+    #[serde(default)]
+    pub source: TabSource,
 }
 
 impl TabData {
@@ -36,6 +58,7 @@ impl TabData {
             view_mode,
             thumbnail_size,
             preview_enabled,
+            source: TabSource::Directory,
         }
     }
 }

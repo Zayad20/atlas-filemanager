@@ -16,7 +16,7 @@ pub fn request_blur(cc: &eframe::CreationContext<'_>) {
     };
 
     if let Err(err) = set_blur_atom(window) {
-        log::debug!("unable to request X11 compositor blur: {err}");
+        tracing::debug!("unable to request X11 compositor blur: {err}");
     }
 }
 

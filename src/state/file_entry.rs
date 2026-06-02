@@ -36,15 +36,17 @@ impl Default for SortDir {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
+
 pub struct FileEntry {
     pub name: String,
+    /// `name` lowercased once at listing time, so the filter doesn't re-lowercase
+    /// every entry on every frame.
+    pub name_lower: String,
     pub path: PathBuf,
     pub kind: FileKind,
     pub size: Option<u64>,
     pub modified: Option<SystemTime>,
     pub extension: Option<String>,
-    pub is_hidden: bool,
-    pub is_symlink: bool,
-    pub dir_usage_pct: Option<f32>,
+    pub _is_hidden: bool,
+    pub _is_symlink: bool,
 }

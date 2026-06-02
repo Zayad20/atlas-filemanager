@@ -1,20 +1,16 @@
 use egui_tiles::TileId;
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
 
 use crate::fs::preview::PreviewResult;
 use crate::search::nucleo_pool::NucleoPool;
 use crate::state::file_entry::FileEntry;
 use crate::state::pane::{TabData, TabId};
 use crate::state::profiles::{ProfileManager, ProfileUiState};
-use crate::state::settings::Settings;
+use crate::state::settings::{Settings, ViewMode};
 use crate::state::tab::{LoadState, TabState};
-use crate::state::undo::UndoStack;
-use crate::ui::fuzzy_overlay::FuzzyOverlayState;
 
-#[allow(dead_code)]
 pub enum BgResult {
     DirListed {
         tab: TabId,
@@ -26,10 +22,24 @@ pub enum BgResult {
         op_id: u64,
         error: String,
     },
+    MillerListed {
+        tab: TabId,
+        path: PathBuf,
+        op_id: u64,
+        entries: Vec<FileEntry>,
+    },
     PreviewReady {
         tab: TabId,
         path: PathBuf,
         result: PreviewResult,
+    },
+    MultiPreviewThumbnailReady {
+        tab: TabId,
+        key: crate::state::preview_cache::MultiPreviewKey,
+        path: PathBuf,
+        rgba: Vec<u8>,
+        width: usize,
+        height: usize,
     },
     FsEvent(std::path::PathBuf),
     OpProgress {
@@ -43,68 +53,17 @@ pub enum BgResult {
         result: Result<(), String>,
         affected_tabs: Vec<TabId>,
     },
-    IndexChunk(Vec<PathBuf>),
-    IndexComplete,
-    DirSize {
-        path: PathBuf,
-        bytes: u64,
+    /// Full tag-definition list pushed by the tag-db worker after any CRUD.
+    TagDefinitions(Vec<crate::state::tag_cache::TagDef>),
+    /// Cached tag associations for a set of queried paths.
+    TagsForPaths {
+        tags: HashMap<PathBuf, Vec<crate::state::tag_cache::TagId>>,
     },
-}
-
-pub struct ClipboardState {
-    pub paths: Vec<PathBuf>,
-    pub is_cut: bool,
-}
-
-pub struct OpState {
-    pub done: u64,
-    pub total: u64,
-    pub current_file: PathBuf,
-}
-
-#[derive(Clone)]
-pub struct DraggedFiles {
-    pub source_tab: TabId,
-    pub paths: Vec<PathBuf>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DragHoverTarget {
-    Folder { tab: TabId, path: PathBuf },
-    Tab(TabId),
-    Location { tab: TabId, path: PathBuf },
-}
-
-#[derive(Default)]
-pub struct DragHoverState {
-    pub observed_target: Option<DragHoverTarget>,
-    pub candidate: Option<DragHoverTarget>,
-    pub candidate_since: f64,
-    pub confirmation_target: Option<DragHoverTarget>,
-    pub confirmation_started_at: f64,
-    pub triggered: bool,
-    pub original_paths: HashMap<TabId, PathBuf>,
-    pub original_focused_tile: Option<TabId>,
-}
-
-impl DragHoverState {
-    pub fn confirmation_visible(&self, target: &DragHoverTarget, now: f64) -> bool {
-        const BLINK_INTERVAL: f64 = 0.08;
-        const BLINK_DURATION: f64 = BLINK_INTERVAL * 4.0;
-
-        if self.confirmation_target.as_ref() != Some(target) {
-            return false;
-        }
-        let elapsed = now - self.confirmation_started_at;
-        (0.0..BLINK_DURATION).contains(&elapsed)
-            && (elapsed / BLINK_INTERVAL).floor() as u64 % 2 == 0
-    }
-}
-
-#[derive(Clone)]
-pub struct ExternalDropTarget {
-    pub tab: TabId,
-    pub dest: PathBuf,
+    /// Paths carrying a given tag, used to populate a virtual tag-results tab.
+    PathsForTag {
+        tag: crate::state::tag_cache::TagId,
+        paths: Vec<PathBuf>,
+    },
 }
 
 pub struct AppState {
@@ -114,32 +73,22 @@ pub struct AppState {
     /// Runtime per-tab state, keyed by Pane leaf TileId
     pub tab_states: HashMap<TileId, TabState>,
     pub settings: Settings,
-    pub undo_stack: UndoStack,
-    pub op_id_counter: Arc<AtomicU64>,
-    pub clipboard: Option<ClipboardState>,
-    pub active_ops: HashMap<u64, OpState>,
-    pub show_goto_bar: bool,
-    pub show_palette: bool,
-    pub show_settings: bool,
+    pub ops: crate::state::ops::OperationManager,
+    pub overlay: crate::state::overlay::OverlayState,
     pub nucleo: NucleoPool,
-    pub goto_state: FuzzyOverlayState,
-    pub palette_state: FuzzyOverlayState,
     pub nucleo_results: Vec<std::path::PathBuf>,
     // Phase 5 — inspector preview
-    pub preview_paths: HashMap<TileId, PathBuf>,
-    pub preview_results: HashMap<TileId, PreviewResult>,
-    pub preview_textures: HashMap<TileId, egui::TextureHandle>,
+    pub preview: crate::state::preview_cache::PreviewState,
     // Phase 7 — filesystem watchers keyed by Pane leaf TileId
     pub watchers: HashMap<TileId, crate::fs::watcher::WatcherHandle>,
-    pub batch_rename: Option<crate::ui::batch_rename::BatchRenameState>,
+    pub batch_rename: Option<crate::state::batch_rename::BatchRenameState>,
     pub tabs_popup: crate::ui::tabs_popup::TabsPopupState,
-    pub dragged_files: Option<DraggedFiles>,
-    pub drag_hover: DragHoverState,
-    pub external_drop_target: Option<ExternalDropTarget>,
-    pub drop_shelf_open: bool,
-    pub drop_shelf_files: Vec<PathBuf>,
+    pub drag_drop: crate::state::drag::DragDropState,
     pub profiles: ProfileManager,
     pub profile_ui: ProfileUiState,
+    pub device_usage: crate::state::device_usage::DeviceUsageState,
+    pub space_lens: crate::state::space_lens::SpaceLensState,
+    pub tag_cache: crate::state::tag_cache::TagCache,
 }
 
 impl AppState {
@@ -161,36 +110,7 @@ impl AppState {
         let mut tab_states = HashMap::new();
         tab_states.insert(pane_tile_id, TabState::default());
 
-        let state = Self {
-            pane_tree: tree,
-            focused_tile: pane_tile_id,
-            tab_states,
-            settings,
-            undo_stack: UndoStack::default(),
-            op_id_counter: Arc::new(AtomicU64::new(1)),
-            clipboard: None,
-            active_ops: HashMap::new(),
-            show_goto_bar: false,
-            show_palette: false,
-            show_settings: false,
-            nucleo: NucleoPool::new(),
-            goto_state: FuzzyOverlayState::default(),
-            palette_state: FuzzyOverlayState::default(),
-            nucleo_results: Vec::new(),
-            preview_paths: HashMap::new(),
-            preview_results: HashMap::new(),
-            preview_textures: HashMap::new(),
-            watchers: HashMap::new(),
-            batch_rename: None,
-            tabs_popup: crate::ui::tabs_popup::TabsPopupState::default(),
-            dragged_files: None,
-            drag_hover: DragHoverState::default(),
-            external_drop_target: None,
-            drop_shelf_open: false,
-            drop_shelf_files: Vec::new(),
-            profiles: ProfileManager::default(),
-            profile_ui: ProfileUiState::default(),
-        };
+        let state = Self::build(tree, pane_tile_id, tab_states, settings);
         (state, pane_tile_id)
     }
 
@@ -198,11 +118,92 @@ impl AppState {
         self.tab_states.get(&self.focused_tile)
     }
 
+    pub fn active_preview_request(&self) -> Option<crate::state::preview_cache::PreviewRequest> {
+        use crate::state::preview_cache::{MultiPreviewKey, PreviewRequest, MULTI_PREVIEW_LIMIT};
+
+        let tab = self.focused_tile;
+        let view = match self.pane_tree.tiles.get(tab) {
+            Some(egui_tiles::Tile::Pane(p)) => p.view_mode.clone(),
+            _ => return None,
+        };
+        let ts = self.tab_states.get(&tab)?;
+        if view == ViewMode::Miller {
+            let col = ts.miller.columns.get(ts.miller.focused)?;
+            return col
+                .entries
+                .get(col.selected?)
+                .map(|entry| PreviewRequest::Single(entry.path.clone()));
+        }
+
+        let mut selected: Vec<usize> = ts.selection.selected.iter().copied().collect();
+        selected.sort_unstable();
+        if selected.len() == 1 {
+            return ts
+                .entries
+                .get(selected[0])
+                .map(|entry| PreviewRequest::Single(entry.path.clone()));
+        }
+        if selected.is_empty() {
+            return None;
+        }
+
+        let mut hasher = DefaultHasher::new();
+        let mut paths = Vec::with_capacity(MULTI_PREVIEW_LIMIT);
+        for idx in selected {
+            let Some(entry) = ts.entries.get(idx) else {
+                continue;
+            };
+            idx.hash(&mut hasher);
+            entry.path.hash(&mut hasher);
+            let is_image = entry
+                .extension
+                .as_deref()
+                .is_some_and(crate::fs::preview::is_image_ext);
+            if paths.len() < MULTI_PREVIEW_LIMIT && is_image {
+                paths.push(entry.path.clone());
+            }
+        }
+
+        Some(PreviewRequest::Multiple {
+            key: MultiPreviewKey {
+                fingerprint: hasher.finish(),
+                selected_count: ts.selection.selected.len(),
+            },
+            paths,
+        })
+    }
+
     pub fn active_tab_state_mut(&mut self) -> Option<&mut TabState> {
         self.tab_states.get_mut(&self.focused_tile)
     }
 
-    #[allow(dead_code)]
+    /// Paths of the currently selected entries in the focused tab (handles Miller).
+    /// Mirrors what the inspector's `SelectionSummary` displays.
+    pub fn selected_paths(&self) -> Vec<PathBuf> {
+        let Some(ts) = self.active_tab_state() else {
+            return Vec::new();
+        };
+        let is_miller = matches!(
+            self.pane_tree.tiles.get(self.focused_tile),
+            Some(egui_tiles::Tile::Pane(p)) if p.view_mode == ViewMode::Miller
+        );
+        if is_miller {
+            return ts
+                .miller
+                .columns
+                .get(ts.miller.focused)
+                .and_then(|c| c.entries.get(c.selected?))
+                .map(|e| vec![e.path.clone()])
+                .unwrap_or_default();
+        }
+        let mut selected: Vec<usize> = ts.selection.selected.iter().copied().collect();
+        selected.sort_unstable();
+        selected
+            .into_iter()
+            .filter_map(|i| ts.entries.get(i).map(|e| e.path.clone()))
+            .collect()
+    }
+
     pub fn active_tab_data(&self) -> Option<&TabData> {
         match self.pane_tree.tiles.get(self.focused_tile) {
             Some(egui_tiles::Tile::Pane(p)) => Some(p),
@@ -210,7 +211,6 @@ impl AppState {
         }
     }
 
-    #[allow(dead_code)]
     pub fn active_tab_data_mut(&mut self) -> Option<&mut TabData> {
         match self.pane_tree.tiles.get_mut(self.focused_tile) {
             Some(egui_tiles::Tile::Pane(p)) => Some(p),
@@ -271,125 +271,150 @@ impl AppState {
 
     /// Restore from a persisted tree. Returns (state, first_pane_to_load).
     pub fn from_tree(tree: egui_tiles::Tree<TabData>, settings: Settings) -> (Self, TileId) {
-        let pane_ids = reachable_pane_tile_ids(&tree);
-        let focused = pane_ids.first().copied().unwrap_or(egui_tiles::TileId(0));
-        let tab_states = pane_ids
-            .into_iter()
-            .map(|id| (id, TabState::default()))
-            .collect();
+        // Collect all Pane leaf IDs to initialize tab_states
+        let mut tab_states = HashMap::new();
+        let mut first_tile = None;
 
-        let state = Self {
-            pane_tree: tree,
-            focused_tile: focused,
+        for (id, tile) in tree.tiles.iter() {
+            if matches!(tile, egui_tiles::Tile::Pane(_)) {
+                tab_states.insert(*id, TabState::default());
+                if first_tile.is_none() {
+                    first_tile = Some(*id);
+                }
+            }
+        }
+
+        let focused = first_tile.unwrap_or(egui_tiles::TileId(0));
+
+        let state = Self::build(tree, focused, tab_states, settings);
+        (state, focused)
+    }
+
+    fn build(
+        pane_tree: egui_tiles::Tree<TabData>,
+        focused_tile: TileId,
+        tab_states: HashMap<TileId, TabState>,
+        settings: Settings,
+    ) -> Self {
+        Self {
+            pane_tree,
+            focused_tile,
             tab_states,
             settings,
-            undo_stack: UndoStack::default(),
-            op_id_counter: Arc::new(AtomicU64::new(1)),
-            clipboard: None,
-            active_ops: HashMap::new(),
-            show_goto_bar: false,
-            show_palette: false,
-            show_settings: false,
+            ops: crate::state::ops::OperationManager::default(),
+            overlay: crate::state::overlay::OverlayState::default(),
             nucleo: NucleoPool::new(),
-            goto_state: FuzzyOverlayState::default(),
-            palette_state: FuzzyOverlayState::default(),
             nucleo_results: Vec::new(),
-            preview_paths: HashMap::new(),
-            preview_results: HashMap::new(),
-            preview_textures: HashMap::new(),
+            preview: crate::state::preview_cache::PreviewState::default(),
             watchers: HashMap::new(),
             batch_rename: None,
             tabs_popup: crate::ui::tabs_popup::TabsPopupState::default(),
-            dragged_files: None,
-            drag_hover: DragHoverState::default(),
-            external_drop_target: None,
-            drop_shelf_open: false,
-            drop_shelf_files: Vec::new(),
+            drag_drop: crate::state::drag::DragDropState::default(),
             profiles: ProfileManager::default(),
             profile_ui: ProfileUiState::default(),
-        };
-        (state, focused)
+            device_usage: crate::state::device_usage::DeviceUsageState::default(),
+            space_lens: crate::state::space_lens::SpaceLensState::default(),
+            tag_cache: crate::state::tag_cache::TagCache::default(),
+        }
+    }
+
+    /// Remove all preview data for a tab.
+    pub fn clear_preview(&mut self, tab: TileId) {
+        self.preview.clear(tab);
+    }
+
+    /// Register a new background operation and return its ID.
+    pub fn start_op(&mut self, count: usize) -> u64 {
+        self.ops.start_op(count)
     }
 
     /// All Pane leaf TileIds in the tree (for session restore / refresh all).
     pub fn all_pane_tile_ids(&self) -> Vec<TileId> {
-        reachable_pane_tile_ids(&self.pane_tree)
+        self.pane_tree
+            .tiles
+            .iter()
+            .filter_map(|(id, tile)| {
+                if matches!(tile, egui_tiles::Tile::Pane(_)) {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     pub fn next_op_id(&self) -> u64 {
-        use std::sync::atomic::Ordering;
-        self.op_id_counter.fetch_add(1, Ordering::Relaxed)
+        self.ops.next_op_id()
     }
-}
-
-fn reachable_pane_tile_ids(tree: &egui_tiles::Tree<TabData>) -> Vec<TileId> {
-    let Some(root) = tree.root else {
-        return Vec::new();
-    };
-    let mut panes = Vec::new();
-    let mut pending = vec![root];
-    let mut visited = std::collections::HashSet::new();
-    while let Some(tile_id) = pending.pop() {
-        if !visited.insert(tile_id) {
-            continue;
-        }
-        match tree.tiles.get(tile_id) {
-            Some(egui_tiles::Tile::Pane(_)) => panes.push(tile_id),
-            Some(egui_tiles::Tile::Container(container)) => {
-                pending.extend(container.children().copied());
-            }
-            None => {}
-        }
-    }
-    panes
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AppState, DragHoverState, DragHoverTarget};
-    use crate::state::pane::TabData;
-    use crate::state::settings::{Settings, ViewMode};
-    use egui_tiles::TileId;
+    use super::AppState;
+    use crate::state::file_entry::{FileEntry, FileKind};
+    use crate::state::preview_cache::{PreviewRequest, MULTI_PREVIEW_LIMIT};
+    use crate::state::settings::Settings;
     use std::path::PathBuf;
 
-    #[test]
-    fn drag_hover_confirmation_blinks_twice_then_stops() {
-        let target = DragHoverTarget::Tab(TileId(7));
-        let state = DragHoverState {
-            confirmation_target: Some(target.clone()),
-            confirmation_started_at: 10.0,
-            ..Default::default()
-        };
-
-        assert!(state.confirmation_visible(&target, 10.01));
-        assert!(!state.confirmation_visible(&target, 10.09));
-        assert!(state.confirmation_visible(&target, 10.17));
-        assert!(!state.confirmation_visible(&target, 10.25));
-        assert!(!state.confirmation_visible(&target, 10.33));
+    fn entry(name: &str) -> FileEntry {
+        let path = PathBuf::from(name);
+        FileEntry {
+            name: name.to_string(),
+            name_lower: name.to_lowercase(),
+            extension: path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(str::to_string),
+            path,
+            kind: FileKind::File,
+            size: Some(1),
+            modified: None,
+            _is_hidden: false,
+            _is_symlink: false,
+        }
     }
 
     #[test]
-    fn restored_state_ignores_orphaned_panes() {
-        let mut tree = egui_tiles::Tree::empty("restore_test");
-        let reachable = tree.tiles.insert_pane(TabData::with_view(
-            PathBuf::from("/reachable"),
-            ViewMode::Details,
-            128.0,
-            false,
-        ));
-        let orphan = tree.tiles.insert_pane(TabData::with_view(
-            PathBuf::from("/orphan"),
-            ViewMode::Details,
-            128.0,
-            false,
-        ));
-        tree.root = Some(tree.tiles.insert_tab_tile(vec![reachable]));
+    fn multi_preview_limits_images_in_visible_order() {
+        let (mut state, tile) = AppState::new(Settings::default());
+        let tab = state.tab_states.get_mut(&tile).unwrap();
+        tab.set_entries((0..8).map(|idx| entry(&format!("{idx}.png"))).collect());
+        tab.selection.selected.extend([7, 2, 5, 1, 3, 6, 4, 0]);
 
-        let (state, focused) = AppState::from_tree(tree, Settings::default());
+        let Some(PreviewRequest::Multiple { key, paths }) = state.active_preview_request() else {
+            panic!("expected a multi-preview request");
+        };
+        assert_eq!(key.selected_count, 8);
+        assert_eq!(paths.len(), MULTI_PREVIEW_LIMIT);
+        assert_eq!(
+            paths,
+            ["0.png", "1.png", "2.png", "3.png"]
+                .into_iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>()
+        );
+    }
 
-        assert_eq!(focused, reachable);
-        assert_eq!(state.all_pane_tile_ids(), vec![reachable]);
-        assert!(state.tab_states.contains_key(&reachable));
-        assert!(!state.tab_states.contains_key(&orphan));
+    #[test]
+    fn mixed_selection_schedules_only_image_thumbnails() {
+        let (mut state, tile) = AppState::new(Settings::default());
+        let tab = state.tab_states.get_mut(&tile).unwrap();
+        tab.set_entries(vec![
+            entry("photo.png"),
+            entry("notes.txt"),
+            entry("other.jpg"),
+        ]);
+        tab.selection.selected.extend([0, 1, 2]);
+
+        let Some(PreviewRequest::Multiple { paths, .. }) = state.active_preview_request() else {
+            panic!("expected a multi-preview request");
+        };
+        assert_eq!(
+            paths,
+            ["photo.png", "other.jpg"]
+                .into_iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>()
+        );
     }
 }

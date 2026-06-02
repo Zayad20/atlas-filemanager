@@ -13,6 +13,8 @@ pub enum Theme {
 pub enum ViewMode {
     Details,
     Grid,
+    List,
+    Miller,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -1,13 +1,16 @@
+#[allow(dead_code)]
 use crate::state::pane::TabData;
 use crate::state::profiles::ProfileManager;
 use crate::state::settings::Settings;
 use std::path::PathBuf;
 
+const APP_NAME: &str = "Atlas";
+
 #[allow(dead_code)]
 pub fn config_dir() -> PathBuf {
     dirs::config_dir()
+        .map(|p| p.join(APP_NAME))
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("egui-app")
 }
 
 #[allow(dead_code)]

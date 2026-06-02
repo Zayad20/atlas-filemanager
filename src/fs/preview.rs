@@ -7,11 +7,14 @@ use syntect::parsing::SyntaxSet;
 
 use crate::state::app_state::BgResult;
 use crate::state::pane::TabId;
+use crate::state::preview_cache::MultiPreviewKey;
 
 static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
 static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
 
 const MAX_TEXT_BYTES: usize = 256 * 1024; // 256 KB
+const MAX_IMAGE_PREVIEW_EDGE: u32 = 1600;
+const MAX_MULTI_THUMBNAIL_EDGE: u32 = 384;
 
 #[derive(Debug)]
 pub struct DirPreviewEntry {
@@ -36,6 +39,8 @@ pub enum PreviewResult {
         rgba: Vec<u8>,
         width: usize,
         height: usize,
+        original_width: usize,
+        original_height: usize,
         exif: Vec<(String, String)>,
     },
     Pdf {
@@ -84,6 +89,30 @@ pub async fn load_preview(tab: TabId, path: PathBuf, tx: flume::Sender<BgResult>
     let _ = tx.send(BgResult::PreviewReady { tab, path, result });
 }
 
+pub async fn load_multi_thumbnail(
+    tab: TabId,
+    key: MultiPreviewKey,
+    path: PathBuf,
+    tx: flume::Sender<BgResult>,
+) {
+    let thumbnail_path = path.clone();
+    let thumbnail = tokio::task::spawn_blocking(move || preview_thumbnail(&thumbnail_path))
+        .await
+        .ok()
+        .and_then(Result::ok);
+    let Some((rgba, width, height)) = thumbnail else {
+        return;
+    };
+    let _ = tx.send(BgResult::MultiPreviewThumbnailReady {
+        tab,
+        key,
+        path,
+        rgba,
+        width,
+        height,
+    });
+}
+
 async fn preview_dir(path: &Path) -> PreviewResult {
     let mut rd = match tokio::fs::read_dir(path).await {
         Ok(r) => r,
@@ -98,7 +127,9 @@ async fn preview_dir(path: &Path) -> PreviewResult {
     while let Ok(Some(entry)) = rd.next_entry().await {
         total_count += 1;
         let name = entry.file_name().to_string_lossy().into_owned();
-        let Ok(meta) = entry.metadata().await else { continue };
+        let Ok(meta) = entry.metadata().await else {
+            continue;
+        };
         let is_dir = meta.is_dir();
         let size = if is_dir { None } else { Some(meta.len()) };
         if let Some(s) = size {
@@ -112,8 +143,17 @@ async fn preview_dir(path: &Path) -> PreviewResult {
                 .and_then(|e| e.to_str())
                 .map(|e| e.to_lowercase())
         };
-        let e = DirPreviewEntry { name, is_dir, size, extension };
-        if is_dir { dirs.push(e) } else { files.push(e) }
+        let e = DirPreviewEntry {
+            name,
+            is_dir,
+            size,
+            extension,
+        };
+        if is_dir {
+            dirs.push(e)
+        } else {
+            files.push(e)
+        }
     }
 
     dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -123,7 +163,11 @@ async fn preview_dir(path: &Path) -> PreviewResult {
     entries.extend(files);
     entries.truncate(DIR_PREVIEW_LIMIT);
 
-    PreviewResult::Dir { entries, total_count, total_size }
+    PreviewResult::Dir {
+        entries,
+        total_count,
+        total_size,
+    }
 }
 
 async fn preview_markdown(path: &Path) -> PreviewResult {
@@ -254,6 +298,9 @@ fn preview_image(path: &Path) -> PreviewResult {
         Err(e) => return PreviewResult::Error(e.to_string()),
     };
 
+    let original_width = img.width() as usize;
+    let original_height = img.height() as usize;
+    let img = img.thumbnail(MAX_IMAGE_PREVIEW_EDGE, MAX_IMAGE_PREVIEW_EDGE);
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
 
@@ -263,8 +310,17 @@ fn preview_image(path: &Path) -> PreviewResult {
         rgba: rgba.into_raw(),
         width: width as usize,
         height: height as usize,
+        original_width,
+        original_height,
         exif,
     }
+}
+
+fn preview_thumbnail(path: &Path) -> Result<(Vec<u8>, usize, usize), image::ImageError> {
+    let img = image::open(path)?.thumbnail(MAX_MULTI_THUMBNAIL_EDGE, MAX_MULTI_THUMBNAIL_EDGE);
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Ok((rgba.into_raw(), width as usize, height as usize))
 }
 
 fn read_exif(path: &Path) -> Vec<(String, String)> {
@@ -288,7 +344,7 @@ fn read_exif(path: &Path) -> Vec<(String, String)> {
     result
 }
 
-fn is_image_ext(ext: &str) -> bool {
+pub(crate) fn is_image_ext(ext: &str) -> bool {
     matches!(
         ext,
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "tiff" | "tif"

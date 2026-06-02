@@ -24,9 +24,30 @@ fn linux_event_loop_builder() -> Option<eframe::EventLoopBuilderHook> {
 }
 
 fn main() -> eframe::Result<()> {
-    env_logger::init();
+    use tracing_subscriber::prelude::*;
+    // egui_winit logs an ERROR every time the OS clipboard is read on Ctrl+V and it
+    // doesn't hold text (e.g. an image, or empty). Atlas uses Ctrl+C/V for file
+    // operations, so this is expected noise — drop that one target. Keep INFO+.
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer().with_filter(
+                tracing_subscriber::filter::filter_fn(|meta| {
+                    *meta.level() <= tracing::Level::INFO
+                        && meta.target() != "egui_winit::clipboard"
+                }),
+            ),
+        )
+        .init();
 
+    // A file manager's async load is filesystem I/O, not CPU-bound parallelism, so
+    // a small fixed pool is plenty. Capping the workers (instead of one-per-core)
+    // cuts startup thread-spawn cost and resident memory. Heavy directory walking
+    // already runs on rayon, not here. `enable_all` stays — we need the I/O + time
+    // drivers for `tokio::fs` and timers.
     let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(4)
+        .thread_name("fp-worker")
         .enable_all()
         .build()
         .expect("tokio runtime");
@@ -46,7 +67,9 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("Atlas")
             .with_inner_size([1280.0, 800.0])
-            .with_transparent(true)
+            // The transparent window is a Linux/KDE aesthetic paired with compositor blur.
+            // On Windows/macOS (no blur) keep it opaque so the background never shows through.
+            .with_transparent(cfg!(target_os = "linux"))
             .with_drag_and_drop(true),
         event_loop_builder: linux_event_loop_builder(),
         ..Default::default()

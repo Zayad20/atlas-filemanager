@@ -2,9 +2,10 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::state::tab::TabState;
 use crate::state::{
-    app_state::{DragHoverState, DragHoverTarget},
+    drag::{DragHoverState, DragHoverTarget},
     pane::TabId,
 };
+use crate::ui::drag_feedback::paint_drag_hover_confirmation;
 
 pub fn show_breadcrumb(
     ui: &mut egui::Ui,
@@ -32,51 +33,51 @@ pub fn show_breadcrumb(
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
 
-                if tab_state.path_editing {
-                    let mut output = egui::TextEdit::singleline(&mut tab_state.path_edit_text)
+                if tab_state.path_edit.editing {
+                    let mut output = egui::TextEdit::singleline(&mut tab_state.path_edit.text)
                         .desired_width(f32::INFINITY)
                         .show(ui);
                     let response = &output.response;
-                    if tab_state.path_edit_focus {
+                    if tab_state.path_edit.focus {
                         response.request_focus();
                         output
                             .state
                             .cursor
                             .set_char_range(Some(egui::text::CCursorRange::two(
                                 egui::text::CCursor::default(),
-                                egui::text::CCursor::new(tab_state.path_edit_text.chars().count()),
+                                egui::text::CCursor::new(tab_state.path_edit.text.chars().count()),
                             )));
                         output.state.store(ui.ctx(), response.id);
-                        tab_state.path_edit_focus = false;
+                        tab_state.path_edit.focus = false;
                     }
                     let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
                     let tab_pressed = ui.input(|input| input.key_pressed(egui::Key::Tab));
                     if tab_pressed {
-                        if let Some(completed) = complete_path(&tab_state.path_edit_text, path) {
-                            tab_state.path_edit_text = completed;
-                            tab_state.path_edit_error = None;
+                        if let Some(completed) = complete_path(&tab_state.path_edit.text, path) {
+                            tab_state.path_edit.text = completed;
+                            tab_state.path_edit.error = None;
                         }
                         response.request_focus();
                     } else if enter_pressed {
-                        let target = resolve_location(&tab_state.path_edit_text, path);
+                        let target = resolve_location(&tab_state.path_edit.text, path);
                         if target.is_dir() {
                             result = Some(target);
-                            tab_state.path_editing = false;
-                            tab_state.path_edit_error = None;
+                            tab_state.path_edit.editing = false;
+                            tab_state.path_edit.error = None;
                         } else {
-                            tab_state.path_edit_error =
+                            tab_state.path_edit.error =
                                 Some("Location does not exist or is not a folder".to_string());
                             response.request_focus();
                         }
                     } else if ui.input(|input| input.key_pressed(egui::Key::Escape))
                         || response.lost_focus()
                     {
-                        tab_state.path_editing = false;
-                        tab_state.path_edit_error = None;
+                        tab_state.path_edit.editing = false;
+                        tab_state.path_edit.error = None;
                     } else if response.changed() {
-                        tab_state.path_edit_error = None;
+                        tab_state.path_edit.error = None;
                     }
-                    if let Some(error) = &tab_state.path_edit_error {
+                    if let Some(error) = &tab_state.path_edit.error {
                         ui.colored_label(ui.visuals().error_fg_color, error);
                     }
                     return;
@@ -139,30 +140,14 @@ pub fn show_breadcrumb(
     {
         enter_edit_mode = true;
     }
-    if enter_edit_mode && !tab_state.path_editing {
-        tab_state.path_edit_text = path.to_string_lossy().into_owned();
-        tab_state.path_editing = true;
-        tab_state.path_edit_focus = true;
-        tab_state.path_edit_error = None;
+    if enter_edit_mode && !tab_state.path_edit.editing {
+        tab_state.path_edit.text = path.to_string_lossy().into_owned();
+        tab_state.path_edit.editing = true;
+        tab_state.path_edit.focus = true;
+        tab_state.path_edit.error = None;
     }
 
     result
-}
-
-fn paint_drag_hover_confirmation(
-    response: &egui::Response,
-    drag_hover: &DragHoverState,
-    target: &DragHoverTarget,
-) {
-    let now = response.ctx.input(|input| input.time);
-    if drag_hover.confirmation_visible(target, now) {
-        response.ctx.debug_painter().rect_stroke(
-            response.rect.shrink(1.0),
-            3.0,
-            egui::Stroke::new(2.0, response.ctx.style().visuals.selection.stroke.color),
-            egui::StrokeKind::Inside,
-        );
-    }
 }
 
 fn expand_home(text: &str) -> PathBuf {

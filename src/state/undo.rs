@@ -1,4 +1,6 @@
+use std::collections::VecDeque;
 use std::path::PathBuf;
+
 
 #[allow(dead_code)]
 pub enum UndoEntry {
@@ -19,19 +21,19 @@ pub enum UndoEntry {
     },
 }
 
-#[allow(dead_code)]
+
 #[derive(Default)]
 pub struct UndoStack {
-    pub undo: Vec<UndoEntry>,
-    pub redo: Vec<UndoEntry>,
+    pub undo: VecDeque<UndoEntry>,
+    pub redo: VecDeque<UndoEntry>,
 }
 
 impl UndoStack {
     pub fn push(&mut self, entry: UndoEntry) {
         self.redo.clear();
-        self.undo.push(entry);
+        self.undo.push_back(entry);
         if self.undo.len() > 50 {
-            self.undo.remove(0);
+            self.undo.pop_front();
         }
     }
 }

@@ -24,6 +24,10 @@ const STATIC_COMMANDS: &[(&str, fn() -> Action)] = &[
     ("Batch Rename", || Action::OpenBatchRename),
     ("View: Details", || Action::SetViewMode(ViewMode::Details)),
     ("View: Thumbnails", || Action::SetViewMode(ViewMode::Grid)),
+    ("View: List", || Action::SetViewMode(ViewMode::List)),
+    ("View: Columns (Miller)", || {
+        Action::SetViewMode(ViewMode::Miller)
+    }),
 ];
 
 pub fn show_command_palette(
@@ -36,7 +40,7 @@ pub fn show_command_palette(
     let selected_paths: Vec<std::path::PathBuf> = app_state
         .active_tab_state()
         .map(|tab| {
-            tab.selected
+            tab.selection.selected
                 .iter()
                 .filter_map(|idx| tab.entries.get(*idx))
                 .map(|e| e.path.clone())

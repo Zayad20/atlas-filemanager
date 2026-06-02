@@ -1,7 +1,15 @@
 pub mod app_state;
+pub mod drag;
 pub mod file_entry;
+pub mod ops;
+pub mod overlay;
 pub mod pane;
+pub mod preview_cache;
 pub mod profiles;
 pub mod settings;
 pub mod tab;
+pub mod tag_cache;
 pub mod undo;
+pub mod batch_rename;
+pub mod device_usage;
+pub mod space_lens;

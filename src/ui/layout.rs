@@ -1,30 +1,35 @@
-use egui::{Id, Sense, TextStyle, Vec2};
 use egui_tiles::{Behavior, SimplificationOptions, TileId, Tiles, UiResponse};
 use std::collections::HashMap;
 
 use crate::fs::preview::PreviewResult;
 use crate::input::action::Action;
 use crate::state::app_state::AppState;
-use crate::state::app_state::DraggedFiles;
-use crate::state::app_state::ExternalDropTarget;
-use crate::state::app_state::{DragHoverState, DragHoverTarget};
+use crate::state::drag::DraggedFiles;
+use crate::state::drag::ExternalDropTarget;
+use crate::state::drag::{DragHoverState, DragHoverTarget};
+use crate::state::file_entry::FileKind;
 use crate::state::pane::TabData;
+use crate::state::preview_cache::MultiPreviewState;
 use crate::state::settings::{InspectorPlacement, Settings, ViewMode};
 use crate::state::tab::TabState;
 use crate::ui::breadcrumb::show_breadcrumb;
+use crate::ui::drag_feedback::paint_drag_hover_confirmation;
 use crate::ui::file_list::show_file_list;
 
 pub struct AtlasBehavior<'a> {
     pub tab_states: &'a mut HashMap<TileId, TabState>,
-    #[allow(dead_code)]
+
     pub settings: &'a mut Settings,
     pub actions: &'a mut Vec<Action>,
     pub focused_tile: &'a mut TileId,
     pub dragged_files: &'a mut Option<DraggedFiles>,
     pub drag_hover: &'a mut DragHoverState,
     pub external_drop_target: &'a mut Option<ExternalDropTarget>,
+    pub tab_strip_drop: &'a mut Option<TileId>,
     pub preview_results: &'a HashMap<TileId, PreviewResult>,
     pub preview_textures: &'a HashMap<TileId, egui::TextureHandle>,
+    pub multi_previews: &'a HashMap<TileId, MultiPreviewState>,
+    pub tag_cache: &'a crate::state::tag_cache::TagCache,
 }
 
 impl<'a> Behavior<TabData> for AtlasBehavior<'a> {
@@ -54,14 +59,27 @@ impl<'a> Behavior<TabData> for AtlasBehavior<'a> {
             // Breadcrumb navigation
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Added right-to-left, so these read Details · List · Icons · Columns.
                     if ui
-                        .selectable_label(pane.view_mode == ViewMode::Grid, "Grid")
+                        .selectable_label(pane.view_mode == ViewMode::Miller, "Columns")
+                        .clicked()
+                    {
+                        self.actions.push(Action::SetViewMode(ViewMode::Miller));
+                    }
+                    if ui
+                        .selectable_label(pane.view_mode == ViewMode::Grid, "Icons")
                         .clicked()
                     {
                         self.actions.push(Action::SetViewMode(ViewMode::Grid));
                     }
                     if ui
-                        .selectable_label(pane.view_mode == ViewMode::Details, "List")
+                        .selectable_label(pane.view_mode == ViewMode::List, "List")
+                        .clicked()
+                    {
+                        self.actions.push(Action::SetViewMode(ViewMode::List));
+                    }
+                    if ui
+                        .selectable_label(pane.view_mode == ViewMode::Details, "Details")
                         .clicked()
                     {
                         self.actions.push(Action::SetViewMode(ViewMode::Details));
@@ -90,19 +108,25 @@ impl<'a> Behavior<TabData> for AtlasBehavior<'a> {
             let sort_dir = pane.sort_dir.clone();
             let tab_state = self.tab_states.entry(tile_id).or_default();
             if *self.focused_tile == tile_id && !ui.ctx().wants_keyboard_input() {
-                handle_file_navigation_keyboard(
-                    ui,
-                    tile_id,
-                    &pane.view_mode,
-                    tab_state,
-                    self.actions,
-                );
-                update_filter_from_keyboard(ui, tab_state);
+                if pane.view_mode == ViewMode::Miller {
+                    handle_miller_keyboard(ui, tile_id, tab_state, self.actions);
+                } else {
+                    handle_file_navigation_keyboard(
+                        ui,
+                        tile_id,
+                        &pane.view_mode,
+                        tab_state,
+                        self.actions,
+                    );
+                    update_filter_from_keyboard(ui, tab_state);
+                }
             }
+            let preview_summary =
+                crate::ui::inspector::SelectionSummary::for_tab(tab_state, &pane.view_mode);
             let show_local_inspector = pane.preview_enabled
                 && self.settings.inspector_placement == InspectorPlacement::ActiveTab
                 && *self.focused_tile == tile_id
-                && !tab_state.selected.is_empty();
+                && preview_summary.count > 0;
             if show_local_inspector {
                 ui.columns(2, |columns| {
                     show_file_list(
@@ -123,8 +147,12 @@ impl<'a> Behavior<TabData> for AtlasBehavior<'a> {
                     columns[1].separator();
                     crate::ui::inspector::show_preview(
                         &mut columns[1],
+                        &preview_summary,
                         self.preview_results.get(&tile_id),
                         self.preview_textures.get(&tile_id),
+                        self.multi_previews.get(&tile_id),
+                        self.tag_cache,
+                        self.actions,
                     );
                 });
             } else {
@@ -149,11 +177,7 @@ impl<'a> Behavior<TabData> for AtlasBehavior<'a> {
     }
 
     fn tab_title_for_pane(&mut self, pane: &TabData) -> egui::WidgetText {
-        let name = pane
-            .path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/".to_string());
+        let name = crate::util::display::display_name(&pane.path);
         egui::RichText::new(name).into()
     }
 
@@ -166,86 +190,6 @@ impl<'a> Behavior<TabData> for AtlasBehavior<'a> {
         false
     }
 
-    fn tab_ui(
-        &mut self,
-        tiles: &mut Tiles<TabData>,
-        ui: &mut egui::Ui,
-        id: Id,
-        tile_id: TileId,
-        state: &egui_tiles::TabState,
-    ) -> egui::Response {
-        let text = self.tab_title_for_tile(tiles, tile_id);
-        let close_btn_size = Vec2::splat(self.close_button_outer_size());
-        let close_btn_left_padding = 4.0;
-        let font_id = TextStyle::Button.resolve(ui.style());
-        let galley = text.into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, font_id);
-        let x_margin = self.tab_title_spacing(ui.visuals());
-        let button_width = galley.size().x
-            + 2.0 * x_margin
-            + f32::from(state.closable) * (close_btn_left_padding + close_btn_size.x);
-        let (_, tab_rect) = ui.allocate_space(egui::vec2(button_width, ui.available_height()));
-        let tab_response = ui
-            .interact(tab_rect, id, Sense::click_and_drag())
-            .on_hover_cursor(self.tab_hover_cursor_icon());
-
-        if ui.is_rect_visible(tab_rect) && !state.is_being_dragged {
-            let bg_color = self.tab_bg_color(ui.visuals(), tiles, tile_id, state);
-            let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, state);
-            ui.painter().rect(
-                tab_rect.shrink(0.5),
-                0.0,
-                bg_color,
-                stroke,
-                egui::StrokeKind::Inside,
-            );
-            if state.active {
-                ui.painter().hline(
-                    tab_rect.x_range(),
-                    tab_rect.bottom(),
-                    egui::Stroke::new(stroke.width + 1.0, bg_color),
-                );
-            }
-
-            let text_color = self.tab_text_color(ui.visuals(), tiles, tile_id, state);
-            let text_position = egui::Align2::LEFT_CENTER
-                .align_size_within_rect(galley.size(), tab_rect.shrink(x_margin))
-                .min;
-            ui.painter().galley(text_position, galley, text_color);
-
-            if state.closable {
-                let close_btn_rect = egui::Align2::RIGHT_CENTER
-                    .align_size_within_rect(close_btn_size, tab_rect.shrink(x_margin));
-                let close_btn_response = ui
-                    .interact(
-                        close_btn_rect,
-                        ui.auto_id_with("tab_close_btn"),
-                        Sense::click_and_drag(),
-                    )
-                    .on_hover_cursor(self.tab_hover_cursor_icon());
-                let visuals = ui.style().interact(&close_btn_response);
-                let rect = close_btn_rect
-                    .shrink(self.close_button_inner_margin())
-                    .expand(visuals.expansion);
-                let stroke = visuals.fg_stroke;
-                ui.painter()
-                    .line_segment([rect.left_top(), rect.right_bottom()], stroke);
-                ui.painter()
-                    .line_segment([rect.right_top(), rect.left_bottom()], stroke);
-
-                // egui_tiles normally reserves the close button exclusively for clicks.
-                // Keep close-on-click while allowing a tab drag to start over the x.
-                if close_btn_response.drag_started() {
-                    ui.ctx().set_dragged_id(id);
-                }
-                if close_btn_response.clicked() && self.on_tab_close(tiles, tile_id) {
-                    tiles.remove(tile_id);
-                }
-            }
-        }
-
-        self.on_tab_button(tiles, tile_id, tab_response)
-    }
-
     fn on_tab_button(
         &mut self,
         _tiles: &Tiles<TabData>,
@@ -255,6 +199,21 @@ impl<'a> Behavior<TabData> for AtlasBehavior<'a> {
         if response.clicked() {
             self.actions.push(Action::FocusTab(tile_id));
         }
+        response.context_menu(|ui| {
+            if ui.button("Split Right").clicked() {
+                self.actions.push(Action::SplitVertical(tile_id));
+                ui.close();
+            }
+            if ui.button("Split Down").clicked() {
+                self.actions.push(Action::SplitHorizontal(tile_id));
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("Close Pane").clicked() {
+                self.actions.push(Action::ClosePane(tile_id));
+                ui.close();
+            }
+        });
         if response.contains_pointer()
             && (self.dragged_files.is_some()
                 || response
@@ -276,8 +235,40 @@ impl<'a> Behavior<TabData> for AtlasBehavior<'a> {
         _tabs: &egui_tiles::Tabs,
         _scroll_offset: &mut f32,
     ) {
-        if ui.small_button("+").clicked() {
+        let external_drag = ui.ctx().input(|input| !input.raw.hovered_files.is_empty());
+        let internal_drag = self.dragged_files.is_some();
+
+        // The "+" doubles as a drop affordance: dropping folders here opens them
+        // as new tabs in this container.
+        let resp = ui.add(egui::Button::new("➕").min_size(egui::vec2(28.0, 24.0)));
+        if resp.clicked() {
             self.actions.push(Action::NewTab(tile_id));
+        }
+
+        if (internal_drag || external_drag) && resp.contains_pointer() {
+            ui.painter().rect_stroke(
+                resp.rect.expand(1.0),
+                6.0,
+                egui::Stroke::new(2.0, ui.visuals().selection.bg_fill),
+                egui::StrokeKind::Outside,
+            );
+            if internal_drag {
+                if ui.input(|input| input.pointer.any_released()) {
+                    if let Some(drag) = self.dragged_files.as_ref() {
+                        let dirs: Vec<_> =
+                            drag.paths.iter().filter(|p| p.is_dir()).cloned().collect();
+                        for path in dirs {
+                            self.actions.push(Action::NewTabWithPath {
+                                pane: tile_id,
+                                path,
+                            });
+                        }
+                    }
+                }
+            } else {
+                // OS file drag: remember this strip so app.rs opens dropped folders here.
+                *self.tab_strip_drop = Some(tile_id);
+            }
         }
     }
 
@@ -337,38 +328,73 @@ impl<'a> Behavior<TabData> for AtlasBehavior<'a> {
         }
     }
 
-    fn dragged_overlay_color(&self, visuals: &egui::Visuals) -> egui::Color32 {
-        visuals.selection.stroke.color.gamma_multiply(0.12)
-    }
-
     fn simplification_options(&self) -> SimplificationOptions {
         SimplificationOptions {
             all_panes_must_have_tabs: true,
             ..Default::default()
         }
     }
-}
 
-fn paint_drag_hover_confirmation(
-    response: &egui::Response,
-    drag_hover: &DragHoverState,
-    target: &DragHoverTarget,
-) {
-    let now = response.ctx.input(|input| input.time);
-    if drag_hover.confirmation_visible(target, now) {
-        response.ctx.debug_painter().rect_stroke(
-            response.rect.shrink(1.0),
-            4.0,
-            egui::Stroke::new(2.0, response.ctx.style().visuals.selection.stroke.color),
+    // ── Drag-and-drop visuals ─────────────────────────────────────────────────
+
+    /// Keep the source pane readable while it is being dragged instead of dimming
+    /// it into a near-empty rectangle (egui_tiles' default is `panel_fill * 0.5`).
+    fn dragged_overlay_color(&self, visuals: &egui::Visuals) -> egui::Color32 {
+        visuals.selection.bg_fill.gamma_multiply(0.08)
+    }
+
+    /// Paint a clear, rounded accent indicator for the split/drop target.
+    fn paint_drag_preview(
+        &self,
+        visuals: &egui::Visuals,
+        painter: &egui::Painter,
+        parent_rect: Option<egui::Rect>,
+        preview_rect: egui::Rect,
+    ) {
+        let accent = visuals.selection.bg_fill;
+        let stroke = egui::Stroke::new(2.0, accent);
+        if let Some(parent_rect) = parent_rect {
+            painter.rect_stroke(
+                parent_rect,
+                6.0,
+                egui::Stroke::new(1.0, accent.gamma_multiply(0.6)),
+                egui::StrokeKind::Inside,
+            );
+        }
+        painter.rect(
+            preview_rect,
+            6.0,
+            accent.gamma_multiply(0.18),
+            stroke,
             egui::StrokeKind::Inside,
         );
+    }
+
+    /// Floating chip that follows the cursor while dragging a tab.
+    fn drag_ui(&mut self, tiles: &Tiles<TabData>, ui: &mut egui::Ui, tile_id: TileId) {
+        let title = match tiles.get_pane(&tile_id) {
+            Some(pane) => crate::util::display::display_name(&pane.path),
+            None => self.tab_title_for_tile(tiles, tile_id).text().to_owned(),
+        };
+        let mut frame = egui::Frame::popup(ui.style());
+        frame.fill = ui.visuals().panel_fill;
+        frame.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(
+                    crate::util::display::FOLDER_ICON_COLOR,
+                    crate::util::extensions::ExtensionRegistry::icon(None),
+                );
+                ui.label(egui::RichText::new(title).strong());
+            });
+        });
     }
 }
 
 pub fn show_layout(ctx: &egui::Context, state: &mut AppState, actions: &mut Vec<Action>) {
-    state.drag_hover.observed_target = None;
+    state.drag_drop.drag_hover.observed_target = None;
     if !ctx.input(|input| input.raw.hovered_files.is_empty()) {
-        state.external_drop_target = None;
+        state.drag_drop.external_drop_target = None;
+        state.drag_drop.tab_strip_drop = None;
     }
     // Tabs popup — move out to avoid borrow conflict on state.tabs_popup
     {
@@ -378,19 +404,22 @@ pub fn show_layout(ctx: &egui::Context, state: &mut AppState, actions: &mut Vec<
     }
 
     // Overlays (Foreground — render before panels so they sit on top)
-    if state.show_goto_bar {
+    if state.overlay.show_goto_bar {
         crate::ui::goto_bar::show_goto_bar(
             ctx,
-            &mut state.goto_state,
+            &mut state.overlay.goto_state,
             &state.nucleo_results,
             state.focused_tile,
             actions,
         );
     }
-    if state.show_palette {
-        let mut palette_state = std::mem::take(&mut state.palette_state);
+    if state.overlay.show_palette {
+        let mut palette_state = std::mem::take(&mut state.overlay.palette_state);
         crate::ui::command_palette::show_command_palette(ctx, state, &mut palette_state, actions);
-        state.palette_state = palette_state;
+        state.overlay.palette_state = palette_state;
+    }
+    if let Some(conflict) = state.overlay.paste_conflict.as_ref() {
+        crate::ui::paste_conflict::show_paste_conflict(ctx, conflict, actions);
     }
 
     // Status bar (bottom) — must be added before CentralPanel
@@ -435,15 +464,15 @@ pub fn show_layout(ctx: &egui::Context, state: &mut AppState, actions: &mut Vec<
         .is_some_and(|tab| tab.preview_enabled)
         && state.settings.inspector_placement == InspectorPlacement::Global
     {
-        crate::ui::inspector::show_inspector(ctx, state);
+        crate::ui::inspector::show_inspector(ctx, state, actions);
     }
 
     // Settings window (floating)
-    if state.show_settings {
+    if state.overlay.show_settings {
         crate::ui::settings_window::show_settings(
             ctx,
             &mut state.settings,
-            &mut state.show_settings,
+            &mut state.overlay.show_settings,
         );
     }
 
@@ -456,6 +485,11 @@ pub fn show_layout(ctx: &egui::Context, state: &mut AppState, actions: &mut Vec<
         }
     }
 
+    // Analyzer Window
+    if state.overlay.show_analyzer {
+        crate::ui::analyzer::show_analyzer_window(ctx, state, actions);
+    }
+
     // Central pane tree
     egui::CentralPanel::default()
         .frame(egui::Frame::central_panel(&ctx.style()).fill(ctx.style().visuals.window_fill))
@@ -465,17 +499,20 @@ pub fn show_layout(ctx: &egui::Context, state: &mut AppState, actions: &mut Vec<
                 settings: &mut state.settings,
                 actions,
                 focused_tile: &mut state.focused_tile,
-                dragged_files: &mut state.dragged_files,
-                drag_hover: &mut state.drag_hover,
-                external_drop_target: &mut state.external_drop_target,
-                preview_results: &state.preview_results,
-                preview_textures: &state.preview_textures,
+                dragged_files: &mut state.drag_drop.dragged_files,
+                drag_hover: &mut state.drag_drop.drag_hover,
+                external_drop_target: &mut state.drag_drop.external_drop_target,
+                tab_strip_drop: &mut state.drag_drop.tab_strip_drop,
+                preview_results: &state.preview.results,
+                preview_textures: &state.preview.textures,
+                multi_previews: &state.preview.multi,
+                tag_cache: &state.tag_cache,
             };
             state.pane_tree.ui(&mut behavior, ui);
         });
 
-    show_drag_feedback(ctx, state.dragged_files.as_ref());
-    show_external_drop_feedback(ctx, state.external_drop_target.as_ref());
+    show_drag_feedback(ctx, state.drag_drop.dragged_files.as_ref());
+    show_external_drop_feedback(ctx, state.drag_drop.external_drop_target.as_ref());
 }
 
 fn show_external_drop_feedback(ctx: &egui::Context, target: Option<&ExternalDropTarget>) {
@@ -519,6 +556,10 @@ fn show_command_bar(ctx: &egui::Context, state: &AppState, actions: &mut Vec<Act
             if ui.button("Drop Shelf").clicked() {
                 actions.push(Action::ToggleDropShelf);
             }
+            ui.separator();
+            if ui.button("Analyzer 🚀").clicked() {
+                actions.push(Action::ToggleAnalyzer);
+            }
         });
     });
 }
@@ -547,16 +588,20 @@ fn update_filter_from_keyboard(ui: &egui::Ui, tab_state: &mut TabState) {
         }
     });
     if changed {
-        let visible: Vec<usize> = tab_state.visible_indices().collect();
-        tab_state.selected.retain(|idx| visible.contains(idx));
+        // Keep the selection of items that still pass the filter; only nudge the
+        // keyboard cursor back into view if it fell out. Don't wipe the selection.
+        let visible: Vec<usize> = tab_state.visible_indices().to_vec();
+        tab_state
+            .selection
+            .selected
+            .retain(|idx| visible.contains(idx));
         if tab_state
+            .selection
             .keyboard_cursor
             .is_some_and(|idx| !visible.contains(&idx))
         {
-            tab_state.keyboard_cursor = visible.first().copied();
-            tab_state.selection_anchor = tab_state.keyboard_cursor;
-            tab_state.selected.clear();
-            tab_state.selected.extend(tab_state.keyboard_cursor);
+            tab_state.selection.keyboard_cursor = visible.first().copied();
+            tab_state.selection.selection_anchor = tab_state.selection.keyboard_cursor;
         }
     }
 }
@@ -582,11 +627,12 @@ fn handle_file_navigation_keyboard(
         if modifiers.ctrl || modifiers.alt || modifiers.command {
             continue;
         }
-        let visible: Vec<usize> = tab_state.visible_indices().collect();
+        let visible: Vec<usize> = tab_state.visible_indices().to_vec();
         if key == egui::Key::Enter {
             if let Some(idx) = tab_state
+                .selection
                 .keyboard_cursor
-                .or_else(|| tab_state.selected.iter().next().copied())
+                .or_else(|| tab_state.selection.selected.iter().next().copied())
             {
                 actions.push(Action::Activate { tile: tile_id, idx });
             }
@@ -597,29 +643,30 @@ fn handle_file_navigation_keyboard(
         }
 
         let current_pos = tab_state
+            .selection
             .keyboard_cursor
             .and_then(|idx| visible.iter().position(|visible_idx| *visible_idx == idx))
             .unwrap_or(0);
-        let columns = match view_mode {
-            ViewMode::Grid => tab_state.grid_columns.max(1),
-            ViewMode::Details => 1,
+        let multi_column = matches!(view_mode, ViewMode::Grid | ViewMode::List);
+        let columns = if multi_column {
+            tab_state.grid_columns.max(1)
+        } else {
+            1
         };
         let next_pos = match key {
             egui::Key::Home => 0,
             egui::Key::End => visible.len() - 1,
             egui::Key::ArrowUp => current_pos.saturating_sub(columns),
             egui::Key::ArrowDown => (current_pos + columns).min(visible.len() - 1),
-            egui::Key::ArrowLeft if *view_mode == ViewMode::Grid => current_pos.saturating_sub(1),
-            egui::Key::ArrowRight if *view_mode == ViewMode::Grid => {
-                (current_pos + 1).min(visible.len() - 1)
-            }
+            egui::Key::ArrowLeft if multi_column => current_pos.saturating_sub(1),
+            egui::Key::ArrowRight if multi_column => (current_pos + 1).min(visible.len() - 1),
             _ => continue,
         };
         let next_idx = visible[next_pos];
-        let anchor = tab_state.selection_anchor.unwrap_or(next_idx);
-        tab_state.keyboard_cursor = Some(next_idx);
-        tab_state.last_clicked_index = Some(next_idx);
-        tab_state.scroll_to_selected = true;
+        let anchor = tab_state.selection.selection_anchor.unwrap_or(next_idx);
+        tab_state.selection.keyboard_cursor = Some(next_idx);
+        tab_state.selection.last_clicked_index = Some(next_idx);
+        tab_state.selection.scroll_to_selected = true;
         if modifiers.shift {
             let anchor_pos = visible
                 .iter()
@@ -627,17 +674,96 @@ fn handle_file_navigation_keyboard(
                 .unwrap_or(next_pos);
             let lo = anchor_pos.min(next_pos);
             let hi = anchor_pos.max(next_pos);
-            tab_state.selected.clear();
-            tab_state.selected.extend(visible[lo..=hi].iter().copied());
+            tab_state.selection.selected.clear();
+            tab_state
+                .selection
+                .selected
+                .extend(visible[lo..=hi].iter().copied());
         } else {
-            tab_state.selection_anchor = Some(next_idx);
-            tab_state.selected.clear();
-            tab_state.selected.insert(next_idx);
+            tab_state.selection.selection_anchor = Some(next_idx);
+            tab_state.selection.selected.clear();
+            tab_state.selection.selected.insert(next_idx);
         }
     }
 }
 
+/// Keyboard navigation for the Miller (columns) view: up/down within the focused
+/// column, left/right between columns, Enter to open.
+fn handle_miller_keyboard(
+    ui: &egui::Ui,
+    tile_id: TileId,
+    tab_state: &TabState,
+    actions: &mut Vec<Action>,
+) {
+    let focused = tab_state.miller.focused;
+    let col = tab_state.miller.columns.get(focused);
+    let len = col.map(|c| c.entries.len()).unwrap_or(0);
+    let sel = col.and_then(|c| c.selected);
+    let sel_is_dir = col
+        .zip(sel)
+        .and_then(|(c, s)| c.entries.get(s))
+        .is_some_and(|e| e.kind == FileKind::Dir);
+    let has_child = tab_state.miller.columns.len() > focused + 1;
+
+    let events = ui.input(|input| input.events.clone());
+    for event in events {
+        let egui::Event::Key {
+            key,
+            pressed: true,
+            modifiers,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        if modifiers.ctrl || modifiers.alt || modifiers.command {
+            continue;
+        }
+        let select = |idx: usize| Action::MillerSelect {
+            tile: tile_id,
+            column: focused,
+            idx,
+        };
+        match key {
+            egui::Key::ArrowDown if len > 0 => {
+                actions.push(select(sel.map(|s| (s + 1).min(len - 1)).unwrap_or(0)));
+            }
+            egui::Key::ArrowUp if len > 0 => {
+                actions.push(select(sel.map(|s| s.saturating_sub(1)).unwrap_or(0)));
+            }
+            egui::Key::Home if len > 0 => actions.push(select(0)),
+            egui::Key::End if len > 0 => actions.push(select(len - 1)),
+            egui::Key::ArrowRight if sel_is_dir && has_child => {
+                actions.push(Action::MillerFocusColumn {
+                    tile: tile_id,
+                    column: focused + 1,
+                });
+            }
+            egui::Key::ArrowLeft if focused > 0 => {
+                actions.push(Action::MillerFocusColumn {
+                    tile: tile_id,
+                    column: focused - 1,
+                });
+            }
+            egui::Key::Enter => {
+                if let Some(s) = sel {
+                    actions.push(Action::MillerActivate {
+                        tile: tile_id,
+                        column: focused,
+                        idx: s,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Ctrl+scroll cycles through the four views (Details ⇄ List ⇄ Icons ⇄ Columns)
+/// and, while in Icons, resizes the thumbnails before crossing into the next view.
 fn update_view_zoom(ui: &egui::Ui, pane: &mut TabData) {
+    const MIN_THUMB: f32 = 80.0;
+    const MAX_THUMB: f32 = 256.0;
     let scroll = ui.input(|input| {
         if input.modifiers.ctrl {
             input.raw_scroll_delta.y
@@ -649,15 +775,25 @@ fn update_view_zoom(ui: &egui::Ui, pane: &mut TabData) {
         return;
     }
     if scroll > 0.0 {
-        if pane.view_mode == ViewMode::Details {
-            pane.view_mode = ViewMode::Grid;
-        } else {
-            pane.thumbnail_size = (pane.thumbnail_size + 4.0).min(256.0);
+        match pane.view_mode {
+            ViewMode::Details => pane.view_mode = ViewMode::List,
+            ViewMode::List => pane.view_mode = ViewMode::Grid,
+            ViewMode::Grid if pane.thumbnail_size < MAX_THUMB => {
+                pane.thumbnail_size = (pane.thumbnail_size + 4.0).min(MAX_THUMB);
+            }
+            ViewMode::Grid => pane.view_mode = ViewMode::Miller,
+            ViewMode::Miller => {}
         }
-    } else if pane.view_mode == ViewMode::Grid && pane.thumbnail_size > 80.0 {
-        pane.thumbnail_size = (pane.thumbnail_size - 4.0).max(80.0);
     } else {
-        pane.view_mode = ViewMode::Details;
+        match pane.view_mode {
+            ViewMode::Miller => pane.view_mode = ViewMode::Grid,
+            ViewMode::Grid if pane.thumbnail_size > MIN_THUMB => {
+                pane.thumbnail_size = (pane.thumbnail_size - 4.0).max(MIN_THUMB);
+            }
+            ViewMode::Grid => pane.view_mode = ViewMode::List,
+            ViewMode::List => pane.view_mode = ViewMode::Details,
+            ViewMode::Details => {}
+        }
     }
 }
 

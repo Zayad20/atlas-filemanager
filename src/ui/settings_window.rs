@@ -48,7 +48,9 @@ pub fn show_settings(ctx: &egui::Context, settings: &mut Settings, open: &mut bo
                         egui::ComboBox::from_id_salt("view_mode")
                             .selected_text(match settings.view_mode {
                                 ViewMode::Details => "Details",
-                                ViewMode::Grid => "Grid",
+                                ViewMode::Grid => "Icons",
+                                ViewMode::List => "List",
+                                ViewMode::Miller => "Columns",
                             })
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
@@ -58,8 +60,18 @@ pub fn show_settings(ctx: &egui::Context, settings: &mut Settings, open: &mut bo
                                 );
                                 ui.selectable_value(
                                     &mut settings.view_mode,
+                                    ViewMode::List,
+                                    "List",
+                                );
+                                ui.selectable_value(
+                                    &mut settings.view_mode,
                                     ViewMode::Grid,
-                                    "Grid",
+                                    "Icons",
+                                );
+                                ui.selectable_value(
+                                    &mut settings.view_mode,
+                                    ViewMode::Miller,
+                                    "Columns",
                                 );
                             });
                     });

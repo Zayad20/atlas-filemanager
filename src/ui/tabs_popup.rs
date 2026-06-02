@@ -50,11 +50,7 @@ pub fn show_tabs_popup(
                                 {
                                     continue;
                                 }
-                                let label = pane_data
-                                    .path
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_else(|| path_str.to_string());
+                                let label = crate::util::display::display_name(&pane_data.path);
                                 let is_active = *id == state.focused_tile;
                                 let resp = ui
                                     .selectable_label(is_active, &label)

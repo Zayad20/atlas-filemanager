@@ -1,3 +1,4 @@
+use crate::util::display::is_hidden;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -86,11 +87,7 @@ fn common_folders() -> Vec<PathBuf> {
     .collect()
 }
 
-fn is_hidden(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with('.'))
-}
+
 
 #[cfg(test)]
 mod tests {

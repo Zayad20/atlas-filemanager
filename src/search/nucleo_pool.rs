@@ -3,6 +3,11 @@ use nucleo::{Config, Nucleo};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Fuzzy-matching the folder index doesn't need a worker per core. Passing `None`
+/// to `Nucleo::new` would spawn `available_parallelism()` threads (one per core),
+/// all kept alive for the whole session even while the goto bar is closed.
+const NUCLEO_THREADS: usize = 2;
+
 pub struct NucleoPool {
     pub nucleo: Nucleo<PathBuf>,
 }
@@ -10,7 +15,7 @@ pub struct NucleoPool {
 impl NucleoPool {
     pub fn new() -> Self {
         Self {
-            nucleo: Nucleo::new(Config::DEFAULT, Arc::new(|| {}), None, 1),
+            nucleo: Nucleo::new(Config::DEFAULT, Arc::new(|| {}), Some(NUCLEO_THREADS), 1),
         }
     }
 
@@ -38,6 +43,6 @@ impl NucleoPool {
     }
 
     pub fn reset(&mut self) {
-        self.nucleo = Nucleo::new(Config::DEFAULT, Arc::new(|| {}), None, 1);
+        self.nucleo = Nucleo::new(Config::DEFAULT, Arc::new(|| {}), Some(NUCLEO_THREADS), 1);
     }
 }

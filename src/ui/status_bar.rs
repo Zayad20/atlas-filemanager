@@ -8,10 +8,10 @@ pub fn show_status_bar(ctx: &egui::Context, state: &AppState) {
             ui.horizontal_centered(|ui| {
                 if let Some(ts) = state.active_tab_state() {
                     let n_total = ts.entries.len();
-                    let n_sel = ts.selected.len();
+                    let n_sel = ts.selection.selected.len();
                     if n_sel > 0 {
                         let total_size: u64 = ts
-                            .selected
+                            .selection.selected
                             .iter()
                             .filter_map(|&i| ts.entries.get(i).and_then(|e| e.size))
                             .sum();
@@ -27,7 +27,7 @@ pub fn show_status_bar(ctx: &egui::Context, state: &AppState) {
                 }
 
                 // Progress for active ops
-                for op in state.active_ops.values() {
+                for op in state.ops.active_ops.values() {
                     let pct = if op.total > 0 {
                         op.done as f32 / op.total as f32
                     } else {

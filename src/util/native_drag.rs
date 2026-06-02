@@ -16,7 +16,7 @@ pub fn start(frame: &eframe::Frame, paths: Vec<PathBuf>) -> bool {
         .filter_map(|path| match path.canonicalize() {
             Ok(path) => Some(path),
             Err(err) => {
-                log::warn!("cannot drag {}: {err}", path.display());
+                tracing::warn!("cannot drag {}: {err}", path.display());
                 None
             }
         })
@@ -33,7 +33,7 @@ pub fn start(frame: &eframe::Frame, paths: Vec<PathBuf>) -> bool {
         drag::Options::default(),
     );
     if let Err(err) = result {
-        log::warn!("failed to start native file drag: {err}");
+        tracing::warn!("failed to start native file drag: {err}");
         return false;
     }
     true

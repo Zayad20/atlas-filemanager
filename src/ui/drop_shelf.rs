@@ -80,13 +80,10 @@ pub fn show_drop_shelf(
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for (idx, path) in files.iter().enumerate() {
                         ui.horizontal(|ui| {
-                            let name = path
-                                .file_name()
-                                .map(|name| name.to_string_lossy())
-                                .unwrap_or_else(|| path.to_string_lossy());
+                            let name = crate::util::display::display_name(path);
                             let response = ui
                                 .add(
-                                    egui::Label::new(name.as_ref())
+                                    egui::Label::new(name.as_str())
                                         .sense(egui::Sense::click_and_drag()),
                                 )
                                 .on_hover_text(path.display().to_string());

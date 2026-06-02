@@ -3,23 +3,24 @@ use crate::state::pane::TabId;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
+/// Copy each `(source, destination)` pair. Destinations are full target paths, so
+/// the caller decides overwrite vs. auto-rename semantics; an existing destination
+/// is overwritten/merged.
 pub async fn copy_files(
-    sources: Vec<PathBuf>,
-    dest: PathBuf,
+    pairs: Vec<(PathBuf, PathBuf)>,
     op_id: u64,
     tx: flume::Sender<BgResult>,
     affected_tabs: Vec<TabId>,
 ) {
-    let total = sources.len() as u64;
-    for (i, src) in sources.iter().enumerate() {
+    let total = pairs.len() as u64;
+    for (i, (src, dst_file)) in pairs.iter().enumerate() {
         let _ = tx.send(BgResult::OpProgress {
             id: op_id,
             done: i as u64,
             total,
             current_file: src.clone(),
         });
-        let dst_file = dest.join(src.file_name().unwrap_or_default());
-        if let Err(e) = copy_recursive(src, &dst_file).await {
+        if let Err(e) = copy_recursive(src, dst_file).await {
             let _ = tx.send(BgResult::OpComplete {
                 id: op_id,
                 result: Err(e.to_string()),
@@ -35,25 +36,25 @@ pub async fn copy_files(
     });
 }
 
+/// Move each `(source, destination)` pair. Destinations are full target paths.
 pub async fn move_files(
-    sources: Vec<PathBuf>,
-    dest: PathBuf,
+    pairs: Vec<(PathBuf, PathBuf)>,
     op_id: u64,
     tx: flume::Sender<BgResult>,
     affected_tabs: Vec<TabId>,
 ) {
-    let total = sources.len() as u64;
-    for (i, src) in sources.iter().enumerate() {
+    let total = pairs.len() as u64;
+    for (i, (src, dst_file)) in pairs.iter().enumerate() {
         let _ = tx.send(BgResult::OpProgress {
             id: op_id,
             done: i as u64,
             total,
             current_file: src.clone(),
         });
-        let dst_file = dest.join(src.file_name().unwrap_or_default());
-        // Try atomic rename first, fall back to copy+delete
-        if tokio::fs::rename(&src, &dst_file).await.is_err() {
-            if let Err(e) = copy_recursive(src, &dst_file).await {
+        // Try atomic rename first, fall back to copy+delete (cross-device, or
+        // Windows where renaming onto an existing target fails).
+        if tokio::fs::rename(&src, dst_file).await.is_err() {
+            if let Err(e) = copy_recursive(src, dst_file).await {
                 let _ = tx.send(BgResult::OpComplete {
                     id: op_id,
                     result: Err(e.to_string()),

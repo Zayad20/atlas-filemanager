@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Supplementary Info.plist keys for the macOS .app bundle.
+  cargo-bundle generates the base Info.plist from [package.metadata.bundle] in
+  Cargo.toml; merge the CFBundleDocumentTypes block below into the generated file
+  (or use a post-build script) so Atlas appears under Finder's "Open With" for
+  folders and can be associated with file types.
+
+  NOTE: macOS does not allow a third-party app to replace the system "Save As"/open
+  panels — that is owned by the OS. These keys only enable "Open With" and (where the
+  user allows it) acting as a folder handler.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.Atlas.Atlas</string>
+  <key>CFBundleName</key>
+  <string>Atlas</string>
+  <key>CFBundleDisplayName</key>
+  <string>Atlas</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <!-- Folders: lets Atlas open directories from Finder ("Open With"). -->
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Folder</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.folder</string>
+      </array>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+    </dict>
+    <!-- Generic files: enables associating arbitrary file types with Atlas. -->
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>All Files</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.item</string>
+      </array>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+    </dict>
+  </array>
+</dict>
+</plist>

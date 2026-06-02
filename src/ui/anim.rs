@@ -73,7 +73,10 @@ pub fn collapse_vertical(
 
 /// Smooth [0→1→0] pulse — useful for indeterminate progress indicators.
 pub fn animate_pulse(ui: &mut Ui, period_secs: f32) -> f32 {
-    ui.ctx().request_repaint();
+    // Indeterminate progress only needs ~30 fps; an unconditional `request_repaint`
+    // would drive the whole app at full frame rate for the duration of every op.
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(33));
     let t = ui.input(|i| i.time as f32);
     let phase = (t % period_secs) / period_secs;
     let rt = if phase < 0.5 {
