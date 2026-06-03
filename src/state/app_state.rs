@@ -1,4 +1,4 @@
-use egui_tiles::TileId;
+use crate::state::layout_tree::{Container, Tile, Tree, TileId};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
@@ -122,7 +122,7 @@ pub enum BgResult {
 }
 
 pub struct AppState {
-    pub pane_tree: egui_tiles::Tree<TabData>,
+    pub pane_tree: Tree<TabData>,
     /// Active Pane leaf TileId (the individual tab being viewed)
     pub focused_tile: TileId,
     /// Runtime per-tab state, keyed by Pane leaf TileId
@@ -149,7 +149,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(settings: Settings) -> (Self, TileId) {
+    pub fn new(settings: Settings) -> (Self, crate::state::pane::PaneId) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let tab_data = TabData::with_view(
             home,
@@ -158,8 +158,7 @@ impl AppState {
             settings.show_inspector,
         );
 
-        let mut tree: egui_tiles::Tree<TabData> =
-            egui_tiles::Tree::empty(egui::Id::new("Atlas"));
+        let mut tree: Tree<TabData> = Tree::empty();
         let pane_tile_id = tree.tiles.insert_pane(tab_data);
         let tabs_id = tree.tiles.insert_tab_tile(vec![pane_tile_id]);
         tree.root = Some(tabs_id);
@@ -180,7 +179,7 @@ impl AppState {
 
         let tab = self.focused_tile;
         let view = match self.pane_tree.tiles.get(tab) {
-            Some(egui_tiles::Tile::Pane(p)) => p.view_mode.clone(),
+            Some(Tile::Pane(p)) => p.view_mode.clone(),
             _ => return None,
         };
         let ts = self.tab_states.get(&tab)?;
@@ -242,7 +241,7 @@ impl AppState {
         };
         let is_miller = matches!(
             self.pane_tree.tiles.get(self.focused_tile),
-            Some(egui_tiles::Tile::Pane(p)) if p.view_mode == ViewMode::Miller
+            Some(Tile::Pane(p)) if p.view_mode == ViewMode::Miller
         );
         if is_miller {
             return ts
@@ -263,14 +262,14 @@ impl AppState {
 
     pub fn active_tab_data(&self) -> Option<&TabData> {
         match self.pane_tree.tiles.get(self.focused_tile) {
-            Some(egui_tiles::Tile::Pane(p)) => Some(p),
+            Some(Tile::Pane(p)) => Some(p),
             _ => None,
         }
     }
 
     pub fn active_tab_data_mut(&mut self) -> Option<&mut TabData> {
         match self.pane_tree.tiles.get_mut(self.focused_tile) {
-            Some(egui_tiles::Tile::Pane(p)) => Some(p),
+            Some(Tile::Pane(p)) => Some(p),
             _ => None,
         }
     }
@@ -284,7 +283,7 @@ impl AppState {
     /// Find the Tabs container TileId that contains the given pane tile.
     pub fn find_tabs_container(&self, tile_id: TileId) -> Option<TileId> {
         for (id, tile) in self.pane_tree.tiles.iter() {
-            if let egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs)) = tile {
+            if let Tile::Container(Container::Tabs(tabs)) = tile {
                 if tabs.children.contains(&tile_id) {
                     return Some(*id);
                 }
@@ -298,7 +297,7 @@ impl AppState {
         self.pane_tree.tiles.iter().find_map(|(id, tile)| {
             if matches!(
                 tile,
-                egui_tiles::Tile::Container(egui_tiles::Container::Tabs(_))
+                Tile::Container(Container::Tabs(_))
             ) {
                 Some(*id)
             } else {
@@ -311,10 +310,10 @@ impl AppState {
     pub fn find_parent_of(&self, tile_id: TileId) -> Option<TileId> {
         for (id, tile) in self.pane_tree.tiles.iter() {
             let children = match tile {
-                egui_tiles::Tile::Container(egui_tiles::Container::Linear(l)) => {
+                Tile::Container(Container::Linear(l)) => {
                     l.children.as_slice()
                 }
-                egui_tiles::Tile::Container(egui_tiles::Container::Tabs(t)) => {
+                Tile::Container(Container::Tabs(t)) => {
                     t.children.as_slice()
                 }
                 _ => continue,
@@ -327,13 +326,13 @@ impl AppState {
     }
 
     /// Restore from a persisted tree. Returns (state, first_pane_to_load).
-    pub fn from_tree(tree: egui_tiles::Tree<TabData>, settings: Settings) -> (Self, TileId) {
+    pub fn from_tree(tree: Tree<TabData>, settings: Settings) -> (Self, TileId) {
         // Collect all Pane leaf IDs to initialize tab_states
         let mut tab_states = HashMap::new();
         let mut first_tile = None;
 
         for (id, tile) in tree.tiles.iter() {
-            if matches!(tile, egui_tiles::Tile::Pane(_)) {
+            if matches!(tile, Tile::Pane(_)) {
                 tab_states.insert(*id, TabState::default());
                 if first_tile.is_none() {
                     first_tile = Some(*id);
@@ -341,14 +340,14 @@ impl AppState {
             }
         }
 
-        let focused = first_tile.unwrap_or(egui_tiles::TileId(0));
+        let focused = first_tile.unwrap_or(TileId(0));
 
         let state = Self::build(tree, focused, tab_states, settings);
         (state, focused)
     }
 
     fn build(
-        pane_tree: egui_tiles::Tree<TabData>,
+        pane_tree: Tree<TabData>,
         focused_tile: TileId,
         tab_states: HashMap<TileId, TabState>,
         settings: Settings,
@@ -393,7 +392,7 @@ impl AppState {
             .tiles
             .iter()
             .filter_map(|(id, tile)| {
-                if matches!(tile, egui_tiles::Tile::Pane(_)) {
+                if matches!(tile, Tile::Pane(_)) {
                     Some(*id)
                 } else {
                     None

@@ -76,7 +76,7 @@ pub struct Profile {
     pub tags: Vec<Tag>,
     /// Saved pane/tab tree for this profile. None = fresh session on first switch.
     #[serde(default)]
-    pub tree: Option<egui_tiles::Tree<TabData>>,
+    pub tree: Option<crate::state::layout_tree::Tree<TabData>>,
     /// Sidebar section order and collapsed state, per profile.
     #[serde(default = "default_sections")]
     pub sidebar_sections: Vec<SidebarSection>,

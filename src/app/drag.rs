@@ -1,6 +1,7 @@
 use crate::app::App;
 use crate::input::action::Action;
 use crate::state::drag::DragHoverTarget;
+use crate::state::layout_tree::Tile;
 use std::time::Duration;
 
 impl App {
@@ -16,7 +17,7 @@ impl App {
     pub(crate) fn cancel_spring_navigation(&mut self) {
         let original_paths = std::mem::take(&mut self.state.drag_drop.drag_hover.original_paths);
         for (tab_id, path) in original_paths {
-            let Some(egui_tiles::Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id)
+            let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id)
             else {
                 continue;
             };

@@ -1,4 +1,5 @@
 use crate::app::App;
+use crate::state::layout_tree::{Tile, Tree};
 use crate::state::pane::TabData;
 use std::path::PathBuf;
 
@@ -33,7 +34,7 @@ impl App {
                     self.state.settings.thumbnail_size,
                     self.state.settings.show_inspector,
                 );
-                let mut tree = egui_tiles::Tree::empty(egui::Id::new("Atlas"));
+                let mut tree = Tree::empty();
                 let pane_id = tree.tiles.insert_pane(tab_data);
                 let tabs_id = tree.tiles.insert_tab_tile(vec![pane_id]);
                 tree.root = Some(tabs_id);
@@ -54,7 +55,7 @@ impl App {
         let show_hidden = self.state.settings.show_hidden;
         for tile_id in pane_ids {
             let (path, sort_col, sort_dir) = match self.state.pane_tree.tiles.get(tile_id) {
-                Some(egui_tiles::Tile::Pane(p)) => {
+                Some(Tile::Pane(p)) => {
                     (p.path.clone(), p.sort_col.clone(), p.sort_dir.clone())
                 }
                 _ => continue,

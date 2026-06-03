@@ -5,7 +5,7 @@ use crate::state::pane::TabSource;
 use crate::state::preview_cache::{MultiPreviewState, PreviewRequest};
 use crate::state::tab::LoadState;
 use crate::state::tag_cache::TagId;
-use egui_tiles::TileId;
+use crate::state::layout_tree::{Tile, TileId};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -81,7 +81,7 @@ impl App {
             .tiles
             .iter()
             .filter_map(|(id, tile)| match tile {
-                egui_tiles::Tile::Pane(p) if p.source == TabSource::Tag(tag) => {
+                Tile::Pane(p) if p.source == TabSource::Tag(tag) => {
                     Some((*id, p.sort_col.clone(), p.sort_dir.clone()))
                 }
                 _ => None,
@@ -181,9 +181,8 @@ impl App {
         }
         self.state.preview.paths.insert(tab, path.clone());
         self.state.preview.results.remove(&tab);
-        self.state.preview.textures.remove(&tab);
         self.state.preview.multi.remove(&tab);
-        // Note: preview_paths was just inserted above; only results/textures cleared here
+        // Note: preview_paths was just inserted above; only results/multi cleared here
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         self.rt.spawn(async move {
@@ -214,7 +213,7 @@ impl App {
             MultiPreviewState {
                 key: key.clone(),
                 paths: paths.clone(),
-                textures: Vec::with_capacity(paths.len()),
+                images: Vec::with_capacity(paths.len()),
             },
         );
 

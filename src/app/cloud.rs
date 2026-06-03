@@ -1,7 +1,7 @@
 //! App-side glue for the cloud extension: routes `CloudAction`s to the worker,
 //! applies `BgResult`s to `CloudState`, and handles Access-mode remote browsing.
 
-use egui_tiles::TileId;
+use crate::state::layout_tree::{Tile, TileId};
 use std::path::PathBuf;
 
 use crate::app::App;
@@ -185,7 +185,7 @@ impl App {
 
     /// Re-list a remote tab at `path` (Access-mode directory descent).
     pub(crate) fn navigate_remote(&mut self, tab_id: TileId, id: RemoteId, path: String) {
-        if let Some(egui_tiles::Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id) {
+        if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id) {
             pane.source = TabSource::Remote {
                 id: id.clone(),
                 path: path.clone(),

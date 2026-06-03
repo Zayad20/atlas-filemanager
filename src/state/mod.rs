@@ -4,6 +4,7 @@ pub mod cloud_state;
 pub mod drag;
 pub mod ext_state;
 pub mod file_entry;
+pub mod layout_tree;
 pub mod ops;
 pub mod overlay;
 pub mod pane;

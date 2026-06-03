@@ -1,5 +1,5 @@
 use crate::app::App;
-use egui_tiles::TileId;
+use crate::state::layout_tree::{Tile, TileId};
 use std::path::PathBuf;
 
 impl App {
@@ -20,14 +20,14 @@ impl App {
         // Validate tab_id; fall back to focused_tile, then first valid pane
         let tab_id = if matches!(
             self.state.pane_tree.tiles.get(tab_id),
-            Some(egui_tiles::Tile::Pane(_))
+            Some(Tile::Pane(_))
         ) {
             tab_id
         } else {
             let focused = self.state.focused_tile;
             if matches!(
                 self.state.pane_tree.tiles.get(focused),
-                Some(egui_tiles::Tile::Pane(_))
+                Some(Tile::Pane(_))
             ) {
                 focused
             } else {
@@ -45,7 +45,7 @@ impl App {
         };
 
         // Update history and path in TabData
-        if let Some(egui_tiles::Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id) {
+        if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id) {
             if pane.path != path {
                 pane.history.push(pane.path.clone());
                 pane.history_forward.clear();
@@ -74,7 +74,7 @@ impl App {
     }
 
     pub(crate) fn navigate_back(&mut self, tab_id: TileId) {
-        if let Some(egui_tiles::Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id) {
+        if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id) {
             if let Some(prev) = pane.history.pop() {
                 pane.history_forward.push(pane.path.clone());
                 let path = prev.clone();
@@ -96,7 +96,7 @@ impl App {
             .original_paths
             .entry(tab_id)
             .or_insert_with(|| {
-                if let Some(egui_tiles::Tile::Pane(pane)) = self.state.pane_tree.tiles.get(tab_id) {
+                if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get(tab_id) {
                     pane.path.clone()
                 } else {
                     PathBuf::from("/")
@@ -111,7 +111,7 @@ impl App {
     }
 
     pub(crate) fn navigate_forward(&mut self, tab_id: TileId) {
-        if let Some(egui_tiles::Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id) {
+        if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id) {
             if let Some(next) = pane.history_forward.pop() {
                 pane.history.push(pane.path.clone());
                 let path = next.clone();
@@ -134,7 +134,7 @@ impl App {
         {
             return;
         }
-        if let Some(egui_tiles::Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id) {
+        if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id) {
             if let Some(parent) = pane.path.parent().map(|p| p.to_path_buf()) {
                 if parent != pane.path {
                     pane.history.push(pane.path.clone());

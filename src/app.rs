@@ -1,4 +1,4 @@
-use egui_tiles::TileId;
+use crate::state::layout_tree::{Tile, TileId};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -9,7 +9,7 @@ use crate::input::action::Action;
 use crate::input::shortcuts::handle_global_shortcuts;
 use crate::state::app_state::{AppState, BgResult};
 use crate::state::pane::TabData;
-use crate::state::preview_cache::PreviewRequest;
+use crate::state::preview_cache::{ImageData, PreviewRequest};
 use crate::state::tab::LoadState;
 use crate::ui::layout::show_layout;
 use crate::util::config::{
@@ -108,7 +108,7 @@ impl App {
         let show_hidden = state.settings.show_hidden;
         for tile_id in pane_ids {
             let (path, sort_col, sort_dir, source) = match state.pane_tree.tiles.get(tile_id) {
-                Some(egui_tiles::Tile::Pane(p)) => (
+                Some(Tile::Pane(p)) => (
                     p.path.clone(),
                     p.sort_col.clone(),
                     p.sort_dir.clone(),
@@ -286,7 +286,7 @@ impl App {
                         .map(|(&id, _)| id)
                         .collect();
                     for tile_id in to_refresh {
-                        if let Some(egui_tiles::Tile::Pane(p)) =
+                        if let Some(Tile::Pane(p)) =
                             self.state.pane_tree.tiles.get(tile_id)
                         {
                             let path = p.path.clone();
@@ -304,37 +304,9 @@ impl App {
                     if self.state.preview.paths.get(&tab) != Some(&path) {
                         continue;
                     }
-                    match &mut result {
-                        PreviewResult::Image {
-                            rgba,
-                            width,
-                            height,
-                            ..
-                        }
-                        | PreviewResult::Pdf {
-                            rgba,
-                            width,
-                            height,
-                        } => {
-                            let color_image =
-                                egui::ColorImage::from_rgba_unmultiplied([*width, *height], rgba);
-                            self.state.preview.textures.insert(
-                                tab,
-                                ctx.load_texture(
-                                    format!("preview_img_{tab:?}"),
-                                    color_image,
-                                    egui::TextureOptions::default(),
-                                ),
-                            );
-                            // The pixels now live in the GPU texture and the inspector
-                            // only reads width/height/exif — drop the CPU-side copy so a
-                            // 4K preview doesn't sit in RAM duplicated for the tab's life.
-                            *rgba = Vec::new();
-                        }
-                        _ => {
-                            self.state.preview.textures.remove(&tab);
-                        }
-                    }
+                    // The decoded RGBA stays in `result`; the UI layer uploads it to a
+                    // GPU texture and caches that handle on its own side (state holds no
+                    // renderer texture).
                     self.state.preview.results.insert(tab, result);
                 }
                 BgResult::MultiPreviewThumbnailReady {
@@ -350,19 +322,17 @@ impl App {
                     };
                     if multi.key != key
                         || !multi.paths.contains(&path)
-                        || multi.textures.iter().any(|(loaded, _)| loaded == &path)
+                        || multi.images.iter().any(|(loaded, _)| loaded == &path)
                     {
                         continue;
                     }
-                    let color_image =
-                        egui::ColorImage::from_rgba_unmultiplied([width, height], &rgba);
-                    multi.textures.push((
+                    multi.images.push((
                         path,
-                        ctx.load_texture(
-                            format!("multi_preview_img_{tab:?}_{}", multi.textures.len()),
-                            color_image,
-                            egui::TextureOptions::default(),
-                        ),
+                        ImageData {
+                            rgba,
+                            width,
+                            height,
+                        },
                     ));
                 }
                 BgResult::OpComplete {
@@ -429,7 +399,7 @@ impl App {
 
     fn tab_data_for(&self, tab_id: TileId) -> Option<&TabData> {
         match self.state.pane_tree.tiles.get(tab_id) {
-            Some(egui_tiles::Tile::Pane(p)) => Some(p),
+            Some(Tile::Pane(p)) => Some(p),
             _ => None,
         }
     }

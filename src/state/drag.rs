@@ -76,7 +76,7 @@ pub struct DragDropState {
 #[cfg(test)]
 mod tests {
     use super::{DragHoverState, DragHoverTarget};
-    use egui_tiles::TileId;
+    use crate::state::layout_tree::TileId;
 
     #[test]
     fn drag_hover_confirmation_blinks_twice_then_stops() {

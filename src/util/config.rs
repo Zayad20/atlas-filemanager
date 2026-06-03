@@ -28,11 +28,16 @@ pub fn save_settings(storage: &mut dyn eframe::Storage, settings: &Settings) {
     eframe::set_value(storage, "atlas_settings", settings);
 }
 
-pub fn load_session(storage: &dyn eframe::Storage) -> Option<egui_tiles::Tree<TabData>> {
+pub fn load_session(
+    storage: &dyn eframe::Storage,
+) -> Option<crate::state::layout_tree::Tree<TabData>> {
     eframe::get_value(storage, "atlas_session")
 }
 
-pub fn save_session(storage: &mut dyn eframe::Storage, tree: &egui_tiles::Tree<TabData>) {
+pub fn save_session(
+    storage: &mut dyn eframe::Storage,
+    tree: &crate::state::layout_tree::Tree<TabData>,
+) {
     eframe::set_value(storage, "atlas_session", tree);
 }
 

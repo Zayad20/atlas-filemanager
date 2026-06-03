@@ -1,6 +1,7 @@
 use crate::app::App;
 use crate::input::action::Action;
 use crate::state::file_entry::FileKind;
+use crate::state::layout_tree::Tile;
 use crate::state::settings::ViewMode;
 use std::path::PathBuf;
 
@@ -181,7 +182,7 @@ impl App {
                     }
                 }
                 Action::SetSort { col, dir } => {
-                    if let Some(egui_tiles::Tile::Pane(pane)) =
+                    if let Some(Tile::Pane(pane)) =
                         self.state.pane_tree.tiles.get_mut(self.state.focused_tile)
                     {
                         pane.sort_col = col;

@@ -3,7 +3,7 @@ use crate::state::pane::{TabData, TabSource};
 use crate::state::settings::ViewMode;
 use crate::state::tab::{LoadState, TabState};
 use crate::state::tag_cache::TagId;
-use egui_tiles::TileId;
+use crate::state::layout_tree::{Container, Tile, TileId};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -46,13 +46,13 @@ impl App {
             .filter_map(|(id, tile)| {
                 matches!(
                     tile,
-                    egui_tiles::Tile::Container(egui_tiles::Container::Tabs(_))
+                    Tile::Container(Container::Tabs(_))
                 )
                 .then_some(*id)
             })
             .collect();
         for id in tabs_ids {
-            if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) =
+            if let Some(Tile::Container(Container::Tabs(tabs))) =
                 self.state.pane_tree.tiles.get_mut(id)
             {
                 let active_is_child = tabs
@@ -105,12 +105,12 @@ impl App {
         if self.state.pane_tree.root == Some(tabs_container_id) {
             self.state.pane_tree.root = Some(split_id);
         } else if let Some(parent_id) = self.state.find_parent_of(tabs_container_id) {
-            if let Some(egui_tiles::Tile::Container(c)) =
+            if let Some(Tile::Container(c)) =
                 self.state.pane_tree.tiles.get_mut(parent_id)
             {
                 let children: &mut Vec<TileId> = match c {
-                    egui_tiles::Container::Linear(l) => &mut l.children,
-                    egui_tiles::Container::Tabs(t) => &mut t.children,
+                    Container::Linear(l) => &mut l.children,
+                    Container::Tabs(t) => &mut t.children,
                     _ => {
                         self.state.pane_tree.root = Some(split_id);
                         return;
@@ -127,7 +127,7 @@ impl App {
     }
 
     pub(crate) fn close_pane(&mut self, tabs_container_id: TileId) {
-        if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) =
+        if let Some(Tile::Container(Container::Tabs(tabs))) =
             self.state.pane_tree.tiles.get(tabs_container_id).cloned()
         {
             for child_id in tabs.children {
@@ -152,7 +152,7 @@ impl App {
     fn resolve_tabs_container(&mut self, pane_id: TileId) -> Option<TileId> {
         if matches!(
             self.state.pane_tree.tiles.get(pane_id),
-            Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(_)))
+            Some(Tile::Container(Container::Tabs(_)))
         ) {
             return Some(pane_id);
         }
@@ -170,7 +170,7 @@ impl App {
         self.state
             .tab_states
             .insert(new_tile_id, TabState::default());
-        if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) =
+        if let Some(Tile::Container(Container::Tabs(tabs))) =
             self.state.pane_tree.tiles.get_mut(tabs_id)
         {
             tabs.add_child(new_tile_id);
@@ -223,7 +223,7 @@ impl App {
     pub(crate) fn wrap_pane_in_tabs(&mut self, pane_id: TileId) -> Option<TileId> {
         if !matches!(
             self.state.pane_tree.tiles.get(pane_id),
-            Some(egui_tiles::Tile::Pane(_))
+            Some(Tile::Pane(_))
         ) {
             return None;
         }
@@ -238,16 +238,16 @@ impl App {
         if is_root {
             self.state.pane_tree.root = Some(tabs_id);
         } else if let Some(parent_id) = parent_id {
-            if let Some(egui_tiles::Tile::Container(container)) =
+            if let Some(Tile::Container(container)) =
                 self.state.pane_tree.tiles.get_mut(parent_id)
             {
                 match container {
-                    egui_tiles::Container::Linear(linear) => {
+                    Container::Linear(linear) => {
                         if let Some(slot) = linear.children.iter_mut().find(|id| **id == pane_id) {
                             *slot = tabs_id;
                         }
                     }
-                    egui_tiles::Container::Tabs(tabs) => {
+                    Container::Tabs(tabs) => {
                         if let Some(slot) = tabs.children.iter_mut().find(|id| **id == pane_id) {
                             *slot = tabs_id;
                         }
@@ -283,7 +283,7 @@ impl App {
         // Find the Tabs container and remove this tile from it
         let container_id = self.state.find_tabs_container(tab_id);
         if let Some(cid) = container_id {
-            if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) =
+            if let Some(Tile::Container(Container::Tabs(tabs))) =
                 self.state.pane_tree.tiles.get_mut(cid)
             {
                 tabs.children.retain(|&id| id != tab_id);

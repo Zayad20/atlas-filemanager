@@ -3,8 +3,8 @@ use crate::state::settings::ViewMode;
 use crate::state::tag_cache::TagId;
 use std::path::PathBuf;
 
-pub type PaneId = egui_tiles::TileId;
-pub type TabId = egui_tiles::TileId;
+pub type PaneId = crate::state::layout_tree::TileId;
+pub type TabId = crate::state::layout_tree::TileId;
 
 /// What a tab is showing. Normal tabs list a real directory; virtual tabs (such as
 /// tag results) get their entries from somewhere other than `read_dir`.

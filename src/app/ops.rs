@@ -1,7 +1,7 @@
 use crate::app::App;
 use crate::state::ops::Resolution;
 use crate::state::undo::UndoEntry;
-use egui_tiles::TileId;
+use crate::state::layout_tree::{Tile, TileId};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -38,7 +38,7 @@ impl App {
             .tiles
             .iter()
             .filter_map(|(id, tile)| {
-                if let egui_tiles::Tile::Pane(p) = tile {
+                if let Tile::Pane(p) = tile {
                     if path.starts_with(&p.path) || p.path.starts_with(path) {
                         return Some(*id);
                     }

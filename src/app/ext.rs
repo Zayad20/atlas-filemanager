@@ -114,7 +114,7 @@ impl App {
             tracing::warn!("extension {ext_id} command failed: {e}");
         }
         // Re-list any directory tab whose contents may have changed.
-        let targets: Vec<(egui_tiles::TileId, PathBuf, _, _)> = self
+        let targets: Vec<(crate::state::layout_tree::TileId, PathBuf, _, _)> = self
             .state
             .all_pane_tile_ids()
             .into_iter()
