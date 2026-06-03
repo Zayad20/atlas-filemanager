@@ -1,17 +1,20 @@
 //! Phase 1 viability spike for the egui → gpui migration.
 //!
 //! Goal (the Windows gate from the gpui migration plan): prove a gpui window opens and
-//! receives input on Windows *and* Linux before investing in the full port.
+//! receives input on Windows *and* Linux, using the **official gpui-component
+//! bootstrap** for the pinned rev so the real shell (Fase 2) builds on the same
+//! pattern:
+//!   * `gpui_platform::application()` (not `Application::new()` — platform
+//!     construction moved into the `gpui_platform` crate in this rev),
+//!   * `with_assets(gpui_component_assets::Assets)` for the default icon pack,
+//!   * `gpui_component::init(cx)` to seed the theme/components,
+//!   * the top-level window view wrapped in `gpui_component::Root` (required by
+//!     gpui-component so overlays/modals/notifications have a mount point).
 //!
 //! Run:  cargo run --features spike --bin spike
-//!
-//! Pure-gpui counter button (window + click input) plus a `gpui_component::init`
-//! call so the widget lib is forced to compile/link against this pinned rev.
 
-use gpui::{
-    div, prelude::*, px, rgb, size, App, Application, Bounds, Context, Window, WindowBounds,
-    WindowOptions,
-};
+use gpui::*;
+use gpui_component::Root;
 
 struct Spike {
     count: usize,
@@ -47,8 +50,9 @@ impl Render for Spike {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
-        // Force the widget lib to link; also seeds its theme/assets.
+    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+
+    app.run(move |cx: &mut App| {
         gpui_component::init(cx);
 
         let bounds = Bounds::centered(None, size(px(480.), px(320.)), cx);
@@ -57,9 +61,13 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            |_window, cx| cx.new(|_cx| Spike { count: 0 }),
+            |window, cx| {
+                let view = cx.new(|_| Spike { count: 0 });
+                // The first level on the window must be `Root`.
+                cx.new(|cx| Root::new(view, window, cx))
+            },
         )
-        .unwrap();
+        .expect("failed to open window");
         cx.activate(true);
     });
 }
