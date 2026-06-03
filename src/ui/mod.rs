@@ -1,9 +1,12 @@
 pub mod anim;
 pub mod batch_rename;
 pub mod breadcrumb;
+#[cfg(feature = "cloud")]
+pub mod cloud;
 pub mod command_palette;
 pub mod context_menu;
 pub mod drag_feedback;
+pub mod extensions;
 pub mod drop_shelf;
 pub mod file_grid;
 pub mod file_list;
@@ -20,6 +23,6 @@ pub mod settings_window;
 pub mod sidebar;
 pub mod status_bar;
 pub mod tabs_popup;
-pub mod device_usage;
+pub mod os_icon;
+pub mod thumbnail_loader;
 pub mod analyzer;
-

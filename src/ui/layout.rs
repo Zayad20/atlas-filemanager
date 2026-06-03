@@ -240,7 +240,9 @@ impl<'a> Behavior<TabData> for AtlasBehavior<'a> {
 
         // The "+" doubles as a drop affordance: dropping folders here opens them
         // as new tabs in this container.
-        let resp = ui.add(egui::Button::new("➕").min_size(egui::vec2(28.0, 24.0)));
+        let resp = ui.add(
+            egui::Button::new(egui_phosphor::regular::PLUS).min_size(egui::vec2(28.0, 24.0)),
+        );
         if resp.clicked() {
             self.actions.push(Action::NewTab(tile_id));
         }
@@ -430,17 +432,12 @@ pub fn show_layout(ctx: &egui::Context, state: &mut AppState, actions: &mut Vec<
     {
         let t = ctx
             .animate_bool_responsive(egui::Id::new("sidebar_slide"), state.settings.show_sidebar);
-        let animating = t > 0.001 && t < 0.999;
         if t > 0.001 {
-            let w = state.settings.sidebar_width * t;
-            let mut panel = egui::SidePanel::left("sidebar");
-            if animating {
-                panel = panel.exact_width(w).resizable(false);
-            } else {
-                panel = panel
-                    .default_width(state.settings.sidebar_width)
-                    .resizable(true);
-            }
+            let sidebar_width = state.settings.sidebar_width.clamp(160.0, 400.0);
+            let w = sidebar_width * t;
+            let mut panel = egui::SidePanel::left("sidebar")
+                .exact_width(w)
+                .resizable(false);
             let panel_fill = ctx.style().visuals.panel_fill;
             panel = panel.frame(
                 egui::Frame::side_top_panel(&ctx.style())
@@ -466,6 +463,20 @@ pub fn show_layout(ctx: &egui::Context, state: &mut AppState, actions: &mut Vec<
     {
         crate::ui::inspector::show_inspector(ctx, state, actions);
     }
+
+    // Cloud dialogs (floating)
+    #[cfg(feature = "cloud")]
+    {
+        crate::ui::cloud::show_add_remote_window(ctx, state, actions);
+        crate::ui::cloud::show_transfers_window(ctx, state, actions);
+    }
+
+    // Publish enabled declarative ext commands for the context menu to read.
+    crate::ui::context_menu::publish_ext_commands(ctx, state.ext.registry.declarative_commands());
+
+    // Extensions manager + command prompt (floating)
+    crate::ui::extensions::show_manager(ctx, state, actions);
+    crate::ui::extensions::show_prompt(ctx, state, actions);
 
     // Settings window (floating)
     if state.overlay.show_settings {
@@ -538,7 +549,7 @@ fn show_external_drop_feedback(ctx: &egui::Context, target: Option<&ExternalDrop
         });
 }
 
-fn show_command_bar(ctx: &egui::Context, state: &AppState, actions: &mut Vec<Action>) {
+fn show_command_bar(ctx: &egui::Context, state: &mut AppState, actions: &mut Vec<Action>) {
     egui::TopBottomPanel::top("command_bar").show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.label("Profile:");
@@ -557,8 +568,71 @@ fn show_command_bar(ctx: &egui::Context, state: &AppState, actions: &mut Vec<Act
                 actions.push(Action::ToggleDropShelf);
             }
             ui.separator();
-            if ui.button("Analyzer 🚀").clicked() {
+            if ui.button("Analyzer").clicked() {
                 actions.push(Action::ToggleAnalyzer);
+            }
+            ui.separator();
+            if ui
+                .button(format!("{}  Extensions", egui_phosphor::regular::PUZZLE_PIECE))
+                .clicked()
+            {
+                actions.push(Action::Ext(crate::app::ext::ExtAction::OpenManager(true)));
+            }
+            #[cfg(feature = "cloud")]
+            if state.ext.registry.is_enabled("cloud") {
+                ui.separator();
+                if ui
+                    .button(format!("{}  Connect", egui_phosphor::regular::CLOUD))
+                    .on_hover_text("Mount a cloud / network drive")
+                    .clicked()
+                {
+                    actions.push(Action::Cloud(
+                        crate::app::cloud::CloudAction::ShowAddDialog(true),
+                    ));
+                }
+            }
+
+            let search_width = 320.0_f32.min(ui.available_width());
+            let left_space = ((ui.available_width() - search_width) * 0.5).max(8.0);
+            ui.add_space(left_space);
+            let search = ui
+                .scope(|ui| {
+                    if state.overlay.show_goto_bar {
+                        ui.set_opacity(0.0);
+                    }
+                    ui.add_sized(
+                        [search_width, 24.0],
+                        egui::Button::new(
+                            egui::RichText::new(format!(
+                                "{}  Search files and folders...",
+                                egui_phosphor::regular::MAGNIFYING_GLASS
+                            ))
+                            .size(12.0)
+                            .family(crate::util::fonts::regular()),
+                        )
+                        .right_text(
+                            egui::RichText::new("Ctrl K")
+                                .size(10.0)
+                                .family(crate::util::fonts::mono())
+                                .weak(),
+                        )
+                        .fill(egui::Color32::TRANSPARENT)
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            ui.visuals()
+                                .widgets
+                                .noninteractive
+                                .bg_stroke
+                                .color
+                                .gamma_multiply(0.8),
+                        ))
+                        .corner_radius(5),
+                    )
+                })
+                .inner;
+            state.overlay.goto_state.origin_rect = Some(search.rect);
+            if search.clicked() {
+                actions.push(Action::OpenGotoBar);
             }
         });
     });

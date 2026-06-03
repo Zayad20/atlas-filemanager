@@ -1,7 +1,7 @@
 use crate::input::action::Action;
 use crate::state::app_state::AppState;
 use crate::state::settings::ViewMode;
-use crate::ui::fuzzy_overlay::{show_fuzzy_overlay, FuzzyOverlayState};
+use crate::ui::fuzzy_overlay::{show_fuzzy_overlay, FuzzyOverlayOptions, FuzzyOverlayState};
 
 /// Static commands that don't require runtime state.
 #[allow(clippy::type_complexity)]
@@ -40,7 +40,8 @@ pub fn show_command_palette(
     let selected_paths: Vec<std::path::PathBuf> = app_state
         .active_tab_state()
         .map(|tab| {
-            tab.selection.selected
+            tab.selection
+                .selected
                 .iter()
                 .filter_map(|idx| tab.entries.get(*idx))
                 .map(|e| e.path.clone())
@@ -90,6 +91,40 @@ pub fn show_command_palette(
         action_builders.push(Box::new(move || Action::SwitchProfile(idx)));
     }
 
+    #[cfg(feature = "cloud")]
+    if app_state.ext.registry.is_enabled("cloud") {
+        labels.push("Connect to Server / Cloud (SFTP, Drive, …)".to_string());
+        action_builders.push(Box::new(|| {
+            Action::Cloud(crate::app::cloud::CloudAction::ShowAddDialog(true))
+        }));
+    }
+
+    // Extension-contributed commands for the current selection.
+    let selection: Vec<(Option<String>, bool)> = selected_paths
+        .iter()
+        .map(|p| {
+            let ext = p
+                .extension()
+                .map(|e| e.to_string_lossy().to_ascii_lowercase());
+            (ext, p.is_dir())
+        })
+        .collect();
+    for cref in app_state.ext.registry.commands_for(&selection) {
+        let (ext_id, cmd_id) = (cref.ext_id.clone(), cref.command.id.clone());
+        labels.push(cref.command.title.clone());
+        action_builders.push(Box::new(move || {
+            Action::Ext(crate::app::ext::ExtAction::Run {
+                ext_id: ext_id.clone(),
+                cmd_id: cmd_id.clone(),
+            })
+        }));
+    }
+
+    labels.push("Manage Extensions".to_string());
+    action_builders.push(Box::new(|| {
+        Action::Ext(crate::app::ext::ExtAction::OpenManager(true))
+    }));
+
     let query_lower = overlay_state.query.to_lowercase();
     let filtered_labels: Vec<&str> = if query_lower.is_empty() {
         labels.iter().map(|s| s.as_str()).collect()
@@ -106,6 +141,14 @@ pub fn show_command_palette(
         egui::Id::new("command_palette"),
         overlay_state,
         &filtered_labels,
+        FuzzyOverlayOptions {
+            placeholder: "Search for commands...",
+            empty_group: "Commands",
+            item_kind: "Command",
+            item_icon: egui_phosphor::regular::COMMAND,
+            footer_action: "Run Command",
+            shortcut: "Ctrl Shift P",
+        },
         Action::ClosePalette,
         |label| {
             if let Some(pos) = labels.iter().position(|l| l == label) {

@@ -1,4 +1,7 @@
 mod app;
+#[cfg(feature = "cloud")]
+mod cloud;
+mod ext;
 mod fs;
 mod input;
 mod search;

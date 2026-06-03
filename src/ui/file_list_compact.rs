@@ -5,7 +5,6 @@ use crate::state::drag::{DragHoverState, DraggedFiles, ExternalDropTarget};
 use crate::state::file_entry::FileKind;
 use crate::state::tab::TabState;
 use crate::ui::file_view_common::render_grid;
-use crate::util::extensions::ExtensionRegistry;
 
 /// Compact multi-column list view: small `icon + name` rows that flow row-major and
 /// wrap into as many columns as fit the width. Shares all interaction (selection,
@@ -38,13 +37,8 @@ pub fn show_file_list_compact(
         actions,
         |ui, entry, _is_selected| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            let icon = ExtensionRegistry::icon(entry.extension.as_deref());
-            let color = if entry.kind == FileKind::Dir {
-                crate::util::display::FOLDER_ICON_COLOR
-            } else {
-                ExtensionRegistry::color(entry.extension.as_deref())
-            };
-            ui.colored_label(color, icon);
+            let is_dir = entry.kind == FileKind::Dir;
+            crate::ui::os_icon::show_file_icon(ui, entry.extension.as_deref(), is_dir, 16.0);
             ui.add(
                 egui::Label::new(&entry.name)
                     .truncate()

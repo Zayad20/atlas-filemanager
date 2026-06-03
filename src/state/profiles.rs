@@ -9,6 +9,9 @@ pub enum SectionKind {
     Tags,
     Drives,
     Recent,
+    /// Cloud / network remotes (feature `cloud`). Renders nothing without it.
+    #[serde(other)]
+    Cloud,
 }
 
 impl SectionKind {
@@ -19,6 +22,7 @@ impl SectionKind {
             Self::Tags => "Tags",
             Self::Drives => "Drives",
             Self::Recent => "Recent",
+            Self::Cloud => "Network",
         }
     }
 }
@@ -44,6 +48,8 @@ fn default_sections() -> Vec<SidebarSection> {
         SidebarSection::new(SectionKind::Bookmarks),
         SidebarSection::new(SectionKind::Tags),
         SidebarSection::new(SectionKind::Drives),
+        #[cfg(feature = "cloud")]
+        SidebarSection::new(SectionKind::Cloud),
         SidebarSection::new(SectionKind::Recent),
     ]
 }
@@ -116,6 +122,25 @@ impl ProfileManager {
 
     pub fn active_mut(&mut self) -> &mut Profile {
         &mut self.profiles[self.active_idx]
+    }
+
+    /// Ensure every profile exposes the Network/Cloud sidebar section. Profiles
+    /// persisted before the cloud feature existed lack it, which would otherwise
+    /// hide all configured remotes. Inserts it just before "Recent".
+    #[cfg(feature = "cloud")]
+    pub fn ensure_cloud_section(&mut self) {
+        for p in &mut self.profiles {
+            if p.sidebar_sections.iter().any(|s| s.kind == SectionKind::Cloud) {
+                continue;
+            }
+            let pos = p
+                .sidebar_sections
+                .iter()
+                .position(|s| s.kind == SectionKind::Recent)
+                .unwrap_or(p.sidebar_sections.len());
+            p.sidebar_sections
+                .insert(pos, SidebarSection::new(SectionKind::Cloud));
+        }
     }
 }
 

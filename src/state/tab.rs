@@ -1,6 +1,7 @@
 use crate::state::file_entry::FileEntry;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// One directory column in the Miller (columns) view.
 pub struct MillerColumn {
@@ -82,7 +83,6 @@ pub struct PathEditState {
     pub error: Option<String>,
 }
 
-
 pub struct TabState {
     pub entries: Vec<FileEntry>,
     pub filter: String,
@@ -93,13 +93,16 @@ pub struct TabState {
     pub selection: SelectionState,
     pub path_edit: PathEditState,
     pub miller: MillerState,
+    /// Width of the pane as of the last rendered frame, used to detect active
+    /// resize and suppress layout thrashing in the grid view.
+    pub last_pane_width: f32,
     /// Bumped whenever `entries` is replaced; used to invalidate `visible` cache.
     /// Mutate `entries` only through [`TabState::set_entries`]/[`TabState::begin_navigation`]
     /// so this stays in sync.
     pub entries_version: u64,
     /// Cached result of filtering `entries` by `filter`, rebuilt only when the
     /// filter text or the entry set changes (see [`TabState::visible_indices`]).
-    pub visible: Vec<usize>,
+    pub visible: Arc<Vec<usize>>,
     pub visible_filter: String,
     pub visible_version: u64,
     pub visible_valid: bool,
@@ -117,8 +120,9 @@ impl Default for TabState {
             selection: SelectionState::default(),
             path_edit: PathEditState::default(),
             miller: MillerState::default(),
+            last_pane_width: 0.0,
             entries_version: 0,
-            visible: Vec::new(),
+            visible: Arc::new(Vec::new()),
             visible_filter: String::new(),
             visible_version: 0,
             visible_valid: false,
@@ -158,11 +162,12 @@ impl TabState {
             || self.visible_filter != self.filter
         {
             let needle = self.filter.to_lowercase();
-            self.visible.clear();
+            let visible = Arc::make_mut(&mut self.visible);
+            visible.clear();
             if needle.is_empty() {
-                self.visible.extend(0..self.entries.len());
+                visible.extend(0..self.entries.len());
             } else {
-                self.visible.extend(
+                visible.extend(
                     self.entries
                         .iter()
                         .enumerate()
@@ -176,5 +181,12 @@ impl TabState {
             self.visible_valid = true;
         }
         &self.visible
+    }
+
+    /// Cheap render snapshot of the cached visible indices. Keeping this behind an
+    /// `Arc` avoids copying the full directory index every frame in virtualized views.
+    pub fn visible_indices_shared(&mut self) -> Arc<Vec<usize>> {
+        self.visible_indices();
+        self.visible.clone()
     }
 }

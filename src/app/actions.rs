@@ -83,6 +83,7 @@ impl App {
                 }
                 Action::OpenGotoBar => {
                     self.state.overlay.show_goto_bar = true;
+                    self.state.overlay.show_palette = false;
                     self.state.overlay.goto_state.reset();
                     // Rebuild index from the current pane's directory
                     self.state.nucleo.reset();
@@ -96,6 +97,7 @@ impl App {
                 }
                 Action::OpenPalette => {
                     self.state.overlay.show_palette = true;
+                    self.state.overlay.show_goto_bar = false;
                     self.state.overlay.palette_state.reset();
                 }
                 Action::ClosePalette => {
@@ -191,6 +193,10 @@ impl App {
                     }
                 }
                 Action::Open(paths) => {
+                    #[cfg(feature = "cloud")]
+                    if self.open_remote_paths(&paths) {
+                        continue;
+                    }
                     self.spawn_open_files(paths);
                 }
                 Action::CopyPathToClipboard(path) => {
@@ -429,6 +435,11 @@ impl App {
                         .send(crate::fs::tag_db::TagDbCmd::UnassignTag { tag, paths });
                 }
                 Action::OpenTagResults { pane, tag } => self.open_tag_results(pane, tag),
+                Action::MountDevice(dev) => self.mount_device(dev),
+                Action::UnmountDevice(dev) => self.unmount_device(dev),
+                #[cfg(feature = "cloud")]
+                Action::Cloud(c) => self.handle_cloud_action(c),
+                Action::Ext(e) => self.handle_ext_action(e),
             }
         }
     }

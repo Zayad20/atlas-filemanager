@@ -15,6 +15,11 @@ pub enum TabSource {
     Directory,
     /// Show every file carrying the given tag. `TabData.path` is a display-only sentinel.
     Tag(TagId),
+    /// Browse a cloud/network remote in Access Mode (no FUSE mount). `id` is the
+    /// rclone remote name; `path` is the remote-relative directory being shown.
+    /// `TabData.path` is a display-only sentinel.
+    #[cfg(feature = "cloud")]
+    Remote { id: String, path: String },
 }
 
 impl TabSource {

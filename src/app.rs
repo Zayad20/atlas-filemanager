@@ -17,7 +17,11 @@ use crate::util::config::{
 };
 
 pub mod actions;
+#[cfg(feature = "cloud")]
+pub mod cloud;
+pub mod devices;
 pub mod drag;
+pub mod ext;
 pub mod fs_sync;
 pub mod nav;
 pub mod ops;
@@ -37,6 +41,9 @@ pub struct App {
     pub(crate) pending_native_drag: Option<Vec<PathBuf>>,
     /// Channel to the SQLite tag-db worker (writes fire-and-forget, reads reply via `tx`).
     pub(crate) tag_db_tx: flume::Sender<crate::fs::tag_db::TagDbCmd>,
+    /// Channel to the cloud worker (rclone sidecar + transfers). Replies via `tx`.
+    #[cfg(feature = "cloud")]
+    pub(crate) cloud_tx: flume::Sender<crate::cloud::CloudCmd>,
 }
 
 const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(90);
@@ -50,6 +57,16 @@ pub(crate) struct PendingPreview {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, rt: tokio::runtime::Handle) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
+        crate::ui::thumbnail_loader::install(&cc.egui_ctx);
+        crate::ui::os_icon::install(&cc.egui_ctx);
+        let installed_fonts = crate::util::fonts::install(&cc.egui_ctx);
+        tracing::info!(
+            sf_regular = installed_fonts.sf_regular,
+            sf_medium = installed_fonts.sf_medium,
+            sf_semibold = installed_fonts.sf_semibold,
+            sf_mono = installed_fonts.sf_mono,
+            "installed UI fonts"
+        );
         #[cfg(target_os = "linux")]
         crate::util::linux_blur::request_blur(cc);
         let settings = cc.storage.map(load_settings).unwrap_or_default();
@@ -71,6 +88,10 @@ impl App {
             AppState::new(settings)
         };
         state.profiles = profiles;
+        // Profiles saved before the cloud feature lack the Network section, which
+        // would hide configured remotes — backfill it.
+        #[cfg(feature = "cloud")]
+        state.profiles.ensure_cloud_section();
 
         // Spawn the SQLite tag-db worker. On a brand-new database it imports the tags
         // that previously lived only in profile config (global + per-profile).
@@ -95,6 +116,12 @@ impl App {
                 ),
                 _ => continue,
             };
+            // A restored Access-mode remote tab can't reconnect before rclone is up;
+            // leave it idle (the user re-opens it from the sidebar).
+            #[cfg(feature = "cloud")]
+            if matches!(source, crate::state::pane::TabSource::Remote { .. }) {
+                continue;
+            }
             // A restored virtual tag tab re-queries its paths instead of listing a dir.
             if let crate::state::pane::TabSource::Tag(tag) = source {
                 let op_id = state.next_op_id();
@@ -130,6 +157,36 @@ impl App {
             });
         }
 
+        // Extensions: seed bundled ones, load enabled overrides, build the registry.
+        let _ = crate::ext::install::ensure_bundled(
+            "file-tools",
+            crate::app::ext::FILE_TOOLS_MANIFEST,
+        );
+        state.ext.enabled = cc
+            .storage
+            .map(crate::util::config::load_ext_enabled)
+            .unwrap_or_default();
+        state.ext.reload();
+
+        // Spawn the cloud worker (rclone sidecar is started lazily on first use)
+        // and restore previously-configured remotes for the sidebar.
+        #[cfg(feature = "cloud")]
+        let cloud_tx = crate::cloud::spawn(&rt, tx.clone());
+        #[cfg(feature = "cloud")]
+        {
+            state.cloud.remotes = cc
+                .storage
+                .map(crate::util::config::load_cloud_remotes)
+                .unwrap_or_default();
+            // Auto-mount remotes the user flagged. Not added to `navigate_on_mount`,
+            // so they mount silently without hijacking the startup tab.
+            for r in &state.cloud.remotes {
+                if r.auto_mount && r.access == crate::cloud::AccessKind::Mount {
+                    let _ = cloud_tx.send(crate::cloud::CloudCmd::Mount { id: r.id.clone() });
+                }
+            }
+        }
+
         Self {
             state,
             tx,
@@ -140,6 +197,8 @@ impl App {
             pending_preview: None,
             pending_native_drag: None,
             tag_db_tx,
+            #[cfg(feature = "cloud")]
+            cloud_tx,
         }
     }
 
@@ -345,6 +404,25 @@ impl App {
                 BgResult::PathsForTag { tag, paths } => {
                     self.populate_tag_tabs(tag, paths);
                 }
+                BgResult::DeviceMounted(path) => {
+                    crate::fs::udisks::invalidate();
+                    self.navigate(self.state.focused_tile, path);
+                }
+                BgResult::DeviceActionFailed(error) => {
+                    tracing::warn!("device action failed: {error}");
+                }
+                BgResult::DevicesChanged => {
+                    crate::fs::udisks::invalidate();
+                }
+                BgResult::ExtCommandDone {
+                    ext_id,
+                    error,
+                    dirs,
+                } => {
+                    self.handle_ext_bg(ext_id, error, dirs);
+                }
+                #[cfg(feature = "cloud")]
+                other => self.handle_cloud_bg(other),
             }
         }
     }
@@ -563,6 +641,14 @@ impl eframe::App for App {
         save_settings(storage, &self.state.settings);
         save_session(storage, &self.state.pane_tree);
         save_profiles(storage, &self.state.profiles);
+        crate::util::config::save_ext_enabled(storage, &self.state.ext.enabled);
+        #[cfg(feature = "cloud")]
+        crate::util::config::save_cloud_remotes(storage, &self.state.cloud.remotes);
+    }
+
+    #[cfg(feature = "cloud")]
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.cleanup_cloud_on_exit();
     }
 }
 

@@ -143,4 +143,14 @@ pub enum Action {
         pane: PaneId,
         tag: TagId,
     },
+    // ── Removable disks (udisks2) ──
+    /// Mount a block device (e.g. `/dev/sdb1`) via udisksctl, then navigate to it.
+    MountDevice(String),
+    /// Unmount/eject a block device via udisksctl.
+    UnmountDevice(String),
+    // ── Cloud / network mounting (feature `cloud`) ──
+    #[cfg(feature = "cloud")]
+    Cloud(crate::app::cloud::CloudAction),
+    // ── Extensions ──
+    Ext(crate::app::ext::ExtAction),
 }

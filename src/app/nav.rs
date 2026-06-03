@@ -4,6 +4,16 @@ use std::path::PathBuf;
 
 impl App {
     pub(crate) fn navigate(&mut self, tab_id: TileId, path: PathBuf) {
+        // Access-mode remote tabs descend by re-listing through the cloud worker,
+        // not by `read_dir` — the entry path is remote-relative, not a real dir.
+        #[cfg(feature = "cloud")]
+        if let Some(crate::state::pane::TabSource::Remote { id, .. }) =
+            self.tab_data_for(tab_id).map(|td| td.source.clone()).as_ref()
+        {
+            let id = id.clone();
+            let rpath = path.to_string_lossy().into_owned();
+            return self.navigate_remote(tab_id, id, rpath);
+        }
         if !path.is_dir() {
             return;
         }

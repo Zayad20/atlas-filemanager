@@ -1,5 +1,8 @@
 pub mod app_state;
+#[cfg(feature = "cloud")]
+pub mod cloud_state;
 pub mod drag;
+pub mod ext_state;
 pub mod file_entry;
 pub mod ops;
 pub mod overlay;
@@ -11,5 +14,4 @@ pub mod tab;
 pub mod tag_cache;
 pub mod undo;
 pub mod batch_rename;
-pub mod device_usage;
 pub mod space_lens;

@@ -43,3 +43,27 @@ pub fn load_profiles(storage: &dyn eframe::Storage) -> ProfileManager {
 pub fn save_profiles(storage: &mut dyn eframe::Storage, profiles: &ProfileManager) {
     eframe::set_value(storage, "atlas_profiles", profiles);
 }
+
+/// Per-extension enabled overrides (id → enabled).
+pub fn load_ext_enabled(storage: &dyn eframe::Storage) -> std::collections::HashMap<String, bool> {
+    eframe::get_value(storage, "atlas_ext_enabled").unwrap_or_default()
+}
+
+pub fn save_ext_enabled(
+    storage: &mut dyn eframe::Storage,
+    enabled: &std::collections::HashMap<String, bool>,
+) {
+    eframe::set_value(storage, "atlas_ext_enabled", enabled);
+}
+
+/// Configured cloud remotes (non-secret definitions only; credentials live in
+/// rclone's own config). Empty when the feature is off or none are set.
+#[cfg(feature = "cloud")]
+pub fn load_cloud_remotes(storage: &dyn eframe::Storage) -> Vec<crate::cloud::CloudRemote> {
+    eframe::get_value(storage, "atlas_cloud_remotes").unwrap_or_default()
+}
+
+#[cfg(feature = "cloud")]
+pub fn save_cloud_remotes(storage: &mut dyn eframe::Storage, remotes: &[crate::cloud::CloudRemote]) {
+    eframe::set_value(storage, "atlas_cloud_remotes", &remotes.to_vec());
+}

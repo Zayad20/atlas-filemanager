@@ -64,6 +64,61 @@ pub enum BgResult {
         tag: crate::state::tag_cache::TagId,
         paths: Vec<PathBuf>,
     },
+    /// A removable device finished mounting at this path (navigate to it).
+    DeviceMounted(PathBuf),
+    /// A mount/unmount via udisksctl failed.
+    DeviceActionFailed(String),
+    /// The set of removable devices changed (e.g. after unmount); refresh sidebar.
+    DevicesChanged,
+    /// A declarative extension command finished; refresh `dirs` and report `error`.
+    ExtCommandDone {
+        ext_id: String,
+        error: Option<String>,
+        dirs: Vec<PathBuf>,
+    },
+    // --- cloud extension ---
+    /// rclone binary download progress while fetching it on first use.
+    #[cfg(feature = "cloud")]
+    CloudRcloneProgress { done: u64, total: u64 },
+    /// rclone daemon is up and the provider is ready.
+    #[cfg(feature = "cloud")]
+    CloudReady,
+    /// A non-fatal cloud error to surface in the UI.
+    #[cfg(feature = "cloud")]
+    CloudError(String),
+    /// A remote's backend config was created successfully.
+    #[cfg(feature = "cloud")]
+    RemoteConfigured(crate::cloud::CloudRemote),
+    #[cfg(feature = "cloud")]
+    RemoteConfigFailed {
+        id: crate::cloud::RemoteId,
+        error: String,
+    },
+    #[cfg(feature = "cloud")]
+    RemoteRemoved(crate::cloud::RemoteId),
+    /// A remote's runtime (mount/connection) status changed.
+    #[cfg(feature = "cloud")]
+    RemoteStatusChanged {
+        id: crate::cloud::RemoteId,
+        status: crate::cloud::RemoteStatus,
+    },
+    /// Full transfer-list snapshot from the Transfer Manager.
+    #[cfg(feature = "cloud")]
+    TransferUpdate(crate::cloud::TransferSnapshot),
+    /// Storage usage `(used, total)` bytes reported for a remote.
+    #[cfg(feature = "cloud")]
+    RemoteQuota {
+        id: crate::cloud::RemoteId,
+        used: u64,
+        total: u64,
+    },
+    /// A remote directory's contents changed (e.g. after an upload); re-list any
+    /// Access-mode tab showing `(id, path)`.
+    #[cfg(feature = "cloud")]
+    RemoteChanged {
+        id: crate::cloud::RemoteId,
+        path: String,
+    },
 }
 
 pub struct AppState {
@@ -86,9 +141,11 @@ pub struct AppState {
     pub drag_drop: crate::state::drag::DragDropState,
     pub profiles: ProfileManager,
     pub profile_ui: ProfileUiState,
-    pub device_usage: crate::state::device_usage::DeviceUsageState,
     pub space_lens: crate::state::space_lens::SpaceLensState,
     pub tag_cache: crate::state::tag_cache::TagCache,
+    pub ext: crate::state::ext_state::ExtState,
+    #[cfg(feature = "cloud")]
+    pub cloud: crate::state::cloud_state::CloudState,
 }
 
 impl AppState {
@@ -312,9 +369,11 @@ impl AppState {
             drag_drop: crate::state::drag::DragDropState::default(),
             profiles: ProfileManager::default(),
             profile_ui: ProfileUiState::default(),
-            device_usage: crate::state::device_usage::DeviceUsageState::default(),
             space_lens: crate::state::space_lens::SpaceLensState::default(),
             tag_cache: crate::state::tag_cache::TagCache::default(),
+            ext: crate::state::ext_state::ExtState::default(),
+            #[cfg(feature = "cloud")]
+            cloud: crate::state::cloud_state::CloudState::default(),
         }
     }
 

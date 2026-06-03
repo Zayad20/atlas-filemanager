@@ -1,4 +1,5 @@
 use egui::{Align, Color32, Layout, RichText};
+use egui_phosphor::regular;
 use std::path::PathBuf;
 
 use crate::input::action::Action;
@@ -14,9 +15,6 @@ pub fn show_sidebar_content(ui: &mut egui::Ui, state: &mut AppState, actions: &m
         show_profile_selector(ui, state, actions);
         ui.add_space(6.0);
         show_sections(ui, state, actions);
-
-        ui.add_space(16.0);
-        crate::ui::device_usage::show_device_usage(ui, state);
     });
 }
 
@@ -39,7 +37,11 @@ fn show_profile_selector(ui: &mut egui::Ui, state: &mut AppState, actions: &mut 
                 }
             });
 
-        if ui.small_button("+").on_hover_text("New profile").clicked() {
+        if ui
+            .small_button(regular::PLUS)
+            .on_hover_text("New profile")
+            .clicked()
+        {
             let new_name = format!("Profile {}", state.profiles.profiles.len() + 1);
             state.profiles.profiles.push(Profile::new(new_name));
             let new_idx = state.profiles.profiles.len() - 1;
@@ -98,15 +100,23 @@ fn show_sections(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Acti
 
         // Section header row
         let header_resp = ui.horizontal(|ui| {
-            let arrow = if collapsed { "▶" } else { "▼" };
+            let arrow = if collapsed {
+                regular::CARET_RIGHT
+            } else {
+                regular::CARET_DOWN
+            };
             if ui.small_button(arrow).clicked() {
                 actions.push(Action::ToggleSidebarSection(i));
             }
-            ui.label(RichText::new(kind.label()).small().strong());
+            ui.label(
+                RichText::new(format!("{}  {}", section_icon(&kind), kind.label()))
+                    .small()
+                    .strong(),
+            );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if i < n - 1
                     && ui
-                        .small_button("↓")
+                        .small_button(regular::ARROW_DOWN)
                         .on_hover_text("Move section down")
                         .clicked()
                 {
@@ -114,7 +124,7 @@ fn show_sections(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Acti
                 }
                 if i > 0
                     && ui
-                        .small_button("↑")
+                        .small_button(regular::ARROW_UP)
                         .on_hover_text("Move section up")
                         .clicked()
                 {
@@ -134,6 +144,14 @@ fn show_sections(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Acti
                 SectionKind::Tags => show_tags(ui, state, actions),
                 SectionKind::Drives => show_drives(ui, state, actions),
                 SectionKind::Recent => show_recent(ui, state, actions),
+                SectionKind::Cloud => {
+                    #[cfg(feature = "cloud")]
+                    if state.ext.registry.is_enabled("cloud") {
+                        crate::ui::cloud::show_cloud(ui, state, actions);
+                    } else {
+                        ui.label(RichText::new("Cloud extension disabled").small().weak());
+                    }
+                }
             },
         );
 
@@ -145,21 +163,21 @@ fn show_sections(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Acti
 // ── Places ───────────────────────────────────────────────────────────────────
 
 fn show_places(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action>) {
-    let places: &[(&str, Option<PathBuf>)] = &[
-        ("Home", dirs::home_dir()),
-        ("Desktop", dirs::desktop_dir()),
-        ("Downloads", dirs::download_dir()),
-        ("Documents", dirs::document_dir()),
-        ("Pictures", dirs::picture_dir()),
-        ("Videos", dirs::video_dir()),
-        ("Music", dirs::audio_dir()),
+    let places: &[(&str, &str, Option<PathBuf>)] = &[
+        (regular::HOUSE, "Home", dirs::home_dir()),
+        (regular::DESKTOP, "Desktop", dirs::desktop_dir()),
+        (regular::DOWNLOAD, "Downloads", dirs::download_dir()),
+        (regular::FILE_TEXT, "Documents", dirs::document_dir()),
+        (regular::IMAGE, "Pictures", dirs::picture_dir()),
+        (regular::VIDEO, "Videos", dirs::video_dir()),
+        (regular::MUSIC_NOTE, "Music", dirs::audio_dir()),
     ];
 
-    for (label, path) in places {
+    for (icon, label, path) in places {
         if let Some(p) = path {
             if p.exists() {
                 let response = ui
-                    .selectable_label(false, *label)
+                    .selectable_label(false, format!("{icon}  {label}"))
                     .interact(egui::Sense::click_and_drag());
                 observe_drag_location(state, &response, p);
                 set_sidebar_drag_source(state, &response, p);
@@ -188,7 +206,7 @@ fn show_bookmarks(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Act
 
         ui.horizontal(|ui| {
             let response = ui
-                .selectable_label(false, &name)
+                .selectable_label(false, format!("{}  {name}", regular::BOOKMARK))
                 .interact(egui::Sense::click_and_drag());
             observe_drag_location(state, &response, &path);
             set_sidebar_drag_source(state, &response, &path);
@@ -199,7 +217,11 @@ fn show_bookmarks(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Act
                 });
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.small_button("✕").on_hover_text("Remove").clicked() {
+                if ui
+                    .small_button(regular::X)
+                    .on_hover_text("Remove")
+                    .clicked()
+                {
                     actions.push(Action::RemoveBookmark(i));
                 }
             });
@@ -237,7 +259,10 @@ fn show_bookmarks(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Act
                 state.profile_ui.new_bookmark_name.clear();
             }
         });
-    } else if ui.small_button("+ Add bookmark").clicked() {
+    } else if ui
+        .small_button(format!("{}  Add bookmark", regular::PLUS))
+        .clicked()
+    {
         state.profile_ui.adding_bookmark = true;
         let path = current_dir(state);
         state.profile_ui.new_bookmark_name = crate::util::display::display_name(&path);
@@ -289,7 +314,10 @@ fn show_tags(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action>)
 
     if state.profile_ui.adding_tag {
         show_add_tag_form(ui, state, actions, &active_profile);
-    } else if ui.small_button("+ Add tag").clicked() {
+    } else if ui
+        .small_button(format!("{}  Add tag", regular::PLUS))
+        .clicked()
+    {
         state.profile_ui.adding_tag = true;
         state.profile_ui.new_tag_name.clear();
         state.profile_ui.new_tag_global = false;
@@ -303,9 +331,10 @@ fn tag_row(ui: &mut egui::Ui, name: &str, color: Color32) -> (egui::Response, bo
     let inner = ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
         ui.painter().circle_filled(rect.center(), 6.0, color);
+        ui.label(regular::TAG);
         let label = ui.add(egui::Label::new(name).sense(egui::Sense::click_and_drag()));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui.small_button("✕").clicked() {
+            if ui.small_button(regular::X).clicked() {
                 remove_clicked = true;
             }
         });
@@ -372,17 +401,55 @@ fn show_add_tag_form(
 // ── Drives ───────────────────────────────────────────────────────────────────
 
 fn show_drives(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action>) {
+    // Removable devices (udisks2): mount points let us tag fixed mounts with an
+    // eject button and surface not-yet-mounted disks as one-click mounts.
+    let removable = crate::fs::udisks::list_removable();
+    let eject_for = |path: &std::path::Path| -> Option<String> {
+        removable
+            .iter()
+            .find(|d| d.mount_point.as_deref() == Some(path))
+            .map(|d| d.dev.clone())
+    };
+
     for mount in crate::fs::mounts::read_mounts() {
-        let response = ui
-            .selectable_label(false, mount.to_string_lossy().as_ref())
-            .interact(egui::Sense::click_and_drag());
-        observe_drag_location(state, &response, &mount);
-        set_sidebar_drag_source(state, &response, &mount);
-        if response.clicked() {
-            actions.push(Action::Navigate {
-                tab: state.focused_tile,
-                path: mount,
-            });
+        ui.horizontal(|ui| {
+            let response = ui
+                .selectable_label(
+                    false,
+                    format!("{}  {}", regular::HARD_DRIVES, mount.to_string_lossy()),
+                )
+                .interact(egui::Sense::click_and_drag());
+            observe_drag_location(state, &response, &mount);
+            set_sidebar_drag_source(state, &response, &mount);
+            if response.clicked() {
+                actions.push(Action::Navigate {
+                    tab: state.focused_tile,
+                    path: mount.clone(),
+                });
+            }
+            if let Some(dev) = eject_for(&mount) {
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    if ui.small_button(regular::EJECT).on_hover_text("Eject").clicked() {
+                        actions.push(Action::UnmountDevice(dev));
+                    }
+                });
+            }
+        });
+    }
+
+    // Connected-but-unmounted removable disks → click to mount.
+    for dev in removable.iter().filter(|d| d.mount_point.is_none()) {
+        let label = if dev.size.is_empty() {
+            format!("{}  {}", regular::USB, dev.label)
+        } else {
+            format!("{}  {}  ({})", regular::USB, dev.label, dev.size)
+        };
+        if ui
+            .selectable_label(false, label)
+            .on_hover_text(format!("Mount {}", dev.dev))
+            .clicked()
+        {
+            actions.push(Action::MountDevice(dev.dev.clone()));
         }
     }
 }
@@ -405,7 +472,10 @@ fn show_recent(ui: &mut egui::Ui, state: &mut AppState, actions: &mut Vec<Action
     for path in recent {
         let label = crate::util::display::display_name(&path);
         let response = ui
-            .selectable_label(false, label)
+            .selectable_label(
+                false,
+                format!("{}  {label}", regular::CLOCK_COUNTER_CLOCKWISE),
+            )
             .interact(egui::Sense::click_and_drag())
             .on_hover_text(path.to_string_lossy().as_ref());
         observe_drag_location(state, &response, &path);
@@ -452,4 +522,13 @@ fn current_dir(state: &AppState) -> PathBuf {
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
 }
 
-
+fn section_icon(kind: &SectionKind) -> &'static str {
+    match kind {
+        SectionKind::Places => regular::HOUSE,
+        SectionKind::Bookmarks => regular::BOOKMARKS,
+        SectionKind::Tags => regular::TAG,
+        SectionKind::Drives => regular::HARD_DRIVES,
+        SectionKind::Recent => regular::CLOCK_COUNTER_CLOCKWISE,
+        SectionKind::Cloud => regular::CLOUD,
+    }
+}

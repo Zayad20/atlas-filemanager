@@ -164,7 +164,7 @@ impl App {
 
     /// Insert `tab_data` as a new focused tab in the Tabs container owning `pane_id`.
     /// Returns the new pane's TileId, or `None` if no container could be resolved.
-    fn insert_tab(&mut self, pane_id: TileId, tab_data: TabData) -> Option<TileId> {
+    pub(crate) fn insert_tab(&mut self, pane_id: TileId, tab_data: TabData) -> Option<TileId> {
         let tabs_id = self.resolve_tabs_container(pane_id)?;
         let new_tile_id = self.state.pane_tree.tiles.insert_pane(tab_data);
         self.state

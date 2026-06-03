@@ -112,7 +112,7 @@ pub fn show_settings(ctx: &egui::Context, settings: &mut Settings, open: &mut bo
                             let shortcuts = [
                                 ("New Tab", "Ctrl+T"),
                                 ("Close Tab", "Ctrl+W"),
-                                ("Goto Bar", "Ctrl+P"),
+                                ("Quick Search", "Ctrl+K"),
                                 ("Edit Location", "Ctrl+L"),
                                 ("Command Palette", "Ctrl+Shift+P"),
                                 ("Toggle Drop Shelf", "Ctrl+Shift+D"),

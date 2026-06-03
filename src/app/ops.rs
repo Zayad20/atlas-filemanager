@@ -102,6 +102,10 @@ impl App {
             Some(c) => (c.paths.clone(), c.is_cut),
             None => return,
         };
+        #[cfg(feature = "cloud")]
+        if self.try_remote_upload(&paths, &dest, is_cut) {
+            return;
+        }
         if !dest.is_dir() {
             return;
         }
@@ -201,6 +205,10 @@ impl App {
     }
 
     pub(crate) fn copy_files(&mut self, paths: Vec<PathBuf>, dest: PathBuf) {
+        #[cfg(feature = "cloud")]
+        if self.try_remote_upload(&paths, &dest, false) {
+            return;
+        }
         let pairs: Vec<_> = paths
             .into_iter()
             .filter(|path| {
@@ -218,6 +226,11 @@ impl App {
     }
 
     pub(crate) fn move_files(&mut self, paths: Vec<PathBuf>, dest: PathBuf) {
+        // Moving into a remote uploads then trashes the local source on success.
+        #[cfg(feature = "cloud")]
+        if self.try_remote_upload(&paths, &dest, true) {
+            return;
+        }
         let paths: Vec<_> = paths
             .into_iter()
             .filter(|path| {

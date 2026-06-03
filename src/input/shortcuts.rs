@@ -36,7 +36,7 @@ pub fn handle_global_shortcuts(ctx: &egui::Context, state: &AppState, actions: &
             (Modifiers::CTRL, Key::T, Action::NewTabFocused),
             (Modifiers::CTRL | Modifiers::SHIFT, Key::P, Action::OpenPalette),
             (Modifiers::CTRL | Modifiers::SHIFT, Key::D, Action::ToggleDropShelf),
-            (Modifiers::CTRL, Key::P, Action::OpenGotoBar),
+            (Modifiers::CTRL, Key::K, Action::OpenGotoBar),
             (Modifiers::CTRL, Key::I, Action::ToggleInspector),
             (Modifiers::CTRL, Key::B, Action::ToggleSidebar),
             (Modifiers::CTRL, Key::Period, Action::ToggleHidden),

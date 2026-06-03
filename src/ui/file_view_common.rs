@@ -354,7 +354,7 @@ pub fn render_grid<F>(
 ) where
     F: FnMut(&mut egui::Ui, &FileEntry, bool),
 {
-    let visible_indices: Vec<usize> = tab_state.visible_indices().to_vec();
+    let visible_indices = tab_state.visible_indices_shared();
     let selected_snapshot = tab_state.selection.selected.clone();
     let list_rect = ui.available_rect_before_wrap();
     let background = ui.interact(
@@ -363,15 +363,30 @@ pub fn render_grid<F>(
         egui::Sense::click_and_drag(),
     );
 
-    let columns = GridLayout::columns_for_width(ui.available_width(), item_size.x, spacing.x);
+    let avail_w = ui.available_width();
+    let target_cols = GridLayout::columns_for_width(avail_w, item_size.x, spacing.x);
+    let is_resizing = (avail_w - tab_state.last_pane_width).abs() > 0.5;
+    tab_state.last_pane_width = avail_w;
+
+    // Freeze column count during active resize to avoid scroll-height jumps
+    // when crossing column boundaries. Fall back to target if previous count
+    // no longer fits (pane shrank enough to cause overflow).
+    let columns = if is_resizing && tab_state.grid_columns > 0 {
+        let prev = tab_state.grid_columns;
+        let min_w = (prev as f32) * (item_size.x + spacing.x) - spacing.x;
+        if avail_w >= min_w { prev } else { target_cols }
+    } else {
+        target_cols
+    };
+    tab_state.grid_columns = columns;
+
     let (column_spacing, side_margin) = GridLayout::horizontal_distribution(
-        ui.available_width(),
+        avail_w,
         item_size.x,
         columns,
         spacing.x,
         24.0,
     );
-    tab_state.grid_columns = columns;
     let layout = GridLayout::new(
         item_size,
         egui::vec2(column_spacing, spacing.y),

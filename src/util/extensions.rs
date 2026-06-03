@@ -1,4 +1,5 @@
 use egui::Color32;
+use egui_phosphor::regular;
 
 /// A registry mapping file extensions to icons and colors.
 pub struct ExtensionRegistry;
@@ -6,21 +7,29 @@ pub struct ExtensionRegistry;
 impl ExtensionRegistry {
     pub fn icon(ext: Option<&str>) -> &'static str {
         match ext {
-            Some("rs") => "🦀",
-            Some("py") => "🐍",
-            Some("js" | "ts" | "jsx" | "tsx") => "📜",
-            Some("json" | "yaml" | "yml" | "toml") => "⚙",
-            Some("md" | "txt" | "rst") => "📄",
-            Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico") => "🖼",
-            Some("mp4" | "mkv" | "avi" | "mov" | "webm") => "🎬",
-            Some("mp3" | "flac" | "wav" | "ogg" | "m4a") => "🎵",
-            Some("pdf") => "📕",
-            Some("zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar") => "📦",
-            Some("sh" | "bash" | "zsh" | "fish") => "💻",
-            Some("c" | "cpp" | "h" | "hpp") => "⚡",
-            Some("html" | "css") => "🌐",
-            None => "📁",
-            _ => "📄",
+            Some("rs") => regular::FILE_RS,
+            Some("py") => regular::FILE_PY,
+            Some("js") => regular::FILE_JS,
+            Some("jsx") => regular::FILE_JSX,
+            Some("ts") => regular::FILE_TS,
+            Some("tsx") => regular::FILE_TSX,
+            Some("json" | "yaml" | "yml" | "toml") => regular::FILE_TEXT,
+            Some("md") => regular::FILE_MD,
+            Some("txt" | "rst") => regular::FILE_TXT,
+            Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico") => {
+                regular::FILE_IMAGE
+            }
+            Some("mp4" | "mkv" | "avi" | "mov" | "webm") => regular::FILE_VIDEO,
+            Some("mp3" | "flac" | "wav" | "ogg" | "m4a") => regular::FILE_AUDIO,
+            Some("pdf") => regular::FILE_PDF,
+            Some("zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar") => regular::FILE_ARCHIVE,
+            Some("sh" | "bash" | "zsh" | "fish") => regular::TERMINAL,
+            Some("c") => regular::FILE_C,
+            Some("cpp" | "h" | "hpp") => regular::FILE_CPP,
+            Some("html") => regular::FILE_HTML,
+            Some("css") => regular::FILE_CSS,
+            None => regular::FOLDER,
+            _ => regular::FILE,
         }
     }
 

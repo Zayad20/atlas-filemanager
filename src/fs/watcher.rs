@@ -6,7 +6,7 @@ use std::time::Duration;
 
 pub struct WatcherHandle {
     // Holding the debouncer keeps it alive; dropping stops watching
-    _debouncer: notify_debouncer_mini::Debouncer<notify::INotifyWatcher>,
+    _debouncer: notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>,
     pub watched_path: PathBuf,
 }
 

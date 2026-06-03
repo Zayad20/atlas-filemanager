@@ -1,0 +1,8 @@
+//! rclone-backed implementation of the cloud provider abstraction.
+
+pub mod oauth;
+pub mod provider;
+pub mod rc_api;
+pub mod sidecar;
+
+pub use provider::RcloneProvider;

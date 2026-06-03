@@ -9,8 +9,6 @@ use crate::state::settings::ViewMode;
 use crate::state::tab::TabState;
 use crate::ui::drag_feedback::paint_drag_hover_confirmation;
 use crate::util::display::{format_date, format_size};
-use crate::util::extensions::ExtensionRegistry;
-
 use crate::ui::file_grid::show_file_grid;
 use crate::ui::file_list_compact::show_file_list_compact;
 use crate::ui::file_miller::show_file_miller;
@@ -83,7 +81,7 @@ pub fn show_file_list(
     }
 
     let row_height = 20.0;
-    let visible_indices: Vec<usize> = tab_state.visible_indices().to_vec();
+    let visible_indices = tab_state.visible_indices_shared();
     tab_state.grid_columns = 1;
     let scroll_active =
         drag_navigation_active(ui.ctx(), dragged_files) || rubber_band_active(tab_state);
@@ -172,13 +170,13 @@ pub fn show_file_list(
 
                 // Icon column
                 row.col(|ui| {
-                    let icon = ExtensionRegistry::icon(entry.extension.as_deref());
-                    let color = if entry.kind == FileKind::Dir {
-                        crate::util::display::FOLDER_ICON_COLOR
-                    } else {
-                        ExtensionRegistry::color(entry.extension.as_deref())
-                    };
-                    ui.colored_label(color, icon);
+                    let is_dir = entry.kind == FileKind::Dir;
+                    crate::ui::os_icon::show_file_icon(
+                        ui,
+                        entry.extension.as_deref(),
+                        is_dir,
+                        16.0,
+                    );
                     cell_responses.push(ui.interact(
                         ui.max_rect(),
                         ui.id().with(("details_cell", tile_id, idx, 0)),

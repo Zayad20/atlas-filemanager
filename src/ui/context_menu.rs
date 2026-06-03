@@ -1,6 +1,24 @@
+use crate::app::ext::ExtAction;
+use crate::ext::manifest::ExtCommand;
 use crate::input::action::Action;
 use egui_tiles::TileId;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+/// Per-frame snapshot of enabled declarative ext commands, published by the
+/// layout (which has `AppState`) so the context menu can read it without the
+/// registry being threaded through every render signature.
+#[derive(Clone, Default)]
+pub struct FrameExtCommands(pub Arc<Vec<(String, ExtCommand)>>);
+
+fn frame_commands_id() -> egui::Id {
+    egui::Id::new("frame_ext_commands")
+}
+
+/// Called once per frame from the layout.
+pub fn publish_ext_commands(ctx: &egui::Context, commands: Vec<(String, ExtCommand)>) {
+    ctx.data_mut(|d| d.insert_temp(frame_commands_id(), FrameExtCommands(Arc::new(commands))));
+}
 
 pub fn show_context_menu(
     ui: &mut egui::Ui,
@@ -62,6 +80,61 @@ pub fn show_context_menu(
         }
     }
     ui.data_mut(|data| data.insert_temp(selected_id, selected));
+
+    show_ext_commands(ui, paths, &query, actions);
+}
+
+/// Append extension-contributed commands that apply to `paths`.
+fn show_ext_commands(ui: &mut egui::Ui, paths: &[PathBuf], query: &str, actions: &mut Vec<Action>) {
+    if paths.is_empty() {
+        return;
+    }
+    let snapshot = ui
+        .ctx()
+        .data(|d| d.get_temp::<FrameExtCommands>(frame_commands_id()))
+        .unwrap_or_default();
+    if snapshot.0.is_empty() {
+        return;
+    }
+
+    // Selection descriptors: (extension, is_dir) for every right-clicked path.
+    let selection: Vec<(Option<String>, bool)> = paths
+        .iter()
+        .map(|p| {
+            let ext = p
+                .extension()
+                .map(|e| e.to_string_lossy().to_ascii_lowercase());
+            (ext, p.is_dir())
+        })
+        .collect();
+    let query = query.to_lowercase();
+
+    let mut first = true;
+    for (ext_id, cmd) in snapshot.0.iter() {
+        let applies = selection
+            .iter()
+            .all(|(e, is_dir)| cmd.accepts.matches(e.as_deref(), *is_dir));
+        if !applies {
+            continue;
+        }
+        if !cmd.requires.iter().all(|b| crate::ext::registry::has_binary(b)) {
+            continue;
+        }
+        if !query.is_empty() && !cmd.title.to_lowercase().contains(&query) {
+            continue;
+        }
+        if first {
+            ui.separator();
+            first = false;
+        }
+        if ui.selectable_label(false, &cmd.title).clicked() {
+            actions.push(Action::Ext(ExtAction::Run {
+                ext_id: ext_id.clone(),
+                cmd_id: cmd.id.clone(),
+            }));
+            ui.close();
+        }
+    }
 }
 
 fn menu_items(pane_path: &Path, paths: &[PathBuf]) -> Vec<(&'static str, Option<Action>)> {
