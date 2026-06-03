@@ -18,8 +18,8 @@ use crate::state::tab::LoadState;
 use crate::util::display::{display_name, format_date, format_size};
 use gpui::prelude::*;
 use gpui::{
-    div, hsla, px, uniform_list, AnyElement, Context, Div, Entity, Hsla, SharedString, Stateful,
-    Window,
+    div, hsla, img, px, uniform_list, AnyElement, Context, Div, Entity, Hsla, SharedString,
+    Stateful, Window,
 };
 use gpui_component::{
     h_flex,
@@ -661,6 +661,14 @@ fn render_row(
         .into_any_element()
 }
 
+/// Extensions rendered as inline image thumbnails in the grid.
+fn is_image_ext(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "tif" | "tiff"
+    )
+}
+
 /// One grid cell: big icon + truncated name, fixed to the thumbnail size.
 /// (Thumbnails for image files land in the next step; for now a scaled glyph.)
 #[allow(clippy::too_many_arguments)]
@@ -680,6 +688,9 @@ fn render_cell(
     } else {
         "📄"
     };
+    let is_image = matches!(entry.kind, FileKind::File)
+        && entry.extension.as_deref().map(is_image_ext).unwrap_or(false);
+    let path = entry.path.clone();
     let name = entry.name.clone();
     let v = view.clone();
     v_flex()
@@ -692,15 +703,20 @@ fn render_cell(
         .cursor_pointer()
         .when(selected, |s| s.bg(accent).text_color(accent_fg))
         .when(!selected, |s| s.hover(|h| h.bg(hover)))
-        .child(
-            div()
+        .child({
+            let area = div()
                 .h(px(thumb * 0.62))
                 .flex()
                 .items_center()
-                .justify_center()
-                .text_size(px(thumb * 0.5))
-                .child(icon),
-        )
+                .justify_center();
+            // gpui decodes + caches the image by path; the cell constrains display
+            // size. (Full-res decode for now — real downscaled thumbnails later.)
+            if is_image {
+                area.child(img(path).max_h(px(thumb * 0.6)).max_w(px(thumb)).rounded_sm())
+            } else {
+                area.text_size(px(thumb * 0.5)).child(icon)
+            }
+        })
         .child(div().w_full().text_center().text_xs().truncate().child(name))
         .on_click(move |ev, _window, cx| {
             let m = ev.modifiers();
