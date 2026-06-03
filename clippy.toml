@@ -1,0 +1,24 @@
+# Clippy configuration for Atlas.
+#
+# Synchronous filesystem calls are banned in app code because blocking I/O on
+# the GPUI foreground thread stalls rendering. Use `tokio::fs` or
+# `spawn_blocking` instead.
+#
+# Legitimate exceptions (e.g. one-shot CLI tools, build scripts) should carry
+# `#[allow(clippy::disallowed_methods)]` with a `// reason: …` comment.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+disallowed-methods = [
+    { path = "std::fs::read",           reason = "use tokio::fs or spawn_blocking to avoid UI stutter" },
+    { path = "std::fs::write",          reason = "use tokio::fs or spawn_blocking to avoid UI stutter" },
+    { path = "std::fs::read_to_string", reason = "use tokio::fs or spawn_blocking to avoid UI stutter" },
+    { path = "std::fs::read_dir",       reason = "use tokio::fs or spawn_blocking to avoid UI stutter" },
+    { path = "std::fs::metadata",       reason = "use tokio::fs or spawn_blocking to avoid UI stutter" },
+    { path = "std::fs::copy",           reason = "use tokio::fs or spawn_blocking to avoid UI stutter" },
+    { path = "std::fs::rename",         reason = "use tokio::fs or spawn_blocking to avoid UI stutter" },
+    { path = "std::fs::remove_file",    reason = "use tokio::fs or spawn_blocking to avoid UI stutter" },
+    { path = "std::fs::remove_dir_all", reason = "use tokio::fs or spawn_blocking to avoid UI stutter" },
+    { path = "std::fs::create_dir_all", reason = "use tokio::fs or spawn_blocking to avoid UI stutter" },
+]

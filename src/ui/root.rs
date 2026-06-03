@@ -13,6 +13,7 @@ use crate::input::action::Action;
 use crate::state::file_entry::{FileEntry, FileKind, SortColumn, SortDir};
 use crate::state::layout_tree::{Container, LinearDir, Tile};
 use crate::state::pane::TabId;
+use crate::state::settings::ViewMode;
 use crate::state::tab::LoadState;
 use crate::util::display::{display_name, format_date, format_size};
 use gpui::prelude::*;
@@ -161,9 +162,18 @@ impl Render for App {
                     .px_3()
                     .py_2()
                     .gap_2()
+                    .items_center()
                     .bg(title_bar)
                     .child("Atlas")
-                    .child(div().text_color(muted).child(path)),
+                    .child(div().flex_1().text_color(muted).truncate().child(path))
+                    .child(toolbar_btn("vm-details".into(), "≣", cx.entity(), |this, cx| {
+                        this.process_actions(vec![Action::SetViewMode(ViewMode::Details)]);
+                        cx.notify();
+                    }))
+                    .child(toolbar_btn("vm-grid".into(), "▦", cx.entity(), |this, cx| {
+                        this.process_actions(vec![Action::SetViewMode(ViewMode::Grid)]);
+                        cx.notify();
+                    })),
             )
             .child(
                 h_flex()
@@ -189,7 +199,7 @@ impl App {
     /// Recursively render a tile (pane / tabs / split) into an element.
     fn render_tile(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         match self.state.pane_tree.tiles.get(id) {
-            Some(Tile::Pane(_)) => self.render_pane(id, cx),
+            Some(Tile::Pane(_)) => self.render_pane(id, window, cx),
             Some(Tile::Container(Container::Tabs(tabs))) => {
                 let children = tabs.children.clone();
                 let active = tabs.active;
@@ -328,7 +338,19 @@ impl App {
     /// The list closure reads live state (`view.read`) and formats only the visible
     /// range — no per-frame allocation over the full directory, so 100k-entry dirs
     /// stay smooth.
-    fn render_pane(&mut self, pane_id: TabId, cx: &mut Context<Self>) -> AnyElement {
+    fn render_pane(
+        &mut self,
+        pane_id: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let view_mode = self
+            .tab_data_for(pane_id)
+            .map(|t| t.view_mode.clone())
+            .unwrap_or_default();
+        if matches!(view_mode, ViewMode::Grid) {
+            return self.render_grid(pane_id, window, cx);
+        }
         let view = cx.entity();
         let focused = self.state.focused_tile == pane_id;
         let (accent, accent_fg, hover, muted, header_bg) = {
@@ -427,6 +449,103 @@ impl App {
             .child(div().flex_1().min_h(px(0.)).child(inner))
             .into_any_element()
     }
+
+    /// Icons (Grid) view: a virtualized grid of fixed-size cells. Column count is
+    /// derived from the viewport width and the per-tab thumbnail size, so it stays
+    /// virtualized (only visible rows built) for huge directories.
+    fn render_grid(
+        &mut self,
+        pane_id: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let view = cx.entity();
+        let focused = self.state.focused_tile == pane_id;
+        let (accent, accent_fg, hover, muted) = {
+            let t = cx.theme();
+            (t.accent, t.accent_foreground, t.list_active, t.muted_foreground)
+        };
+        let thumb = self
+            .tab_data_for(pane_id)
+            .map(|t| t.thumbnail_size)
+            .unwrap_or(128.0);
+        let count = self
+            .state
+            .tab_states
+            .get_mut(&pane_id)
+            .map(|ts| ts.visible_indices().len())
+            .unwrap_or(0);
+        let cell_w = thumb + 16.0;
+        let avail = (f32::from(window.viewport_size().width) - 232.0).max(cell_w);
+        let cols = ((avail / cell_w).floor() as usize).max(1);
+        let row_count = count.div_ceil(cols);
+
+        let inner = if count == 0 {
+            let msg = match self.state.tab_states.get(&pane_id).map(|t| &t.load_state) {
+                Some(LoadState::Loading) => "Cargando…",
+                Some(LoadState::Error(_)) => "No se pudo leer la carpeta",
+                _ => "Carpeta vacía",
+            };
+            v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .text_color(muted)
+                .child(msg)
+                .into_any_element()
+        } else {
+            let scroll = self.scroll_handle_for(pane_id);
+            let list_view = view.clone();
+            uniform_list(
+                SharedString::from(format!("grid-{}", pane_id.0)),
+                row_count,
+                move |range, _window, cx| {
+                    let app = list_view.read(cx);
+                    let Some(ts) = app.state.tab_states.get(&pane_id) else {
+                        return Vec::new();
+                    };
+                    range
+                        .map(|row| {
+                            let mut cells: Vec<AnyElement> = Vec::with_capacity(cols);
+                            for c in 0..cols {
+                                let vi = row * cols + c;
+                                let Some(&entry_idx) = ts.visible.get(vi) else {
+                                    break;
+                                };
+                                let Some(entry) = ts.entries.get(entry_idx) else {
+                                    continue;
+                                };
+                                let selected = ts.selection.selected.contains(&entry_idx);
+                                cells.push(render_cell(
+                                    entry, entry_idx, selected, pane_id, &list_view, thumb, accent,
+                                    accent_fg, hover,
+                                ));
+                            }
+                            h_flex().w_full().gap_2().px_2().py_1().children(cells)
+                        })
+                        .collect::<Vec<_>>()
+                },
+            )
+            .track_scroll(&scroll)
+            .h_full()
+            .into_any_element()
+        };
+
+        let focus_view = view.clone();
+        v_flex()
+            .id(SharedString::from(format!("pane-{}", pane_id.0)))
+            .size_full()
+            .border_2()
+            .border_color(if focused { accent } else { hsla(0., 0., 0., 0.) })
+            .on_click(move |_ev, _window, cx| {
+                focus_view.update(cx, |this, cx| {
+                    this.state.focused_tile = pane_id;
+                    cx.notify();
+                });
+            })
+            .child(inner)
+            .into_any_element()
+    }
 }
 
 /// A clickable column header that toggles the sort column/direction.
@@ -517,6 +636,72 @@ fn render_row(
                 .when(!selected, |s| s.text_color(muted))
                 .child(date),
         )
+        .on_click(move |ev, _window, cx| {
+            let m = ev.modifiers();
+            let shift = m.shift;
+            let ctrl = m.control || m.platform;
+            let activate = ev.click_count() >= 2;
+            v.update(cx, |this, cx| {
+                if activate {
+                    this.process_actions(vec![Action::Activate {
+                        tile: pane_id,
+                        idx: entry_idx,
+                    }]);
+                } else {
+                    this.process_actions(vec![Action::Select {
+                        tile: pane_id,
+                        idx: entry_idx,
+                        shift,
+                        ctrl,
+                    }]);
+                }
+                cx.notify();
+            });
+        })
+        .into_any_element()
+}
+
+/// One grid cell: big icon + truncated name, fixed to the thumbnail size.
+/// (Thumbnails for image files land in the next step; for now a scaled glyph.)
+#[allow(clippy::too_many_arguments)]
+fn render_cell(
+    entry: &FileEntry,
+    entry_idx: usize,
+    selected: bool,
+    pane_id: TabId,
+    view: &Entity<App>,
+    thumb: f32,
+    accent: Hsla,
+    accent_fg: Hsla,
+    hover: Hsla,
+) -> AnyElement {
+    let icon = if matches!(entry.kind, FileKind::Dir) {
+        "📁"
+    } else {
+        "📄"
+    };
+    let name = entry.name.clone();
+    let v = view.clone();
+    v_flex()
+        .id(SharedString::from(format!("cell-{}-{}", pane_id.0, entry_idx)))
+        .w(px(thumb))
+        .p_1()
+        .gap_1()
+        .items_center()
+        .rounded_md()
+        .cursor_pointer()
+        .when(selected, |s| s.bg(accent).text_color(accent_fg))
+        .when(!selected, |s| s.hover(|h| h.bg(hover)))
+        .child(
+            div()
+                .h(px(thumb * 0.62))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(thumb * 0.5))
+                .child(icon),
+        )
+        .child(div().w_full().text_center().text_xs().truncate().child(name))
         .on_click(move |ev, _window, cx| {
             let m = ev.modifiers();
             let shift = m.shift;

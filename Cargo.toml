@@ -109,6 +109,13 @@ objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSString", "NSData"] }
 objc2-app-kit = { version = "0.2", features = ["NSWorkspace", "NSImage"] }
 
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+
 [[bin]]
 name = "spike"
 path = "src/bin/spike.rs"

@@ -1,0 +1,8 @@
+# Formatting rules for Atlas.
+# `imports_granularity` and `group_imports` are nightly-only; stable rustfmt
+# enforces only `edition` / `reorder_imports`. Kept here so nightly `cargo fmt`
+# reorganizes imports consistently.
+edition = "2021"
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"
+reorder_imports = true
