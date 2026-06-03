@@ -1,28 +1,7 @@
-pub mod anim;
-pub mod batch_rename;
-pub mod breadcrumb;
-#[cfg(feature = "cloud")]
-pub mod cloud;
-pub mod command_palette;
-pub mod context_menu;
-pub mod drag_feedback;
-pub mod extensions;
-pub mod drop_shelf;
-pub mod file_grid;
-pub mod file_list;
-pub mod file_list_compact;
-pub mod file_miller;
-pub mod file_view_common;
-pub mod view_layout;
-pub mod fuzzy_overlay;
-pub mod goto_bar;
-pub mod inspector;
-pub mod layout;
-pub mod paste_conflict;
-pub mod settings_window;
-pub mod sidebar;
-pub mod status_bar;
-pub mod tabs_popup;
-pub mod os_icon;
-pub mod thumbnail_loader;
-pub mod analyzer;
+//! gpui UI layer.
+//!
+//! The old egui modules (file_list, layout, sidebar, inspector, …) remain on disk
+//! as a porting reference but are intentionally NOT declared here, so they are
+//! excluded from compilation during the migration. They are ported phase by phase
+//! into gpui views and re-added below as they land.
+pub mod root;

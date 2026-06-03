@@ -3,15 +3,14 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use gpui::{Context, Window};
+use smol::Timer;
+
 use crate::fs::list::list_dir;
-use crate::fs::preview::PreviewResult;
-use crate::input::action::Action;
-use crate::input::shortcuts::handle_global_shortcuts;
 use crate::state::app_state::{AppState, BgResult};
 use crate::state::pane::TabData;
 use crate::state::preview_cache::{ImageData, PreviewRequest};
 use crate::state::tab::LoadState;
-use crate::ui::layout::show_layout;
 use crate::util::config::{
     load_profiles, load_session, load_settings, save_profiles, save_session, save_settings,
 };
@@ -33,10 +32,6 @@ pub struct App {
     pub(crate) tx: flume::Sender<BgResult>,
     pub(crate) rx: flume::Receiver<BgResult>,
     pub(crate) rt: tokio::runtime::Handle,
-    /// Last theme/font applied to the egui context, to avoid rebuilding the
-    /// whole Style every frame (which clones a large struct needlessly).
-    pub(crate) applied_theme: Option<crate::state::settings::Theme>,
-    pub(crate) applied_font_size: f32,
     pub(crate) pending_preview: Option<PendingPreview>,
     pub(crate) pending_native_drag: Option<Vec<PathBuf>>,
     /// Channel to the SQLite tag-db worker (writes fire-and-forget, reads reply via `tx`).
@@ -47,6 +42,10 @@ pub struct App {
 }
 
 const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(90);
+/// How often the foreground loop drains the background-result channel. ~60 Hz so
+/// async dir/preview results land promptly; a repaint is requested only when the
+/// drain actually changed state (see `drain_bg_results`).
+const DRAIN_INTERVAL: Duration = Duration::from_millis(16);
 
 pub(crate) struct PendingPreview {
     pub(crate) tab: TileId,
@@ -55,27 +54,14 @@ pub(crate) struct PendingPreview {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, rt: tokio::runtime::Handle) -> Self {
-        egui_extras::install_image_loaders(&cc.egui_ctx);
-        crate::ui::thumbnail_loader::install(&cc.egui_ctx);
-        crate::ui::os_icon::install(&cc.egui_ctx);
-        let installed_fonts = crate::util::fonts::install(&cc.egui_ctx);
-        tracing::info!(
-            sf_regular = installed_fonts.sf_regular,
-            sf_medium = installed_fonts.sf_medium,
-            sf_semibold = installed_fonts.sf_semibold,
-            sf_mono = installed_fonts.sf_mono,
-            "installed UI fonts"
-        );
-        #[cfg(target_os = "linux")]
-        crate::util::linux_blur::request_blur(cc);
-        let settings = cc.storage.map(load_settings).unwrap_or_default();
-        let profiles = cc.storage.map(load_profiles).unwrap_or_default();
+    pub fn new(rt: tokio::runtime::Handle, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let settings = load_settings();
+        let profiles = load_profiles();
 
         let (tx, rx) = flume::unbounded();
 
         // Restore previous session tree if available, else create fresh state
-        let restored_tree = cc.storage.and_then(load_session);
+        let restored_tree = load_session();
         let (mut state, _initial_tile_id) = if let Some(tree) = restored_tree {
             let (s, id) = AppState::from_tree(tree, settings);
             // Discard a corrupted/empty session and start fresh
@@ -158,14 +144,9 @@ impl App {
         }
 
         // Extensions: seed bundled ones, load enabled overrides, build the registry.
-        let _ = crate::ext::install::ensure_bundled(
-            "file-tools",
-            crate::app::ext::FILE_TOOLS_MANIFEST,
-        );
-        state.ext.enabled = cc
-            .storage
-            .map(crate::util::config::load_ext_enabled)
-            .unwrap_or_default();
+        let _ =
+            crate::ext::install::ensure_bundled("file-tools", crate::app::ext::FILE_TOOLS_MANIFEST);
+        state.ext.enabled = crate::util::config::load_ext_enabled();
         state.ext.reload();
 
         // Spawn the cloud worker (rclone sidecar is started lazily on first use)
@@ -174,10 +155,7 @@ impl App {
         let cloud_tx = crate::cloud::spawn(&rt, tx.clone());
         #[cfg(feature = "cloud")]
         {
-            state.cloud.remotes = cc
-                .storage
-                .map(crate::util::config::load_cloud_remotes)
-                .unwrap_or_default();
+            state.cloud.remotes = crate::util::config::load_cloud_remotes();
             // Auto-mount remotes the user flagged. Not added to `navigate_on_mount`,
             // so they mount silently without hijacking the startup tab.
             for r in &state.cloud.remotes {
@@ -187,13 +165,28 @@ impl App {
             }
         }
 
+        // Drain background results on a ~60 Hz foreground loop, repainting only
+        // when the drain actually changed state. Breaks when the entity is gone.
+        cx.spawn(async move |this, cx| loop {
+            Timer::after(DRAIN_INTERVAL).await;
+            let alive = this
+                .update(cx, |app, cx| {
+                    if app.drain_bg_results() {
+                        cx.notify();
+                    }
+                })
+                .is_ok();
+            if !alive {
+                break;
+            }
+        })
+        .detach();
+
         Self {
             state,
             tx,
             rx,
             rt,
-            applied_theme: None,
-            applied_font_size: 0.0,
             pending_preview: None,
             pending_native_drag: None,
             tag_db_tx,
@@ -202,8 +195,11 @@ impl App {
         }
     }
 
-    fn drain_bg_results(&mut self, ctx: &egui::Context) {
+    /// Apply every queued background result to state. Returns `true` if at least
+    /// one result was processed (i.e. a repaint is warranted).
+    pub(crate) fn drain_bg_results(&mut self) -> bool {
         let results: Vec<BgResult> = self.rx.try_iter().collect();
+        let changed = !results.is_empty();
         for result in results {
             match result {
                 BgResult::DirListed {
@@ -286,9 +282,7 @@ impl App {
                         .map(|(&id, _)| id)
                         .collect();
                     for tile_id in to_refresh {
-                        if let Some(Tile::Pane(p)) =
-                            self.state.pane_tree.tiles.get(tile_id)
-                        {
+                        if let Some(Tile::Pane(p)) = self.state.pane_tree.tiles.get(tile_id) {
                             let path = p.path.clone();
                             let col = p.sort_col.clone();
                             let dir = p.sort_dir.clone();
@@ -296,11 +290,7 @@ impl App {
                         }
                     }
                 }
-                BgResult::PreviewReady {
-                    tab,
-                    path,
-                    mut result,
-                } => {
+                BgResult::PreviewReady { tab, path, result } => {
                     if self.state.preview.paths.get(&tab) != Some(&path) {
                         continue;
                     }
@@ -326,14 +316,7 @@ impl App {
                     {
                         continue;
                     }
-                    multi.images.push((
-                        path,
-                        ImageData {
-                            rgba,
-                            width,
-                            height,
-                        },
-                    ));
+                    multi.images.push((path, ImageData { rgba, width, height }));
                 }
                 BgResult::OpComplete {
                     id,
@@ -395,6 +378,7 @@ impl App {
                 other => self.handle_cloud_bg(other),
             }
         }
+        changed
     }
 
     fn tab_data_for(&self, tab_id: TileId) -> Option<&TabData> {
@@ -403,221 +387,19 @@ impl App {
             _ => None,
         }
     }
-}
 
-impl eframe::App for App {
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        // Matches the window: transparent framebuffer only where the window itself is
-        // transparent (Linux). Elsewhere paint opaque to avoid a see-through background.
-        #[cfg(target_os = "linux")]
-        {
-            egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            _visuals.window_fill().to_normalized_gamma_f32()
-        }
-    }
-
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        // Only touch the egui style when theme/font actually changed — otherwise we
-        // clone the whole Style every frame for nothing.
-        let theme = self.state.profiles.active().theme.clone();
-        if self.applied_theme.as_ref() != Some(&theme) {
-            crate::util::themes::apply_theme(ctx, &theme);
-            self.applied_theme = Some(theme);
-        }
-        let font_size = self.state.settings.font_size;
-        if (self.applied_font_size - font_size).abs() > f32::EPSILON {
-            apply_font_size(ctx, font_size);
-            self.applied_font_size = font_size;
-        }
-        // Sanitize focused_tile so all shortcuts and UI operate on a valid pane
-        if !self.state.tab_states.contains_key(&self.state.focused_tile) {
-            if let Some(first) = self.state.all_pane_tile_ids().first().copied() {
-                self.state.focused_tile = first;
-            }
-        }
-
-        self.drain_bg_results(ctx);
-        self.sync_selection_tags();
-
-        // Tick nucleo and update results when goto bar is open
-        if self.state.overlay.show_goto_bar {
-            self.state
-                .nucleo
-                .set_pattern(&self.state.overlay.goto_state.query);
-            self.state.nucleo.tick();
-            self.state.nucleo_results = self.state.nucleo.results(200);
-            let current = self.state.active_tab_data().map(|tab| tab.path.clone());
-            crate::fs::index::prioritize_folders(
-                &mut self.state.nucleo_results,
-                current.as_deref(),
-            );
-            ctx.request_repaint();
-        }
-
-        let mut pointer_actions = Vec::new();
-        crate::ui::file_view_common::handle_pointer_events(
-            ctx,
-            &mut self.state.tab_states,
-            &mut pointer_actions,
-        );
-        self.process_actions(pointer_actions);
-
-        let mut actions = Vec::new();
-        handle_global_shortcuts(ctx, &self.state, &mut actions);
-
-        show_layout(ctx, &mut self.state, &mut actions);
-        // egui_tiles may have restructured the tree during show_layout (tab
-        // drag-to-split moves/prunes tiles). Reconcile side-tables and focus
-        // before any action runs against a stale tile.
-        self.reconcile_tree_state();
-        // egui_tiles relocates/prunes tiles at the very end of its own `ui` pass when a
-        // tab drag is dropped, without emitting any Action. Without a follow-up repaint
-        // the restructured layout would not paint until the next input event, leaving the
-        // new pane blank. `dragged_id` is also set on the frame the drag stops, so this
-        // keeps painting through the drag and forces the settling frame to render.
-        if self.state.pane_tree.dragged_id(ctx).is_some() {
-            ctx.request_repaint();
-        }
-        self.tick_drag_hover(ctx, &mut actions);
-        if self.state.drag_drop.dragged_files.is_some()
-            && ctx.input(|input| input.pointer.any_down() && !input.pointer.has_pointer())
-        {
-            let paths = self
-                .state
-                .drag_drop
-                .dragged_files
-                .as_ref()
-                .map(|drag| drag.paths.clone())
-                .unwrap_or_default();
-            if crate::util::native_drag::start(frame, paths) {
-                self.state.drag_drop.dragged_files = None;
-            }
-        }
-
-        let external_paths: Vec<PathBuf> = ctx.input(|input| {
-            input
-                .raw
-                .dropped_files
-                .iter()
-                .filter_map(|file| file.path.clone())
-                .collect()
-        });
-        if !external_paths.is_empty() {
-            // Folders dropped on the tab strip open as new tabs instead of being copied.
-            let strip_dirs: Vec<PathBuf> = match self.state.drag_drop.tab_strip_drop.take() {
-                Some(container) => external_paths
-                    .iter()
-                    .filter(|p| p.is_dir())
-                    .map(|path| (container, path.clone()))
-                    .map(|(pane, path)| {
-                        actions.push(Action::NewTabWithPath {
-                            pane,
-                            path: path.clone(),
-                        });
-                        path
-                    })
-                    .collect(),
-                None => Vec::new(),
-            };
-            // Anything not opened as a tab falls back to a normal copy into the drop target.
-            let remaining: Vec<PathBuf> = external_paths
-                .into_iter()
-                .filter(|p| !strip_dirs.contains(p))
-                .collect();
-            if !remaining.is_empty() {
-                let target = self
-                    .state
-                    .drag_drop
-                    .external_drop_target
-                    .take()
-                    .or_else(|| {
-                        self.state.active_tab_data().map(|pane| {
-                            crate::state::drag::ExternalDropTarget {
-                                tab: self.state.focused_tile,
-                                dest: pane.path.clone(),
-                            }
-                        })
-                    });
-                if let Some(target) = target {
-                    self.state.focused_tile = target.tab;
-                    actions.push(Action::CopyTo {
-                        paths: remaining,
-                        dest: target.dest,
-                    });
-                }
-            }
-        } else if ctx.input(|input| input.raw.hovered_files.is_empty()) {
-            self.state.drag_drop.external_drop_target = None;
-        }
-
-        let pointer_released = ctx.input(|input| input.pointer.any_released());
-        let internal_drop = actions
-            .iter()
-            .any(|action| matches!(action, Action::Move { .. }));
-        let had_internal_drag = self.state.drag_drop.dragged_files.is_some();
-        if pointer_released {
-            self.state.drag_drop.dragged_files = None;
-            // A sidebar item dropped over the view opens in a new tab in the active
-            // tabs container (a plain click never starts a drag, so this is safe).
-            if let Some(item) = self.state.drag_drop.sidebar_drag.take() {
-                if let Some(pane) = self
-                    .state
-                    .find_tabs_container(self.state.focused_tile)
-                    .or_else(|| self.state.find_any_tabs_container())
-                {
-                    match item {
-                        crate::state::drag::SidebarDragItem::Path(path) => {
-                            actions.push(Action::NewTabWithPath { pane, path });
-                        }
-                        crate::state::drag::SidebarDragItem::Tag(tag) => {
-                            actions.push(Action::OpenTagResults { pane, tag });
-                        }
-                    }
-                }
-            }
-        }
-
-        let had_actions = !actions.is_empty();
-        self.process_actions(actions);
-        let mut shelf_actions = Vec::new();
-        crate::ui::drop_shelf::show_drop_shelf(
-            ctx,
-            &mut self.state.drag_drop.drop_shelf_open,
-            &mut self.state.drag_drop.drop_shelf_files,
-            &mut self.pending_native_drag,
-            &mut shelf_actions,
-        );
-        if let Some(paths) = self.pending_native_drag.take() {
-            crate::util::native_drag::start(frame, paths);
-        }
-        self.process_actions(shelf_actions);
-        if pointer_released && had_internal_drag && !internal_drop {
-            self.cancel_spring_navigation();
-        }
-        self.sync_active_preview(ctx);
-
-        // Actions mutate state after the frame was built (e.g. selection). Force one more
-        // frame so the visual result shows immediately instead of waiting for the next
-        // input event or egui going idle — this is what makes rapid clicking feel instant.
-        if had_actions || self.state.any_loading() {
-            ctx.request_repaint();
-        }
-    }
-
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        save_settings(storage, &self.state.settings);
-        save_session(storage, &self.state.pane_tree);
-        save_profiles(storage, &self.state.profiles);
-        crate::util::config::save_ext_enabled(storage, &self.state.ext.enabled);
+    /// Persist all UI state to disk. Called on window close.
+    pub fn save(&self) {
+        save_settings(&self.state.settings);
+        save_session(&self.state.pane_tree);
+        save_profiles(&self.state.profiles);
+        crate::util::config::save_ext_enabled(&self.state.ext.enabled);
         #[cfg(feature = "cloud")]
-        crate::util::config::save_cloud_remotes(storage, &self.state.cloud.remotes);
+        crate::util::config::save_cloud_remotes(&self.state.cloud.remotes);
     }
 
     #[cfg(feature = "cloud")]
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    pub fn on_exit(&mut self) {
         self.cleanup_cloud_on_exit();
     }
 }
@@ -648,16 +430,4 @@ fn collect_tag_migration(
         }
     }
     out
-}
-
-fn apply_font_size(ctx: &egui::Context, size: f32) {
-    ctx.style_mut(|style| {
-        for (text_style, font_id) in &mut style.text_styles {
-            font_id.size = match text_style {
-                egui::TextStyle::Small => size - 2.0,
-                egui::TextStyle::Heading => size + 5.0,
-                _ => size,
-            };
-        }
-    });
 }

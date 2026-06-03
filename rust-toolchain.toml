@@ -1,0 +1,5 @@
+# Pinned to match zed/gpui (migration spike). gpui uses `hint::cold_path`,
+# stable as of 1.95.0 — building on older stable fails with E0658.
+[toolchain]
+channel = "1.95.0"
+profile = "minimal"

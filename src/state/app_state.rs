@@ -137,7 +137,7 @@ pub struct AppState {
     // Phase 7 — filesystem watchers keyed by Pane leaf TileId
     pub watchers: HashMap<TileId, crate::fs::watcher::WatcherHandle>,
     pub batch_rename: Option<crate::state::batch_rename::BatchRenameState>,
-    pub tabs_popup: crate::ui::tabs_popup::TabsPopupState,
+    pub tabs_popup: crate::state::overlay::TabsPopupState,
     pub drag_drop: crate::state::drag::DragDropState,
     pub profiles: ProfileManager,
     pub profile_ui: ProfileUiState,
@@ -364,7 +364,7 @@ impl AppState {
             preview: crate::state::preview_cache::PreviewState::default(),
             watchers: HashMap::new(),
             batch_rename: None,
-            tabs_popup: crate::ui::tabs_popup::TabsPopupState::default(),
+            tabs_popup: crate::state::overlay::TabsPopupState::default(),
             drag_drop: crate::state::drag::DragDropState::default(),
             profiles: ProfileManager::default(),
             profile_ui: ProfileUiState::default(),

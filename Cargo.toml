@@ -19,9 +19,6 @@ default = ["cloud"]
 # without the heavier HTTP/TLS/crypto deps (`cargo build --no-default-features`).
 # The rclone binary itself is NOT bundled — it is downloaded on demand at runtime.
 cloud = ["dep:reqwest", "dep:async-trait", "dep:sha2", "dep:futures-util"]
-# Phase 1 viability spike: pulls gpui + gpui-component for `src/bin/spike.rs`.
-# Off by default so the egui app builds without the heavy gpui git deps.
-spike = ["dep:gpui", "dep:gpui_platform", "dep:gpui-component", "dep:gpui-component-assets"]
 
 [dependencies]
 eframe = { version = "0.33", default-features = false, features = [
@@ -33,23 +30,25 @@ egui_tiles = "0.14"
 egui_commonmark = "0.22"
 egui-phosphor = "=0.11.0"
 
-# --- gpui migration spike (optional, feature = "spike") -----------------------
+# --- gpui (renderer) ----------------------------------------------------------
 # gpui MUST be declared with the SAME source spec as gpui-component's transitive
 # dep (bare git, no `rev`), or cargo treats `?rev=…` and the bare source as two
 # distinct packages → two `App` types that don't unify. The commit is pinned by
 # Cargo.lock (currently ade2b21); commit the lock and don't `cargo update` blindly.
-gpui = { git = "https://github.com/zed-industries/zed", optional = true }
+gpui = { git = "https://github.com/zed-industries/zed" }
 # Platform layer for gpui: `gpui_platform::application()` is the official entry
 # point in this rev (replaces `Application::new()`). Same bare-git zed source +
 # the platform features gpui-component itself enables, so cargo unifies the rev.
-gpui_platform = { git = "https://github.com/zed-industries/zed", optional = true, features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "b2472cd798422b05e2448d07aaab1550c21155f7", optional = true }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "b2472cd798422b05e2448d07aaab1550c21155f7" }
 # Default icon/asset pack from the gpui-component repo (crates/assets), pinned to
 # the SAME rev so the asset paths match the widget set.
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "b2472cd798422b05e2448d07aaab1550c21155f7", optional = true }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "b2472cd798422b05e2448d07aaab1550c21155f7" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "fs", "io-util", "sync", "macros", "time", "process"] }
 flume = "0.11"
+# gpui's async executor uses smol; `smol::Timer` drives the BgResult drain loop.
+smol = "2"
 rayon = "1"
 nucleo = "0.5"
 notify = "6"
