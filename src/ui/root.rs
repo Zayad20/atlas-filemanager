@@ -13,6 +13,7 @@ use crate::input::action::Action;
 use crate::state::file_entry::{FileEntry, FileKind, SortColumn, SortDir};
 use crate::state::layout_tree::{Container, LinearDir, Tile};
 use crate::state::pane::TabId;
+use crate::state::tab::LoadState;
 use crate::util::display::{display_name, format_date, format_size};
 use gpui::prelude::*;
 use gpui::{
@@ -60,6 +61,31 @@ impl Render for App {
             .active_tab_data()
             .map(|t| t.path.display().to_string())
             .unwrap_or_default();
+
+        // Status-bar summary for the focused tab.
+        let status_text = match self.state.active_tab_state() {
+            Some(ts) => match &ts.load_state {
+                LoadState::Loading => "Cargando…".to_string(),
+                LoadState::Error(e) => format!("Error: {e}"),
+                _ => {
+                    let items = ts.entries.len();
+                    let sel = ts.selection.selected.len();
+                    if sel > 0 {
+                        let bytes: u64 = ts
+                            .selection
+                            .selected
+                            .iter()
+                            .filter_map(|&i| ts.entries.get(i))
+                            .filter_map(|e| e.size)
+                            .sum();
+                        format!("{items} elementos · {sel} seleccionados · {}", format_size(bytes))
+                    } else {
+                        format!("{items} elementos")
+                    }
+                }
+            },
+            None => String::new(),
+        };
 
         let body = match self.state.pane_tree.root {
             Some(id) => self.render_tile(id, window, cx),
@@ -154,7 +180,7 @@ impl Render for App {
                     .bg(title_bar)
                     .text_xs()
                     .text_color(muted)
-                    .child("listo"),
+                    .child(status_text),
             )
     }
 }
@@ -342,30 +368,48 @@ impl App {
                     .w(px(150.)),
             );
 
-        let scroll = self.scroll_handle_for(pane_id);
-        let list_view = view.clone();
-        let list = uniform_list(
-            SharedString::from(format!("list-{}", pane_id.0)),
-            count,
-            move |range, _window, cx| {
-                let app = list_view.read(cx);
-                let Some(ts) = app.state.tab_states.get(&pane_id) else {
-                    return Vec::new();
-                };
-                range
-                    .filter_map(|i| {
-                        let entry_idx = *ts.visible.get(i)?;
-                        let entry = ts.entries.get(entry_idx)?;
-                        let selected = ts.selection.selected.contains(&entry_idx);
-                        Some(render_row(
-                            entry, entry_idx, selected, pane_id, &list_view, accent, accent_fg,
-                            hover, muted,
-                        ))
-                    })
-                    .collect::<Vec<_>>()
-            },
-        )
-        .track_scroll(&scroll);
+        // Empty / loading / error placeholder, or the virtualized list.
+        let inner = if count == 0 {
+            let msg = match self.state.tab_states.get(&pane_id).map(|t| &t.load_state) {
+                Some(LoadState::Loading) => "Cargando…",
+                Some(LoadState::Error(_)) => "No se pudo leer la carpeta",
+                _ => "Carpeta vacía",
+            };
+            v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .text_color(muted)
+                .child(msg)
+                .into_any_element()
+        } else {
+            let scroll = self.scroll_handle_for(pane_id);
+            let list_view = view.clone();
+            uniform_list(
+                SharedString::from(format!("list-{}", pane_id.0)),
+                count,
+                move |range, _window, cx| {
+                    let app = list_view.read(cx);
+                    let Some(ts) = app.state.tab_states.get(&pane_id) else {
+                        return Vec::new();
+                    };
+                    range
+                        .filter_map(|i| {
+                            let entry_idx = *ts.visible.get(i)?;
+                            let entry = ts.entries.get(entry_idx)?;
+                            let selected = ts.selection.selected.contains(&entry_idx);
+                            Some(render_row(
+                                entry, entry_idx, selected, pane_id, &list_view, accent,
+                                accent_fg, hover, muted,
+                            ))
+                        })
+                        .collect::<Vec<_>>()
+                },
+            )
+            .track_scroll(&scroll)
+            .h_full()
+            .into_any_element()
+        };
 
         let focus_view = view.clone();
         v_flex()
@@ -380,7 +424,7 @@ impl App {
                 });
             })
             .child(header)
-            .child(div().flex_1().min_h(px(0.)).child(list.h_full()))
+            .child(div().flex_1().min_h(px(0.)).child(inner))
             .into_any_element()
     }
 }
