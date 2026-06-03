@@ -10,12 +10,15 @@
 
 use crate::app::App;
 use crate::input::action::Action;
-use crate::state::file_entry::FileKind;
+use crate::state::file_entry::{FileEntry, FileKind, SortColumn, SortDir};
 use crate::state::layout_tree::{Container, LinearDir, Tile};
 use crate::state::pane::TabId;
-use crate::util::display::display_name;
+use crate::util::display::{display_name, format_date, format_size};
 use gpui::prelude::*;
-use gpui::{div, hsla, px, AnyElement, Context, Entity, SharedString, Window};
+use gpui::{
+    div, hsla, px, uniform_list, AnyElement, Context, Div, Entity, Hsla, SharedString, Stateful,
+    Window,
+};
 use gpui_component::{
     h_flex,
     resizable::{h_resizable, resizable_panel, v_resizable},
@@ -237,31 +240,77 @@ impl App {
             .into_any_element()
     }
 
+    /// Details view: a virtualized (`uniform_list`) table with sortable header.
+    /// The list closure reads live state (`view.read`) and formats only the visible
+    /// range — no per-frame allocation over the full directory, so 100k-entry dirs
+    /// stay smooth.
     fn render_pane(&mut self, pane_id: TabId, cx: &mut Context<Self>) -> AnyElement {
         let view = cx.entity();
         let focused = self.state.focused_tile == pane_id;
-        let (accent, list_hover) = {
+        let (accent, accent_fg, hover, muted, header_bg) = {
             let t = cx.theme();
-            (t.accent, t.list_active)
+            (
+                t.accent,
+                t.accent_foreground,
+                t.list_active,
+                t.muted_foreground,
+                t.secondary,
+            )
         };
-        let rows: Vec<(usize, String, bool)> = self
+        let (sort_col, sort_dir) = self
+            .tab_data_for(pane_id)
+            .map(|t| (t.sort_col.clone(), t.sort_dir.clone()))
+            .unwrap_or_default();
+        let count = self
             .state
             .tab_states
-            .get(&pane_id)
-            .map(|ts| {
-                ts.entries
-                    .iter()
-                    .enumerate()
-                    .map(|(i, e)| (i, e.name.clone(), matches!(e.kind, FileKind::Dir)))
-                    .collect()
-            })
-            .unwrap_or_default();
+            .get_mut(&pane_id)
+            .map(|ts| ts.visible_indices().len())
+            .unwrap_or(0);
+
+        let header = h_flex()
+            .w_full()
+            .px_2()
+            .py_1()
+            .gap_2()
+            .bg(header_bg)
+            .text_xs()
+            .text_color(muted)
+            .child(div().w(px(20.)))
+            .child(sort_cell(&view, pane_id, SortColumn::Name, "Nombre", &sort_col, &sort_dir).flex_1())
+            .child(sort_cell(&view, pane_id, SortColumn::Size, "Tamaño", &sort_col, &sort_dir).w(px(90.)))
+            .child(
+                sort_cell(&view, pane_id, SortColumn::Modified, "Modificado", &sort_col, &sort_dir)
+                    .w(px(150.)),
+            );
+
+        let list_view = view.clone();
+        let list = uniform_list(
+            SharedString::from(format!("list-{}", pane_id.0)),
+            count,
+            move |range, _window, cx| {
+                let app = list_view.read(cx);
+                let Some(ts) = app.state.tab_states.get(&pane_id) else {
+                    return Vec::new();
+                };
+                range
+                    .filter_map(|i| {
+                        let entry_idx = *ts.visible.get(i)?;
+                        let entry = ts.entries.get(entry_idx)?;
+                        let selected = ts.selection.selected.contains(&entry_idx);
+                        Some(render_row(
+                            entry, entry_idx, selected, pane_id, &list_view, accent, accent_fg,
+                            hover, muted,
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            },
+        );
 
         let focus_view = view.clone();
-        div()
+        v_flex()
             .id(SharedString::from(format!("pane-{}", pane_id.0)))
             .size_full()
-            .p_1()
             .border_2()
             .border_color(if focused { accent } else { hsla(0., 0., 0., 0.) })
             .on_click(move |_ev, _window, cx| {
@@ -270,33 +319,121 @@ impl App {
                     cx.notify();
                 });
             })
-            .child(
-                v_flex()
-                    .size_full()
-                    .gap_px()
-                    .children(rows.into_iter().map(|(i, name, is_dir)| {
-                        let row_view = view.clone();
-                        div()
-                            .id(SharedString::from(format!("row-{}-{}", pane_id.0, i)))
-                            .w_full()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(list_hover))
-                            .child(format!("{}  {name}", if is_dir { "📁" } else { "📄" }))
-                            .on_click(move |_ev, _window, cx| {
-                                row_view.update(cx, |this, cx| {
-                                    this.state.focused_tile = pane_id;
-                                    this.process_actions(vec![Action::Activate {
-                                        tile: pane_id,
-                                        idx: i,
-                                    }]);
-                                    cx.notify();
-                                });
-                            })
-                    })),
-            )
+            .child(header)
+            .child(div().flex_1().min_h(px(0.)).child(list.h_full()))
             .into_any_element()
     }
+}
+
+/// A clickable column header that toggles the sort column/direction.
+fn sort_cell(
+    view: &Entity<App>,
+    pane_id: TabId,
+    col: SortColumn,
+    label: &str,
+    cur_col: &SortColumn,
+    cur_dir: &SortDir,
+) -> Stateful<Div> {
+    let arrow = if col == *cur_col {
+        if *cur_dir == SortDir::Asc {
+            " ▲"
+        } else {
+            " ▼"
+        }
+    } else {
+        ""
+    };
+    let next_dir = if col == *cur_col && *cur_dir == SortDir::Asc {
+        SortDir::Desc
+    } else {
+        SortDir::Asc
+    };
+    let v = view.clone();
+    div()
+        .id(SharedString::from(format!("hdr-{}-{:?}", pane_id.0, col)))
+        .cursor_pointer()
+        .child(format!("{label}{arrow}"))
+        .on_click(move |_ev, _window, cx| {
+            let col = col.clone();
+            let dir = next_dir.clone();
+            v.update(cx, |this, cx| {
+                this.process_actions(vec![Action::SetSort { col, dir }]);
+                cx.notify();
+            });
+        })
+}
+
+/// One file row in the Details list. Selection/activation route through `Action`s,
+/// reading click modifiers (shift = range, ctrl/cmd = toggle) and count (≥2 = open).
+#[allow(clippy::too_many_arguments)]
+fn render_row(
+    entry: &FileEntry,
+    entry_idx: usize,
+    selected: bool,
+    pane_id: TabId,
+    view: &Entity<App>,
+    accent: Hsla,
+    accent_fg: Hsla,
+    hover: Hsla,
+    muted: Hsla,
+) -> AnyElement {
+    let is_dir = matches!(entry.kind, FileKind::Dir);
+    let icon = if is_dir { "📁" } else { "📄" };
+    let name = entry.name.clone();
+    let size = if is_dir {
+        String::new()
+    } else {
+        entry.size.map(format_size).unwrap_or_default()
+    };
+    let date = entry.modified.map(format_date).unwrap_or_default();
+    let v = view.clone();
+    h_flex()
+        .id(SharedString::from(format!("row-{}-{}", pane_id.0, entry_idx)))
+        .w_full()
+        .px_2()
+        .py(px(3.))
+        .gap_2()
+        .items_center()
+        .rounded_sm()
+        .cursor_pointer()
+        .when(selected, |s| s.bg(accent).text_color(accent_fg))
+        .when(!selected, |s| s.hover(|h| h.bg(hover)))
+        .child(div().w(px(20.)).child(icon))
+        .child(div().flex_1().min_w(px(0.)).truncate().child(name))
+        .child(
+            div()
+                .w(px(90.))
+                .text_right()
+                .when(!selected, |s| s.text_color(muted))
+                .child(size),
+        )
+        .child(
+            div()
+                .w(px(150.))
+                .when(!selected, |s| s.text_color(muted))
+                .child(date),
+        )
+        .on_click(move |ev, _window, cx| {
+            let m = ev.modifiers();
+            let shift = m.shift;
+            let ctrl = m.control || m.platform;
+            let activate = ev.click_count() >= 2;
+            v.update(cx, |this, cx| {
+                if activate {
+                    this.process_actions(vec![Action::Activate {
+                        tile: pane_id,
+                        idx: entry_idx,
+                    }]);
+                } else {
+                    this.process_actions(vec![Action::Select {
+                        tile: pane_id,
+                        idx: entry_idx,
+                        shift,
+                        ctrl,
+                    }]);
+                }
+                cx.notify();
+            });
+        })
+        .into_any_element()
 }
