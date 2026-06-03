@@ -381,7 +381,7 @@ impl App {
         changed
     }
 
-    fn tab_data_for(&self, tab_id: TileId) -> Option<&TabData> {
+    pub(crate) fn tab_data_for(&self, tab_id: TileId) -> Option<&TabData> {
         match self.state.pane_tree.tiles.get(tab_id) {
             Some(Tile::Pane(p)) => Some(p),
             _ => None,
