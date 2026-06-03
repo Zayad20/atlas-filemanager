@@ -15,13 +15,30 @@ use crate::state::layout_tree::{Container, LinearDir, Tile};
 use crate::state::pane::TabId;
 use crate::util::display::display_name;
 use gpui::prelude::*;
-use gpui::{div, hsla, px, AnyElement, Context, SharedString, Window};
+use gpui::{div, hsla, px, AnyElement, Context, Entity, SharedString, Window};
 use gpui_component::{
     h_flex,
     resizable::{h_resizable, resizable_panel, v_resizable},
     tab::{Tab, TabBar},
     v_flex, ActiveTheme,
 };
+
+/// A small clickable glyph in the tab toolbar, bound to an `App` mutation.
+fn toolbar_btn(
+    id: String,
+    glyph: &'static str,
+    view: Entity<App>,
+    action: impl Fn(&mut App, &mut Context<App>) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(SharedString::from(id))
+        .px_1()
+        .cursor_pointer()
+        .child(glyph)
+        .on_click(move |_ev, _window, cx| {
+            view.update(cx, |this, cx| action(this, cx));
+        })
+}
 
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -133,21 +150,39 @@ impl App {
         let active_idx = active
             .and_then(|a| children.iter().position(|&c| c == a))
             .unwrap_or(0);
-        let labels: Vec<String> = children
+
+        // One Tab per child pane, each with a × close affordance (which must not
+        // also trigger tab-select, hence `stop_propagation`).
+        let tabs: Vec<Tab> = children
             .iter()
-            .map(|&c| {
-                self.tab_data_for(c)
+            .map(|&tile| {
+                let label = self
+                    .tab_data_for(tile)
                     .map(|t| display_name(&t.path))
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                let close_view = view.clone();
+                Tab::new().label(label).suffix(
+                    div()
+                        .id(SharedString::from(format!("close-{}", tile.0)))
+                        .px_1()
+                        .cursor_pointer()
+                        .child("×")
+                        .on_click(move |_ev, _window, cx| {
+                            cx.stop_propagation();
+                            close_view.update(cx, |this, cx| {
+                                this.close_tab(tile);
+                                cx.notify();
+                            });
+                        }),
+                )
             })
             .collect();
 
         let on_select_children = children.clone();
         let on_select_view = view.clone();
-        let new_tab_view = view.clone();
         let tab_bar = TabBar::new(SharedString::from(format!("tabbar-{}", container_id.0)))
             .selected_index(active_idx)
-            .children(labels.into_iter().map(|l| Tab::new().label(l)))
+            .children(tabs)
             .on_click(move |ix, _window, cx| {
                 if let Some(&tile) = on_select_children.get(*ix) {
                     on_select_view.update(cx, |this, cx| {
@@ -157,17 +192,37 @@ impl App {
                 }
             })
             .suffix(
-                div()
-                    .id("new-tab")
-                    .px_2()
-                    .cursor_pointer()
-                    .child("+")
-                    .on_click(move |_ev, _window, cx| {
-                        new_tab_view.update(cx, |this, cx| {
+                h_flex()
+                    .gap_1()
+                    .px_1()
+                    .items_center()
+                    .child(toolbar_btn(
+                        format!("split-r-{}", container_id.0),
+                        "⬌",
+                        view.clone(),
+                        move |this, cx| {
+                            this.split_pane(container_id, true);
+                            cx.notify();
+                        },
+                    ))
+                    .child(toolbar_btn(
+                        format!("split-d-{}", container_id.0),
+                        "⬍",
+                        view.clone(),
+                        move |this, cx| {
+                            this.split_pane(container_id, false);
+                            cx.notify();
+                        },
+                    ))
+                    .child(toolbar_btn(
+                        format!("newtab-{}", container_id.0),
+                        "+",
+                        view.clone(),
+                        move |this, cx| {
                             this.new_tab(container_id);
                             cx.notify();
-                        });
-                    }),
+                        },
+                    )),
             );
 
         let content = match active {
