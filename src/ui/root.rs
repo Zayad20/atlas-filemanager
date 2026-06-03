@@ -71,6 +71,64 @@ impl Render for App {
             .bg(bg)
             .text_color(fg)
             .text_sm()
+            .key_context("Atlas")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|this, _: &crate::NavUp, _w, cx| {
+                this.nav_up(false);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::NavDown, _w, cx| {
+                this.nav_down(false);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::ExtendUp, _w, cx| {
+                this.nav_up(true);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::ExtendDown, _w, cx| {
+                this.nav_down(true);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::NavHome, _w, cx| {
+                this.nav_home(false);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::NavEnd, _w, cx| {
+                this.nav_end(false);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::NavPageUp, _w, cx| {
+                this.nav_page(false, false);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::NavPageDown, _w, cx| {
+                this.nav_page(true, false);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::OpenSelected, _w, cx| {
+                this.open_cursor();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::SelectAllItems, _w, cx| {
+                this.process_actions(vec![Action::SelectAll]);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::NewTab, _w, cx| {
+                this.process_actions(vec![Action::NewTabFocused]);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::CloseTab, _w, cx| {
+                this.process_actions(vec![Action::CloseFocusedTab]);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::NextTab, _w, cx| {
+                this.focus_next_tab();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::PrevTab, _w, cx| {
+                this.focus_prev_tab();
+                cx.notify();
+            }))
             .child(
                 h_flex()
                     .w_full()
@@ -284,6 +342,7 @@ impl App {
                     .w(px(150.)),
             );
 
+        let scroll = self.scroll_handle_for(pane_id);
         let list_view = view.clone();
         let list = uniform_list(
             SharedString::from(format!("list-{}", pane_id.0)),
@@ -305,7 +364,8 @@ impl App {
                     })
                     .collect::<Vec<_>>()
             },
-        );
+        )
+        .track_scroll(&scroll);
 
         let focus_view = view.clone();
         v_flex()

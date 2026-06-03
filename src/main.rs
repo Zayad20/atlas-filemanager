@@ -12,7 +12,26 @@ mod util;
 use gpui::{px, size, App, AppContext as _, KeyBinding, WindowBounds, WindowOptions};
 use gpui_component::{Root, TitleBar};
 
-gpui::actions!(Atlas, [Quit]);
+gpui::actions!(
+    Atlas,
+    [
+        Quit,
+        NewTab,
+        CloseTab,
+        NextTab,
+        PrevTab,
+        NavUp,
+        NavDown,
+        NavHome,
+        NavEnd,
+        NavPageUp,
+        NavPageDown,
+        ExtendUp,
+        ExtendDown,
+        OpenSelected,
+        SelectAllItems,
+    ]
+);
 
 fn main() {
     use tracing_subscriber::prelude::*;
@@ -51,6 +70,20 @@ fn main() {
             KeyBinding::new("cmd-q", Quit, None),
             #[cfg(not(target_os = "macos"))]
             KeyBinding::new("ctrl-q", Quit, None),
+            KeyBinding::new("up", NavUp, Some("Atlas")),
+            KeyBinding::new("down", NavDown, Some("Atlas")),
+            KeyBinding::new("shift-up", ExtendUp, Some("Atlas")),
+            KeyBinding::new("shift-down", ExtendDown, Some("Atlas")),
+            KeyBinding::new("home", NavHome, Some("Atlas")),
+            KeyBinding::new("end", NavEnd, Some("Atlas")),
+            KeyBinding::new("pageup", NavPageUp, Some("Atlas")),
+            KeyBinding::new("pagedown", NavPageDown, Some("Atlas")),
+            KeyBinding::new("enter", OpenSelected, Some("Atlas")),
+            KeyBinding::new("ctrl-a", SelectAllItems, Some("Atlas")),
+            KeyBinding::new("ctrl-t", NewTab, Some("Atlas")),
+            KeyBinding::new("ctrl-w", CloseTab, Some("Atlas")),
+            KeyBinding::new("ctrl-tab", NextTab, Some("Atlas")),
+            KeyBinding::new("ctrl-shift-tab", PrevTab, Some("Atlas")),
         ]);
         cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
 

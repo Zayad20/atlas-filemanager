@@ -1,9 +1,9 @@
-use crate::state::layout_tree::{Tile, TileId};
-use std::collections::HashSet;
+use crate::state::layout_tree::{Container, Tile, TileId};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use gpui::{Context, Window};
+use gpui::{Context, FocusHandle, ScrollStrategy, UniformListScrollHandle, Window};
 use smol::Timer;
 
 use crate::fs::list::list_dir;
@@ -32,6 +32,12 @@ pub struct App {
     pub(crate) tx: flume::Sender<BgResult>,
     pub(crate) rx: flume::Receiver<BgResult>,
     pub(crate) rt: tokio::runtime::Handle,
+    /// Keyboard focus for the whole window; the root element tracks it so the
+    /// `Atlas` key context (nav/tab shortcuts) is active.
+    pub(crate) focus_handle: FocusHandle,
+    /// Per-pane virtualized-list scroll handles (UI-side), so keyboard nav can
+    /// scroll the cursor into view.
+    pub(crate) scroll_handles: HashMap<TileId, UniformListScrollHandle>,
     pub(crate) pending_preview: Option<PendingPreview>,
     pub(crate) pending_native_drag: Option<Vec<PathBuf>>,
     /// Channel to the SQLite tag-db worker (writes fire-and-forget, reads reply via `tx`).
@@ -54,7 +60,9 @@ pub(crate) struct PendingPreview {
 }
 
 impl App {
-    pub fn new(rt: tokio::runtime::Handle, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(rt: tokio::runtime::Handle, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
+        window.focus(&focus_handle, cx);
         let settings = load_settings();
         let profiles = load_profiles();
 
@@ -187,6 +195,8 @@ impl App {
             tx,
             rx,
             rt,
+            focus_handle,
+            scroll_handles: HashMap::new(),
             pending_preview: None,
             pending_native_drag: None,
             tag_db_tx,
@@ -386,6 +396,112 @@ impl App {
             Some(Tile::Pane(p)) => Some(p),
             _ => None,
         }
+    }
+
+    /// Get-or-create the virtualized-list scroll handle for a pane.
+    pub(crate) fn scroll_handle_for(&mut self, tile: TileId) -> UniformListScrollHandle {
+        self.scroll_handles
+            .entry(tile)
+            .or_insert_with(UniformListScrollHandle::new)
+            .clone()
+    }
+
+    /// Move the keyboard cursor within the focused tab's visible list. `target`
+    /// maps `(current_pos, len)` to the new visible position. `extend` grows the
+    /// selection from the anchor (Shift); otherwise it becomes a single selection.
+    fn nav_apply(&mut self, target: impl Fn(usize, usize) -> usize, extend: bool) {
+        let tile = self.state.focused_tile;
+        let next_pos = {
+            let Some(ts) = self.state.tab_states.get_mut(&tile) else {
+                return;
+            };
+            let visible: Vec<usize> = ts.visible_indices().to_vec();
+            if visible.is_empty() {
+                return;
+            }
+            let len = visible.len();
+            let cur = ts
+                .selection
+                .keyboard_cursor
+                .and_then(|i| visible.iter().position(|v| *v == i))
+                .unwrap_or(0);
+            let np = target(cur, len).min(len - 1);
+            let next_idx = visible[np];
+            let anchor = ts.selection.selection_anchor.unwrap_or(next_idx);
+            ts.selection.keyboard_cursor = Some(next_idx);
+            ts.selection.last_clicked_index = Some(next_idx);
+            if extend {
+                let ap = visible.iter().position(|v| *v == anchor).unwrap_or(np);
+                let (lo, hi) = (ap.min(np), ap.max(np));
+                ts.selection.selected.clear();
+                ts.selection.selected.extend(visible[lo..=hi].iter().copied());
+            } else {
+                ts.selection.selection_anchor = Some(next_idx);
+                ts.selection.selected.clear();
+                ts.selection.selected.insert(next_idx);
+            }
+            np
+        };
+        if let Some(h) = self.scroll_handles.get(&tile) {
+            h.scroll_to_item(next_pos, ScrollStrategy::Center);
+        }
+    }
+
+    pub(crate) fn nav_up(&mut self, extend: bool) {
+        self.nav_apply(|c, _| c.saturating_sub(1), extend);
+    }
+    pub(crate) fn nav_down(&mut self, extend: bool) {
+        self.nav_apply(|c, _| c + 1, extend);
+    }
+    pub(crate) fn nav_home(&mut self, extend: bool) {
+        self.nav_apply(|_, _| 0, extend);
+    }
+    pub(crate) fn nav_end(&mut self, extend: bool) {
+        self.nav_apply(|_, len| len - 1, extend);
+    }
+    pub(crate) fn nav_page(&mut self, down: bool, extend: bool) {
+        const STEP: usize = 20;
+        self.nav_apply(
+            move |c, _| if down { c + STEP } else { c.saturating_sub(STEP) },
+            extend,
+        );
+    }
+
+    /// Open (or navigate into) the item under the keyboard cursor.
+    pub(crate) fn open_cursor(&mut self) {
+        let tile = self.state.focused_tile;
+        let idx = self.state.tab_states.get(&tile).and_then(|ts| {
+            ts.selection
+                .keyboard_cursor
+                .or_else(|| ts.selection.selected.iter().next().copied())
+        });
+        if let Some(idx) = idx {
+            self.process_actions(vec![crate::input::action::Action::Activate { tile, idx }]);
+        }
+    }
+
+    pub(crate) fn focus_next_tab(&mut self) {
+        self.cycle_tab(1);
+    }
+    pub(crate) fn focus_prev_tab(&mut self) {
+        self.cycle_tab(-1);
+    }
+    fn cycle_tab(&mut self, dir: isize) {
+        let cur = self.state.focused_tile;
+        let Some(container) = self.state.find_tabs_container(cur) else {
+            return;
+        };
+        let children = match self.state.pane_tree.tiles.get(container) {
+            Some(Tile::Container(Container::Tabs(tabs))) => tabs.children.clone(),
+            _ => return,
+        };
+        if children.is_empty() {
+            return;
+        }
+        let pos = children.iter().position(|&c| c == cur).unwrap_or(0) as isize;
+        let n = children.len() as isize;
+        let np = (((pos + dir) % n + n) % n) as usize;
+        self.activate_tab(children[np]);
     }
 
     /// Persist all UI state to disk. Called on window close.
