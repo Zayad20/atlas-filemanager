@@ -1,0 +1,36 @@
+Windows Registry Editor Version 5.00
+
+; Atlas — Windows shell integration.
+; Replace C:\\Program Files\\Atlas\\Atlas.exe below with the real install path
+; before importing (double-click the .reg, or run: reg import Atlas-register.reg).
+;
+; This adds:
+;   * "Open with Atlas" on the right-click menu of folders and folder backgrounds
+;   * an Applications entry so Atlas shows up in the "Open with" picker for files
+;
+; NOTE: Windows does not let a third-party app replace the system "Save As"/open
+; dialogs — those are owned by the OS. These keys only add context-menu / "Open with"
+; integration and let Atlas be chosen as a folder handler.
+
+; --- Right-click a folder ---
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Atlas]
+@="Open with Atlas"
+"Icon"="C:\\Program Files\\Atlas\\Atlas.exe,0"
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Atlas\command]
+@="\"C:\\Program Files\\Atlas\\Atlas.exe\" \"%1\""
+
+; --- Right-click the background of an open folder ---
+[HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\Atlas]
+@="Open with Atlas"
+"Icon"="C:\\Program Files\\Atlas\\Atlas.exe,0"
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\Atlas\command]
+@="\"C:\\Program Files\\Atlas\\Atlas.exe\" \"%V\""
+
+; --- "Open with" application registration (for associating file types) ---
+[HKEY_CURRENT_USER\Software\Classes\Applications\Atlas.exe]
+"FriendlyAppName"="Atlas"
+
+[HKEY_CURRENT_USER\Software\Classes\Applications\Atlas.exe\shell\open\command]
+@="\"C:\\Program Files\\Atlas\\Atlas.exe\" \"%1\""

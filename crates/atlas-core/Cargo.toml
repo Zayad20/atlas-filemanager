@@ -1,0 +1,75 @@
+[package]
+name = "atlas-core"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# Cloud / rclone backend (mirrors the binary's `cloud` feature).
+cloud = [
+    "dep:reqwest",
+    "dep:sha2",
+    "dep:async-trait",
+    "dep:futures-util",
+    "atlas-model/cloud",
+]
+rar = ["dep:unrar"]
+sevenz = ["dep:sevenz-rust2"]
+
+[dependencies]
+atlas-model.workspace = true
+anyhow.workspace = true
+flume.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.8"
+dirs = "5"
+notify = "6"
+notify-debouncer-mini = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
+image = { version = "0.25", default-features = false, features = [
+    "jpeg", "png", "gif", "webp", "tiff", "bmp", "ico",
+] }
+kamadak-exif = "0.6"
+syntect = { version = ">=5.0, <5.3", default-features = false, features = [
+    "default-syntaxes", "default-themes", "parsing", "regex-fancy",
+] }
+walkdir = "2"
+# ripgrep's library crates: blazing-fast content search (goto bar "search in content").
+ignore = "0.4"
+grep-searcher = "0.1"
+grep-regex = "0.1"
+grep-matcher = "0.1"
+regex = "1"
+jwalk = "0.8.1"
+pulldown-cmark = { version = "0.12", default-features = false }
+lofty = "0.22"
+sysinfo = "0.38.4"
+nucleo = "0.5"
+rayon = "1"
+uuid = { version = "1", features = ["v4"] }
+open = "5"
+trash = "5"
+zip = "2"
+tar = "0.4"
+flate2 = "1"
+bzip2 = "0.4"
+xz2 = "0.1"
+unrar = { path = "vendor/unrar", version = "0.4", optional = true }
+
+# --- cloud feature (optional) ---
+reqwest = { version = "0.12", default-features = false, features = [
+    "json", "rustls-tls", "stream",
+], optional = true }
+sha2 = { version = "0.10", optional = true }
+async-trait = { version = "0.1", optional = true }
+futures-util = { version = "0.3", default-features = false, optional = true }
+extism = "1.0.1"
+sevenz-rust2 = { version = "0.21.0", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
