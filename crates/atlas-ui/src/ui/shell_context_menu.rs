@@ -423,6 +423,7 @@ impl App {
                             fg,
                             muted,
                         )
+                        .on_mouse_move(ctx_hover_handler(&view, this_idx))
                         .on_mouse_down(MouseButton::Left, move |_e, window, cx| {
                             v.update(cx, |this, cx| {
                                 this.run_ctx_atlas(cmd, window, cx);
@@ -468,7 +469,8 @@ impl App {
                         if disabled { muted } else { fg },
                         muted,
                     )
-                    .pl(px(8.0 + f32::from(*depth) * 14.0));
+                    .pl(px(8.0 + f32::from(*depth) * 14.0))
+                    .on_mouse_move(ctx_hover_handler(&view, this_idx));
                     if !disabled {
                         r = r.on_mouse_down(MouseButton::Left, move |_e, window, cx| {
                             v.update(cx, |this, cx| {
@@ -895,6 +897,26 @@ fn fill_submenu(items: &mut [UiNativeItem], id: u32, slot: &mut Option<Vec<UiNat
 
 /// One styled menu row (icon slot, label, optional chevron / default emphasis).
 #[allow(clippy::too_many_arguments)]
+/// Hover-to-select: moving the mouse over a selectable row makes it the current
+/// selection (mirrors keyboard nav). Only notifies on an actual change so a moving
+/// cursor doesn't thrash the renderer.
+fn ctx_hover_handler(
+    view: &gpui::Entity<App>,
+    idx: usize,
+) -> impl Fn(&gpui::MouseMoveEvent, &mut Window, &mut gpui::App) + 'static {
+    let view = view.clone();
+    move |_e, _window, cx| {
+        view.update(cx, |this, cx| {
+            if let Some(m) = this.ctx_menu.as_mut() {
+                if m.selected != idx {
+                    m.selected = idx;
+                    cx.notify();
+                }
+            }
+        });
+    }
+}
+
 fn menu_row(
     id: SharedString,
     icon: Option<AnyElement>,
