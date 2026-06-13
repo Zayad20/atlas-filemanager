@@ -1,5 +1,9 @@
 //! gpui UI layer.
 pub mod root;
+// Window chrome (tab pills, breadcrumb, search pill, marquee) + pane interactions
+// (rubber-band, inline rename, type-to-filter) split out of `root.rs`.
+pub mod chrome;
+pub mod interactions;
 // File-view renderers (Details/Grid/List/Miller) split out of `root.rs`.
 pub mod views;
 // Liquid-glass surface styling (Figma "Design" frame).
