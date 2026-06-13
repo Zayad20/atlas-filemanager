@@ -610,7 +610,7 @@ impl App {
             let refs: Vec<&CommandDef> = defs.iter().collect();
             let icon = icon.clone();
             let title = title.clone();
-            let id = id.clone();
+            let id = id;
             if let Some((best, items)) = self.scored_command_items(&refs, false, &pinned, &query)
             {
                 scored.push((

@@ -1,5 +1,7 @@
 //! gpui UI layer.
 pub mod root;
+// File-view renderers (Details/Grid/List/Miller) split out of `root.rs`.
+pub mod views;
 // Liquid-glass surface styling (Figma "Design" frame).
 pub mod glass;
 pub mod icons;

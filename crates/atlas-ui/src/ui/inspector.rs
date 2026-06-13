@@ -19,7 +19,7 @@ use crate::app::App;
 use crate::state::file_entry::FileKind;
 use crate::state::layout_tree::TileId;
 use crate::state::preview_cache::{
-    MarkdownBlock, MdSpan, MultiPreviewState, PreviewRequest, PreviewResult, DIR_PREVIEW_LIMIT,
+    MultiPreviewState, PreviewRequest, PreviewResult, DIR_PREVIEW_LIMIT,
 };
 use crate::state::settings::ViewMode;
 use crate::state::tab::TabState;
@@ -28,7 +28,7 @@ use crate::util::display::{format_date, format_size};
 use gpui::prelude::*;
 use gpui::{
     div, img, px, AnyElement, ClickEvent, Context, Hsla, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, RenderImage, ScrollDelta, ScrollWheelEvent, SharedString, Window,
+    MouseMoveEvent, MouseUpEvent, RenderImage, ScrollDelta, ScrollWheelEvent, Window,
 };
 use gpui_component::{
     h_flex, v_flex, ActiveTheme,

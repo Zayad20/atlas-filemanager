@@ -250,7 +250,7 @@ pub fn run(handle: tokio::runtime::Handle) {
             ..Default::default()
         };
 
-        let initial_zoom = settings.global_zoom;
+        let _initial_zoom = settings.global_zoom;
         cx.spawn(async move |cx| {
             if let Err(err) = cx.open_window(window_options, move |window, cx| {
                 window.set_window_title("Atlas");
