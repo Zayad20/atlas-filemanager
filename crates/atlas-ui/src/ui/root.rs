@@ -194,20 +194,13 @@ impl Render for App {
         // "Atlas" key context so its nav/open shortcuts don't resolve and fire on the
         // file pane behind the overlay. The overlay's own `capture_key_down` (and the
         // focused input) drive the keys instead.
-        let modal_active = self.state.overlay.show_goto_bar
-            || self.palette_closing.is_some()
-            || self.state.overlay.show_palette
-            || self.state.overlay.show_ext_palette
-            || self.state.overlay.show_settings
-            || self.state.overlay.transfer_conflict.is_some()
-            || self.state.profile_ui.creating_tag
-            || self.state.batch_rename.is_some()
-            || self.rename_edit.is_some()
-            || self
-                .state
-                .active_tab_state()
-                .is_some_and(|ts| ts.search.active);
-        let key_ctx = if modal_active { "AtlasModal" } else { "Atlas" };
+        // Single source of truth (includes the right-click menu + rename overlay,
+        // which were previously missing — that let arrow keys reach the pane).
+        let key_ctx = if self.modal_overlay_active() {
+            "AtlasModal"
+        } else {
+            "Atlas"
+        };
 
         let view = cx.entity();
         let mouse_back_view = view.clone();

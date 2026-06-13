@@ -25,6 +25,33 @@ use gpui::{Context, Focusable, FocusHandle, Window};
 use gpui_component::WindowExt;
 
 impl App {
+    /// THE single source of truth for "is a keyboard-owning overlay open?".
+    ///
+    /// Used by the window root to swap its key context from `Atlas` to `AtlasModal`
+    /// — the latter omits the pane navigation keybindings (`up`/`down` → NavUp/Down),
+    /// so an open overlay's own keys (its `capture_key_down`/focused input) take over
+    /// instead of the file pane behind it. Every overlay that captures the keyboard
+    /// must be listed here once; forgetting one is exactly why arrow keys leaked to
+    /// the pane while the right-click menu was open.
+    pub(crate) fn modal_overlay_active(&self) -> bool {
+        let o = &self.state.overlay;
+        o.show_goto_bar
+            || self.palette_closing.is_some()
+            || o.show_palette
+            || o.show_ext_palette
+            || o.show_settings
+            || o.transfer_conflict.is_some()
+            || o.renaming_profile
+            || self.state.profile_ui.creating_tag
+            || self.state.batch_rename.is_some()
+            || self.rename_edit.is_some()
+            || self.ctx_menu.is_some()
+            || self
+                .state
+                .active_tab_state()
+                .is_some_and(|ts| ts.search.active)
+    }
+
     /// Decide which focus handle should own the keyboard this frame and move focus
     /// to it (only when not already focused, to avoid fighting the cursor).
     pub(crate) fn sync_overlay_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
