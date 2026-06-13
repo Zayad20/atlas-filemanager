@@ -4,6 +4,8 @@ pub mod root;
 // (rubber-band, inline rename, type-to-filter) split out of `root.rs`.
 pub mod chrome;
 pub mod interactions;
+// Shared file drag-and-drop wiring used by every view.
+pub mod drag;
 // File-view renderers (Details/Grid/List/Miller) split out of `root.rs`.
 pub mod views;
 // Liquid-glass surface styling (Figma "Design" frame).

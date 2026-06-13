@@ -18,7 +18,7 @@ use gpui_component::button::ButtonVariants as _;
 use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt};
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::ui::root::{ctrl_scroll, rect_recorder, DragNoop, DraggedFiles};
+use crate::ui::root::{ctrl_scroll, rect_recorder, DraggedFiles};
 
 impl App {
     /// Icons (Grid) view: a virtualized grid of fixed-size cells. Column count is
@@ -421,56 +421,7 @@ fn render_cell(
                 DraggedFiles {
                     paths: vec![entry.path.clone()],
                 },
-                {
-                    let drag_view = view.clone();
-                    let anchor = entry.path.clone();
-                    move |_d, _pos, _window, cx| {
-                        // Full multi-selection at drag-start time (fix: was single entry).
-                        let (paths, archive_items) = {
-                            let app = drag_view.read(&*cx);
-                            let mut arc = app.state.selected_archive_items();
-                            // Fallback: single-entry drag when nothing is in the selection set.
-                            if let Some(ref mut items) = arc {
-                                if items.is_empty() {
-                                    if let Some(archive) =
-                                        app.state.active_tab_data().and_then(|t| t.location.as_archive().map(|(a, _)| a.to_path_buf()))
-                                    {
-                                        items.push((archive, anchor.clone()));
-                                    }
-                                }
-                            }
-                            let p = app.state.selected_paths();
-                            let p = if p.is_empty() {
-                                vec![anchor.clone()]
-                            } else {
-                                p
-                            };
-                            (p, arc)
-                        };
-                        // Windows: schedule DoDragDrop via PostMessage so it runs
-                        // AFTER this closure returns and gpui's App RefCell is
-                        // no longer borrowed (prevents "RefCell already borrowed"
-                        // panic from DoDragDrop's nested Win32 message loop).
-                        #[cfg(windows)]
-                        {
-                            drag_view
-                                .read(&*cx)
-                                .trigger_os_drag(paths.clone(), archive_items);
-                            // Return an invisible zero-size placeholder. OLE provides
-                            // cursor feedback; a synthetic WM_LBUTTONUP injected after
-                            // DoDragDrop clears gpui's active_drag without firing any
-                            // on_drop handler (DragNoop has no matching handlers).
-                            return cx.new(|_| DragNoop);
-                        }
-                        // Non-Windows: OLE path absent; gpui renders the ghost itself.
-                        #[cfg(not(windows))]
-                        {
-                            let _ = archive_items;
-                        }
-                        #[cfg(not(windows))]
-                        cx.new(|_| DraggedFiles { paths })
-                    }
-                },
+                crate::ui::drag::file_drag_handler(view.clone(), entry.path.clone()),
             )
         })
         .when(matches!(entry.kind, FileKind::Dir), |s| {
