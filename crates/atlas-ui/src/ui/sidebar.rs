@@ -151,28 +151,9 @@ impl SearchableListItem for ProfileRow {
     fn value(&self) -> &Self::Value {
         &self.value
     }
-
-    fn render(&self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let Some(glyph) = self.action_icon else {
-            // Profile row: plain label; the adapter adds the trailing check icon.
-            return div().child(self.value.clone()).into_any_element();
-        };
-        let muted = cx.theme().muted_foreground;
-        let border = cx.theme().border;
-        let mut col = v_flex().w_full().gap_1();
-        if self.divider_above {
-            col = col.child(div().h(px(1.)).w_full().bg(border));
-        }
-        col.child(
-            h_flex()
-                .gap_2()
-                .items_center()
-                .text_color(muted)
-                .child(icon(glyph, 14.0, muted))
-                .child(self.value.clone()),
-        )
-        .into_any_element()
-    }
+    // Profile rows use the default content (title) + the adapter's trailing check.
+    // Action rows are rendered whole by `ProfileMenu::render_item` (which suppresses
+    // that check, so the leading icon never overlaps it).
 }
 
 /// Delegate backing the profile dropdown: the real profiles followed by the two
@@ -201,6 +182,38 @@ impl SearchableListDelegate for ProfileMenu {
             .iter()
             .position(|r| r.value() == value)
             .map(|i| IndexPath::default().row(i))
+    }
+
+    /// Render action rows whole (icon + label, divider above the first), which
+    /// suppresses the adapter's default trailing check icon — that check was
+    /// overlapping the leading icon when New/Rename were highlighted. Profile rows
+    /// return `None` so they keep the default content + active-profile check.
+    fn render_item(
+        &self,
+        _ix: IndexPath,
+        item: &Self::Item,
+        _checked: bool,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> Option<gpui::AnyElement> {
+        let glyph = item.action_icon?;
+        let muted = cx.theme().muted_foreground;
+        let border = cx.theme().border;
+        let mut col = v_flex().w_full().gap_1();
+        if item.divider_above {
+            col = col.child(div().h(px(1.)).w_full().bg(border));
+        }
+        Some(
+            col.child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .text_color(muted)
+                    .child(icon(glyph, 14.0, muted))
+                    .child(item.value.clone()),
+            )
+            .into_any_element(),
+        )
     }
 }
 

@@ -9,8 +9,9 @@ use crate::state::settings::ViewMode;
 use gpui::prelude::*;
 use gpui::{
     canvas, Context, DispatchPhase,
-    Entity, Focusable, MouseMoveEvent, MouseUpEvent, Window,
+    Entity, MouseMoveEvent, MouseUpEvent, Window,
 };
+use gpui_component::WindowExt;
 
 impl App {
     /// Compute (cols, row_count) for autoscroll in the given pane. Uses tab_state
@@ -248,20 +249,19 @@ impl App {
     /// True when any of the app's text inputs (overlay palettes, renames, the
     /// per-pane filter) currently holds keyboard focus — typing then belongs to
     /// that field, never to type-to-filter.
-    pub(crate) fn any_text_input_focused(&self, window: &Window, cx: &Context<Self>) -> bool {
-        let Some(focused) = window.focused(cx) else {
-            return false;
-        };
-        self.goto_input
-            .iter()
-            .chain(self.palette_input.iter())
-            .chain(self.ext_palette_input.iter())
-            .chain(self.rename_input.iter())
-            .chain(self.batch_pattern_input.iter())
-            .chain(self.batch_replacement_input.iter())
-            .chain(self.rename_edit.iter().map(|r| &r.input))
-            .chain(self.search_inputs.values())
-            .any(|input| input.read(cx).focus_handle(cx) == focused)
+    /// True when the keyboard belongs to a text field or a managed modal, so the
+    /// window-level type-to-filter must not steal the key. Uses gpui-component's
+    /// own focus bookkeeping (`has_focused_input`) instead of a hand-maintained
+    /// list, so it automatically covers every overlay's input — the app fields,
+    /// the right-click menu's search box, and `Dialog`/`Sheet` inputs alike.
+    /// (The old hardcoded list missed the context-menu and dialog inputs, which
+    /// let the pane filter swallow their typing.)
+    pub(crate) fn any_text_input_focused(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        window.has_focused_input(cx) || window.has_active_dialog(cx) || window.has_active_sheet(cx)
     }
 
     /// Window-level type-to-filter: a plain character (no modifiers, not space)

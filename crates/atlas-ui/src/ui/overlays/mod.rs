@@ -67,6 +67,9 @@ impl App {
         if self.state.batch_rename.is_some() {
             layers.push(self.render_batch_rename(window, cx));
         }
+        if self.state.overlay.renaming_profile {
+            layers.push(self.render_rename_profile(window, cx));
+        }
         if !self.state.overlay.op_errors.is_empty() {
             layers.push(self.render_op_errors(cx));
         }

@@ -116,13 +116,8 @@ impl Render for App {
             self.theme_dirty = false;
             self.apply_active_theme(window, cx);
         }
-        // Open the rename-profile dialog once when requested. Latched in state so
-        // any trigger (sidebar button, command palette) can ask for it; opened
-        // here because `gpui_component::Dialog` needs `&mut Window`.
-        if self.state.overlay.renaming_profile {
-            self.state.overlay.renaming_profile = false;
-            self.open_rename_profile_dialog(window, cx);
-        }
+        // (Rename-profile is now a normal overlay layer rendered by `render_overlays`
+        // + focused via the overlay-focus arbiter; no render-time dialog open.)
         // Apply the active profile's sidebar width to the left dock (needs the dock
         // entity + window, which `switch_profile` lacks). One-shot per change.
         if self.sidebar_width_dirty {

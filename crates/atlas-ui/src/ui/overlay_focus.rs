@@ -80,6 +80,9 @@ impl App {
         if self.state.batch_rename.is_some() {
             return Some(self.batch_focus_handle(window, cx));
         }
+        if self.state.overlay.renaming_profile {
+            return Some(self.rename_profile_focus(window, cx));
+        }
         // Text-less modals: a neutral handle so Esc/buttons work but no input steals.
         if self.state.overlay.show_settings
             || self.state.overlay.transfer_conflict.is_some()
