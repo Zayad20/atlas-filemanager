@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::ext::{CommandRef, Registry};
+use crate::ext_model::CommandRef;
 
 /// A command awaiting prompt answers before it runs.
 pub struct PendingCommand {
@@ -15,7 +15,6 @@ pub struct PendingCommand {
 
 #[derive(Default)]
 pub struct ExtState {
-    pub registry: Registry,
     /// Persisted per-extension enabled overrides (id → enabled).
     pub enabled: HashMap<String, bool>,
     pub show_manager: bool,
@@ -23,11 +22,4 @@ pub struct ExtState {
     pub pending: Option<PendingCommand>,
     pub last_error: Option<String>,
     pub feedback: Option<String>,
-}
-
-impl ExtState {
-    /// Rebuild the registry from disk using the current enabled overrides.
-    pub fn reload(&mut self) {
-        self.registry = Registry::load(&self.enabled);
-    }
 }

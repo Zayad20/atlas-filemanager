@@ -1,0 +1,66 @@
+[package]
+name = "atlas-ui"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# Cloud / rclone integration. Mirrors the binary's `cloud` feature; forwards to the
+# backend + model crates (the cloud HTTP/crypto deps live in `atlas-core`).
+cloud = ["atlas-core/cloud", "atlas-model/cloud"]
+# RAR archive navigation. Forwards to the core crate where `rar_backend` lives.
+rar = ["atlas-core/rar"]
+
+[dependencies]
+atlas-core.workspace = true
+atlas-model.workspace = true
+rust-i18n.workspace = true
+
+# --- gpui (renderer) ----------------------------------------------------------
+# Same bare-git zed source spec as gpui-component's transitive dep (no `rev`), or
+# cargo treats them as two distinct `App` types. Commit pinned by Cargo.lock.
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "b2472cd798422b05e2448d07aaab1550c21155f7" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "b2472cd798422b05e2448d07aaab1550c21155f7" }
+
+tokio.workspace = true
+flume.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# gpui's async executor uses smol; `smol::Timer` drives the BgResult drain loop.
+smol = "2"
+arboard = "3"
+dirs = "6"
+image = "0.25"
+open = "5"
+rfd = "0.15"
+resvg = "0.45"
+
+[target.'cfg(windows)'.dependencies]
+# Windows OLE drag-and-drop (IDataObject, IDropSource, IDropTarget, DoDragDrop).
+# Version matches what gpui_windows already pulls in (windows = "0.61") so no
+# duplicate linking.
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_SystemServices",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# windows-core is a direct dep because the #[implement] macro generates code
+# that references `windows_core::IUnknownImpl` by the crate name directly.
+windows-core = "0.61"
+# Raw window handle — exposes HWND via gpui's HasWindowHandle impl.
+# Version 0.6 matches the one gpui already depends on.
+raw-window-handle = "0.6"
+
+[lints]
+workspace = true

@@ -1,0 +1,31 @@
+id = "media-thumbs"
+name = "Media Thumbnails"
+version = "0.1.0"
+description = "Grid thumbnails for video and PSD/large-raster files using local tools"
+kind = "declarative"
+
+# Thumbnailer commands (thumbnail = true) are not shown in the menu. Atlas runs them in
+# the background for files they `accept`, substituting {input} and {output} (a temp PNG),
+# then caches the result as a grid thumbnail. They only activate when their `requires`
+# binaries are on PATH, so missing tools simply fall back to the file-type glyph.
+# Placeholders: {input} {output} {dir} {stem} {ext}
+
+[[commands]]
+id = "video-thumb"
+title = "Video thumbnail"
+thumbnail = true
+requires = ["ffmpeg"]
+run = "ffmpeg -y -ss 1 -i {input} -frames:v 1 -vf scale=384:-1 {output}"
+accepts = { extensions = ["mp4", "mkv", "mov", "webm", "avi", "flv", "wmv", "m4v", "mpeg", "mpg"] }
+
+[[commands]]
+id = "raster-thumb"
+title = "PSD / large-raster thumbnail"
+thumbnail = true
+requires = ["magick"]
+run = "magick {input}[0] -flatten -resize 384x384 {output}"
+accepts = { extensions = ["psd", "psb", "xcf", "heic", "heif", "avif", "tga", "dds"] }
+
+# 3D model thumbnails need a headless renderer (e.g. a glTF/OBJ rasterizer). Add a
+# command here with `requires = ["<your-tool>"]` and a `run` that writes a PNG to
+# {output}; Atlas will pick it up automatically.

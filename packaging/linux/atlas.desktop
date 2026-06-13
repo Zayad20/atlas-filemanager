@@ -3,8 +3,8 @@ Type=Application
 Name=Atlas
 GenericName=File Manager
 Comment=Modern cross-platform file manager
-Exec=Atlas %F
-Icon=Atlas
+Exec=atlas %F
+Icon=atlas
 Terminal=false
 Categories=System;FileManager;Utility;
 # Registering inode/directory makes Atlas a candidate to open folders, and lets

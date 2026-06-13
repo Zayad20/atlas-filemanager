@@ -1,50 +1,131 @@
-use crate::state::file_entry::{SortColumn, SortDir};
-use crate::state::settings::ViewMode;
-use crate::state::tag_cache::TagId;
+use crate::file_entry::{SortColumn, SortDir};
+use crate::location::Location;
+use crate::settings::ViewMode;
+use crate::tag_cache::TagId;
 use std::path::PathBuf;
 
-pub type PaneId = crate::state::layout_tree::TileId;
-pub type TabId = crate::state::layout_tree::TileId;
+pub type PaneId = crate::layout_tree::TileId;
+pub type TabId = crate::layout_tree::TileId;
 
-/// What a tab is showing. Normal tabs list a real directory; virtual tabs (such as
-/// tag results) get their entries from somewhere other than `read_dir`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub enum TabSource {
-    /// List the real directory at `TabData.path`.
+// Kept privately for compat deserialization of sessions saved before Location migration.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
+enum TabSource {
     #[default]
     Directory,
-    /// Show every file carrying the given tag. `TabData.path` is a display-only sentinel.
     Tag(TagId),
-    /// Browse a cloud/network remote in Access Mode (no FUSE mount). `id` is the
-    /// rclone remote name; `path` is the remote-relative directory being shown.
-    /// `TabData.path` is a display-only sentinel.
     #[cfg(feature = "cloud")]
     Remote { id: String, path: String },
+    Archive { inner: PathBuf },
 }
 
-impl TabSource {
-    pub fn is_directory(&self) -> bool {
-        matches!(self, TabSource::Directory)
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TabData {
-    pub path: PathBuf,
+    pub location: Location,
     pub sort_col: SortColumn,
     pub sort_dir: SortDir,
-    pub history: Vec<PathBuf>,
-    pub history_forward: Vec<PathBuf>,
+    pub history: Vec<Location>,
+    pub history_forward: Vec<Location>,
     #[serde(default)]
     pub view_mode: ViewMode,
     #[serde(default = "default_thumbnail_size")]
     pub thumbnail_size: f32,
     #[serde(default)]
     pub preview_enabled: bool,
-    /// What this tab shows (real directory vs. virtual results). Defaults to
-    /// `Directory` so sessions saved before this field deserialize unchanged.
+    #[serde(default = "default_true")]
+    pub folders_first: bool,
+    #[serde(default = "default_true")]
+    pub show_files: bool,
+    #[serde(default = "default_true")]
+    pub show_folders: bool,
+}
+
+/// Compat deserializer: accepts both the new format (`location: Location`) and the
+/// old format (`path + source + history: Vec<PathBuf>`).
+#[derive(serde::Deserialize)]
+struct TabDataRaw {
+    location: Option<Location>,
+    path: Option<PathBuf>,
     #[serde(default)]
-    pub source: TabSource,
+    source: TabSource,
+    #[serde(default, deserialize_with = "deser_history")]
+    history: Vec<Location>,
+    #[serde(default, deserialize_with = "deser_history")]
+    history_forward: Vec<Location>,
+    #[serde(default)]
+    sort_col: SortColumn,
+    #[serde(default)]
+    sort_dir: SortDir,
+    #[serde(default)]
+    view_mode: ViewMode,
+    #[serde(default = "default_thumbnail_size")]
+    thumbnail_size: f32,
+    #[serde(default)]
+    preview_enabled: bool,
+    #[serde(default = "default_true")]
+    folders_first: bool,
+    #[serde(default = "default_true")]
+    show_files: bool,
+    #[serde(default = "default_true")]
+    show_folders: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum LocationOrPath {
+    Location(Location),
+    Path(PathBuf),
+}
+
+fn deser_history<'de, D>(d: D) -> Result<Vec<Location>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    Vec::<LocationOrPath>::deserialize(d).map(|v| {
+        v.into_iter()
+            .map(|item| match item {
+                LocationOrPath::Location(l) => l,
+                LocationOrPath::Path(p) => Location::Directory(p),
+            })
+            .collect()
+    })
+}
+
+impl From<TabDataRaw> for TabData {
+    fn from(r: TabDataRaw) -> Self {
+        let location = match r.location {
+            Some(loc) => loc,
+            None => {
+                let path = r.path.unwrap_or_default();
+                match r.source {
+                    TabSource::Directory => Location::Directory(path),
+                    TabSource::Archive { inner } => Location::Archive { archive: path, inner },
+                    TabSource::Tag(id) => Location::Tag(id),
+                    #[cfg(feature = "cloud")]
+                    TabSource::Remote { id, path: rpath } => Location::Remote { id, path: rpath },
+                }
+            }
+        };
+        Self {
+            location,
+            sort_col: r.sort_col,
+            sort_dir: r.sort_dir,
+            history: r.history,
+            history_forward: r.history_forward,
+            view_mode: r.view_mode,
+            thumbnail_size: r.thumbnail_size,
+            preview_enabled: r.preview_enabled,
+            folders_first: r.folders_first,
+            show_files: r.show_files,
+            show_folders: r.show_folders,
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for TabData {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        TabDataRaw::deserialize(d).map(Into::into)
+    }
 }
 
 impl TabData {
@@ -55,7 +136,7 @@ impl TabData {
         preview_enabled: bool,
     ) -> Self {
         Self {
-            path,
+            location: Location::Directory(path),
             sort_col: SortColumn::default(),
             sort_dir: SortDir::default(),
             history: Vec::new(),
@@ -63,20 +144,24 @@ impl TabData {
             view_mode,
             thumbnail_size,
             preview_enabled,
-            source: TabSource::Directory,
+            folders_first: true,
+            show_files: true,
+            show_folders: true,
         }
     }
 }
 
-fn default_thumbnail_size() -> f32 {
+const fn default_thumbnail_size() -> f32 {
     128.0
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 #[cfg(test)]
 mod tests {
-    use super::TabData;
-    use crate::state::settings::ViewMode;
-    use std::path::PathBuf;
+    use super::*;
 
     #[test]
     fn persists_view_per_tab() {
@@ -85,12 +170,13 @@ mod tests {
         let restored: TabData = serde_json::from_str(&json).unwrap();
 
         assert_eq!(restored.view_mode, ViewMode::Grid);
-        assert_eq!(restored.thumbnail_size, 192.0);
+        assert!((restored.thumbnail_size - 192.0).abs() < f32::EPSILON);
         assert!(restored.preview_enabled);
     }
 
     #[test]
     fn restores_tabs_saved_before_preview_was_per_tab() {
+        // Old format: path + source (default Directory) without preview_enabled.
         let json = r#"{
             "path":"/tmp",
             "sort_col":"Name",
@@ -101,7 +187,55 @@ mod tests {
             "thumbnail_size":128.0
         }"#;
         let restored: TabData = serde_json::from_str(json).unwrap();
-
         assert!(!restored.preview_enabled);
+        assert!(restored.folders_first);
+        assert!(restored.show_files);
+        assert!(restored.show_folders);
+        assert_eq!(
+            restored.location,
+            Location::Directory(PathBuf::from("/tmp"))
+        );
+    }
+
+    #[test]
+    fn deserializes_new_location_format() {
+        let json = r#"{
+            "location": {"Directory": "/home/user/docs"},
+            "sort_col": "Name",
+            "sort_dir": "Asc",
+            "history": [{"Directory": "/home/user"}],
+            "history_forward": [],
+            "view_mode": "Details",
+            "thumbnail_size": 128.0,
+            "preview_enabled": false
+        }"#;
+        let td: TabData = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            td.location,
+            Location::Directory(PathBuf::from("/home/user/docs"))
+        );
+        assert_eq!(td.history.len(), 1);
+    }
+
+    #[test]
+    fn old_history_vec_pathbuf_upgrades_to_location() {
+        let json = r#"{
+            "path": "/home/user/docs",
+            "source": "Directory",
+            "sort_col": "Name",
+            "sort_dir": "Asc",
+            "history": ["/home/user", "/home"],
+            "history_forward": [],
+            "view_mode": "Details",
+            "thumbnail_size": 128.0,
+            "preview_enabled": false
+        }"#;
+        let td: TabData = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            td.location,
+            Location::Directory(PathBuf::from("/home/user/docs"))
+        );
+        assert_eq!(td.history.len(), 2);
+        assert!(matches!(td.history[0], Location::Directory(_)));
     }
 }

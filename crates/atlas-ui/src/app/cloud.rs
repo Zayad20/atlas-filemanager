@@ -1,3 +1,4 @@
+#![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
 //! App-side glue for the cloud extension: routes `CloudAction`s to the worker,
 //! applies `BgResult`s to `CloudState`, and handles Access-mode remote browsing.
 
@@ -10,7 +11,8 @@ use crate::cloud::{
 };
 use crate::state::app_state::BgResult;
 use crate::state::cloud_state::AddRemoteKind;
-use crate::state::pane::{TabData, TabSource};
+use crate::state::location::Location;
+use crate::state::pane::TabData;
 use crate::state::settings::ViewMode;
 use crate::state::tab::LoadState;
 
@@ -51,7 +53,7 @@ impl App {
         match action {
             CloudAction::ShowAddDialog(show) => {
                 if show {
-                    self.state.cloud.add_form = Default::default();
+                    self.state.cloud.add_form = crate::state::cloud_state::AddRemoteForm::default();
                 }
                 self.state.cloud.show_add_dialog = show;
             }
@@ -116,12 +118,12 @@ impl App {
         };
         // Non-OAuth backends need a host; OAuth backends need nothing but a name.
         if !kind.is_oauth() && host.is_empty() {
-            self.state.cloud.last_error = Some("Host is required".into());
+            self.state.cloud.last_error = Some(rust_i18n::t!("cloud_host_required").into());
             return;
         }
         let display = match form.name.trim() {
             "" if kind.is_oauth() => kind.label().to_string(),
-            "" => host.clone(),
+            "" => host,
             name => name.to_string(),
         };
         let id = self.unique_remote_id(&display);
@@ -140,7 +142,7 @@ impl App {
         self.state.cloud.remotes.push(remote.clone());
         let _ = self.cloud_tx.send(CloudCmd::AddRemote {
             remote,
-            secret: form.password.clone(),
+            secret: form.password,
         });
         self.state.cloud.show_add_dialog = false;
     }
@@ -152,12 +154,23 @@ impl App {
             .map(|c| if c.is_alphanumeric() { c } else { '-' })
             .collect();
         let base = base.trim_matches('-').to_lowercase();
-        let base = if base.is_empty() { "remote".into() } else { base };
+        let base = if base.is_empty() {
+            "remote".into()
+        } else {
+            base
+        };
         let exists = |id: &str| self.state.cloud.remotes.iter().any(|r| r.id == id);
         if !exists(&base) {
             return base;
         }
-        (2..).map(|n| format!("{base}-{n}")).find(|id| !exists(id)).unwrap()
+        let mut n = 2u32;
+        loop {
+            let candidate = format!("{base}-{n}");
+            if !exists(&candidate) {
+                return candidate;
+            }
+            n += 1;
+        }
     }
 
     /// Open a new Access-mode tab browsing the remote root.
@@ -174,7 +187,7 @@ impl App {
             self.state.settings.thumbnail_size,
             self.state.settings.show_inspector,
         );
-        tab_data.source = TabSource::Remote {
+        tab_data.location = Location::Remote {
             id: id.clone(),
             path: String::new(),
         };
@@ -186,15 +199,15 @@ impl App {
     /// Re-list a remote tab at `path` (Access-mode directory descent).
     pub(crate) fn navigate_remote(&mut self, tab_id: TileId, id: RemoteId, path: String) {
         if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id) {
-            pane.source = TabSource::Remote {
+            pane.location = Location::Remote {
                 id: id.clone(),
                 path: path.clone(),
             };
-            pane.path = PathBuf::from(format!("remote:{id}/{path}"));
         }
         if let Some(ts) = self.state.tab_states.get_mut(&tab_id) {
             ts.begin_navigation();
         }
+        self.search_inputs.remove(&tab_id);
         self.spawn_list_remote(tab_id, id, path);
         self.state.focused_tile = tab_id;
     }
@@ -260,12 +273,19 @@ impl App {
                 let _ = std::process::Command::new("fusermount3")
                     .args(["-u", &p])
                     .status()
-                    .or_else(|_| std::process::Command::new("fusermount").args(["-u", &p]).status())
-                    .or_else(|_| std::process::Command::new("umount").arg(p.as_ref()).status());
+                    .or_else(|_| {
+                        std::process::Command::new("fusermount")
+                            .args(["-u", &p])
+                            .status()
+                    })
+                    .or_else(|_| {
+                        std::process::Command::new("umount")
+                            .arg(p.as_ref())
+                            .status()
+                    });
             }
         }
-        let pid = crate::cloud::rclone::sidecar::RCD_PID
-            .load(std::sync::atomic::Ordering::SeqCst);
+        let pid = crate::cloud::rclone::sidecar::RCD_PID.load(std::sync::atomic::Ordering::SeqCst);
         if pid != 0 {
             let _ = std::process::Command::new("kill")
                 .arg(pid.to_string())
@@ -277,20 +297,18 @@ impl App {
     /// (remote-relative) into the downloads folder and open them when done.
     /// Returns `true` when handled (so the caller skips the local open path).
     pub(crate) fn open_remote_paths(&mut self, paths: &[PathBuf]) -> bool {
-        let id = match self
+        let Some(Location::Remote { id, .. }) = self
             .tab_data_for(self.state.focused_tile)
-            .map(|td| td.source.clone())
-        {
-            Some(TabSource::Remote { id, .. }) => id,
-            _ => return false,
+            .map(|td| td.location.clone())
+        else {
+            return false;
         };
         let dest_dir = crate::cloud::downloads_dir();
         for path in paths {
             let remote_path = path.to_string_lossy().into_owned();
             let name = path
                 .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| remote_path.clone());
+                .map_or_else(|| remote_path.clone(), |n| n.to_string_lossy().into_owned());
             let _ = self.cloud_tx.send(CloudCmd::EnqueueDownload {
                 id: id.clone(),
                 remote_path,
@@ -368,8 +386,8 @@ impl App {
                     .into_iter()
                     .filter(|tile| {
                         matches!(
-                            self.tab_data_for(*tile).map(|td| &td.source),
-                            Some(TabSource::Remote { id: rid, path: rp })
+                            self.tab_data_for(*tile).map(|td| td.location.clone()),
+                            Some(Location::Remote { id: ref rid, path: ref rp })
                                 if *rid == id && *rp == path
                         )
                     })

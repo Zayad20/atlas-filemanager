@@ -217,25 +217,43 @@ pub fn is_archive_path(path: &Path) -> bool {
 /// The `password` parameter is accepted but only used by backends that support
 /// encryption (zip AES, 7z, rar — wired up in F5).
 pub fn open_with(path: &Path, #[allow(unused_variables)] password: Option<&str>) -> Option<Arc<dyn ArchiveProvider>> {
-    cache::get_or_open(path, |p| match archive_format(p)? {
-        ArchiveFormat::Zip => zip_backend::ZipProvider::new(p)
-            .ok()
-            .map(|b| Arc::new(b) as Arc<dyn ArchiveProvider>),
-        ArchiveFormat::Tar(compression) => tar_backend::TarProvider::new(p, compression)
-            .ok()
-            .map(|b| Arc::new(b) as Arc<dyn ArchiveProvider>),
-        #[cfg(feature = "rar")]
-        ArchiveFormat::Rar => rar_backend::RarProvider::new(p)
-            .ok()
-            .map(|b| Arc::new(b) as Arc<dyn ArchiveProvider>),
-        #[cfg(not(feature = "rar"))]
-        ArchiveFormat::Rar => None,
-        #[cfg(feature = "sevenz")]
-        ArchiveFormat::SevenZ => sevenz_backend::SevenzProvider::new(p, password)
-            .ok()
-            .map(|b| Arc::new(b) as Arc<dyn ArchiveProvider>),
-        #[cfg(not(feature = "sevenz"))]
-        ArchiveFormat::SevenZ => None,
+    let fmt = archive_format(path);
+    tracing::debug!(?path, ?fmt, "archive::open_with");
+    cache::get_or_open(path, |p| {
+        let result = match archive_format(p)? {
+            ArchiveFormat::Zip => zip_backend::ZipProvider::new(p)
+                .map_err(|e| { tracing::warn!(%e, ?p, "ZIP open failed"); e })
+                .ok()
+                .map(|b| Arc::new(b) as Arc<dyn ArchiveProvider>),
+            ArchiveFormat::Tar(compression) => tar_backend::TarProvider::new(p, compression)
+                .map_err(|e| { tracing::warn!(%e, ?p, "TAR open failed"); e })
+                .ok()
+                .map(|b| Arc::new(b) as Arc<dyn ArchiveProvider>),
+            #[cfg(feature = "rar")]
+            ArchiveFormat::Rar => rar_backend::RarProvider::new(p)
+                .map_err(|e| { tracing::warn!(%e, ?p, "RAR open failed"); e })
+                .ok()
+                .map(|b| Arc::new(b) as Arc<dyn ArchiveProvider>),
+            #[cfg(not(feature = "rar"))]
+            ArchiveFormat::Rar => {
+                tracing::warn!(?p, "RAR support not compiled (feature 'rar' disabled)");
+                None
+            }
+            #[cfg(feature = "sevenz")]
+            ArchiveFormat::SevenZ => sevenz_backend::SevenzProvider::new(p, password)
+                .map_err(|e| { tracing::warn!(%e, ?p, "7z open failed"); e })
+                .ok()
+                .map(|b| Arc::new(b) as Arc<dyn ArchiveProvider>),
+            #[cfg(not(feature = "sevenz"))]
+            ArchiveFormat::SevenZ => {
+                tracing::warn!(?p, "7z support not compiled (feature 'sevenz' disabled)");
+                None
+            }
+        };
+        if result.is_none() {
+            tracing::warn!(?p, "archive::open_with returned None");
+        }
+        result
     })
 }
 

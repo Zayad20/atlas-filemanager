@@ -1,0 +1,7 @@
+// Phase 4
+pub mod nucleo_pool;
+// One-shot fuzzy ranking for the command/ext palettes.
+pub mod fuzzy;
+// Content search (goto bar "search in content") via ripgrep's library crates.
+pub mod content;
+pub mod name;

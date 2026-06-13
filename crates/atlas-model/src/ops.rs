@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use crate::state::undo::UndoStack;
+use crate::undo::UndoStack;
 
 pub struct ClipboardState {
     pub paths: Vec<PathBuf>,
@@ -21,22 +21,115 @@ pub enum Resolution {
     Rename,
 }
 
-/// Pending paste that collided with existing names at the destination. While this
-/// is `Some`, the conflict dialog is shown and the paste is held until the user
-/// chooses a [`Resolution`] (or cancels).
-pub struct PasteConflictState {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferKind {
+    Copy,
+    Move,
+}
+
+/// Where a transfer was initiated from. Drives toast wording and per-origin
+/// behavior (e.g. cleaning up temp files extracted for an external drop).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferOrigin {
+    Paste,
+    /// Paste of files *cut in another app* (Explorer): on success,
+    /// `Performed DropEffect = MOVE` is written back so the source clears its
+    /// cut state.
+    PasteExternalCut,
+    DndInternal,
+    DndExternal,
+    Menu,
+    Undo,
+}
+
+/// Conflict handling for an entire transfer. `Ask` holds the transfer and opens
+/// the conflict dialog; the rest execute immediately.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConflictPolicy {
+    Ask,
+    OverwriteAll,
+    SkipAll,
+    RenameAll,
+    /// One [`Resolution`] per conflict, parallel to
+    /// [`TransferConflictState::conflicts`].
+    PerItem(Vec<Resolution>),
+}
+
+/// A single source→destination transfer of one or more files, with all the
+/// context needed to validate, resolve conflicts, and execute it.
+#[derive(Debug, Clone)]
+pub struct TransferRequest {
+    pub sources: Vec<PathBuf>,
     pub dest: PathBuf,
-    pub is_cut: bool,
-    /// Sources whose target name already exists at `dest`.
-    pub conflicts: Vec<PathBuf>,
-    /// Sources with no collision; pasted as-is once the user confirms.
+    pub kind: TransferKind,
+    pub policy: ConflictPolicy,
+    pub origin: TransferOrigin,
+}
+
+/// One name collision at the destination, with enough detail for the dialog
+/// (sizes/dates are stat'ed once at detection time, not in the render loop).
+#[derive(Debug, Clone)]
+pub struct ConflictItem {
+    pub source: PathBuf,
+    /// The pre-existing entry at the destination that `source` collides with.
+    pub existing: PathBuf,
+    pub is_dir: bool,
+    pub src_size: Option<u64>,
+    pub src_modified: Option<std::time::SystemTime>,
+    pub dst_size: Option<u64>,
+    pub dst_modified: Option<std::time::SystemTime>,
+}
+
+/// Pending transfer that collided with existing names at the destination. While
+/// this is `Some`, the conflict dialog is shown and the transfer is held until
+/// the user picks a policy (or cancels).
+pub struct TransferConflictState {
+    pub request: TransferRequest,
+    pub conflicts: Vec<ConflictItem>,
+    /// Sources with no collision; transferred as-is once the user confirms.
     pub clean: Vec<PathBuf>,
+    /// `Some` while the dialog is in "decide one by one" mode: the pending
+    /// choice for each conflict, parallel to `conflicts`.
+    pub per_item: Option<Vec<Resolution>>,
+}
+
+/// A per-item failure surfaced to the user as its own toast.
+#[derive(Debug, Clone)]
+pub struct OpError {
+    pub path: PathBuf,
+    pub message: String,
+}
+
+impl std::fmt::Display for OpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = self.path.file_name().map_or_else(
+            || self.path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        write!(f, "{name}: {}", self.message)
+    }
+}
+
+/// Outcome of an executed transfer. `completed` holds the *real* src→dst pairs
+/// (post conflict-resolution), which is what undo records.
+#[derive(Debug, Clone, Default)]
+pub struct TransferReport {
+    pub completed: Vec<(PathBuf, PathBuf)>,
+    pub skipped: Vec<PathBuf>,
+    pub errors: Vec<OpError>,
+    pub cancelled: bool,
 }
 
 pub struct OpState {
     pub done: u64,
     pub total: u64,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
     pub current_file: PathBuf,
+    /// Short verb for the status bar ("Copiando", "Moviendo", "Eliminando"…).
+    pub label: String,
+    /// Set to request cancellation; the worker checks it per file and per chunk.
+    pub cancel: Arc<AtomicBool>,
 }
 
 pub struct OperationManager {
@@ -62,17 +155,23 @@ impl OperationManager {
         self.op_id_counter.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Register a new background operation and return its ID.
-    pub fn start_op(&mut self, count: usize) -> u64 {
+    /// Register a new background operation with a status-bar label; returns the
+    /// op ID and the cancellation flag to hand to the worker.
+    pub fn start_op_labeled(&mut self, count: usize, label: String) -> (u64, Arc<AtomicBool>) {
         let op_id = self.next_op_id();
+        let cancel = Arc::new(AtomicBool::new(false));
         self.active_ops.insert(
             op_id,
             OpState {
                 done: 0,
                 total: count as u64,
+                bytes_done: 0,
+                bytes_total: 0,
                 current_file: PathBuf::new(),
+                label,
+                cancel: cancel.clone(),
             },
         );
-        op_id
+        (op_id, cancel)
     }
 }

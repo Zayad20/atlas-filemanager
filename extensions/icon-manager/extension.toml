@@ -1,0 +1,22 @@
+id = "icon-manager"
+name = "Icon Theme Manager"
+version = "0.1.0"
+description = "Downloads and manages VSCode icon themes."
+kind = "wasm"
+wasm_module = "plugin.wasm"
+
+[[commands]]
+id = "icon-manager.download-theme"
+title = "Download Icon Theme..."
+run = "{}"
+per_file = false
+[commands.accepts]
+any = true
+
+[[commands]]
+id = "icon-manager.select-theme"
+title = "Select Active Theme..."
+run = "{}"
+per_file = false
+[commands.accepts]
+any = true

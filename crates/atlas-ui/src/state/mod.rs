@@ -1,18 +1,4 @@
-pub mod app_state;
-#[cfg(feature = "cloud")]
-pub mod cloud_state;
-pub mod drag;
-pub mod ext_state;
-pub mod file_entry;
-pub mod layout_tree;
-pub mod ops;
-pub mod overlay;
-pub mod pane;
-pub mod preview_cache;
-pub mod profiles;
-pub mod settings;
-pub mod tab;
-pub mod tag_cache;
-pub mod undo;
-pub mod batch_rename;
-pub mod space_lens;
+//! FASE J: `state` now lives in the `atlas-model` crate; this shim re-exports it so
+//! the binary's existing `crate::state::…` paths keep resolving unchanged.
+//! (`space_lens` moved to `atlas-core` as a scan engine.)
+pub use atlas_model::*;

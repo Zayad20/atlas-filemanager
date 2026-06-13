@@ -1,21 +1,978 @@
-use crate::input::action::Action;
-use crate::fs::preview::{PreviewResult, DIR_PREVIEW_LIMIT};
-use crate::state::app_state::AppState;
-use crate::state::file_entry::{FileEntry, FileKind};
-use crate::state::preview_cache::MultiPreviewState;
+//! FASE5 — Inspector / preview panel (gpui port of the egui `src/ui/inspector.rs`).
+//!
+//! Renders the right-hand preview panel for the focused tab's selection:
+//! single-file metadata + content preview (text/markdown/image/pdf/dir/binary),
+//! or a multi-selection summary with a thumbnail stack.
+//!
+//! Framework split (per the migration rules):
+//! - `state::preview` (neutral) holds the decoded RGBA (`PreviewResult` / `ImageData`).
+//! - The GPU textures (`Arc<RenderImage>`) are cached HERE, on the UI side, in new
+//!   `App` fields (`preview_textures` / `multi_textures`). `state` never holds a
+//!   renderer handle.
+//!
+//! The egui version drove preview loading through `sync_active_preview(ctx)` which
+//! needed an `egui::Context` for `request_repaint`. Under gpui the ~60 Hz drain loop
+//! already repaints when background results land, so the gpui variants drop `ctx`
+//! entirely (`sync_active_preview_gpui` / `load_preview_gpui` / `load_multi_preview_gpui`).
+
+use crate::app::App;
+use crate::state::file_entry::FileKind;
+use crate::state::layout_tree::TileId;
+use crate::state::preview_cache::{
+    MarkdownBlock, MdSpan, MultiPreviewState, PreviewRequest, PreviewResult, DIR_PREVIEW_LIMIT,
+};
 use crate::state::settings::ViewMode;
 use crate::state::tab::TabState;
-use crate::state::tag_cache::{TagCache, TagId};
+use crate::ui::icons::{file_type_icon, icon, AtlasIcon};
 use crate::util::display::{format_date, format_size};
-use crate::util::extensions::ExtensionRegistry;
-use std::borrow::Cow;
-use std::path::PathBuf;
-use std::time::SystemTime;
+use gpui::prelude::*;
+use gpui::{
+    div, img, px, AnyElement, ClickEvent, Context, Hsla, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, RenderImage, ScrollDelta, ScrollWheelEvent, SharedString, Window,
+};
+use gpui_component::{
+    h_flex, v_flex, ActiveTheme,
+};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-thread_local! {
-    static MARKDOWN_CACHE: std::cell::RefCell<egui_commonmark::CommonMarkCache> =
-        std::cell::RefCell::new(egui_commonmark::CommonMarkCache::default());
+
+
+/// Scale `w`×`h` to fit inside `box_w`×`box_h` preserving aspect ratio. Returns the
+/// fitted display size. A zero/empty source falls back to the box size.
+fn fit_into(w: f32, h: f32, box_w: f32, box_h: f32) -> (f32, f32) {
+    if w <= 0.0 || h <= 0.0 {
+        return (box_w, box_h);
+    }
+    let scale = (box_w / w).min(box_h / h);
+    (w * scale, h * scale)
 }
+
+fn preview_language_for_path(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "rs" => "rust",
+        "js" | "jsx" => "javascript",
+        "ts" | "tsx" => "typescript",
+        "py" => "python",
+        "go" => "go",
+        "java" => "java",
+        "c" | "h" => "c",
+        "cc" | "cpp" | "cxx" | "hpp" => "cpp",
+        "cs" => "c_sharp",
+        "rb" => "ruby",
+        "php" => "php",
+        "swift" => "swift",
+        "kt" | "kts" => "kotlin",
+        "sh" | "bash" => "bash",
+        "ps1" => "powershell",
+        "html" | "htm" => "html",
+        "css" => "css",
+        "json" => "json",
+        "toml" => "toml",
+        "yaml" | "yml" => "yaml",
+        "xml" => "xml",
+        "md" | "markdown" => "markdown",
+        _ => "text",
+    }
+}
+
+/// Upload tightly-packed RGBA8 (`width*height*4`) to a gpui `RenderImage`. gpui's
+/// renderer expects BGRA, so we swap R/B per pixel (same as gpui's own decoder).
+pub fn rgba_to_render_image(rgba: &[u8], width: usize, height: usize) -> Option<Arc<RenderImage>> {
+    if width == 0 || height == 0 || rgba.len() < width * height * 4 {
+        return None;
+    }
+    let mut buf = rgba[..width * height * 4].to_vec();
+    for pixel in buf.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    let image = image::RgbaImage::from_raw(width as u32, height as u32, buf)?;
+    let frame = image::Frame::new(image);
+    Some(Arc::new(RenderImage::new(vec![frame])))
+}
+
+impl App {
+    // ── Preview loading (gpui variants, no egui ctx) ─────────────────────────
+
+    /// gpui replacement for `sync_active_preview(ctx)`: decides what (if anything)
+    /// should be previewed for the focused tab and kicks off a debounced load. The
+    /// drain loop handles repaints, so no `ctx.request_repaint` is needed.
+    pub(crate) fn sync_active_preview_gpui(&mut self) {
+        let tab = self.state.focused_tile;
+        if !self.preview_visible_for_focused() {
+            self.pending_preview = None;
+            return;
+        }
+        let request = self.state.active_preview_request();
+        let Some(request) = request else {
+            self.pending_preview = None;
+            self.state.clear_preview(tab);
+            return;
+        };
+
+        let already_loaded = match &request {
+            PreviewRequest::Single(path) => self.state.preview.paths.get(&tab) == Some(path),
+            PreviewRequest::ArchiveSingle { inner, .. } => {
+                self.state.preview.paths.get(&tab).map(PathBuf::as_path) == Some(inner.as_path())
+            }
+            PreviewRequest::Multiple { key, .. } => self
+                .state
+                .preview
+                .multi
+                .get(&tab)
+                .is_some_and(|multi| &multi.key == key),
+        };
+        if already_loaded {
+            return;
+        }
+
+        // The egui path debounced via `ctx.request_repaint_after`; under gpui a render
+        // only happens when state changed (selection/nav already called `cx.notify()`),
+        // so we kick the load immediately. Superseded loads are discarded on arrival
+        // (`BgResult::PreviewReady` checks `preview.paths`), so fast arrow-key scrolling
+        // is still safe. (`pending_preview` / `PREVIEW_DEBOUNCE` remain used by the
+        // legacy egui `sync_active_preview` path.)
+        match request {
+            PreviewRequest::Single(path) => self.load_preview_gpui(tab, path),
+            PreviewRequest::ArchiveSingle { archive, inner } => {
+                self.load_archive_preview_gpui(tab, archive, inner);
+            }
+            PreviewRequest::Multiple { key, paths } => {
+                self.load_multi_preview_gpui(tab, key, paths);
+            }
+        }
+    }
+
+    /// Is the preview panel visible for the focused tab? True when the global
+    /// `show_inspector` is on OR the per-tab `preview_enabled` toggle is set.
+    pub(crate) fn preview_visible_for_focused(&self) -> bool {
+        let global = self.state.settings.show_inspector;
+        let per_tab = self
+            .state
+            .active_tab_data()
+            .is_some_and(|d| d.preview_enabled);
+        global || per_tab
+    }
+
+    fn load_preview_gpui(&mut self, tab: TileId, path: PathBuf) {
+        if self.state.preview.paths.get(&tab).map(PathBuf::as_path) == Some(path.as_path()) {
+            return;
+        }
+        // New selection: reset zoom/pan (keep `expanded` so browsing in the big view
+        // stays open).
+        if let Some(v) = self.preview_view.get_mut(&tab) {
+            v.zoom = 1.0;
+            v.pan_x = 0.0;
+            v.pan_y = 0.0;
+        }
+        self.preview_drag = None;
+        self.state.preview.paths.insert(tab, path.clone());
+        self.state.preview.results.remove(&tab);
+        self.state.preview.multi.remove(&tab);
+        self.preview_textures.remove(&tab);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            crate::fs::preview::load_preview(tab, path, tx).await;
+        });
+    }
+
+    fn load_archive_preview_gpui(&mut self, tab: TileId, archive: PathBuf, inner: PathBuf) {
+        if self.state.preview.paths.get(&tab).map(PathBuf::as_path) == Some(inner.as_path()) {
+            return;
+        }
+        if let Some(v) = self.preview_view.get_mut(&tab) {
+            v.zoom = 1.0;
+            v.pan_x = 0.0;
+            v.pan_y = 0.0;
+        }
+        self.preview_drag = None;
+        self.state.preview.paths.insert(tab, inner.clone());
+        self.state.preview.results.remove(&tab);
+        self.state.preview.multi.remove(&tab);
+        self.preview_textures.remove(&tab);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            crate::fs::preview::load_archive_preview(tab, archive, inner, tx).await;
+        });
+    }
+
+    fn load_multi_preview_gpui(
+        &mut self,
+        tab: TileId,
+        key: crate::state::preview_cache::MultiPreviewKey,
+        paths: Vec<PathBuf>,
+    ) {
+        if self
+            .state
+            .preview
+            .multi
+            .get(&tab)
+            .is_some_and(|multi| multi.key == key)
+        {
+            return;
+        }
+        self.state.clear_preview(tab);
+        self.preview_textures.remove(&tab);
+        self.multi_textures.remove(&tab);
+        self.state.preview.multi.insert(
+            tab,
+            MultiPreviewState {
+                key: key.clone(),
+                paths: paths.clone(),
+                images: Vec::with_capacity(paths.len()),
+            },
+        );
+        for (index, path) in paths.into_iter().enumerate() {
+            let tx = self.tx.clone();
+            let key = key.clone();
+            self.rt.spawn(async move {
+                crate::fs::preview::load_multi_thumbnail(tab, key, index, path, tx).await;
+            });
+        }
+    }
+
+    /// Get-or-build the cached single-preview texture for the focused tab from the
+    /// decoded RGBA in `state.preview.results` (Image / Pdf variants). Keyed by path
+    /// so a new selection invalidates the old texture.
+    fn focused_preview_texture(&mut self) -> Option<Arc<RenderImage>> {
+        let tab = self.state.focused_tile;
+        let path = self.state.preview.paths.get(&tab).cloned()?;
+        if let Some((cached_path, tex)) = self.preview_textures.get(&tab) {
+            if *cached_path == path {
+                return Some(tex.clone());
+            }
+        }
+        let (rgba, w, h) = match self.state.preview.results.get(&tab)? {
+            PreviewResult::Image {
+                rgba,
+                width,
+                height,
+                ..
+            }
+            | PreviewResult::Pdf {
+                rgba,
+                width,
+                height,
+                ..
+            } => (rgba, *width, *height),
+            PreviewResult::Audio {
+                cover: Some(cover), ..
+            } => (&cover.rgba, cover.width, cover.height),
+            _ => return None,
+        };
+        let tex = rgba_to_render_image(rgba, w, h)?;
+        self.preview_textures.insert(tab, (path, tex.clone()));
+        Some(tex)
+    }
+
+    /// Get-or-build the cached multi-selection thumbnail textures for the focused tab.
+    fn focused_multi_textures(&mut self) -> Vec<(PathBuf, Arc<RenderImage>)> {
+        let tab = self.state.focused_tile;
+        let Some(multi) = self.state.preview.multi.get(&tab) else {
+            return Vec::new();
+        };
+        // Rebuild only when the set of decoded images grew.
+        let need = multi.images.len();
+        let have = self.multi_textures.get(&tab).map_or(0, std::vec::Vec::len);
+        if have != need {
+            let built: Vec<(PathBuf, Arc<RenderImage>)> = multi
+                .images
+                .iter()
+                .filter_map(|(p, img)| {
+                    rgba_to_render_image(&img.rgba, img.width, img.height).map(|t| (p.clone(), t))
+                })
+                .collect();
+            self.multi_textures.insert(tab, built);
+        }
+        self.multi_textures.get(&tab).cloned().unwrap_or_default()
+    }
+
+    /// Toggle the expanded (near-full-window) preview for the focused tab. Bound to
+    /// Space. Resets zoom/pan so the new size starts fitted.
+    pub(crate) fn toggle_preview_expanded(&mut self) {
+        let tab = self.state.focused_tile;
+        let v = self.preview_view.entry(tab).or_default();
+        v.expanded = !v.expanded;
+        v.zoom = 1.0;
+        v.pan_x = 0.0;
+        v.pan_y = 0.0;
+        self.preview_drag = None;
+    }
+
+    /// Collapse the expanded preview for the focused tab (Esc / `CloseOverlays`).
+    pub(crate) fn collapse_preview_expanded(&mut self) -> bool {
+        let tab = self.state.focused_tile;
+        match self.preview_view.get_mut(&tab) {
+            Some(v) if v.expanded => {
+                v.expanded = false;
+                v.zoom = 1.0;
+                v.pan_x = 0.0;
+                v.pan_y = 0.0;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn preview_view_for_focused(&self) -> crate::app::PreviewView {
+        self.preview_view
+            .get(&self.state.focused_tile)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    // ── Rendering ────────────────────────────────────────────────────────────
+
+    /// Render the inspector panel (right side of the central row). The caller in
+    /// `root.rs` only invokes this when `preview_visible_for_focused()` is true.
+    pub(crate) fn render_inspector(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // Trigger / advance the debounced preview load for the current selection.
+        self.sync_active_preview_gpui();
+        self.sync_selection_tags();
+
+        let (bg, fg, muted, border, danger) = {
+            let t = cx.theme();
+            (
+                t.sidebar,
+                t.foreground,
+                t.muted_foreground,
+                t.border,
+                t.danger,
+            )
+        };
+        // FASE6: when `expanded` is set (Space), widen the inspector to most of the
+        // window so the zoomable image has room. The image-preview box dimensions are
+        // derived here and threaded down to `render_image_preview`.
+        let expanded = self
+            .preview_view
+            .get(&self.state.focused_tile)
+            .is_some_and(|v| v.expanded);
+        let viewport = window.viewport_size();
+        let width = if expanded {
+            (f32::from(viewport.width) * 0.9).max(360.0)
+        } else {
+            self.state.settings.inspector_width.max(180.0)
+        };
+        let box_w = (width - 24.0).max(80.0);
+        let box_h = if expanded {
+            (f32::from(viewport.height) - 160.0).max(300.0)
+        } else {
+            420.0
+        };
+
+        let summary = self
+            .state
+            .active_tab_state()
+            .zip(self.state.active_tab_data())
+            .map(|(tab, data)| selection_summary(tab, &data.view_mode))
+            .unwrap_or_default();
+
+        let mut col = v_flex()
+            .w(px(width))
+            .h_full()
+            .bg(bg)
+            .text_color(fg)
+            .border_l_1()
+            .border_color(border)
+            .p_2()
+            .gap_2();
+
+        if summary.count == 0 {
+            return col
+                .items_center()
+                .justify_center()
+                .child(div().text_color(muted).child(rust_i18n::t!("inspector_no_selection").to_string()))
+                .into_any_element();
+        }
+
+        if summary.count > 1 {
+            col = col.child(self.render_multi(&summary, muted, cx));
+            return col.into_any_element();
+        }
+
+        // Single selection: metadata header + content preview.
+        if let Some(entry) = &summary.single {
+            col = col.child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        match self.icon_tex_for_entry(&entry.kind, entry.extension.as_deref()) {
+                            Some(tex) => gpui::img(tex)
+                                .w(gpui::px(22.))
+                                .h(gpui::px(22.))
+                                .flex_none()
+                                .into_any_element(),
+                            None => file_type_icon(&entry.kind, entry.extension.as_deref(), 22.0),
+                        },
+                    )
+                    .child(
+                        v_flex()
+                            .min_w(px(0.))
+                            .flex_1()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(entry.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .truncate()
+                                    .child(entry.path.display().to_string()),
+                            ),
+                    ),
+            );
+            let mut meta = v_flex().text_xs().text_color(muted).gap_1();
+            if let Some(size) = entry.size {
+                meta = meta.child(rust_i18n::t!("inspector_size", size = format_size(size)).to_string());
+            }
+            if let Some(modified) = entry.modified {
+                meta = meta.child(rust_i18n::t!("inspector_modified", date = format_date(modified)).to_string());
+            }
+            if let Some(ext) = &entry.extension {
+                meta = meta.child(rust_i18n::t!("inspector_type", ext = ext).to_string());
+            }
+            col = col.child(meta);
+        }
+
+        col = col.child(div().h(px(1.)).w_full().bg(border));
+        col = col.child(self.render_preview_body(muted, danger, box_w, box_h, window, cx));
+        col.into_any_element()
+    }
+
+    /// The content-preview portion for a single selection.
+    fn render_preview_body(
+        &mut self,
+        muted: Hsla,
+        danger: Hsla,
+        box_w: f32,
+        box_h: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tab = self.state.focused_tile;
+        // Borrow the result immutably only to branch; texture build needs &mut self,
+        // so resolve the texture first where needed.
+        let kind = match self.state.preview.results.get(&tab) {
+            None => PreviewKind::Loading,
+            Some(PreviewResult::Text { .. }) => PreviewKind::Text,
+            Some(PreviewResult::Markdown { .. }) => PreviewKind::Markdown,
+            Some(PreviewResult::Image { .. }) => PreviewKind::Image,
+            Some(PreviewResult::Pdf { .. }) => PreviewKind::Pdf,
+            Some(PreviewResult::Audio { .. }) => PreviewKind::Audio,
+            Some(PreviewResult::Dir { .. }) => PreviewKind::Dir,
+            Some(PreviewResult::Binary { .. }) => PreviewKind::Binary,
+            Some(PreviewResult::Error(_)) => PreviewKind::Error,
+        };
+
+        match kind {
+            PreviewKind::Loading => div()
+                .flex_1()
+                .text_color(muted)
+                .child(rust_i18n::t!("inspector_loading").to_string())
+                .into_any_element(),
+            PreviewKind::Text => self.render_text_preview(muted, window, cx),
+            PreviewKind::Markdown => self.render_markdown_preview(muted, cx),
+            PreviewKind::Image | PreviewKind::Pdf => {
+                self.render_image_preview(muted, box_w, box_h, cx)
+            }
+            PreviewKind::Audio => self.render_audio_preview(muted),
+            PreviewKind::Dir => self.render_dir_preview(muted),
+            PreviewKind::Binary => {
+                let size = match self.state.preview.results.get(&tab) {
+                    Some(PreviewResult::Binary { size }) => *size,
+                    _ => 0,
+                };
+                div()
+                    .flex_1()
+                    .text_color(muted)
+                    .items_center()
+                    .justify_center()
+                    .child(rust_i18n::t!("inspector_binary", size = format_size(size)).to_string())
+                    .into_any_element()
+            }
+            PreviewKind::Error => {
+                let msg = match self.state.preview.results.get(&tab) {
+                    Some(PreviewResult::Error(e)) => e.clone(),
+                    _ => String::new(),
+                };
+                div()
+                    .flex_1()
+                    .text_color(danger)
+                    .child(msg)
+                    .into_any_element()
+            }
+        }
+    }
+
+    /// Selectable text/code preview. The `InputState` is kept read-only by rendering it
+    /// disabled, but still gives users native selection and `Ctrl+C` behavior.
+    fn render_text_preview(
+        &mut self,
+        muted: Hsla,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tab = self.state.focused_tile;
+        let Some(PreviewResult::Text { text, .. }) = self.state.preview.results.get(&tab) else {
+            return div().into_any_element();
+        };
+        let raw = text.clone();
+        let path = self
+            .state
+            .preview
+            .paths
+            .get(&tab)
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from("<preview>"));
+        let language = preview_language_for_path(&path);
+        let markdown = format!("```{}\n{}\n```", language, raw);
+
+        div()
+            .id("inspector-text")
+            .relative()
+            .flex_1()
+            .min_h(px(0.))
+            .child(
+                gpui_component::text::TextView::markdown(
+                    gpui::SharedString::from(format!("preview-{:?}", tab)),
+                    markdown,
+                )
+                .selectable(true)
+                .scrollable(true)
+                .h_full()
+                .p_0()
+            )
+            .child(Self::copy_button(raw, muted, cx))
+            .into_any_element()
+    }
+
+
+
+    /// A floating icon button that writes `text` to the system clipboard.
+    fn copy_button(text: String, _muted: Hsla, _cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .absolute()
+            .top(px(8.))
+            .right(px(8.))
+            .child(
+                gpui_component::clipboard::Clipboard::new("preview-copy")
+                    .value(text),
+            )
+            .into_any_element()
+    }
+
+    fn render_markdown_preview(&self, muted: Hsla, cx: &mut Context<Self>) -> AnyElement {
+        let tab = self.state.focused_tile;
+        let source: String = match self.state.preview.results.get(&tab) {
+            Some(PreviewResult::Markdown { source, .. }) => source.clone(),
+            _ => String::new(),
+        };
+        v_flex()
+            .flex_1()
+            .min_h(px(0.))
+            .child(
+                div()
+                    .relative()
+                    .id("inspector-md")
+                    .flex_1()
+                    .min_h(px(0.))
+                    .child(
+                        gpui_component::text::TextView::markdown(
+                            gpui::SharedString::from(format!("preview-md-{:?}", tab)),
+                            source.clone(),
+                        )
+                        .selectable(true)
+                        .scrollable(true)
+                        .h_full()
+                        .p_0()
+                    )
+                    .child(Self::copy_button(source, muted, cx)),
+            )
+            .into_any_element()
+    }
+
+    /// Image / PDF: show the decoded texture fitted into a `box_w`×`box_h` viewport
+    /// with scroll-to-zoom and drag-to-pan. Double-click toggles fit ↔ 2×. EXIF
+    /// metadata (if present) follows as a key/value list.
+    fn render_image_preview(
+        &mut self,
+        muted: Hsla,
+        box_w: f32,
+        box_h: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tab = self.state.focused_tile;
+        let (ow, oh, dw, dh, exif, is_pdf) = match self.state.preview.results.get(&tab) {
+            Some(PreviewResult::Image {
+                original_width,
+                original_height,
+                width,
+                height,
+                exif,
+                ..
+            }) => (
+                *original_width,
+                *original_height,
+                *width,
+                *height,
+                exif.clone(),
+                false,
+            ),
+            Some(PreviewResult::Pdf { width, height, .. }) => {
+                (*width, *height, *width, *height, Vec::new(), true)
+            }
+            _ => return div().into_any_element(),
+        };
+        let view = self.preview_view_for_focused();
+        let texture = self.focused_preview_texture();
+
+        let mut col = v_flex().flex_1().min_h(px(0.)).gap_2();
+        let label = if is_pdf {
+            rust_i18n::t!("inspector_pdf_instructions").to_string()
+        } else {
+            rust_i18n::t!("inspector_image_instructions", width = ow, height = oh).to_string()
+        };
+        col = col.child(div().text_xs().text_color(muted).child(label));
+
+        if let Some(tex) = texture {
+            let (fit_w, fit_h) = fit_into(dw as f32, dh as f32, box_w, box_h);
+            let img_w = fit_w * view.zoom;
+            let img_h = fit_h * view.zoom;
+            let left = (box_w - img_w) / 2.0 + view.pan_x;
+            let top = (box_h - img_h) / 2.0 + view.pan_y;
+            let image = img(tex)
+                .absolute()
+                .left(px(left))
+                .top(px(top))
+                .w(px(img_w))
+                .h(px(img_h))
+                .rounded_sm();
+            col = col.child(
+                div()
+                    .id("preview-image")
+                    .relative()
+                    .overflow_hidden()
+                    .w(px(box_w))
+                    .h(px(box_h))
+                    .child(image)
+                    .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _w, cx| {
+                        let dy = match ev.delta {
+                            ScrollDelta::Pixels(p) => f32::from(p.y),
+                            ScrollDelta::Lines(l) => l.y,
+                        };
+                        if dy != 0.0 {
+                            let tab = this.state.focused_tile;
+                            let v = this.preview_view.entry(tab).or_default();
+                            let factor = if dy > 0.0 { 1.1 } else { 1.0 / 1.1 };
+                            v.zoom = (v.zoom * factor).clamp(0.1, 12.0);
+                            cx.notify();
+                        }
+                        cx.stop_propagation();
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, ev: &MouseDownEvent, _w, _cx| {
+                            this.preview_drag = Some(ev.position);
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _w, cx| {
+                        if ev.pressed_button == Some(MouseButton::Left) {
+                            if let Some(prev) = this.preview_drag {
+                                let dx = f32::from(ev.position.x - prev.x);
+                                let dy = f32::from(ev.position.y - prev.y);
+                                let tab = this.state.focused_tile;
+                                let v = this.preview_view.entry(tab).or_default();
+                                v.pan_x += dx;
+                                v.pan_y += dy;
+                                this.preview_drag = Some(ev.position);
+                                cx.notify();
+                            }
+                        } else {
+                            this.preview_drag = None;
+                        }
+                    }))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _ev: &MouseUpEvent, _w, _cx| {
+                            this.preview_drag = None;
+                        }),
+                    )
+                    .on_click(cx.listener(|this, ev: &ClickEvent, _w, cx| {
+                        if ev.click_count() >= 2 {
+                            let tab = this.state.focused_tile;
+                            let v = this.preview_view.entry(tab).or_default();
+                            v.zoom = if (v.zoom - 1.0).abs() < 0.01 {
+                                2.0
+                            } else {
+                                1.0
+                            };
+                            v.pan_x = 0.0;
+                            v.pan_y = 0.0;
+                            cx.notify();
+                        }
+                    })),
+            );
+        } else {
+            col = col.child(div().text_color(muted).child("…"));
+        }
+        if !exif.is_empty() {
+            let mut grid = v_flex().text_xs().text_color(muted).gap_1().mt_2();
+            for (k, v) in exif.iter().take(30) {
+                grid = grid.child(
+                    h_flex()
+                        .gap_2()
+                        .child(div().w(px(120.)).truncate().child(k.clone()))
+                        .child(div().flex_1().truncate().child(v.clone())),
+                );
+            }
+            col = col.child(div().h(px(1.)).w_full().bg(muted).opacity(0.3));
+            col = col.child(
+                div()
+                    .id("inspector-exif")
+                    .max_h(px(200.))
+                    .overflow_y_scroll()
+                    .child(grid),
+            );
+        }
+        col.into_any_element()
+    }
+
+    /// Audio: cover art (or a placeholder) plus title/artist/album/duration/bitrate.
+    fn render_audio_preview(&mut self, muted: Hsla) -> AnyElement {
+        let tab = self.state.focused_tile;
+        let (title, artist, album, duration_secs, bitrate, has_cover) =
+            match self.state.preview.results.get(&tab) {
+                Some(PreviewResult::Audio {
+                    title,
+                    artist,
+                    album,
+                    duration_secs,
+                    bitrate,
+                    cover,
+                }) => (
+                    title.clone(),
+                    artist.clone(),
+                    album.clone(),
+                    *duration_secs,
+                    *bitrate,
+                    cover.is_some(),
+                ),
+                _ => return div().into_any_element(),
+            };
+        let texture = if has_cover {
+            self.focused_preview_texture()
+        } else {
+            None
+        };
+
+        let mut col = v_flex().flex_1().min_h(px(0.)).gap_2();
+        if let Some(tex) = texture {
+            col = col.child(img(tex).max_w(px(220.)).max_h(px(220.)).rounded_md());
+        } else {
+            col = col.child(
+                h_flex()
+                    .w(px(220.))
+                    .h(px(220.))
+                    .rounded_md()
+                    .bg(muted)
+                    .opacity(0.15)
+                    .items_center()
+                    .justify_center()
+                    .child(icon(AtlasIcon::Music, 44.0, muted)),
+            );
+        }
+
+        let mut meta = v_flex().gap_1();
+        meta = meta.child(
+            div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(title.unwrap_or_else(|| "(sin título)".into())),
+        );
+        if let Some(artist) = artist {
+            meta = meta.child(div().text_sm().text_color(muted).child(artist));
+        }
+        if let Some(album) = album {
+            meta = meta.child(div().text_sm().text_color(muted).child(album));
+        }
+        let (mins, secs) = (duration_secs / 60, duration_secs % 60);
+        let line = match bitrate {
+            Some(br) => format!("{mins}:{secs:02} · {br} kbps"),
+            None => format!("{mins}:{secs:02}"),
+        };
+        meta = meta.child(div().text_xs().text_color(muted).child(line));
+        col.child(meta).into_any_element()
+    }
+
+    fn render_dir_preview(&self, muted: Hsla) -> AnyElement {
+        let tab = self.state.focused_tile;
+        let Some(PreviewResult::Dir {
+            entries,
+            total_count,
+            total_size,
+        }) = self.state.preview.results.get(&tab)
+        else {
+            return div().into_any_element();
+        };
+        let mut list = v_flex().gap_1().text_xs();
+        for e in entries {
+            let row_kind = if e.is_dir {
+                FileKind::Dir
+            } else {
+                FileKind::File
+            };
+            let size = e.size.map(format_size).unwrap_or_default();
+            list = list.child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .w(px(16.))
+                            .child(match self.icon_tex_for_entry(&row_kind, None) {
+                                Some(tex) => gpui::img(tex)
+                                    .w(px(14.))
+                                    .h(px(14.))
+                                    .flex_none()
+                                    .into_any_element(),
+                                None => file_type_icon(&row_kind, None, 14.0),
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .child(e.name.clone()),
+                    )
+                    .child(div().text_color(muted).child(size)),
+            );
+        }
+        if *total_count > DIR_PREVIEW_LIMIT {
+            list = list.child(
+                div()
+                    .text_color(muted)
+                    .child(rust_i18n::t!("inspector_and_more", count = total_count - DIR_PREVIEW_LIMIT).to_string()),
+            );
+        }
+        v_flex()
+            .flex_1()
+            .min_h(px(0.))
+            .gap_2()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .text_color(muted)
+                    .child(rust_i18n::t!("inspector_elements_count", count = total_count).to_string())
+                    .child("·")
+                    .child(format_size(*total_size)),
+            )
+            .child(
+                div()
+                    .id("inspector-dir")
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_y_scroll()
+                    .child(list),
+            )
+            .into_any_element()
+    }
+
+    /// Multi-selection: counts + an overlapping thumbnail stack. gpui does not expose
+    /// a cheap per-element rotation path here, so the fan is expressed with offset
+    /// cards rather than rotated meshes.
+    fn render_multi(
+        &mut self,
+        summary: &SelectionSummary,
+        muted: Hsla,
+        _cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let textures = self.focused_multi_textures();
+        let mut col = v_flex().flex_1().min_h(px(0.)).gap_2();
+        col = col.child(
+            div()
+                .text_lg()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(rust_i18n::t!("inspector_elements_selected", count = summary.count).to_string()),
+        );
+        let mut meta = h_flex().gap_2().text_xs().text_color(muted);
+        if summary.file_count > 0 {
+            meta = meta.child(rust_i18n::t!("inspector_files_count", count = summary.file_count).to_string());
+        }
+        if summary.dir_count > 0 {
+            meta = meta.child(rust_i18n::t!("inspector_folders_count", count = summary.dir_count).to_string());
+        }
+        if summary.known_size_count > 0 {
+            meta = meta.child(format_size(summary.total_size));
+        }
+        col = col.child(meta);
+
+        if summary.image_count > 0 {
+            if textures.is_empty() {
+                col = col.child(div().text_color(muted).child(rust_i18n::t!("inspector_loading_thumbnails").to_string()));
+            } else {
+                // The first four thumbnails arrive with a tilt baked into the bitmap
+                // (gpui can't rotate rasters on screen), so we just overlap them into a
+                // fan. Corners are transparent, so no clipping/border here.
+                let thumbs: Vec<AnyElement> = textures
+                    .into_iter()
+                    .take(4)
+                    .enumerate()
+                    .map(|(idx, (_, tex))| {
+                        div()
+                            .when(idx > 0, |d| d.ml(px(-30.)))
+                            .child(img(tex).max_w(px(104.)).max_h(px(104.)))
+                            .into_any_element()
+                    })
+                    .collect();
+                col = col.child(h_flex().pl_2().items_center().children(thumbs));
+                if summary.count > summary.image_count {
+                    col = col.child(div().text_xs().text_color(muted).child(rust_i18n::t!(
+                        "inspector_not_images",
+                        count = summary.count - summary.image_count
+                    ).to_string()));
+                }
+            }
+        } else {
+            col = col.child(
+                v_flex()
+                    .items_center()
+                    .gap_1()
+                    .text_color(muted)
+                    .child(icon(AtlasIcon::Grid, 28.0, muted))
+                    .child(rust_i18n::t!("inspector_mixed_selection").to_string()),
+            );
+        }
+        col.into_any_element()
+    }
+}
+
+enum PreviewKind {
+    Loading,
+    Text,
+    Markdown,
+    Image,
+    Pdf,
+    Audio,
+    Dir,
+    Binary,
+    Error,
+}
+
+// ── Selection summary (neutral; mirrors the egui inspector's SelectionSummary) ──
 
 #[derive(Default)]
 pub struct SelectionSummary {
@@ -26,8 +983,6 @@ pub struct SelectionSummary {
     pub total_size: u64,
     pub known_size_count: usize,
     pub single: Option<SelectedEntry>,
-    /// Paths of every selected entry (for the tag section).
-    pub paths: Vec<PathBuf>,
 }
 
 pub struct SelectedEntry {
@@ -35,735 +990,58 @@ pub struct SelectedEntry {
     pub path: PathBuf,
     pub kind: FileKind,
     pub size: Option<u64>,
-    pub modified: Option<SystemTime>,
+    pub modified: Option<std::time::SystemTime>,
     pub extension: Option<String>,
 }
 
-impl SelectionSummary {
-    pub fn for_tab(tab_state: &TabState, view_mode: &ViewMode) -> Self {
-        if view_mode == &ViewMode::Miller {
-            return tab_state
-                .miller
-                .columns
-                .get(tab_state.miller.focused)
-                .and_then(|column| column.entries.get(column.selected?))
-                .map(Self::for_entry)
-                .unwrap_or_default();
-        }
+fn selection_summary(tab_state: &TabState, view_mode: &ViewMode) -> SelectionSummary {
+    use crate::state::file_entry::FileEntry;
 
+    let entries: Vec<&FileEntry> = if view_mode == &ViewMode::Miller {
+        tab_state
+            .miller
+            .columns
+            .get(tab_state.miller.focused)
+            .and_then(|c| c.entries.get(c.primary_selected()?))
+            .into_iter()
+            .collect()
+    } else {
         let mut selected: Vec<usize> = tab_state.selection.selected.iter().copied().collect();
         selected.sort_unstable();
-        let entries: Vec<&FileEntry> = selected
+        selected
             .into_iter()
             .filter_map(|idx| tab_state.entries.get(idx))
-            .collect();
-        Self::for_entries(&entries)
-    }
-
-    fn for_entry(entry: &FileEntry) -> Self {
-        Self::for_entries(&[entry])
-    }
-
-    fn for_entries(entries: &[&FileEntry]) -> Self {
-        let mut summary = Self {
-            paths: entries.iter().map(|e| e.path.clone()).collect(),
-            ..Self::default()
-        };
-        for entry in entries {
-            summary.count += 1;
-            match entry.kind {
-                FileKind::Dir => summary.dir_count += 1,
-                FileKind::File | FileKind::Symlink => summary.file_count += 1,
-            }
-            if let Some(size) = entry.size {
-                summary.total_size += size;
-                summary.known_size_count += 1;
-            }
-            if entry
-                .extension
-                .as_deref()
-                .is_some_and(crate::fs::preview::is_image_ext)
-            {
-                summary.image_count += 1;
-            }
-        }
-        if let [entry] = entries {
-            summary.single = Some(SelectedEntry {
-                name: entry.name.clone(),
-                path: entry.path.clone(),
-                kind: entry.kind.clone(),
-                size: entry.size,
-                modified: entry.modified,
-                extension: entry.extension.clone(),
-            });
-        }
-        summary
-    }
-}
-
-pub fn show_inspector(ctx: &egui::Context, state: &AppState, actions: &mut Vec<Action>) {
-    egui::SidePanel::right("inspector")
-        .default_width(state.settings.inspector_width)
-        .resizable(true)
-        .show(ctx, |ui| {
-            let summary = state
-                .active_tab_state()
-                .zip(state.active_tab_data())
-                .map(|(tab, data)| SelectionSummary::for_tab(tab, &data.view_mode))
-                .unwrap_or_default();
-            show_preview(
-                ui,
-                &summary,
-                state.preview.results.get(&state.focused_tile),
-                state.preview.textures.get(&state.focused_tile),
-                state.preview.multi.get(&state.focused_tile),
-                &state.tag_cache,
-                actions,
-            );
-        });
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn show_preview(
-    ui: &mut egui::Ui,
-    summary: &SelectionSummary,
-    preview_result: Option<&PreviewResult>,
-    preview_texture: Option<&egui::TextureHandle>,
-    multi_preview: Option<&MultiPreviewState>,
-    tag_cache: &TagCache,
-    actions: &mut Vec<Action>,
-) {
-    if summary.count == 0 {
-        ui.centered_and_justified(|ui| {
-            ui.label(egui::RichText::new("No selection").weak());
-        });
-        return;
-    }
-    if summary.count > 1 {
-        show_multi_selection(ui, summary, multi_preview);
-        show_tag_section(ui, tag_cache, &summary.paths, actions);
-        return;
-    }
-
-    if let Some(entry) = &summary.single {
-        show_single_metadata(ui, entry);
-        show_tag_section(ui, tag_cache, &summary.paths, actions);
-        ui.separator();
-    }
-
-    match preview_result {
-        None => {
-            ui.centered_and_justified(|ui| {
-                ui.label(egui::RichText::new("Loading preview...").weak());
-            });
-        }
-        Some(PreviewResult::Text { lines }) => {
-            egui::ScrollArea::both()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
-                    let mut current_line = Vec::new();
-                    for (color, token) in lines {
-                        if token == "\n" {
-                            ui.horizontal(|ui| {
-                                for (c, t) in &current_line {
-                                    ui.colored_label(*c, *t);
-                                }
-                            });
-                            current_line.clear();
-                        } else if *color == egui::Color32::TRANSPARENT {
-                            // skip transparent tokens
-                        } else {
-                            current_line.push((*color, token.as_str()));
-                        }
-                    }
-                    if !current_line.is_empty() {
-                        ui.horizontal(|ui| {
-                            for (c, t) in &current_line {
-                                ui.colored_label(*c, *t);
-                            }
-                        });
-                    }
-                });
-        }
-        Some(PreviewResult::Markdown { source, base_uri }) => {
-            let source = promote_nested_fenced_code_blocks(source);
-            let viewport_width = ui.available_width();
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.set_width(viewport_width);
-                    ui.shrink_clip_rect(ui.max_rect());
-                    MARKDOWN_CACHE.with(|cache| {
-                        egui_commonmark::CommonMarkViewer::new()
-                            .max_image_width(Some(viewport_width as usize))
-                            .default_width(Some(viewport_width as usize))
-                            .default_implicit_uri_scheme(base_uri)
-                            .show(ui, &mut cache.borrow_mut(), &source);
-                    });
-                });
-        }
-        Some(PreviewResult::Image {
-            width,
-            height,
-            original_width,
-            original_height,
-            exif,
-            ..
-        }) => {
-            ui.weak(format!("{original_width} x {original_height} px"));
-            show_image(ui, preview_texture, *width, *height);
-            if !exif.is_empty() {
-                ui.separator();
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    egui::Grid::new("exif_table")
-                        .num_columns(2)
-                        .striped(true)
-                        .show(ui, |ui| {
-                            for (key, val) in exif {
-                                ui.label(key);
-                                ui.label(val);
-                                ui.end_row();
-                            }
-                        });
-                });
-            }
-        }
-        Some(PreviewResult::Pdf { width, height, .. }) => {
-            ui.label(egui::RichText::new("PDF preview - first page").weak());
-            ui.separator();
-            show_image(ui, preview_texture, *width, *height);
-        }
-        Some(PreviewResult::Dir {
-            entries,
-            total_count,
-            total_size,
-        }) => {
-            ui.horizontal(|ui| {
-                ui.label(format!("{total_count} items"));
-                ui.weak("·");
-                ui.weak(format_size(*total_size));
-            });
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    for entry in entries {
-                        ui.horizontal(|ui| {
-                            let (icon, color) = if entry.is_dir {
-                                ("📁", crate::util::display::FOLDER_ICON_COLOR)
-                            } else {
-                                let ext = entry.extension.as_deref();
-                                (ExtensionRegistry::icon(ext), ExtensionRegistry::color(ext))
-                            };
-                            ui.colored_label(color, icon);
-                            ui.label(egui::RichText::new(&entry.name).size(12.0));
-                            if let Some(size) = entry.size {
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        ui.weak(egui::RichText::new(format_size(size)).size(11.0));
-                                    },
-                                );
-                            }
-                        });
-                    }
-                    if *total_count > DIR_PREVIEW_LIMIT {
-                        ui.weak(format!("… and {} more", total_count - DIR_PREVIEW_LIMIT));
-                    }
-                });
-        }
-        Some(PreviewResult::Binary { size }) => {
-            ui.centered_and_justified(|ui| {
-                ui.label(format!("Binary file ({})", format_size(*size)));
-            });
-        }
-        Some(PreviewResult::Error(e)) => {
-            ui.colored_label(egui::Color32::RED, e);
-        }
-    }
-}
-
-fn show_single_metadata(ui: &mut egui::Ui, entry: &SelectedEntry) {
-    ui.horizontal(|ui| {
-        let (icon, color) = if entry.kind == FileKind::Dir {
-            ("📁", crate::util::display::FOLDER_ICON_COLOR)
-        } else {
-            let ext = entry.extension.as_deref();
-            (ExtensionRegistry::icon(ext), ExtensionRegistry::color(ext))
-        };
-        ui.colored_label(color, egui::RichText::new(icon).size(28.0));
-        ui.vertical(|ui| {
-            ui.label(egui::RichText::new(&entry.name).strong());
-            ui.weak(egui::RichText::new(entry.path.display().to_string()).size(11.0));
-        });
-    });
-    egui::Grid::new("single_preview_metadata")
-        .num_columns(2)
-        .spacing([12.0, 3.0])
-        .show(ui, |ui| {
-            if let Some(size) = entry.size {
-                ui.weak("Size");
-                ui.label(format_size(size));
-                ui.end_row();
-            }
-            if let Some(modified) = entry.modified {
-                ui.weak("Modified");
-                ui.label(format_date(modified));
-                ui.end_row();
-            }
-            if let Some(extension) = &entry.extension {
-                ui.weak("Type");
-                ui.label(extension);
-                ui.end_row();
-            }
-        });
-}
-
-/// Tags present on *every* selected path (the ones safe to show as "the selection's tags").
-fn common_tags(cache: &TagCache, paths: &[PathBuf]) -> Vec<TagId> {
-    let mut iter = paths.iter();
-    let Some(first) = iter.next() else {
-        return Vec::new();
+            .collect()
     };
-    let mut common: Vec<TagId> = cache.tags_of(first).to_vec();
-    for p in iter {
-        let tags = cache.tags_of(p);
-        common.retain(|t| tags.contains(t));
-        if common.is_empty() {
-            break;
+
+    let mut s = SelectionSummary::default();
+    for entry in &entries {
+        s.count += 1;
+        match entry.kind {
+            FileKind::Dir => s.dir_count += 1,
+            FileKind::File | FileKind::Symlink => s.file_count += 1,
+        }
+        if let Some(size) = entry.size {
+            s.total_size += size;
+            s.known_size_count += 1;
+        }
+        if entry
+            .extension
+            .as_deref()
+            .is_some_and(crate::state::preview_cache::is_image_ext)
+        {
+            s.image_count += 1;
         }
     }
-    common
-}
-
-/// A colored, optionally-removable tag chip. Returns the click response.
-fn tag_chip(ui: &mut egui::Ui, name: &str, color: [u8; 3], removable: bool) -> egui::Response {
-    let fill = egui::Color32::from_rgb(color[0], color[1], color[2]);
-    // Pick a readable text color from the chip's luminance.
-    let lum = 0.299 * color[0] as f32 + 0.587 * color[1] as f32 + 0.114 * color[2] as f32;
-    let text_color = if lum > 140.0 {
-        egui::Color32::BLACK
-    } else {
-        egui::Color32::WHITE
-    };
-    let label = if removable {
-        format!("{name}  ✕")
-    } else {
-        name.to_string()
-    };
-    let font = egui::FontId::proportional(12.0);
-    let galley = ui.painter().layout_no_wrap(label, font, text_color);
-    let padding = egui::vec2(8.0, 3.0);
-    let (rect, resp) =
-        ui.allocate_exact_size(galley.size() + padding * 2.0, egui::Sense::click());
-    ui.painter().rect_filled(rect, 6.0, fill);
-    ui.painter().galley(rect.min + padding, galley, text_color);
-    if removable {
-        resp.on_hover_text("Remove tag")
-    } else {
-        resp
-    }
-}
-
-/// Tag chips for the current selection + an "add tag" menu. Writes assign/unassign
-/// actions; the optimistic cache update makes chips appear/disappear the same frame.
-fn show_tag_section(
-    ui: &mut egui::Ui,
-    cache: &TagCache,
-    paths: &[PathBuf],
-    actions: &mut Vec<Action>,
-) {
-    if paths.is_empty() {
-        return;
-    }
-    ui.separator();
-    ui.horizontal_wrapped(|ui| {
-        ui.weak("Tags");
-        let common = common_tags(cache, paths);
-        for tag in &common {
-            if let Some(def) = cache.def(*tag) {
-                if tag_chip(ui, &def.name, def.color, true).clicked() {
-                    actions.push(Action::UnassignTagFromFiles {
-                        tag: *tag,
-                        paths: paths.to_vec(),
-                    });
-                }
-            }
-        }
-        ui.menu_button("＋", |ui| {
-            let mut any = false;
-            for def in &cache.defs {
-                if common.contains(&def.id) {
-                    continue;
-                }
-                any = true;
-                ui.horizontal(|ui| {
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                    ui.painter().circle_filled(
-                        rect.center(),
-                        5.0,
-                        egui::Color32::from_rgb(def.color[0], def.color[1], def.color[2]),
-                    );
-                    if ui.button(&def.name).clicked() {
-                        actions.push(Action::AssignTagToFiles {
-                            tag: def.id,
-                            paths: paths.to_vec(),
-                        });
-                        ui.close();
-                    }
-                });
-            }
-            if !any {
-                ui.weak("No more tags");
-            }
-        })
-        .response
-        .on_hover_text("Add tag");
-    });
-}
-
-fn show_multi_selection(
-    ui: &mut egui::Ui,
-    summary: &SelectionSummary,
-    multi_preview: Option<&MultiPreviewState>,
-) {
-    ui.heading(format!("{} items selected", summary.count));
-    ui.horizontal_wrapped(|ui| {
-        if summary.file_count > 0 {
-            ui.label(format!("{} files", summary.file_count));
-        }
-        if summary.dir_count > 0 {
-            ui.label(format!("{} folders", summary.dir_count));
-        }
-        if summary.known_size_count > 0 {
-            ui.label(format_size(summary.total_size));
-        }
-    });
-    ui.separator();
-
-    if summary.image_count > 0 {
-        if let Some(multi) = multi_preview {
-            show_thumbnail_stack(ui, summary.count, multi);
-        } else {
-            ui.centered_and_justified(|ui| {
-                ui.label(egui::RichText::new("Loading thumbnails...").weak());
-            });
-        }
-    }
-
-    if summary.image_count != summary.count {
-        ui.vertical_centered(|ui| {
-            if summary.image_count == 0 {
-                ui.add_space(24.0);
-                ui.label(egui::RichText::new("▦").size(48.0).weak());
-            }
-            ui.weak("Mixed selection");
-            if summary.image_count > 0 {
-                ui.weak(format!("{} images", summary.image_count));
-            }
+    if let [entry] = entries.as_slice() {
+        s.single = Some(SelectedEntry {
+            name: entry.name.clone(),
+            path: entry.path.clone(),
+            kind: entry.kind.clone(),
+            size: entry.size,
+            modified: entry.modified,
+            extension: entry.extension.clone(),
         });
     }
-}
-
-fn show_thumbnail_stack(ui: &mut egui::Ui, selected_count: usize, multi: &MultiPreviewState) {
-    if multi.paths.is_empty() {
-        return;
-    }
-
-    let available_width = ui.available_width();
-    let card_width = (available_width * 0.72).clamp(112.0, 260.0);
-    let card_height = (card_width * 0.72).clamp(88.0, 190.0);
-    let stack_height = card_height + 54.0;
-    let (stack_rect, _) = ui.allocate_exact_size(
-        egui::vec2(available_width, stack_height),
-        egui::Sense::hover(),
-    );
-    let painter = ui.painter_at(stack_rect);
-    let center = stack_rect.center() + egui::vec2(0.0, 4.0);
-    let angles = [-0.025, -0.10, 0.085, -0.145];
-    let offsets = [
-        egui::vec2(0.0, 8.0),
-        egui::vec2(-13.0, 7.0),
-        egui::vec2(14.0, 4.0),
-        egui::vec2(-5.0, -1.0),
-    ];
-
-    // Draw the first selected image last so it remains the clear front card.
-    for idx in (0..multi.paths.len()).rev() {
-        let path = &multi.paths[idx];
-        let card = egui::Rect::from_center_size(
-            center + offsets[idx],
-            egui::vec2(card_width, card_height),
-        );
-        let angle = angles[idx];
-        paint_rotated_card(
-            &painter,
-            card,
-            angle,
-            multi
-                .textures
-                .iter()
-                .find(|(loaded, _)| loaded == path)
-                .map(|(_, texture)| texture),
-            ui.visuals(),
-        );
-    }
-
-    if selected_count > multi.paths.len() {
-        let extra = selected_count - multi.paths.len();
-        let text = format!("+{extra}");
-        let galley =
-            painter.layout_no_wrap(text, egui::FontId::proportional(12.0), egui::Color32::WHITE);
-        let badge_size = galley.size() + egui::vec2(12.0, 8.0);
-        let badge = egui::Rect::from_center_size(
-            center + egui::vec2(card_width * 0.42, card_height * 0.38),
-            badge_size,
-        );
-        painter.rect_filled(badge, 5.0, egui::Color32::from_black_alpha(205));
-        painter.galley(
-            badge.min + egui::vec2(6.0, 4.0),
-            galley,
-            egui::Color32::WHITE,
-        );
-    }
-}
-
-fn paint_rotated_card(
-    painter: &egui::Painter,
-    card: egui::Rect,
-    angle: f32,
-    texture: Option<&egui::TextureHandle>,
-    visuals: &egui::Visuals,
-) {
-    let rotation = egui::emath::Rot2::from_angle(angle);
-    let corners = rotated_rect_corners(card, rotation);
-    let shadow = corners
-        .iter()
-        .map(|point| *point + egui::vec2(2.0, 3.0))
-        .collect::<Vec<_>>();
-    painter.add(egui::Shape::convex_polygon(
-        shadow,
-        egui::Color32::from_black_alpha(70),
-        egui::Stroke::NONE,
-    ));
-    painter.add(egui::Shape::convex_polygon(
-        corners.to_vec(),
-        visuals.extreme_bg_color,
-        visuals.widgets.noninteractive.bg_stroke,
-    ));
-
-    let Some(texture) = texture else {
-        painter.text(
-            card.center(),
-            egui::Align2::CENTER_CENTER,
-            "...",
-            egui::FontId::proportional(18.0),
-            visuals.weak_text_color(),
-        );
-        return;
-    };
-    let content = card.shrink(5.0);
-    let image_size = texture.size_vec2();
-    let scale = (content.width() / image_size.x)
-        .min(content.height() / image_size.y)
-        .min(1.0);
-    let image_rect = egui::Rect::from_center_size(content.center(), image_size * scale);
-    let mut mesh = egui::Mesh::with_texture(texture.id());
-    mesh.add_rect_with_uv(
-        image_rect,
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-        egui::Color32::WHITE,
-    );
-    mesh.rotate(rotation, card.center());
-    painter.add(mesh);
-}
-
-fn rotated_rect_corners(rect: egui::Rect, rotation: egui::emath::Rot2) -> [egui::Pos2; 4] {
-    [
-        rect.left_top(),
-        rect.right_top(),
-        rect.right_bottom(),
-        rect.left_bottom(),
-    ]
-    .map(|point| rect.center() + rotation * (point - rect.center()))
-}
-
-/// `egui_commonmark` renders a fenced code block with the full viewer width even
-/// when the block is nested inside a list item. Promote only those nested fences
-/// so their selectable `TextEdit` cannot overflow from an already-indented x.
-fn promote_nested_fenced_code_blocks(source: &str) -> Cow<'_, str> {
-    let mut output = String::with_capacity(source.len());
-    let mut active: Option<(String, &'static str)> = None;
-    let mut changed = false;
-
-    for line in source.split_inclusive('\n') {
-        if let Some((indent, marker)) = active.as_ref() {
-            let line = line.strip_prefix(indent).unwrap_or(line);
-            let closes_fence = line.trim_start().starts_with(marker);
-            output.push_str(line);
-            changed = true;
-            if closes_fence {
-                active = None;
-            }
-            continue;
-        }
-
-        let trimmed = line.trim_start_matches([' ', '\t']);
-        let indent_len = line.len() - trimmed.len();
-        let marker = if trimmed.starts_with("```") {
-            Some("```")
-        } else if trimmed.starts_with("~~~") {
-            Some("~~~")
-        } else {
-            None
-        };
-        if indent_len > 0 {
-            if let Some(marker) = marker {
-                output.push_str(trimmed);
-                active = Some((line[..indent_len].to_owned(), marker));
-                changed = true;
-                continue;
-            }
-        }
-        output.push_str(line);
-    }
-
-    if changed {
-        Cow::Owned(output)
-    } else {
-        Cow::Borrowed(source)
-    }
-}
-
-/// Interactive zoom/pan state for the image preview, kept in egui temp memory
-/// keyed by the widget `Id`. `zoom == 1.0` means "fit to the available area".
-#[derive(Clone, Copy)]
-struct ImageView {
-    zoom: f32,
-    offset: egui::Vec2,
-    tex: egui::TextureId,
-}
-
-const MIN_ZOOM: f32 = 1.0;
-const MAX_ZOOM: f32 = 32.0;
-
-fn show_image(
-    ui: &mut egui::Ui,
-    preview_texture: Option<&egui::TextureHandle>,
-    width: usize,
-    height: usize,
-) {
-    let Some(handle) = preview_texture else {
-        return;
-    };
-    let tex_id = handle.id();
-    let img_size = egui::vec2((width as f32).max(1.0), (height as f32).max(1.0));
-
-    // Keep room for metadata below the image instead of claiming the entire inspector.
-    let avail = ui.available_size();
-    let preview_height = avail.y.min((avail.x * 0.9).clamp(160.0, 520.0));
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(avail.x, preview_height),
-        egui::Sense::click_and_drag(),
-    );
-
-    // Scale that makes the image fit the area (never upscales past 1:1 at zoom 1).
-    let fit_scale = (rect.width() / img_size.x)
-        .min(rect.height() / img_size.y)
-        .min(1.0);
-
-    // Load (or reset, when a different image is now shown) the view state.
-    let id = response.id;
-    let mut view = ui
-        .data(|d| d.get_temp::<ImageView>(id))
-        .filter(|v| v.tex == tex_id)
-        .unwrap_or(ImageView {
-            zoom: 1.0,
-            offset: egui::Vec2::ZERO,
-            tex: tex_id,
-        });
-
-    // Double-click resets back to the fitted view.
-    if response.double_clicked() {
-        view.zoom = 1.0;
-        view.offset = egui::Vec2::ZERO;
-    }
-
-    // Wheel / pinch zoom, anchored on the cursor so it zooms "into" what's there.
-    if response.hovered() {
-        let cursor = response.hover_pos().unwrap_or_else(|| rect.center());
-        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-        let pinch = ui.input(|i| i.zoom_delta());
-        let factor = (scroll * 0.005).exp() * pinch;
-        if (factor - 1.0).abs() > f32::EPSILON {
-            let new_zoom = (view.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
-            let k = new_zoom / view.zoom;
-            // Keep the pixel under the cursor anchored: offset' = d(1-k) + offset*k.
-            let d = cursor - rect.center();
-            view.offset = d * (1.0 - k) + view.offset * k;
-            view.zoom = new_zoom;
-        }
-    }
-
-    // Drag to pan (only meaningful when zoomed in).
-    if response.dragged() {
-        view.offset += response.drag_delta();
-    }
-
-    // Displayed image rectangle, clamped so its edges never slide inside the area.
-    let disp = img_size * fit_scale * view.zoom;
-    let max_off = ((disp - rect.size()) * 0.5).max(egui::Vec2::ZERO);
-    view.offset = egui::vec2(
-        view.offset.x.clamp(-max_off.x, max_off.x),
-        view.offset.y.clamp(-max_off.y, max_off.y),
-    );
-    let image_rect = egui::Rect::from_center_size(rect.center() + view.offset, disp);
-
-    // Clip to the reserved area so a zoomed image can't paint over the EXIF table.
-    let painter = ui.painter_at(rect);
-    painter.image(
-        tex_id,
-        image_rect,
-        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-        egui::Color32::WHITE,
-    );
-
-    // Hint the panning affordance and surface the current zoom level.
-    if view.zoom > 1.0 {
-        if response.dragged() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-        } else if response.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-        }
-        let text = format!("{:.0}%", view.zoom * 100.0);
-        let pos = rect.right_top() + egui::vec2(-6.0, 6.0);
-        let galley =
-            painter.layout_no_wrap(text, egui::FontId::proportional(12.0), egui::Color32::WHITE);
-        let bg = egui::Rect::from_min_size(
-            pos - egui::vec2(galley.size().x, 0.0) - egui::vec2(4.0, 2.0),
-            galley.size() + egui::vec2(8.0, 4.0),
-        );
-        painter.rect_filled(bg, 3.0, egui::Color32::from_black_alpha(160));
-        painter.galley(bg.min + egui::vec2(4.0, 2.0), galley, egui::Color32::WHITE);
-    }
-
-    ui.data_mut(|d| d.insert_temp(id, view));
-}
-
-#[cfg(test)]
-mod tests {
-    use super::promote_nested_fenced_code_blocks;
-
-    #[test]
-    fn promotes_only_nested_fenced_code_blocks() {
-        let source = "- outline\n\n  ```rust\n  fn main() {}\n  ```\n\n```\ntop_level\n```\n";
-        let normalized = promote_nested_fenced_code_blocks(source);
-
-        assert_eq!(
-            normalized,
-            "- outline\n\n```rust\nfn main() {}\n```\n\n```\ntop_level\n```\n"
-        );
-    }
+    s
 }

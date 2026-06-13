@@ -27,31 +27,15 @@ use gpui::{
     Entity, Focusable, Hsla, MouseButton, MouseMoveEvent, MouseUpEvent, NavigationDirection,
     RenderImage, SharedString, Stateful, Window,
 };
+use gpui_component::button::ButtonVariants as _;
 use gpui_component::dock::DockPlacement;
 use gpui_component::input::InputState;
-use gpui_component::menu::{ContextMenuExt, PopupMenu};
-use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt};
+use gpui_component::menu::DropdownMenu as _;
+use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt, Sizable as _};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 /// A small clickable glyph in the tab toolbar, bound to an `App` mutation.
-fn toolbar_btn(
-    id: String,
-    glyph: AtlasIcon,
-    color: Hsla,
-    view: Entity<App>,
-    action: impl Fn(&mut App, &mut Context<App>) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(SharedString::from(id))
-        .px_1()
-        .cursor_pointer()
-        .child(icon(glyph, 16.0, color))
-        .on_click(move |_ev, _window, cx| {
-            view.update(cx, |this, cx| action(this, cx));
-        })
-}
-
 /// FASE F: payload for an internal file drag (paths dragged between panes / onto
 /// folders). The platform/gpui renders the drag image from this view.
 #[derive(Clone)]
@@ -68,7 +52,7 @@ impl Render for DraggedFiles {
             .rounded_md()
             .bg(cx.theme().accent)
             .text_color(cx.theme().accent_foreground)
-            .child(SharedString::from(format!("{n} elemento(s)")))
+            .child(SharedString::from(rust_i18n::t!("root_elements", count = n)))
     }
 }
 
@@ -86,25 +70,6 @@ impl Render for DragNoop {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
     }
-}
-
-/// FASE G: right-click context menu for a file item. Items dispatch crate actions
-/// that the root `Atlas` key context handles, operating on the current selection
-/// (right-click first selects the item under the cursor).
-fn file_context_menu(
-    menu: PopupMenu,
-    _window: &mut Window,
-    _cx: &mut Context<PopupMenu>,
-) -> PopupMenu {
-    menu.menu("Abrir", Box::new(crate::OpenSelected))
-        .menu("Renombrar", Box::new(crate::RenameSelected))
-        .separator()
-        .menu("Copiar", Box::new(crate::CopySel))
-        .menu("Cortar", Box::new(crate::CutSel))
-        .menu("Pegar aquí", Box::new(crate::PasteHere))
-        .separator()
-        .menu("Mover a papelera", Box::new(crate::DeleteToTrash))
-        .menu("Eliminar permanentemente", Box::new(crate::DeletePermanent))
 }
 
 /// FASE C: record a visible item's window-space rect for rubber-band hit-testing.
@@ -146,6 +111,7 @@ fn zone_recorder(
 /// ancestor directory. Replaces the old plain truncated path label.
 fn breadcrumb(
     view: &Entity<App>,
+    tile: TabId,
     path: &std::path::Path,
     fg: Hsla,
     muted: Hsla,
@@ -163,7 +129,7 @@ fn breadcrumb(
         let v = view.clone();
         row = row.child(
             div()
-                .id(SharedString::from(format!("crumb-{i}")))
+                .id(SharedString::from(format!("crumb-{}-{}", tile.0, i)))
                 .px_1()
                 .rounded_sm()
                 .cursor_pointer()
@@ -173,7 +139,6 @@ fn breadcrumb(
                 .on_click(move |_ev, _window, cx| {
                     let target = target.clone();
                     v.update(cx, |this, cx| {
-                        let tile = this.state.focused_tile;
                         this.navigate(tile, target);
                         cx.notify();
                     });
@@ -187,6 +152,7 @@ fn breadcrumb(
 /// Segments: real parent dirs → archive file → inner dirs.
 fn archive_breadcrumb(
     view: &Entity<App>,
+    tile: TabId,
     archive: &std::path::Path,
     inner: &std::path::Path,
     fg: Hsla,
@@ -209,7 +175,7 @@ fn archive_breadcrumb(
         let v = view.clone();
         row = row.child(
             div()
-                .id(SharedString::from(format!("crumb-r{i}")))
+                .id(SharedString::from(format!("crumb-r{}-{}", tile.0, i)))
                 .px_1()
                 .rounded_sm()
                 .cursor_pointer()
@@ -219,7 +185,6 @@ fn archive_breadcrumb(
                 .on_click(move |_ev, _window, cx| {
                     let target = target.clone();
                     v.update(cx, |this, cx| {
-                        let tile = this.state.focused_tile;
                         this.navigate(tile, target);
                         cx.notify();
                     });
@@ -239,7 +204,7 @@ fn archive_breadcrumb(
         let v = view.clone();
         row = row.child(
             div()
-                .id(SharedString::from(format!("crumb-a{j}")))
+                .id(SharedString::from(format!("crumb-a{}-{}", tile.0, j)))
                 .px_1()
                 .rounded_sm()
                 .cursor_pointer()
@@ -250,7 +215,6 @@ fn archive_breadcrumb(
                     let arc = target_archive.clone();
                     let inn = target_inner.clone();
                     v.update(cx, |this, cx| {
-                        let tile = this.state.focused_tile;
                         this.navigate_into_archive(tile, arc, inn);
                         cx.notify();
                     });
@@ -281,46 +245,27 @@ impl Render for App {
             self.theme_dirty = false;
             self.apply_active_theme(window, cx);
         }
+        // Open the rename-profile dialog once when requested. Latched in state so
+        // any trigger (sidebar button, command palette) can ask for it; opened
+        // here because `gpui_component::Dialog` needs `&mut Window`.
+        if self.state.overlay.renaming_profile {
+            self.state.overlay.renaming_profile = false;
+            self.open_rename_profile_dialog(window, cx);
+        }
+        // Apply the active profile's sidebar width to the left dock (needs the dock
+        // entity + window, which `switch_profile` lacks). One-shot per change.
+        if self.sidebar_width_dirty {
+            self.sidebar_width_dirty = false;
+            let width = self.state.settings.sidebar_width;
+            if let Some(left) = self.dock.as_ref().and_then(|d| d.read(cx).left_dock().cloned()) {
+                left.update(cx, |dock, cx| dock.set_size(px(width), window, cx));
+            }
+        }
         let (fg, muted, status_border) = {
             let t = cx.theme();
             (t.foreground, t.muted_foreground, t.border)
         };
-        let active_path = self.state.active_tab_data().map(|t| t.location.display_path());
-        let active_archive_inner = self.state.active_tab_data().and_then(|t| {
-            t.location.as_archive().map(|(archive, inner)| {
-                (archive.to_path_buf(), inner.to_path_buf())
-            })
-        });
-
-        // Status-bar summary for the focused tab.
-        let status_text = match self.state.active_tab_state() {
-            Some(ts) => match &ts.load_state {
-                LoadState::Loading => "Cargando…".to_string(),
-                LoadState::Error(e) => format!("Error: {e}"),
-                _ => {
-                    let items = ts.entries.len();
-                    let sel = ts.selection.selected.len();
-                    if sel > 0 {
-                        let bytes: u64 = ts
-                            .selection
-                            .selected
-                            .iter()
-                            .filter_map(|&i| ts.entries.get(i))
-                            .filter_map(|e| e.size)
-                            .sum();
-                        format!(
-                            "{items} elementos · {sel} seleccionados · {}",
-                            format_size(bytes)
-                        )
-                    } else {
-                        format!("{items} elementos")
-                    }
-                }
-            },
-            None => String::new(),
-        };
-
-        // Most recent background operation, rendered at the right of the status
+        // Most recent background operation, rendered as a floating overlay pill
         // bar with a cancel button. `active_ops` updates via OpProgress events.
         let op_progress = self
             .state
@@ -353,7 +298,7 @@ impl Render for App {
                 }
                 let n_ops = self.state.ops.active_ops.len();
                 if n_ops > 1 {
-                    text.push_str(&format!(" ({n_ops} operaciones)"));
+                    text.push_str(&format!(" ({})", rust_i18n::t!("root_operations", count = n_ops)));
                 }
                 (*id, text, op.cancel.clone())
             });
@@ -384,8 +329,9 @@ impl Render for App {
         // file pane behind the overlay. The overlay's own `capture_key_down` (and the
         // focused input) drive the keys instead.
         let modal_active = self.state.overlay.show_goto_bar
-            || self.goto_closing.is_some()
+            || self.palette_closing.is_some()
             || self.state.overlay.show_palette
+            || self.state.overlay.show_ext_palette
             || self.state.overlay.show_settings
             || self.state.overlay.transfer_conflict.is_some()
             || self.state.profile_ui.creating_tag
@@ -397,16 +343,7 @@ impl Render for App {
                 .is_some_and(|ts| ts.search.active);
         let key_ctx = if modal_active { "AtlasModal" } else { "Atlas" };
 
-        // FASE G: clickable breadcrumb for the focused tab's path.
         let view = cx.entity();
-        let crumbs: Option<gpui::AnyElement> =
-            if let Some((archive, inner)) = active_archive_inner.as_ref() {
-                Some(archive_breadcrumb(&view, archive, inner, fg, muted).into_any_element())
-            } else {
-                active_path
-                    .as_ref()
-                    .map(|p| breadcrumb(&view, p, fg, muted).into_any_element())
-            };
         let mouse_back_view = view.clone();
         let mouse_forward_view = view.clone();
 
@@ -515,6 +452,53 @@ impl Render for App {
                 this.process_actions(vec![Action::OpenSearchInPlace]);
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &crate::ViewModeDetails, _w, cx| {
+                this.process_actions(vec![Action::SetViewMode(ViewMode::Details)]);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::ViewModeGrid, _w, cx| {
+                this.process_actions(vec![Action::SetViewMode(ViewMode::Grid)]);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::ViewModeList, _w, cx| {
+                this.process_actions(vec![Action::SetViewMode(ViewMode::List)]);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::ViewModeMiller, _w, cx| {
+                this.process_actions(vec![Action::SetViewMode(ViewMode::Miller)]);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::ZoomIn, window_cx, cx| {
+                let mut settings = this.state.settings.clone();
+                settings.global_zoom = (settings.global_zoom * 1.1).min(3.0);
+                window_cx.set_rem_size(settings.global_zoom * 16.0);
+                crate::util::config::save_settings(&settings);
+                this.state.settings = settings;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::ZoomOut, window_cx, cx| {
+                let mut settings = this.state.settings.clone();
+                settings.global_zoom = (settings.global_zoom / 1.1).max(0.5);
+                window_cx.set_rem_size(settings.global_zoom * 16.0);
+                crate::util::config::save_settings(&settings);
+                this.state.settings = settings;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::ZoomReset, window_cx, cx| {
+                let mut settings = this.state.settings.clone();
+                settings.global_zoom = 1.0;
+                window_cx.set_rem_size(settings.global_zoom * 16.0);
+                crate::util::config::save_settings(&settings);
+                this.state.settings = settings;
+                cx.notify();
+            }))
+            // Type-to-filter: plain characters typed while no text field has focus
+            // open/extend the focused pane's local fuzzy filter. Captured at the
+            // window root because keyboard focus often rests on untracked handles
+            // (Dock panels), so per-pane listeners never see these keys.
+            .capture_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
+                this.handle_global_type_to_filter(ev, window, cx);
+            }))
             .on_action(
                 cx.listener(|this, _: &crate::TogglePreviewExpanded, _w, cx| {
                     // Space only acts when the file list is the active surface and the
@@ -585,8 +569,20 @@ impl Render for App {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::EditLocation, _w, cx| {
+                // Ctrl+L: open the fuzzy goto pre-filled with the pane's absolute
+                // path (copy it, or Tab into subfolders). Non-filesystem
+                // locations fall back to the inline path editor.
                 let t = this.state.focused_tile;
-                this.process_actions(vec![Action::EditLocation(t)]);
+                let dir = this
+                    .tab_data_for(t)
+                    .and_then(|td| td.location.fs_dir().map(|p| p.to_path_buf()));
+                if let Some(dir) = dir {
+                    this.goto_prefill =
+                        Some(format!("{}{}", dir.display(), std::path::MAIN_SEPARATOR));
+                    this.process_actions(vec![Action::OpenGotoBar]);
+                } else {
+                    this.process_actions(vec![Action::EditLocation(t)]);
+                }
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::NavBack, _w, cx| {
@@ -607,7 +603,7 @@ impl Render for App {
             // FASE D: clipboard / delete on the current selection.
             .on_action(cx.listener(|this, _: &crate::DeleteToTrash, _w, cx| {
                 if this.state.active_tab_data().map_or(false, |t| t.location.is_archive()) {
-                    this.toast_error("Eliminar dentro de archivos comprimidos no disponible todavía".into());
+                    this.toast_error(rust_i18n::t!("root_delete_archive_error").into());
                     cx.notify();
                     return;
                 }
@@ -622,7 +618,7 @@ impl Render for App {
             }))
             .on_action(cx.listener(|this, _: &crate::DeletePermanent, _w, cx| {
                 if this.state.active_tab_data().map_or(false, |t| t.location.is_archive()) {
-                    this.toast_error("Eliminar dentro de archivos comprimidos no disponible todavía".into());
+                    this.toast_error(rust_i18n::t!("root_delete_archive_error").into());
                     cx.notify();
                     return;
                 }
@@ -635,9 +631,9 @@ impl Render for App {
                 }
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &crate::CopySel, _w, cx| {
+            .on_action(cx.listener(|this, _: &gpui_component::input::Copy, _w, cx| {
                 if this.state.active_tab_data().map_or(false, |t| t.location.is_archive()) {
-                    this.toast_error("Copiar dentro de archivos comprimidos no disponible todavía".into());
+                    this.toast_error(rust_i18n::t!("root_copy_archive_error").into());
                     cx.notify();
                     return;
                 }
@@ -647,9 +643,9 @@ impl Render for App {
                 }
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &crate::CutSel, _w, cx| {
+            .on_action(cx.listener(|this, _: &gpui_component::input::Cut, _w, cx| {
                 if this.state.active_tab_data().map_or(false, |t| t.location.is_archive()) {
-                    this.toast_error("Cortar dentro de archivos comprimidos no disponible todavía".into());
+                    this.toast_error(rust_i18n::t!("root_cut_archive_error").into());
                     cx.notify();
                     return;
                 }
@@ -659,7 +655,7 @@ impl Render for App {
                 }
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &crate::PasteHere, _w, cx| {
+            .on_action(cx.listener(|this, _: &gpui_component::input::Paste, _w, cx| {
                 if let Some(dest) = this.state.active_tab_data().and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf())) {
                     this.process_actions(vec![Action::Paste { dest }]);
                     cx.notify();
@@ -673,48 +669,7 @@ impl Render for App {
                     .gap_2()
                     .items_center()
                     .bg(glass_chrome_fill())
-                    .child("Atlas")
-                    .children(crumbs)
-                    .child(toolbar_btn(
-                        "vm-details".into(),
-                        AtlasIcon::Details,
-                        muted,
-                        cx.entity(),
-                        |this, cx| {
-                            this.process_actions(vec![Action::SetViewMode(ViewMode::Details)]);
-                            cx.notify();
-                        },
-                    ))
-                    .child(toolbar_btn(
-                        "vm-grid".into(),
-                        AtlasIcon::Grid,
-                        muted,
-                        cx.entity(),
-                        |this, cx| {
-                            this.process_actions(vec![Action::SetViewMode(ViewMode::Grid)]);
-                            cx.notify();
-                        },
-                    ))
-                    .child(toolbar_btn(
-                        "vm-list".into(),
-                        AtlasIcon::List,
-                        muted,
-                        cx.entity(),
-                        |this, cx| {
-                            this.process_actions(vec![Action::SetViewMode(ViewMode::List)]);
-                            cx.notify();
-                        },
-                    ))
-                    .child(toolbar_btn(
-                        "vm-miller".into(),
-                        AtlasIcon::Columns,
-                        muted,
-                        cx.entity(),
-                        |this, cx| {
-                            this.process_actions(vec![Action::SetViewMode(ViewMode::Miller)]);
-                            cx.notify();
-                        },
-                    )),
+                    .child("Atlas"),
             )
             .child(
                 h_flex()
@@ -728,17 +683,29 @@ impl Render for App {
                     // FASE5: inspector panel as the third child of the central row.
                     .children(inspector),
             )
-            .child(
-                h_flex()
-                    .w_full()
+            // FASE5: overlay layers (goto bar, palette, settings, paste conflict, …).
+            .children(overlays)
+            // FASE C: the rubber-band selection rectangle, painted over the panes.
+            .children(marquee)
+            // FASE C: global rubber-band motor (invisible canvas, registers window-wide
+            // mouse move/up listeners that fire even outside the pane hitbox).
+            .child(rubber_layer(cx.entity()))
+            // Floating glass search pill (Figma "Window/Search Global"), bottom-center.
+            .children(search_pill)
+            // Operation progress toast: appears bottom-right while a transfer is active.
+            .children(op_progress.map(|(op_id, text, cancel)| {
+                div()
+                    .absolute()
+                    .bottom_4()
+                    .right_4()
                     .px_3()
-                    .py_1()
+                    .py_2()
+                    .rounded_lg()
                     .bg(glass_chrome_fill())
                     .text_xs()
                     .text_color(muted)
-                    .gap_2()
-                    .child(div().flex_1().child(status_text))
-                    .children(op_progress.map(|(op_id, text, cancel)| {
+                    .shadow_md()
+                    .child(
                         h_flex()
                             .gap_2()
                             .items_center()
@@ -752,24 +719,13 @@ impl Render for App {
                                     .border_1()
                                     .border_color(status_border)
                                     .hover(|h| h.bg(status_border))
-                                    .child("Cancelar")
+                                    .child(rust_i18n::t!("root_cancel"))
                                     .on_mouse_down(MouseButton::Left, move |_ev, _w, _cx| {
-                                        // The worker checks this per file and per
-                                        // 1 MiB chunk; partial files are removed.
                                         cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                                     }),
-                            )
-                    })),
-            )
-            // FASE5: overlay layers (goto bar, palette, settings, paste conflict, …).
-            .children(overlays)
-            // FASE C: the rubber-band selection rectangle, painted over the panes.
-            .children(marquee)
-            // FASE C: global rubber-band motor (invisible canvas, registers window-wide
-            // mouse move/up listeners that fire even outside the pane hitbox).
-            .child(rubber_layer(cx.entity()))
-            // Floating glass search pill (Figma "Window/Search Global"), bottom-center.
-            .children(search_pill)
+                            ),
+                    )
+            }))
     }
 }
 
@@ -1096,6 +1052,17 @@ impl App {
         pos: gpui::Point<gpui::Pixels>,
         additive: bool,
     ) {
+        // Clicking the empty list area dismisses a filter that has no text yet
+        // (the "click outside to leave the field" affordance); a filter with a
+        // query stays applied so the click can refine the selection instead.
+        if self
+            .state
+            .tab_states
+            .get(&pane)
+            .is_some_and(|ts| ts.search.active && ts.search.query.trim().is_empty())
+        {
+            self.close_search_in_place(pane);
+        }
         let base = self
             .state
             .tab_states
@@ -1147,19 +1114,65 @@ impl App {
         )
     }
 
-    fn render_search_in_place_bar(
+    /// Compact breadcrumb strip rendered at the top of each pane, showing the
+    /// pane's current path. Clicking any segment navigates that specific pane.
+    fn render_crumb_strip(
+        &self,
+        pane_id: TabId,
+        view: &Entity<App>,
+        fg: Hsla,
+        muted: Hsla,
+        border: Hsla,
+    ) -> AnyElement {
+        let pane_archive_inner = self.tab_data_for(pane_id).and_then(|t| {
+            t.location.as_archive().map(|(archive, inner)| {
+                (archive.to_path_buf(), inner.to_path_buf())
+            })
+        });
+        let pane_path = self.tab_data_for(pane_id).map(|t| t.location.display_path());
+        let crumbs: Option<AnyElement> =
+            if let Some((archive, inner)) = pane_archive_inner.as_ref() {
+                Some(
+                    archive_breadcrumb(view, pane_id, archive, inner, fg, muted)
+                        .into_any_element(),
+                )
+            } else {
+                pane_path
+                    .as_ref()
+                    .map(|p| breadcrumb(view, pane_id, p, fg, muted).into_any_element())
+            };
+        h_flex()
+            .w_full()
+            .px_2()
+            .py_1()
+            .min_w(px(0.))
+            .border_b_1()
+            .border_color(border)
+            .text_xs()
+            .text_color(muted)
+            .children(crumbs)
+            .into_any_element()
+    }
+
+    /// Floating per-pane overlays, anchored to the bottom corners of the file
+    /// list: a compact fuzzy-filter pill on the left (a lone magnifier until it
+    /// activates) and a controls pill on the right (visibility toggles,
+    /// folders-first, view selector). Both sit on translucent glass so the
+    /// listing shows through.
+    fn render_pane_pills(
         &mut self,
         pane_id: TabId,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let active = self
-            .state
-            .tab_states
-            .get(&pane_id)
-            .is_some_and(|ts| ts.search.active);
-        if !active {
-            return None;
+    ) -> (AnyElement, AnyElement) {
+        // Mirror the per-tab toggles into the TabState so its cached filtering
+        // (and the counts below) pick them up.
+        let (folders_first, show_files, show_folders) = self
+            .tab_data_for(pane_id)
+            .map(|td| (td.folders_first, td.show_files, td.show_folders))
+            .unwrap_or((true, true, true));
+        if let Some(ts) = self.state.tab_states.get_mut(&pane_id) {
+            ts.set_visibility(show_files, show_folders);
         }
 
         let initial = self
@@ -1172,20 +1185,22 @@ impl App {
             .search_inputs
             .entry(pane_id)
             .or_insert_with(|| {
-                crate::ui::text_input::single_line(window, cx, "Buscar en esta carpeta", initial)
+                crate::ui::text_input::single_line(window, cx, "Filtrar…", initial)
             })
             .clone();
 
         let value = input.read(cx).value().to_string();
         let mut needs_refresh = false;
         if let Some(ts) = self.state.tab_states.get_mut(&pane_id) {
-            if ts.search.focus {
-                let handle = input.read(cx).focus_handle(cx);
-                window.focus(&handle, cx);
-                ts.search.focus = false;
-            }
+            // Focus is owned by `sync_overlay_focus`: while `search.active` the
+            // field keeps the keyboard, so no per-render focus juggling here.
+            ts.search.focus = false;
             if value != ts.search.query {
                 ts.search.query.clone_from(&value);
+                // Typing directly into the always-visible input activates the filter.
+                if !value.is_empty() {
+                    ts.search.active = true;
+                }
                 needs_refresh = true;
             }
         }
@@ -1193,69 +1208,125 @@ impl App {
             self.refresh_search_in_place(pane_id);
         }
 
-        let (recursive, status, count, error) = self
+        let (active, recursive, status, count, error, counts) = self
             .state
             .tab_states
             .get_mut(&pane_id)
             .map(|ts| {
                 (
+                    ts.search.active,
                     ts.search.recursive,
                     ts.search.status,
                     ts.visible_indices().len(),
                     ts.search.error.clone(),
+                    ts.counts(),
                 )
             })
             .unwrap_or_default();
-        let (border, muted, accent, accent_fg, secondary) = {
+        let filtering = active && !value.trim().is_empty();
+        let (border, muted, fg, accent, accent_fg, secondary) = {
             let t = cx.theme();
             (
                 t.border,
                 t.muted_foreground,
+                t.foreground,
                 t.accent,
                 t.accent_foreground,
                 t.secondary,
             )
         };
         let view = cx.entity();
-        let status_text = if let Some(error) = error {
-            error
+        // Concise status inside the pill: result count, "…" while searching,
+        // "!" (with the error in its own right) on failure.
+        let status_text = if error.is_some() {
+            Some("!".to_string())
         } else if status == crate::state::tab::SearchStatus::Searching {
-            "Buscando...".to_string()
-        } else if value.trim().is_empty() {
-            "Escribe para filtrar".to_string()
+            Some("…".to_string())
+        } else if filtering {
+            Some(format!("{count}"))
         } else {
-            format!("{count} resultados")
+            None
         };
 
-        let toggle_view = view.clone();
-        let close_view = view;
-        let key_input = input.clone();
-        Some(
+        // Only the active pane shows the floating chrome. An inactive pane that
+        // still has a filter applied keeps a tiny badge so it's obvious why
+        // entries are missing; clicking it focuses the pane and the field.
+        let focused = self.state.focused_tile == pane_id;
+        if !focused {
+            let badge: AnyElement = if active {
+                let open_view = view.clone();
+                h_flex()
+                    .id(SharedString::from(format!("filter-badge-{}", pane_id.0)))
+                    .absolute()
+                    .bottom_2()
+                    .left_2()
+                    .px_2()
+                    .py(px(3.))
+                    .gap_1()
+                    .items_center()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(accent.opacity(0.6))
+                    .bg(secondary.opacity(0.85))
+                    .shadow_md()
+                    .text_xs()
+                    .cursor_pointer()
+                    .child(icon(AtlasIcon::Search, 12.0, accent))
+                    .children(
+                        status_text
+                            .map(|t| div().text_color(muted).whitespace_nowrap().child(t)),
+                    )
+                    .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                        cx.stop_propagation();
+                        open_view.update(cx, |this, cx| {
+                            this.state.focused_tile = pane_id;
+                            if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
+                                ts.search.focus = true;
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .into_any_element()
+            } else {
+                div().into_any_element()
+            };
+            return (badge, div().into_any_element());
+        }
+
+        // ── Left pill: fuzzy filter (lone magnifier until active) ──
+        let filter_pill: AnyElement = if active {
+            let toggle_view = view.clone();
+            let close_view = view.clone();
             h_flex()
-                .id(SharedString::from(format!("search-in-place-{}", pane_id.0)))
-                .w_full()
+                .id(SharedString::from(format!("filter-pill-{}", pane_id.0)))
+                .absolute()
+                .bottom_2()
+                .left_2()
                 .px_2()
                 .py_1()
-                .gap_2()
+                .gap_1()
                 .items_center()
-                .border_b_1()
-                .border_color(border)
-                .bg(secondary)
+                .rounded_lg()
+                .border_1()
+                .border_color(if filtering {
+                    accent.opacity(0.8)
+                } else {
+                    border.opacity(0.5)
+                })
+                .bg(secondary.opacity(0.92))
+                .shadow_md()
+                .text_xs()
+                // Keep pill clicks away from the pane underneath (rubber band,
+                // pane-focus click handlers).
+                .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
+                    cx.stop_propagation();
+                })
                 .capture_key_down(
-                    cx.listener(move |this, ev: &gpui::KeyDownEvent, window, cx| {
+                    cx.listener(move |this, ev: &gpui::KeyDownEvent, _window, cx| {
                         let handled = match ev.keystroke.key.as_str() {
                             "escape" => {
-                                let current = key_input.read(cx).value().to_string();
-                                if current.is_empty() {
-                                    this.process_actions(vec![Action::CloseSearchInPlace]);
-                                } else {
-                                    key_input
-                                        .update(cx, |state, cx| state.set_value("", window, cx));
-                                    if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
-                                        ts.search.query.clear();
-                                    }
-                                    this.refresh_search_in_place(pane_id);
-                                }
+                                this.state.focused_tile = pane_id;
+                                this.process_actions(vec![Action::CloseSearchInPlace]);
                                 true
                             }
                             "enter" => {
@@ -1278,20 +1349,33 @@ impl App {
                         }
                     }),
                 )
-                .child(div().text_color(muted).child("Buscar"))
-                .child(div().flex_1().child(crate::ui::text_input::flat(&input)))
+                .child(icon(
+                    AtlasIcon::Search,
+                    14.0,
+                    if filtering { accent } else { muted },
+                ))
                 .child(
                     div()
-                        .px_2()
-                        .py(px(2.))
+                        .w(px(180.))
+                        .child(crate::ui::text_input::flat(&input).xsmall()),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("filter-rec-{}", pane_id.0)))
+                        .p(px(3.))
                         .rounded_md()
-                        .border_1()
-                        .border_color(if recursive { accent } else { border })
-                        .when(recursive, |s| s.bg(accent).text_color(accent_fg))
-                        .when(!recursive, |s| s.text_color(muted))
                         .cursor_pointer()
-                        .text_xs()
-                        .child("Subfolders")
+                        .when(recursive, |s| s.bg(accent))
+                        .hover(|s| s.bg(border.opacity(0.4)))
+                        .child(icon(
+                            AtlasIcon::TreeStructure,
+                            14.0,
+                            if recursive { accent_fg } else { muted },
+                        ))
+                        .tooltip(|window, cx| {
+                            gpui_component::tooltip::Tooltip::new("Buscar en subcarpetas")
+                                .build(window, cx)
+                        })
                         .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
                             toggle_view.update(cx, |this, cx| {
                                 this.process_actions(vec![Action::ToggleSearchInSubfolders]);
@@ -1299,15 +1383,28 @@ impl App {
                             });
                         }),
                 )
-                .child(div().text_xs().text_color(muted).child(status_text))
+                .children(status_text.map(|t| {
+                    let tip = error.clone();
+                    div()
+                        .id(SharedString::from(format!("filter-status-{}", pane_id.0)))
+                        .text_color(if tip.is_some() { gpui::red() } else { muted })
+                        .whitespace_nowrap()
+                        .when_some(tip, |s, tip| {
+                            s.tooltip(move |window, cx| {
+                                gpui_component::tooltip::Tooltip::new(tip.clone())
+                                    .build(window, cx)
+                            })
+                        })
+                        .child(t)
+                }))
                 .child(
                     div()
-                        .px_2()
-                        .py(px(2.))
+                        .id(SharedString::from(format!("filter-close-{}", pane_id.0)))
+                        .p(px(3.))
                         .rounded_md()
                         .cursor_pointer()
-                        .text_color(muted)
-                        .child("x")
+                        .hover(|s| s.bg(border.opacity(0.4)))
+                        .child(icon(AtlasIcon::X, 12.0, muted))
                         .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
                             close_view.update(cx, |this, cx| {
                                 this.process_actions(vec![Action::CloseSearchInPlace]);
@@ -1315,8 +1412,257 @@ impl App {
                             });
                         }),
                 )
-                .into_any_element(),
-        )
+                .into_any_element()
+        } else {
+            let open_view = view.clone();
+            div()
+                .id(SharedString::from(format!("filter-pill-{}", pane_id.0)))
+                .absolute()
+                .bottom_2()
+                .left_2()
+                .p(px(6.))
+                .rounded_full()
+                .border_1()
+                .border_color(border.opacity(0.5))
+                .bg(secondary.opacity(0.75))
+                .shadow_md()
+                .cursor_pointer()
+                .hover(|s| s.bg(secondary))
+                .child(icon(AtlasIcon::Search, 14.0, muted))
+                .tooltip(|window, cx| {
+                    gpui_component::tooltip::Tooltip::new("Filtrar — solo empieza a escribir")
+                        .build(window, cx)
+                })
+                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                    cx.stop_propagation();
+                    open_view.update(cx, |this, cx| {
+                        this.state.focused_tile = pane_id;
+                        this.process_actions(vec![Action::OpenSearchInPlace]);
+                        cx.notify();
+                    });
+                })
+                .into_any_element()
+        };
+
+        // ── Right pill: visibility toggles + folders-first + view selector ──
+        let tbtn = |id: String,
+                    glyph: AtlasIcon,
+                    on: bool,
+                    on_color: Hsla,
+                    tip: String,
+                    action: Action,
+                    view: Entity<App>| {
+            div()
+                .id(SharedString::from(id))
+                .p(px(4.))
+                .rounded_md()
+                .cursor_pointer()
+                .when(!on, |s| s.opacity(0.45))
+                .hover(move |s| s.bg(border.opacity(0.4)))
+                .child(icon(glyph, 14.0, if on { on_color } else { muted }))
+                .tooltip(move |window, cx| {
+                    gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                })
+                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                    view.update(cx, |this, cx| {
+                        this.process_actions(vec![action.clone()]);
+                        cx.notify();
+                    });
+                })
+        };
+
+        let view_mode = self
+            .tab_data_for(pane_id)
+            .map(|t| t.view_mode.clone())
+            .unwrap_or_default();
+        let view_icon = match view_mode {
+            ViewMode::Details => AtlasIcon::Details,
+            ViewMode::Grid => AtlasIcon::Grid,
+            ViewMode::List => AtlasIcon::List,
+            ViewMode::Miller => AtlasIcon::Columns,
+        };
+        let vm = view_mode.clone();
+        let view_btn = gpui_component::button::Button::new(SharedString::from(format!(
+            "view-select-{}",
+            pane_id.0
+        )))
+        .ghost()
+        .xsmall()
+        .icon(gpui_component::Icon::empty().path(view_icon.path()))
+        // Anchored to the bottom so the menu opens upward, above the icon.
+        .dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _window, _cx| {
+            let row = |glyph: AtlasIcon, label: &'static str| {
+                move |_: &mut Window, _: &mut gpui::App| {
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(gpui_component::Icon::empty().path(glyph.path()).small())
+                        .child(label)
+                }
+            };
+            menu.menu_element_with_check(
+                vm == ViewMode::Details,
+                Box::new(crate::ViewModeDetails),
+                row(AtlasIcon::Details, "Detalles"),
+            )
+            .menu_element_with_check(
+                vm == ViewMode::Grid,
+                Box::new(crate::ViewModeGrid),
+                row(AtlasIcon::Grid, "Cuadrícula"),
+            )
+            .menu_element_with_check(
+                vm == ViewMode::List,
+                Box::new(crate::ViewModeList),
+                row(AtlasIcon::List, "Lista"),
+            )
+            .menu_element_with_check(
+                vm == ViewMode::Miller,
+                Box::new(crate::ViewModeMiller),
+                row(AtlasIcon::Columns, "Columnas"),
+            )
+        });
+
+        let focus_view = view.clone();
+        let controls_pill = h_flex()
+            .id(SharedString::from(format!("controls-pill-{}", pane_id.0)))
+            .absolute()
+            .bottom_2()
+            .right_2()
+            .px_1()
+            .py(px(3.))
+            .gap_1()
+            .items_center()
+            .rounded_lg()
+            .border_1()
+            .border_color(border.opacity(0.5))
+            .bg(secondary.opacity(0.85))
+            .shadow_md()
+            // The view-selector actions act on the focused pane; make sure that's
+            // us — and keep the click away from the pane underneath.
+            .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                cx.stop_propagation();
+                focus_view.update(cx, |this, _| {
+                    this.state.focused_tile = pane_id;
+                });
+            })
+            .child(tbtn(
+                format!("bb-folders-{}", pane_id.0),
+                AtlasIcon::Folder,
+                show_folders,
+                fg,
+                format!(
+                    "Carpetas {}/{}",
+                    counts.folders_shown, counts.folders_total
+                ),
+                Action::ToggleShowFolders(pane_id),
+                view.clone(),
+            ))
+            .child(tbtn(
+                format!("bb-files-{}", pane_id.0),
+                AtlasIcon::File,
+                show_files,
+                fg,
+                format!("Archivos {}/{}", counts.files_shown, counts.files_total),
+                Action::ToggleShowFiles(pane_id),
+                view.clone(),
+            ))
+            .child(tbtn(
+                format!("bb-ffirst-{}", pane_id.0),
+                AtlasIcon::SortAscending,
+                folders_first,
+                accent,
+                "Carpetas primero".to_string(),
+                Action::ToggleFoldersFirst(pane_id),
+                view.clone(),
+            ))
+            .child(div().w(px(1.)).h(px(14.)).bg(border.opacity(0.6)))
+            .child(view_btn)
+            .into_any_element();
+
+        (filter_pill, controls_pill)
+    }
+
+    /// True when any of the app's text inputs (overlay palettes, renames, the
+    /// per-pane filter) currently holds keyboard focus — typing then belongs to
+    /// that field, never to type-to-filter.
+    fn any_text_input_focused(&self, window: &Window, cx: &Context<Self>) -> bool {
+        let Some(focused) = window.focused(cx) else {
+            return false;
+        };
+        self.goto_input
+            .iter()
+            .chain(self.palette_input.iter())
+            .chain(self.ext_palette_input.iter())
+            .chain(self.rename_input.iter())
+            .chain(self.batch_pattern_input.iter())
+            .chain(self.batch_replacement_input.iter())
+            .chain(self.rename_edit.iter().map(|r| &r.input))
+            .chain(self.search_inputs.values())
+            .any(|input| input.read(cx).focus_handle(cx) == focused)
+    }
+
+    /// Window-level type-to-filter: a plain character (no modifiers, not space)
+    /// typed while no text field is focused opens — or extends — the focused
+    /// pane's local fuzzy filter.
+    fn handle_global_type_to_filter(
+        &mut self,
+        ev: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(seed) = search_seed_from_key(ev) else {
+            return;
+        };
+        if self.any_text_input_focused(window, cx) {
+            return;
+        }
+        let o = &self.state.overlay;
+        if o.show_goto_bar
+            || o.show_palette
+            || o.show_settings
+            || o.show_ext_palette
+            || o.show_analyzer
+            || o.transfer_conflict.is_some()
+            || self.state.batch_rename.is_some()
+            || self.rename_edit.is_some()
+        {
+            return;
+        }
+        let pane_id = self.state.focused_tile;
+        if !matches!(
+            self.state.pane_tree.tiles.get(pane_id),
+            Some(Tile::Pane(_))
+        ) {
+            return;
+        }
+        if self
+            .state
+            .tab_states
+            .get(&pane_id)
+            .is_some_and(|ts| ts.path_edit.editing)
+        {
+            return;
+        }
+
+        let active = self
+            .state
+            .tab_states
+            .get(&pane_id)
+            .is_some_and(|ts| ts.search.active);
+        if active {
+            // Filter open but unfocused: append the char and refocus the field.
+            if let Some(input) = self.search_inputs.get(&pane_id).cloned() {
+                let new_value = format!("{}{}", input.read(cx).value(), seed);
+                input.update(cx, |state, cx| state.set_value(new_value, window, cx));
+            }
+            if let Some(ts) = self.state.tab_states.get_mut(&pane_id) {
+                ts.search.focus = true;
+            }
+        } else {
+            self.open_search_in_place_seeded(pane_id, seed, window, cx);
+        }
+        cx.stop_propagation();
+        cx.notify();
     }
 
     fn open_search_in_place_seeded(
@@ -1361,9 +1707,10 @@ impl App {
         }
         let view = cx.entity();
         let focused = self.state.focused_tile == pane_id;
-        let (accent, accent_fg, hover, muted, header_bg) = {
+        let (fg, accent, accent_fg, hover, muted, header_bg) = {
             let t = cx.theme();
             (
+                t.foreground,
                 t.accent,
                 t.accent_foreground,
                 t.list_active,
@@ -1371,6 +1718,7 @@ impl App {
                 t.secondary,
             )
         };
+        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, header_bg);
         let (sort_col, sort_dir) = self
             .tab_data_for(pane_id)
             .map(|t| (t.sort_col.clone(), t.sort_dir.clone()))
@@ -1488,7 +1836,7 @@ impl App {
             .into_any_element()
         };
 
-        let search_bar = self.render_search_in_place_bar(pane_id, window, cx);
+        let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
         let focus_view = view.clone();
         let rubber_view = view.clone();
         let zone_view = view.clone();
@@ -1503,22 +1851,6 @@ impl App {
             .when(focused, |s| {
                 s.rounded(px(GLASS_RADIUS)).border_2().border_color(accent)
             })
-            .capture_key_down(
-                cx.listener(move |this, ev: &gpui::KeyDownEvent, window, cx| {
-                    if let Some(seed) = search_seed_from_key(ev) {
-                        let already_active = this
-                            .state
-                            .tab_states
-                            .get(&pane_id)
-                            .is_some_and(|ts| ts.search.active);
-                        if !already_active {
-                            this.open_search_in_place_seeded(pane_id, seed, window, cx);
-                            cx.stop_propagation();
-                            cx.notify();
-                        }
-                    }
-                }),
-            )
             .on_mouse_down(MouseButton::Left, {
                 let v = rubber_view.clone();
                 move |ev, _window, cx| {
@@ -1565,9 +1897,17 @@ impl App {
             .when(cfg!(windows), |el| {
                 el.on_prepaint(zone_recorder(pane_id, &zone_view))
             })
-            .children(search_bar)
+            .child(crumb_strip)
             .child(header)
-            .child(div().flex_1().min_h(px(0.)).child(inner))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .relative()
+                    .child(inner)
+                    .child(filter_pill)
+                    .child(controls_pill),
+            )
             .into_any_element()
     }
 
@@ -1582,15 +1922,18 @@ impl App {
     ) -> AnyElement {
         let view = cx.entity();
         let focused = self.state.focused_tile == pane_id;
-        let (accent, accent_fg, hover, muted) = {
+        let (fg, accent, accent_fg, hover, muted, header_bg) = {
             let t = cx.theme();
             (
+                t.foreground,
                 t.accent,
                 t.accent_foreground,
                 t.list_active,
                 t.muted_foreground,
+                t.secondary,
             )
         };
+        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, header_bg);
         let thumb = self
             .tab_data_for(pane_id)
             .map_or(128.0, |t| t.thumbnail_size);
@@ -1734,7 +2077,7 @@ impl App {
             .into_any_element()
         };
 
-        let search_bar = self.render_search_in_place_bar(pane_id, window, cx);
+        let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
         let focus_view = view.clone();
         let rubber_view = view.clone();
         let prepaint_view = view.clone();
@@ -1749,22 +2092,6 @@ impl App {
             .when(focused, |s| {
                 s.rounded(px(GLASS_RADIUS)).border_2().border_color(accent)
             })
-            .capture_key_down(
-                cx.listener(move |this, ev: &gpui::KeyDownEvent, window, cx| {
-                    if let Some(seed) = search_seed_from_key(ev) {
-                        let already_active = this
-                            .state
-                            .tab_states
-                            .get(&pane_id)
-                            .is_some_and(|ts| ts.search.active);
-                        if !already_active {
-                            this.open_search_in_place_seeded(pane_id, seed, window, cx);
-                            cx.stop_propagation();
-                            cx.notify();
-                        }
-                    }
-                }),
-            )
             .on_mouse_down(MouseButton::Left, {
                 let v = rubber_view.clone();
                 move |ev, _window, cx| {
@@ -1823,8 +2150,16 @@ impl App {
                     this.push_pane_zone(pane_id, bounds);
                 });
             })
-            .children(search_bar)
-            .child(div().flex_1().min_h(px(0.)).child(inner))
+            .child(crumb_strip)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .relative()
+                    .child(inner)
+                    .child(filter_pill)
+                    .child(controls_pill),
+            )
             .into_any_element()
     }
 
@@ -1839,15 +2174,18 @@ impl App {
     ) -> AnyElement {
         let view = cx.entity();
         let focused = self.state.focused_tile == pane_id;
-        let (accent, accent_fg, hover, muted) = {
+        let (fg, accent, accent_fg, hover, muted, header_bg) = {
             let t = cx.theme();
             (
+                t.foreground,
                 t.accent,
                 t.accent_foreground,
                 t.list_active,
                 t.muted_foreground,
+                t.secondary,
             )
         };
+        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, header_bg);
         let count = self
             .state
             .tab_states
@@ -1922,7 +2260,7 @@ impl App {
             .into_any_element()
         };
 
-        let search_bar = self.render_search_in_place_bar(pane_id, window, cx);
+        let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
         let focus_view = view.clone();
         let rubber_view = view.clone();
         let zone_view = view.clone();
@@ -1937,22 +2275,6 @@ impl App {
             .when(focused, |s| {
                 s.rounded(px(GLASS_RADIUS)).border_2().border_color(accent)
             })
-            .capture_key_down(
-                cx.listener(move |this, ev: &gpui::KeyDownEvent, window, cx| {
-                    if let Some(seed) = search_seed_from_key(ev) {
-                        let already_active = this
-                            .state
-                            .tab_states
-                            .get(&pane_id)
-                            .is_some_and(|ts| ts.search.active);
-                        if !already_active {
-                            this.open_search_in_place_seeded(pane_id, seed, window, cx);
-                            cx.stop_propagation();
-                            cx.notify();
-                        }
-                    }
-                }),
-            )
             .on_mouse_down(MouseButton::Left, {
                 let v = rubber_view.clone();
                 move |ev, _window, cx| {
@@ -1999,8 +2321,16 @@ impl App {
             .when(cfg!(windows), |el| {
                 el.on_prepaint(zone_recorder(pane_id, &zone_view))
             })
-            .children(search_bar)
-            .child(div().flex_1().min_h(px(0.)).child(inner))
+            .child(crumb_strip)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .relative()
+                    .child(inner)
+                    .child(filter_pill)
+                    .child(controls_pill),
+            )
             .into_any_element()
     }
 
@@ -2011,7 +2341,7 @@ impl App {
     fn render_miller(
         &mut self,
         pane_id: TabId,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         // Lazily seed the first column from the pane path on entry.
@@ -2030,9 +2360,10 @@ impl App {
         }
         let view = cx.entity();
         let focused = self.state.focused_tile == pane_id;
-        let (accent, accent_fg, hover, muted, header_bg) = {
+        let (fg, accent, accent_fg, hover, muted, header_bg) = {
             let t = cx.theme();
             (
+                t.foreground,
                 t.accent,
                 t.accent_foreground,
                 t.list_active,
@@ -2040,6 +2371,7 @@ impl App {
                 t.secondary,
             )
         };
+        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, header_bg);
 
         // Snapshot each column's rows up-front; Miller dirs are browsed one level at a
         // time, so a column is rarely huge — a scrollable v_flex per column is enough.
@@ -2120,6 +2452,7 @@ impl App {
             }
         }
 
+        let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
         let focus_view = view.clone();
         let rubber_view = view.clone();
         let zone_view = view.clone();
@@ -2176,12 +2509,21 @@ impl App {
             .when(cfg!(windows), |el| {
                 el.on_prepaint(zone_recorder(pane_id, &zone_view))
             })
+            .child(crumb_strip)
             .child(
-                h_flex()
-                    .id(SharedString::from(format!("miller-{}", pane_id.0)))
-                    .size_full()
-                    .overflow_x_scroll()
-                    .children(columns),
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .relative()
+                    .child(
+                        h_flex()
+                            .id(SharedString::from(format!("miller-{}", pane_id.0)))
+                            .size_full()
+                            .overflow_x_scroll()
+                            .children(columns),
+                    )
+                    .child(filter_pill)
+                    .child(controls_pill),
             )
             .into_any_element()
     }
@@ -2395,7 +2737,8 @@ fn render_row(
         })
         .on_mouse_down(MouseButton::Right, {
             let rv = view.clone();
-            move |_ev, _window, cx| {
+            move |ev, window, cx| {
+                let pos = ev.position;
                 rv.update(cx, |this, cx| {
                     this.process_actions(vec![Action::Select {
                         tile: pane_id,
@@ -2403,6 +2746,10 @@ fn render_row(
                         shift: false,
                         ctrl: false,
                     }]);
+                    // Right-click opens the Atlas–style menu on the (now
+                    // selected) item; native shell items stream in afterwards.
+                    let paths = this.selected_paths();
+                    this.open_ctx_menu(paths, pos, window, cx);
                     cx.notify();
                 });
             }
@@ -2515,7 +2862,6 @@ fn render_row(
                 _ => {}
             })
         })
-        .context_menu(file_context_menu)
         .into_any_element()
 }
 
@@ -2629,7 +2975,8 @@ fn render_cell(
         })
         .on_mouse_down(MouseButton::Right, {
             let rv = view.clone();
-            move |_ev, _window, cx| {
+            move |ev, window, cx| {
+                let pos = ev.position;
                 rv.update(cx, |this, cx| {
                     this.process_actions(vec![Action::Select {
                         tile: pane_id,
@@ -2637,6 +2984,10 @@ fn render_cell(
                         shift: false,
                         ctrl: false,
                     }]);
+                    // Right-click opens the Atlas–style menu on the (now
+                    // selected) item; native shell items stream in afterwards.
+                    let paths = this.selected_paths();
+                    this.open_ctx_menu(paths, pos, window, cx);
                     cx.notify();
                 });
             }
@@ -2733,7 +3084,6 @@ fn render_cell(
                     });
                 })
         })
-        .context_menu(file_context_menu)
         .into_any_element()
 }
 
@@ -2830,7 +3180,8 @@ fn render_cell_compact(
         })
         .on_mouse_down(MouseButton::Right, {
             let rv = view.clone();
-            move |_ev, _window, cx| {
+            move |ev, window, cx| {
+                let pos = ev.position;
                 rv.update(cx, |this, cx| {
                     this.process_actions(vec![Action::Select {
                         tile: pane_id,
@@ -2838,6 +3189,10 @@ fn render_cell_compact(
                         shift: false,
                         ctrl: false,
                     }]);
+                    // Right-click opens the Atlas–style menu on the (now
+                    // selected) item; native shell items stream in afterwards.
+                    let paths = this.selected_paths();
+                    this.open_ctx_menu(paths, pos, window, cx);
                     cx.notify();
                 });
             }
@@ -2934,7 +3289,6 @@ fn render_cell_compact(
                     });
                 })
         })
-        .context_menu(file_context_menu)
         .into_any_element()
 }
 

@@ -1,4 +1,6 @@
+#![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
 use crate::state::file_entry::{SortColumn, SortDir};
+use crate::state::location::Location;
 use crate::state::pane::{PaneId, TabId};
 use crate::state::settings::ViewMode;
 use crate::state::tag_cache::TagId;
@@ -14,11 +16,6 @@ pub enum Action {
     NavigateBack(TabId),
     NavigateForward(TabId),
     NavigateUp(TabId),
-    SpringNavigate {
-        tab: TabId,
-        path: PathBuf,
-    },
-    SpringFocusTab(TabId),
     EditLocation(TabId),
     NewTab(PaneId),
     NewTabFocused,
@@ -42,8 +39,11 @@ pub enum Action {
     Paste {
         dest: PathBuf,
     },
-    /// Resolve the pending paste-conflict dialog. `None` cancels the paste.
-    ResolvePasteConflict(Option<crate::state::ops::Resolution>),
+    /// Resolve the pending transfer-conflict dialog. `None` cancels.
+    ResolveTransferConflict(Option<crate::state::ops::ConflictPolicy>),
+    /// Fully-specified transfer (used by the OLE drop queue, which knows the
+    /// origin and kind); `Move`/`CopyTo` below are convenience forms.
+    Transfer(crate::state::ops::TransferRequest),
     Move {
         paths: Vec<PathBuf>,
         dest: PathBuf,
@@ -79,7 +79,7 @@ pub enum Action {
     InvertSelection,
     MillerInit {
         tile: TabId,
-        path: PathBuf,
+        location: Location,
     },
     MillerSelect {
         tile: TabId,
@@ -97,6 +97,8 @@ pub enum Action {
     },
     ToggleHidden,
     SetViewMode(ViewMode),
+    /// Switch the active profile's theme by registered theme name.
+    SetTheme(String),
     SetSort {
         col: SortColumn,
         dir: SortDir,
@@ -104,24 +106,48 @@ pub enum Action {
     OpenGotoBar,
     ClosePalette,
     OpenPalette,
+    SubmitExtPalette(String),
+    /// Pin/unpin a command-palette command (by stable id) to the "Quick" section.
+    ToggleCommandPin(String),
+    OpenSearchInPlace,
+    CloseSearchInPlace,
+    ToggleSearchInSubfolders,
+    // ── Per-pane bottom-bar toggles ──
+    ToggleFoldersFirst(TabId),
+    ToggleShowFiles(TabId),
+    ToggleShowFolders(TabId),
     CloseOverlays,
     ToggleInspector,
     ToggleSidebar,
     OpenBatchRename,
     OpenSettings,
     ToggleAnalyzer,
-    ToggleDropShelf,
     Refresh(TabId),
     CopyPathToClipboard(PathBuf),
     Undo,
     Redo,
     SwitchProfile(usize),
+    /// Create a new profile with the given name, seeded from the current view, and
+    /// switch to it.
+    CreateProfile(String),
+    /// Rename the active profile.
+    RenameActiveProfile(String),
+    /// Open the rename-active-profile dialog (seeded with the current name).
+    OpenRenameProfile,
     DeleteActiveProfile,
     ToggleSidebarSection(usize),
     MoveSidebarSectionUp(usize),
     MoveSidebarSectionDown(usize),
+    SetSidebarSectionHidden {
+        index: usize,
+        hidden: bool,
+    },
+    ResetSidebarSections,
     RemoveBookmark(usize),
-    AddBookmark { name: String, path: PathBuf },
+    AddBookmark {
+        name: String,
+        path: PathBuf,
+    },
     // ── Tags ──
     /// Create a new tag. `profile = None` makes it global (visible in every profile).
     CreateTag {
@@ -129,6 +155,10 @@ pub enum Action {
         color: [u8; 3],
         profile: Option<String>,
     },
+    OpenCreateTagOverlay {
+        global: bool,
+    },
+    CloseCreateTagOverlay,
     DeleteTag(TagId),
     AssignTagToFiles {
         tag: TagId,
@@ -148,6 +178,21 @@ pub enum Action {
     MountDevice(String),
     /// Unmount/eject a block device via udisksctl.
     UnmountDevice(String),
+    // ── Archives ──
+    /// Navigate inside an archive, entering the `inner` directory within it.
+    /// Pass `inner = PathBuf::new()` to open at the archive root.
+    NavigateIntoArchive {
+        tab: TabId,
+        archive: PathBuf,
+        inner: PathBuf,
+    },
+    /// Extract the selected virtual entries (`archive_root` + `inner_path` pairs)
+    /// to the given destination directory.
+    ExtractArchiveTo {
+        tab: TabId,
+        items: Vec<(PathBuf, PathBuf)>,
+        dest: PathBuf,
+    },
     // ── Cloud / network mounting (feature `cloud`) ──
     #[cfg(feature = "cloud")]
     Cloud(crate::app::cloud::CloudAction),

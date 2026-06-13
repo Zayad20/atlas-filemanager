@@ -1,0 +1,26 @@
+[files]
+extend-exclude = [
+    "target",
+    "Cargo.lock",
+    "*.png",
+    "*.jpg",
+    "*.jpeg",
+    "*.gif",
+    "*.webp",
+    "*.ico",
+    "*.icns",
+]
+
+[default.extend-words]
+GPUI = "GPUI"
+gpui = "gpui"
+rclone = "rclone"
+rcd = "rcd"
+nucleo = "nucleo"
+jwalk = "jwalk"
+udisks = "udisks"
+exif = "exif"
+hsla = "hsla"
+syntect = "syntect"
+OneDrive = "OneDrive"
+AppData = "AppData"

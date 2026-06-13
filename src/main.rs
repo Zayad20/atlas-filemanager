@@ -1,37 +1,6 @@
-mod app;
-#[cfg(feature = "cloud")]
-mod cloud;
-mod ext;
-mod fs;
-mod input;
-mod search;
-mod state;
-mod ui;
-mod util;
-
-use gpui::{px, size, App, AppContext as _, KeyBinding, WindowBounds, WindowOptions};
-use gpui_component::{Root, TitleBar};
-
-gpui::actions!(
-    Atlas,
-    [
-        Quit,
-        NewTab,
-        CloseTab,
-        NextTab,
-        PrevTab,
-        NavUp,
-        NavDown,
-        NavHome,
-        NavEnd,
-        NavPageUp,
-        NavPageDown,
-        ExtendUp,
-        ExtendDown,
-        OpenSelected,
-        SelectAllItems,
-    ]
-);
+//! Atlas — thin launcher. The gpui application lives in the `atlas-ui` crate;
+//! this binary only sets up logging, the tokio runtime, and hands off to
+//! [`atlas_ui::run`].
 
 fn main() {
     use tracing_subscriber::prelude::*;
@@ -49,10 +18,13 @@ fn main() {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .max_blocking_threads(4)
-        .thread_name("fp-worker")
+        .thread_name("atlas-worker")
         .enable_all()
-        .build()
-        .expect("tokio runtime");
+        .build();
+    let Ok(rt) = rt else {
+        tracing::error!("failed to create tokio runtime");
+        return;
+    };
     let handle = rt.handle().clone();
     std::thread::spawn(move || {
         let _rt = rt;
@@ -61,48 +33,5 @@ fn main() {
         }
     });
 
-    let application = gpui_platform::application().with_assets(gpui_component_assets::Assets);
-    application.run(move |cx: &mut App| {
-        gpui_component::init(cx);
-
-        cx.bind_keys([
-            #[cfg(target_os = "macos")]
-            KeyBinding::new("cmd-q", Quit, None),
-            #[cfg(not(target_os = "macos"))]
-            KeyBinding::new("ctrl-q", Quit, None),
-            KeyBinding::new("up", NavUp, Some("Atlas")),
-            KeyBinding::new("down", NavDown, Some("Atlas")),
-            KeyBinding::new("shift-up", ExtendUp, Some("Atlas")),
-            KeyBinding::new("shift-down", ExtendDown, Some("Atlas")),
-            KeyBinding::new("home", NavHome, Some("Atlas")),
-            KeyBinding::new("end", NavEnd, Some("Atlas")),
-            KeyBinding::new("pageup", NavPageUp, Some("Atlas")),
-            KeyBinding::new("pagedown", NavPageDown, Some("Atlas")),
-            KeyBinding::new("enter", OpenSelected, Some("Atlas")),
-            KeyBinding::new("ctrl-a", SelectAllItems, Some("Atlas")),
-            KeyBinding::new("ctrl-t", NewTab, Some("Atlas")),
-            KeyBinding::new("ctrl-w", CloseTab, Some("Atlas")),
-            KeyBinding::new("ctrl-tab", NextTab, Some("Atlas")),
-            KeyBinding::new("ctrl-shift-tab", PrevTab, Some("Atlas")),
-        ]);
-        cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
-
-        let window_options = WindowOptions {
-            titlebar: Some(TitleBar::title_bar_options()),
-            window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
-            ..Default::default()
-        };
-
-        cx.spawn(async move |cx| {
-            cx.open_window(window_options, |window, cx| {
-                window.set_window_title("Atlas");
-                let view = cx.new(|cx| app::App::new(handle, window, cx));
-                // The top-level window view must be `Root` (mount point for
-                // gpui-component overlays, modals and notifications).
-                cx.new(|cx| Root::new(view, window, cx))
-            })
-            .expect("failed to open window");
-        })
-        .detach();
-    });
+    atlas_ui::run(handle);
 }

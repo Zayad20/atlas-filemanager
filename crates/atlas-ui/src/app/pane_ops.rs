@@ -1,14 +1,21 @@
+#![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
 use crate::app::App;
-use crate::state::pane::{TabData, TabSource};
+use crate::state::layout_tree::{Container, Tile, TileId};
+use crate::state::location::Location;
+use crate::state::pane::TabData;
 use crate::state::settings::ViewMode;
 use crate::state::tab::{LoadState, TabState};
 use crate::state::tag_cache::TagId;
-use crate::state::layout_tree::{Container, Tile, TileId};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
 impl App {
-    /// Reconcile the app's side-tables with `pane_tree` after egui_tiles may have
+    fn invalidate_dock_layout(&mut self) {
+        self.dock = None;
+        self.dock_revision = 0;
+    }
+
+    /// Reconcile the app's side-tables with `pane_tree` after `egui_tiles` may have
     /// mutated the tree itself (tab drag-to-split moves and prunes tiles during
     /// `Tree::ui`). Drops state for panes that no longer exist and guarantees
     /// `focused_tile` points at a live pane.
@@ -20,7 +27,7 @@ impl App {
             .state
             .tab_states
             .keys()
-            .chain(self.state.watchers.keys())
+            .chain(self.watchers.keys())
             .copied()
             .filter(|id| !live.contains(id))
             .collect::<HashSet<_>>()
@@ -29,7 +36,7 @@ impl App {
 
         for id in dead {
             self.state.tab_states.remove(&id);
-            self.state.watchers.remove(&id);
+            self.watchers.remove(&id);
             self.state.clear_preview(id);
         }
 
@@ -44,11 +51,7 @@ impl App {
             .tiles
             .iter()
             .filter_map(|(id, tile)| {
-                matches!(
-                    tile,
-                    Tile::Container(Container::Tabs(_))
-                )
-                .then_some(*id)
+                matches!(tile, Tile::Container(Container::Tabs(_))).then_some(*id)
             })
             .collect();
         for id in tabs_ids {
@@ -105,16 +108,10 @@ impl App {
         if self.state.pane_tree.root == Some(tabs_container_id) {
             self.state.pane_tree.root = Some(split_id);
         } else if let Some(parent_id) = self.state.find_parent_of(tabs_container_id) {
-            if let Some(Tile::Container(c)) =
-                self.state.pane_tree.tiles.get_mut(parent_id)
-            {
+            if let Some(Tile::Container(c)) = self.state.pane_tree.tiles.get_mut(parent_id) {
                 let children: &mut Vec<TileId> = match c {
                     Container::Linear(l) => &mut l.children,
                     Container::Tabs(t) => &mut t.children,
-                    _ => {
-                        self.state.pane_tree.root = Some(split_id);
-                        return;
-                    }
                 };
                 if let Some(slot) = children.iter_mut().find(|id| **id == tabs_container_id) {
                     *slot = split_id;
@@ -124,6 +121,8 @@ impl App {
 
         self.state.focused_tile = new_pane_id;
         self.navigate(new_pane_id, home);
+        self.layout_revision += 1;
+        self.invalidate_dock_layout();
     }
 
     pub(crate) fn close_pane(&mut self, tabs_container_id: TileId) {
@@ -136,6 +135,8 @@ impl App {
             }
         }
         self.state.pane_tree.tiles.remove(tabs_container_id);
+        self.layout_revision += 1;
+        self.invalidate_dock_layout();
     }
 
     pub(crate) fn new_tab(&mut self, pane_id: TileId) {
@@ -163,7 +164,7 @@ impl App {
     }
 
     /// Insert `tab_data` as a new focused tab in the Tabs container owning `pane_id`.
-    /// Returns the new pane's TileId, or `None` if no container could be resolved.
+    /// Returns the new pane's `TileId`, or `None` if no container could be resolved.
     pub(crate) fn insert_tab(&mut self, pane_id: TileId, tab_data: TabData) -> Option<TileId> {
         let tabs_id = self.resolve_tabs_container(pane_id)?;
         let new_tile_id = self.state.pane_tree.tiles.insert_pane(tab_data);
@@ -177,6 +178,7 @@ impl App {
             tabs.set_active(new_tile_id);
         }
         self.activate_tab(new_tile_id);
+        self.invalidate_dock_layout();
         Some(new_tile_id)
     }
 
@@ -209,7 +211,7 @@ impl App {
             self.state.settings.thumbnail_size,
             self.state.settings.show_inspector,
         );
-        tab_data.source = TabSource::Tag(tag);
+        tab_data.location = Location::Tag(tag);
         if let Some(new_tile_id) = self.insert_tab(pane_id, tab_data) {
             if let Some(ts) = self.state.tab_states.get_mut(&new_tile_id) {
                 ts.load_state = LoadState::Loading;
@@ -221,10 +223,7 @@ impl App {
     }
 
     pub(crate) fn wrap_pane_in_tabs(&mut self, pane_id: TileId) -> Option<TileId> {
-        if !matches!(
-            self.state.pane_tree.tiles.get(pane_id),
-            Some(Tile::Pane(_))
-        ) {
+        if !matches!(self.state.pane_tree.tiles.get(pane_id), Some(Tile::Pane(_))) {
             return None;
         }
 
@@ -238,8 +237,7 @@ impl App {
         if is_root {
             self.state.pane_tree.root = Some(tabs_id);
         } else if let Some(parent_id) = parent_id {
-            if let Some(Tile::Container(container)) =
-                self.state.pane_tree.tiles.get_mut(parent_id)
+            if let Some(Tile::Container(container)) = self.state.pane_tree.tiles.get_mut(parent_id)
             {
                 match container {
                     Container::Linear(linear) => {
@@ -252,7 +250,6 @@ impl App {
                             *slot = tabs_id;
                         }
                     }
-                    _ => return None,
                 }
             }
         } else {
@@ -269,6 +266,7 @@ impl App {
             .pane_tree
             .make_active(|tile_id, _| tile_id == tab_id);
         self.state.focused_tile = tab_id;
+        self.layout_revision += 1;
     }
 
     pub(crate) fn close_tab(&mut self, tab_id: TileId) {
@@ -304,5 +302,7 @@ impl App {
                 self.state.focused_tile = first;
             }
         }
+        self.layout_revision += 1;
+        self.invalidate_dock_layout();
     }
 }

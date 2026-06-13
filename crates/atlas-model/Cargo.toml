@@ -1,0 +1,18 @@
+[package]
+name = "atlas-model"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# Cloud request/result models (gated to mirror the binary's `cloud` feature).
+cloud = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+toml = "0.8"
+dirs = "5"
+
+[lints]
+workspace = true

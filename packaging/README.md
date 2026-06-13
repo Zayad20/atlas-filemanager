@@ -1,7 +1,9 @@
 # Packaging & OS integration
 
-Atlas is a single Rust/eframe binary. The platform-specific code (mounts, blur,
-event loop) is `#[cfg]`-gated, so the same source builds on Linux, Windows and macOS.
+Atlas ships as a single Rust binary. The application UI lives in `atlas-ui`
+(`gpui` + `gpui-component`), while filesystem, cloud, extension and search backends
+live in `atlas-core`; platform-specific code is `#[cfg]`-gated so the same workspace
+builds on Linux, Windows and macOS.
 
 > **Important about "default file manager" / "Save As":** a third-party app **cannot**
 > replace the system *Save As* / open panels on macOS or Windows — those dialogs are
@@ -12,7 +14,7 @@ event loop) is `#[cfg]`-gated, so the same source builds on Linux, Windows and m
 ## Build the release binary
 
 ```sh
-cargo build --release        # target/release/egui-app (rename to Atlas)
+cargo build --release        # target/release/atlas (rename to atlas)
 ```
 
 The SQLite tag store is statically linked (rusqlite `bundled`), so there is no external
@@ -22,11 +24,11 @@ libsqlite dependency on any platform.
 
 ```sh
 # Bundle (.deb) with cargo-bundle, or just install the binary + desktop entry manually:
-install -Dm755 target/release/egui-app           ~/.local/bin/Atlas
-install -Dm644 packaging/linux/Atlas.desktop ~/.local/share/applications/Atlas.desktop
+install -Dm755 target/release/atlas           ~/.local/bin/atlas
+install -Dm644 packaging/linux/atlas.desktop ~/.local/share/applications/atlas.desktop
 
 # Make Atlas the default file manager (handler for directories):
-xdg-mime default Atlas.desktop inode/directory
+xdg-mime default atlas.desktop inode/directory
 ```
 
 An AppImage can be produced with `linuxdeploy`/`appimagetool` over the same binary +
@@ -47,13 +49,13 @@ will list Atlas under Finder's **Open With** for folders and files.
 ## Windows
 
 ```powershell
-cargo build --release          # target\release\egui-app.exe -> rename Atlas.exe
+cargo build --release          # target\release\atlas.exe -> rename atlas.exe
 ```
 
-Edit the install path inside `packaging/windows/Atlas-register.reg`, then import it:
+Edit the install path inside `packaging/windows/atlas-register.reg`, then import it:
 
 ```powershell
-reg import packaging\windows\Atlas-register.reg
+reg import packaging\windows\atlas-register.reg
 ```
 
 This adds **"Open with Atlas"** to the context menu of folders and folder
@@ -62,8 +64,8 @@ types can be associated with it.
 
 ## Icons
 
-Drop platform icon files into `packaging/icons/` (`Atlas.icns` for macOS,
-`Atlas.ico` for Windows, a PNG named `Atlas` for the Linux theme) and uncomment
+Drop platform icon files into `packaging/icons/` (`atlas.icns` for macOS,
+`atlas.ico` for Windows, a PNG named `atlas` for the Linux theme) and uncomment
 the `icon = [...]` line in `[package.metadata.bundle]`.
 
 ## CI note

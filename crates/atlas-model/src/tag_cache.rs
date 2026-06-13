@@ -1,6 +1,7 @@
+#![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
 //! In-memory, UI-facing view of the tag system.
 //!
-//! All persistence lives in [`crate::fs::tag_db`] (SQLite). This cache is what the
+//! All persistence lives in [`crate::fs::tag_db`] (`SQLite`). This cache is what the
 //! sidebar and inspector read every frame, so it must never touch SQL. It is kept in
 //! sync by the background tag-db worker via `BgResult::{TagDefinitions, TagsForPaths}`
 //! and updated optimistically on assign/unassign so chips appear the same frame.
@@ -8,7 +9,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Stable identity of a tag, matching the `tags.id` primary key in SQLite.
+/// Stable identity of a tag, matching the `tags.id` primary key in `SQLite`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TagId(pub i64);
 
@@ -37,7 +38,7 @@ impl TagCache {
     }
 
     pub fn tags_of(&self, path: &Path) -> &[TagId] {
-        self.for_path.get(path).map(Vec::as_slice).unwrap_or(&[])
+        self.for_path.get(path).map_or(&[], Vec::as_slice)
     }
 
     /// True once we have a (possibly empty) cached answer for `path`.

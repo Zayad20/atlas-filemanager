@@ -1,9 +1,10 @@
+#![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
 //! UI-facing state for the cloud extension (feature `cloud`).
 //!
 //! Mirrors what the cloud worker reports via `BgResult`; the worker owns the
 //! authoritative rclone state, this is just what the sidebar/dialogs render.
 
-use crate::cloud::{AccessKind, CloudRemote, TransferSnapshot};
+use crate::cloud_model::{AccessKind, CloudRemote, RemoteId, TransferSnapshot};
 
 /// Which backend the add-remote dialog is configuring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -18,8 +19,8 @@ pub enum AddRemoteKind {
 
 impl AddRemoteKind {
     /// OAuth kinds need no host/credentials — the dialog hides those fields.
-    pub fn is_oauth(&self) -> bool {
-        matches!(self, AddRemoteKind::GoogleDrive | AddRemoteKind::OneDrive)
+    pub const fn is_oauth(&self) -> bool {
+        matches!(self, Self::GoogleDrive | Self::OneDrive)
     }
 }
 
@@ -54,7 +55,7 @@ pub struct CloudState {
     pub remotes: Vec<CloudRemote>,
     /// Remotes whose mount was user-initiated, so the focused pane navigates into
     /// them once mounted (auto-mounted remotes are absent → no navigation hijack).
-    pub navigate_on_mount: std::collections::HashSet<crate::cloud::RemoteId>,
+    pub navigate_on_mount: std::collections::HashSet<RemoteId>,
     pub transfers: TransferSnapshot,
     /// rclone binary download progress `(done, total)` while fetching.
     pub rclone_progress: Option<(u64, u64)>,

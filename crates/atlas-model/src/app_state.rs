@@ -1,15 +1,15 @@
-use crate::state::layout_tree::{Container, Tile, Tree, TileId};
+#![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
+use crate::layout_tree::{Container, Tile, TileId, Tree};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 
-use crate::fs::preview::PreviewResult;
-use crate::search::nucleo_pool::NucleoPool;
-use crate::state::file_entry::FileEntry;
-use crate::state::pane::{TabData, TabId};
-use crate::state::profiles::{ProfileManager, ProfileUiState};
-use crate::state::settings::{Settings, ViewMode};
-use crate::state::tab::{LoadState, TabState};
+use crate::file_entry::FileEntry;
+use crate::pane::{TabData, TabId};
+use crate::preview_cache::PreviewResult;
+use crate::profiles::{ProfileManager, ProfileUiState};
+use crate::settings::{Settings, ViewMode};
+use crate::tab::{LoadState, TabState};
 
 pub enum BgResult {
     DirListed {
@@ -24,7 +24,7 @@ pub enum BgResult {
     },
     MillerListed {
         tab: TabId,
-        path: PathBuf,
+        location: crate::location::Location,
         op_id: u64,
         entries: Vec<FileEntry>,
     },
@@ -35,17 +35,53 @@ pub enum BgResult {
     },
     MultiPreviewThumbnailReady {
         tab: TabId,
-        key: crate::state::preview_cache::MultiPreviewKey,
+        key: crate::preview_cache::MultiPreviewKey,
         path: PathBuf,
         rgba: Vec<u8>,
         width: usize,
         height: usize,
+    },
+    /// A downscaled grid thumbnail finished decoding off-thread. `rgba` empty == the
+    /// decode failed (cached as a permanent miss so it isn't re-requested).
+    GridThumbnailReady {
+        path: PathBuf,
+        rgba: Vec<u8>,
+        width: usize,
+        height: usize,
+    },
+
+    /// Virtual listing of an archive directory completed.
+    ArchiveListed {
+        tab: TabId,
+        op_id: u64,
+        /// Archive file on disk.
+        archive: PathBuf,
+        /// Directory within the archive that was listed (empty = root).
+        inner: PathBuf,
+        entries: Vec<FileEntry>,
+    },
+    ArchiveListError {
+        tab: TabId,
+        op_id: u64,
+        error: String,
+    },
+    SearchInPlaceResults {
+        tab: TabId,
+        gen: u64,
+        entries: Vec<FileEntry>,
+    },
+    SearchInPlaceError {
+        tab: TabId,
+        gen: u64,
+        error: String,
     },
     FsEvent(std::path::PathBuf),
     OpProgress {
         id: u64,
         done: u64,
         total: u64,
+        bytes_done: u64,
+        bytes_total: u64,
         current_file: PathBuf,
     },
     OpComplete {
@@ -53,15 +89,33 @@ pub enum BgResult {
         result: Result<(), String>,
         affected_tabs: Vec<TabId>,
     },
+    /// A paste target wrote `Performed DropEffect` onto our clipboard data
+    /// object (e.g. Explorer pasting an Atlas cut). `effect` is the raw
+    /// `DROPEFFECT` value: 0 = optimized move (target moved the files itself),
+    /// 1 = copy, 2 = move (we must delete the sources).
+    ClipboardPerformed {
+        effect: u32,
+        paths: Vec<PathBuf>,
+    },
+    /// A unified transfer (copy/move via paste, drag-and-drop, or menu) finished —
+    /// possibly partially. The report carries per-item errors, skips, the real
+    /// `src→dst` pairs for undo, and whether it was cancelled.
+    TransferComplete {
+        id: u64,
+        kind: crate::ops::TransferKind,
+        origin: crate::ops::TransferOrigin,
+        report: crate::ops::TransferReport,
+        affected_tabs: Vec<TabId>,
+    },
     /// Full tag-definition list pushed by the tag-db worker after any CRUD.
-    TagDefinitions(Vec<crate::state::tag_cache::TagDef>),
+    TagDefinitions(Vec<crate::tag_cache::TagDef>),
     /// Cached tag associations for a set of queried paths.
     TagsForPaths {
-        tags: HashMap<PathBuf, Vec<crate::state::tag_cache::TagId>>,
+        tags: HashMap<PathBuf, Vec<crate::tag_cache::TagId>>,
     },
     /// Paths carrying a given tag, used to populate a virtual tag-results tab.
     PathsForTag {
-        tag: crate::state::tag_cache::TagId,
+        tag: crate::tag_cache::TagId,
         paths: Vec<PathBuf>,
     },
     /// A removable device finished mounting at this path (navigate to it).
@@ -70,16 +124,29 @@ pub enum BgResult {
     DeviceActionFailed(String),
     /// The set of removable devices changed (e.g. after unmount); refresh sidebar.
     DevicesChanged,
-    /// A declarative extension command finished; refresh `dirs` and report `error`.
+    /// A batch of files whose contents matched the goto bar's content search. `gen`
+    /// tags the search generation so stale batches (from an older query) are dropped.
+    ContentResults {
+        gen: u64,
+        paths: Vec<PathBuf>,
+    },
     ExtCommandDone {
         ext_id: String,
         error: Option<String>,
         dirs: Vec<PathBuf>,
     },
+    /// A WASM extension requested the fuzzy panel. The background worker blocks on `reply_tx`.
+    ExtShowQuickPick {
+        items: Vec<String>,
+        reply_tx: std::sync::mpsc::Sender<String>,
+    },
     // --- cloud extension ---
     /// rclone binary download progress while fetching it on first use.
     #[cfg(feature = "cloud")]
-    CloudRcloneProgress { done: u64, total: u64 },
+    CloudRcloneProgress {
+        done: u64,
+        total: u64,
+    },
     /// rclone daemon is up and the provider is ready.
     #[cfg(feature = "cloud")]
     CloudReady,
@@ -88,27 +155,27 @@ pub enum BgResult {
     CloudError(String),
     /// A remote's backend config was created successfully.
     #[cfg(feature = "cloud")]
-    RemoteConfigured(crate::cloud::CloudRemote),
+    RemoteConfigured(crate::cloud_model::CloudRemote),
     #[cfg(feature = "cloud")]
     RemoteConfigFailed {
-        id: crate::cloud::RemoteId,
+        id: crate::cloud_model::RemoteId,
         error: String,
     },
     #[cfg(feature = "cloud")]
-    RemoteRemoved(crate::cloud::RemoteId),
+    RemoteRemoved(crate::cloud_model::RemoteId),
     /// A remote's runtime (mount/connection) status changed.
     #[cfg(feature = "cloud")]
     RemoteStatusChanged {
-        id: crate::cloud::RemoteId,
-        status: crate::cloud::RemoteStatus,
+        id: crate::cloud_model::RemoteId,
+        status: crate::cloud_model::RemoteStatus,
     },
     /// Full transfer-list snapshot from the Transfer Manager.
     #[cfg(feature = "cloud")]
-    TransferUpdate(crate::cloud::TransferSnapshot),
+    TransferUpdate(crate::cloud_model::TransferSnapshot),
     /// Storage usage `(used, total)` bytes reported for a remote.
     #[cfg(feature = "cloud")]
     RemoteQuota {
-        id: crate::cloud::RemoteId,
+        id: crate::cloud_model::RemoteId,
         used: u64,
         total: u64,
     },
@@ -116,40 +183,33 @@ pub enum BgResult {
     /// Access-mode tab showing `(id, path)`.
     #[cfg(feature = "cloud")]
     RemoteChanged {
-        id: crate::cloud::RemoteId,
+        id: crate::cloud_model::RemoteId,
         path: String,
     },
 }
 
 pub struct AppState {
     pub pane_tree: Tree<TabData>,
-    /// Active Pane leaf TileId (the individual tab being viewed)
+    /// Active Pane leaf `TileId` (the individual tab being viewed)
     pub focused_tile: TileId,
-    /// Runtime per-tab state, keyed by Pane leaf TileId
+    /// Runtime per-tab state, keyed by Pane leaf `TileId`
     pub tab_states: HashMap<TileId, TabState>,
     pub settings: Settings,
-    pub ops: crate::state::ops::OperationManager,
-    pub overlay: crate::state::overlay::OverlayState,
-    pub nucleo: NucleoPool,
-    pub nucleo_results: Vec<std::path::PathBuf>,
+    pub ops: crate::ops::OperationManager,
+    pub overlay: crate::overlay::OverlayState,
     // Phase 5 — inspector preview
-    pub preview: crate::state::preview_cache::PreviewState,
-    // Phase 7 — filesystem watchers keyed by Pane leaf TileId
-    pub watchers: HashMap<TileId, crate::fs::watcher::WatcherHandle>,
-    pub batch_rename: Option<crate::state::batch_rename::BatchRenameState>,
-    pub tabs_popup: crate::state::overlay::TabsPopupState,
-    pub drag_drop: crate::state::drag::DragDropState,
+    pub preview: crate::preview_cache::PreviewState,
+    pub batch_rename: Option<crate::batch_rename::BatchRenameState>,
     pub profiles: ProfileManager,
     pub profile_ui: ProfileUiState,
-    pub space_lens: crate::state::space_lens::SpaceLensState,
-    pub tag_cache: crate::state::tag_cache::TagCache,
-    pub ext: crate::state::ext_state::ExtState,
+    pub tag_cache: crate::tag_cache::TagCache,
+    pub ext: crate::ext_state::ExtState,
     #[cfg(feature = "cloud")]
-    pub cloud: crate::state::cloud_state::CloudState,
+    pub cloud: crate::cloud_state::CloudState,
 }
 
 impl AppState {
-    pub fn new(settings: Settings) -> (Self, crate::state::pane::PaneId) {
+    pub fn new(settings: Settings) -> (Self, crate::pane::PaneId) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let tab_data = TabData::with_view(
             home,
@@ -174,8 +234,8 @@ impl AppState {
         self.tab_states.get(&self.focused_tile)
     }
 
-    pub fn active_preview_request(&self) -> Option<crate::state::preview_cache::PreviewRequest> {
-        use crate::state::preview_cache::{MultiPreviewKey, PreviewRequest, MULTI_PREVIEW_LIMIT};
+    pub fn active_preview_request(&self) -> Option<crate::preview_cache::PreviewRequest> {
+        use crate::preview_cache::{MultiPreviewKey, PreviewRequest, MULTI_PREVIEW_LIMIT};
 
         let tab = self.focused_tile;
         let view = match self.pane_tree.tiles.get(tab) {
@@ -187,8 +247,8 @@ impl AppState {
             let col = ts.miller.columns.get(ts.miller.focused)?;
             return col
                 .entries
-                .get(col.selected?)
-                .map(|entry| PreviewRequest::Single(entry.path.clone()));
+                .get(col.primary_selected()?)
+                .map(|entry| entry_to_preview_request(entry));
         }
 
         let mut selected: Vec<usize> = ts.selection.selected.iter().copied().collect();
@@ -197,7 +257,7 @@ impl AppState {
             return ts
                 .entries
                 .get(selected[0])
-                .map(|entry| PreviewRequest::Single(entry.path.clone()));
+                .map(|entry| entry_to_preview_request(entry));
         }
         if selected.is_empty() {
             return None;
@@ -214,7 +274,7 @@ impl AppState {
             let is_image = entry
                 .extension
                 .as_deref()
-                .is_some_and(crate::fs::preview::is_image_ext);
+                .is_some_and(crate::preview_cache::is_image_ext);
             if paths.len() < MULTI_PREVIEW_LIMIT && is_image {
                 paths.push(entry.path.clone());
             }
@@ -248,7 +308,7 @@ impl AppState {
                 .miller
                 .columns
                 .get(ts.miller.focused)
-                .and_then(|c| c.entries.get(c.selected?))
+                .and_then(|c| c.entries.get(c.primary_selected()?))
                 .map(|e| vec![e.path.clone()])
                 .unwrap_or_default();
         }
@@ -258,6 +318,25 @@ impl AppState {
             .into_iter()
             .filter_map(|i| ts.entries.get(i).map(|e| e.path.clone()))
             .collect()
+    }
+
+    /// Like `selected_paths()` but returns `(archive, inner)` pairs for archive
+    /// tabs, so callers can implement drag-out virtual (extract on drag).
+    /// Returns `None` when the focused tab is not in archive mode.
+    pub fn selected_archive_items(&self) -> Option<Vec<(PathBuf, PathBuf)>> {
+        let td = self.active_tab_data()?;
+        let (archive, _) = td.location.as_archive()?;
+        let archive = archive.to_path_buf();
+        let Some(ts) = self.active_tab_state() else {
+            return Some(Vec::new());
+        };
+        let mut selected: Vec<usize> = ts.selection.selected.iter().copied().collect();
+        selected.sort_unstable();
+        let items = selected
+            .into_iter()
+            .filter_map(|i| ts.entries.get(i).map(|e| (archive.clone(), e.path.clone())))
+            .collect();
+        Some(items)
     }
 
     pub fn active_tab_data(&self) -> Option<&TabData> {
@@ -280,7 +359,7 @@ impl AppState {
             .any(|s| s.load_state == LoadState::Loading)
     }
 
-    /// Find the Tabs container TileId that contains the given pane tile.
+    /// Find the Tabs container `TileId` that contains the given pane tile.
     pub fn find_tabs_container(&self, tile_id: TileId) -> Option<TileId> {
         for (id, tile) in self.pane_tree.tiles.iter() {
             if let Tile::Container(Container::Tabs(tabs)) = tile {
@@ -292,13 +371,10 @@ impl AppState {
         None
     }
 
-    /// Find any Tabs container in the tree (fallback when focused_tile is stale).
+    /// Find any Tabs container in the tree (fallback when `focused_tile` is stale).
     pub fn find_any_tabs_container(&self) -> Option<TileId> {
         self.pane_tree.tiles.iter().find_map(|(id, tile)| {
-            if matches!(
-                tile,
-                Tile::Container(Container::Tabs(_))
-            ) {
+            if matches!(tile, Tile::Container(Container::Tabs(_))) {
                 Some(*id)
             } else {
                 None
@@ -310,12 +386,8 @@ impl AppState {
     pub fn find_parent_of(&self, tile_id: TileId) -> Option<TileId> {
         for (id, tile) in self.pane_tree.tiles.iter() {
             let children = match tile {
-                Tile::Container(Container::Linear(l)) => {
-                    l.children.as_slice()
-                }
-                Tile::Container(Container::Tabs(t)) => {
-                    t.children.as_slice()
-                }
+                Tile::Container(Container::Linear(l)) => l.children.as_slice(),
+                Tile::Container(Container::Tabs(t)) => t.children.as_slice(),
                 _ => continue,
             };
             if children.contains(&tile_id) {
@@ -325,7 +397,7 @@ impl AppState {
         None
     }
 
-    /// Restore from a persisted tree. Returns (state, first_pane_to_load).
+    /// Restore from a persisted tree. Returns (state, `first_pane_to_load`).
     pub fn from_tree(tree: Tree<TabData>, settings: Settings) -> (Self, TileId) {
         // Collect all Pane leaf IDs to initialize tab_states
         let mut tab_states = HashMap::new();
@@ -357,22 +429,16 @@ impl AppState {
             focused_tile,
             tab_states,
             settings,
-            ops: crate::state::ops::OperationManager::default(),
-            overlay: crate::state::overlay::OverlayState::default(),
-            nucleo: NucleoPool::new(),
-            nucleo_results: Vec::new(),
-            preview: crate::state::preview_cache::PreviewState::default(),
-            watchers: HashMap::new(),
+            ops: crate::ops::OperationManager::default(),
+            overlay: crate::overlay::OverlayState::default(),
+            preview: crate::preview_cache::PreviewState::default(),
             batch_rename: None,
-            tabs_popup: crate::state::overlay::TabsPopupState::default(),
-            drag_drop: crate::state::drag::DragDropState::default(),
             profiles: ProfileManager::default(),
             profile_ui: ProfileUiState::default(),
-            space_lens: crate::state::space_lens::SpaceLensState::default(),
-            tag_cache: crate::state::tag_cache::TagCache::default(),
-            ext: crate::state::ext_state::ExtState::default(),
+            tag_cache: crate::tag_cache::TagCache::default(),
+            ext: crate::ext_state::ExtState::default(),
             #[cfg(feature = "cloud")]
-            cloud: crate::state::cloud_state::CloudState::default(),
+            cloud: crate::cloud_state::CloudState::default(),
         }
     }
 
@@ -381,12 +447,7 @@ impl AppState {
         self.preview.clear(tab);
     }
 
-    /// Register a new background operation and return its ID.
-    pub fn start_op(&mut self, count: usize) -> u64 {
-        self.ops.start_op(count)
-    }
-
-    /// All Pane leaf TileIds in the tree (for session restore / refresh all).
+    /// All Pane leaf `TileIds` in the tree (for session restore / refresh all).
     pub fn all_pane_tile_ids(&self) -> Vec<TileId> {
         self.pane_tree
             .tiles
@@ -406,12 +467,24 @@ impl AppState {
     }
 }
 
+fn entry_to_preview_request(entry: &crate::file_entry::FileEntry) -> crate::preview_cache::PreviewRequest {
+    use crate::preview_cache::PreviewRequest;
+    if let Some(archive) = entry.archive_root.clone() {
+        PreviewRequest::ArchiveSingle {
+            archive,
+            inner: entry.path.clone(),
+        }
+    } else {
+        PreviewRequest::Single(entry.path.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::AppState;
-    use crate::state::file_entry::{FileEntry, FileKind};
-    use crate::state::preview_cache::{PreviewRequest, MULTI_PREVIEW_LIMIT};
-    use crate::state::settings::Settings;
+    use crate::file_entry::{FileEntry, FileKind};
+    use crate::preview_cache::{PreviewRequest, MULTI_PREVIEW_LIMIT};
+    use crate::settings::Settings;
     use std::path::PathBuf;
 
     fn entry(name: &str) -> FileEntry {
@@ -429,6 +502,7 @@ mod tests {
             modified: None,
             _is_hidden: false,
             _is_symlink: false,
+            archive_root: None,
         }
     }
 

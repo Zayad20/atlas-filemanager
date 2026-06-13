@@ -68,12 +68,29 @@ impl App {
                     self.state.overlay.show_analyzer = !self.state.overlay.show_analyzer;
                 }
                 Action::CloseOverlays => {
+                    // Esc with no palette open also dismisses the focused pane's
+                    // local filter (the "obvious" exit key for the filter pill).
+                    let any_palette = self.state.overlay.show_goto_bar
+                        || self.state.overlay.show_palette
+                        || self.state.overlay.show_ext_palette;
+                    if !any_palette {
+                        let tile = self.state.focused_tile;
+                        if self
+                            .state
+                            .tab_states
+                            .get(&tile)
+                            .is_some_and(|ts| ts.search.active)
+                        {
+                            self.close_search_in_place(tile);
+                        }
+                    }
                     // Goto dismisses with a fade-out: keep its view + input mounted and
-                    // start the exit animation; `tick_goto_close` drops them when it
+                    // start the exit animation; `tick_palette_close` drops them when it
                     // finishes. If it was already closing, leave the in-flight fade.
                     if self.state.overlay.show_goto_bar {
                         self.state.overlay.show_goto_bar = false;
-                        self.goto_closing = Some(Instant::now());
+                        self.palette_closing =
+                            Some((crate::ui::palette::PaletteKind::Goto, Instant::now()));
                     }
                     self.state.overlay.show_palette = false;
                     self.palette_input = None;
@@ -83,6 +100,11 @@ impl App {
                     if let Some(tx) = self.state.overlay.ext_palette_reply.take() {
                         let _ = tx.send(String::new()); // Unblock WASM on Esc
                     }
+                    // Keep the host mounted only for the goto's exit fade; otherwise
+                    // drop it so the next open remounts fresh.
+                    if self.palette_closing.is_none() {
+                        self.palette_host = None;
+                    }
 
                     // Esc also collapses an expanded image preview.
                     self.collapse_preview_expanded();
@@ -90,6 +112,7 @@ impl App {
                 Action::SubmitExtPalette(selection) => {
                     self.state.overlay.show_ext_palette = false;
                     self.ext_palette_input = None;
+                    self.palette_host = None;
                     if let Some(tx) = self.state.overlay.ext_palette_reply.take() {
                         let _ = tx.send(selection);
                     }
@@ -99,16 +122,23 @@ impl App {
                     self.state.overlay.show_palette = false;
                     self.state.overlay.goto_state.reset();
                     // Cancel any in-flight exit fade and start fresh.
-                    self.goto_closing = None;
+                    self.palette_closing = None;
                     self.goto_input = None;
-                    self.goto_overlay = None;
-                    // Rebuild index from the current pane's directory
+                    self.palette_host = None;
                     self.nucleo.reset();
-                    let root = self.state.active_tab_data().and_then(|td| {
-                        td.location.fs_dir().map(|p| p.to_path_buf())
-                    }).unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-                    let injector = self.nucleo.injector();
-                    crate::fs::index::build_index(root, injector);
+                    if self.goto_prefill.is_some() {
+                        // Pre-filled open (Ctrl+L): the first render scopes the
+                        // index from the path in the query; skip the global build.
+                        self.goto_index_root = None;
+                    } else {
+                        // Rebuild the global index from the current pane's directory.
+                        let root = self.state.active_tab_data().and_then(|td| {
+                            td.location.fs_dir().map(|p| p.to_path_buf())
+                        }).unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+                        let injector = self.nucleo.injector();
+                        crate::fs::index::build_index(root.clone(), injector);
+                        self.goto_index_root = Some((root, false));
+                    }
                 }
                 Action::OpenPalette => {
                     self.state.overlay.show_palette = true;
@@ -116,9 +146,18 @@ impl App {
                     self.state.overlay.palette_state.reset();
                     self.palette_input = None;
                     // Hard-dismiss the goto (no fade) when switching to the palette.
-                    self.goto_closing = None;
+                    self.palette_closing = None;
                     self.goto_input = None;
-                    self.goto_overlay = None;
+                    self.palette_host = None;
+                }
+                Action::ToggleCommandPin(id) => {
+                    let pinned = &mut self.state.profiles.active_mut().pinned_commands;
+                    if let Some(pos) = pinned.iter().position(|p| *p == id) {
+                        pinned.remove(pos);
+                    } else {
+                        pinned.push(id);
+                    }
+                    crate::util::config::save_profiles(&self.state.profiles);
                 }
                 Action::OpenSearchInPlace => {
                     let tile = self.state.focused_tile;
@@ -141,13 +180,60 @@ impl App {
                     }
                     self.refresh_search_in_place(tile);
                 }
+                Action::ToggleFoldersFirst(tile) => {
+                    let sort = match self.state.pane_tree.tiles.get_mut(tile) {
+                        Some(Tile::Pane(p)) => {
+                            p.folders_first = !p.folders_first;
+                            Some((p.sort_col.clone(), p.sort_dir.clone(), p.folders_first))
+                        }
+                        _ => None,
+                    };
+                    if let Some((col, dir, folders_first)) = sort {
+                        self.resort_entries_in_place(tile, &col, &dir, folders_first);
+                    }
+                }
+                Action::ToggleShowFiles(tile) | Action::ToggleShowFolders(tile) => {
+                    let toggled = match self.state.pane_tree.tiles.get_mut(tile) {
+                        Some(Tile::Pane(p)) => {
+                            if matches!(action, Action::ToggleShowFiles(_)) {
+                                p.show_files = !p.show_files;
+                            } else {
+                                p.show_folders = !p.show_folders;
+                            }
+                            Some((p.show_files, p.show_folders))
+                        }
+                        _ => None,
+                    };
+                    if let Some((show_files, show_folders)) = toggled {
+                        if let Some(ts) = self.state.tab_states.get_mut(&tile) {
+                            ts.set_visibility(show_files, show_folders);
+                            // Drop selection entries that just became invisible so
+                            // keyboard/file ops can't act on hidden items.
+                            let entries = &ts.entries;
+                            let kind_visible = |i: usize| {
+                                entries.get(i).is_some_and(|e| {
+                                    if matches!(e.kind, FileKind::Dir) {
+                                        show_folders
+                                    } else {
+                                        show_files
+                                    }
+                                })
+                            };
+                            ts.selection.selected.retain(|&i| kind_visible(i));
+                            if ts.selection.keyboard_cursor.is_some_and(|i| !kind_visible(i)) {
+                                ts.selection.keyboard_cursor = None;
+                                ts.selection.selection_anchor = None;
+                            }
+                        }
+                    }
+                }
                 Action::ClosePalette => {
                     self.state.overlay.show_palette = false;
                     self.state.overlay.show_goto_bar = false;
-                    self.goto_closing = None;
+                    self.palette_closing = None;
                     self.goto_input = None;
-                    self.goto_overlay = None;
                     self.palette_input = None;
+                    self.palette_host = None;
                 }
                 Action::Refresh(tab_id) => {
                     if let Some(tab_data) = self.tab_data_for(tab_id) {
@@ -220,7 +306,7 @@ impl App {
                                 // Open virtual file by extracting to a temp dir first.
                                 let dest_dir = std::env::temp_dir().join("atlas-open");
                                 let dest = dest_dir.join(path.file_name().map_or_else(
-                                    || "file".to_string(),
+                                    || rust_i18n::t!("extract_fallback_name").to_string(),
                                     |n| n.to_string_lossy().into_owned(),
                                 ));
                                 let rt = self.rt.clone();
@@ -450,6 +536,13 @@ impl App {
                 }
                 Action::SetTheme(name) => self.set_theme(name),
                 Action::SwitchProfile(idx) => self.switch_profile(idx),
+                Action::CreateProfile(name) => self.create_profile(name),
+                Action::RenameActiveProfile(name) => self.rename_active_profile(name),
+                Action::OpenRenameProfile => {
+                    // Re-seed the input with the current name on next render.
+                    self.rename_profile_input = None;
+                    self.state.overlay.renaming_profile = true;
+                }
                 Action::DeleteActiveProfile => self.delete_active_profile(),
                 Action::ToggleSidebarSection(i) => {
                     if let Some(section) =

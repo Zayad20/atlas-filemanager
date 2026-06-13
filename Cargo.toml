@@ -1,134 +1,139 @@
 [package]
-name = "egui-app"
+name = "atlas"
 version = "0.1.0"
 edition = "2021"
+default-run = "atlas"
+
+[workspace]
+members = [
+    ".",
+    "crates/atlas-model",
+    "crates/atlas-core",
+    "crates/atlas-ui", "crates/atlas-wasm-icon-theme",
+]
+resolver = "2"
+
+[workspace.dependencies]
+atlas-model = { path = "crates/atlas-model" }
+atlas-core = { path = "crates/atlas-core" }
+atlas-ui = { path = "crates/atlas-ui" }
+anyhow = "1"
+flume = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "fs", "io-util", "sync", "macros", "time", "process"] }
+tracing = "0.1.44"
+rust-i18n = "3"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+option_if_let_else = "allow"
+needless_pass_by_ref_mut = "allow"
+needless_pass_by_value = "allow"
+trivially_copy_pass_by_ref = "allow"
+too_many_lines = "allow"
+similar_names = "allow"
+struct_excessive_bools = "allow"
+# Library crates expose internal modules as "public API", surfacing doc/field
+# pedantic lints that the binary suppresses. These are internal atlas-* crates,
+# not a published API, so the noise isn't worth churn.
+too_long_first_doc_paragraph = "allow"
+pub_underscore_fields = "allow"
+implicit_hasher = "allow"
+new_without_default = "allow"
 
 # Bundle metadata for `cargo bundle` (cargo install cargo-bundle).
 # Produces a macOS .app / Linux .deb with the icon and identifier below.
 # The folder "Open With" association is injected per-OS from the packaging/ manifests.
 [package.metadata.bundle]
 name = "Atlas"
-identifier = "com.Atlas.Atlas"
+identifier = "com.atlas.Atlas"
 short_description = "Modern cross-platform file manager"
 category = "Utility"
-# icon = ["packaging/icons/Atlas.icns", "packaging/icons/Atlas.ico"]
+# icon = ["packaging/icons/atlas.icns", "packaging/icons/atlas.ico"]
+
+# `kamadak-exif` exposes its crate as `exif` (used in fs/preview.rs); cargo-machete
+# matches by package name and reports a false positive — ignore it.
+[package.metadata.cargo-machete]
+ignored = ["kamadak-exif"]
 
 [features]
-default = ["cloud"]
-# Cloud / network mounting extension. Gated so the core binary can be built
-# without the heavier HTTP/TLS/crypto deps (`cargo build --no-default-features`).
-# The rclone binary itself is NOT bundled — it is downloaded on demand at runtime.
-cloud = ["dep:reqwest", "dep:async-trait", "dep:sha2", "dep:futures-util"]
+default = ["cloud", "rar"]
+# Cloud / network mounting extension. Forwards to the UI crate (which forwards to
+# atlas-core/atlas-model); the heavy HTTP/TLS/crypto deps live in `atlas-core`.
+cloud = ["atlas-ui/cloud"]
+# RAR archive navigation via bundled UnRAR.exe CLI.
+rar = ["atlas-ui/rar"]
 
 [dependencies]
-eframe = { version = "0.33", default-features = false, features = [
-    "default_fonts", "glow", "wayland", "x11", "persistence",
-]}
-egui = { version = "0.33", default-features = false }
-egui_extras = { version = "0.33", features = ["all_loaders"] }
-egui_tiles = "0.14"
-egui_commonmark = "0.22"
-egui-phosphor = "=0.11.0"
-
-# --- gpui (renderer) ----------------------------------------------------------
-# gpui MUST be declared with the SAME source spec as gpui-component's transitive
-# dep (bare git, no `rev`), or cargo treats `?rev=…` and the bare source as two
-# distinct packages → two `App` types that don't unify. The commit is pinned by
-# Cargo.lock (currently ade2b21); commit the lock and don't `cargo update` blindly.
-gpui = { git = "https://github.com/zed-industries/zed" }
-# Platform layer for gpui: `gpui_platform::application()` is the official entry
-# point in this rev (replaces `Application::new()`). Same bare-git zed source +
-# the platform features gpui-component itself enables, so cargo unifies the rev.
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "b2472cd798422b05e2448d07aaab1550c21155f7" }
-# Default icon/asset pack from the gpui-component repo (crates/assets), pinned to
-# the SAME rev so the asset paths match the widget set.
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "b2472cd798422b05e2448d07aaab1550c21155f7" }
+# FASE J: the whole gpui application layer (App entity, views, overlays, input,
+# platform glue) lives in `atlas-ui`. This binary is a thin launcher over
+# `atlas_ui::run`. Backends/state live in atlas-core/atlas-model (transitive).
+atlas-ui = { workspace = true }
 
 tokio = { version = "1", features = ["rt-multi-thread", "fs", "io-util", "sync", "macros", "time", "process"] }
-flume = "0.11"
-# gpui's async executor uses smol; `smol::Timer` drives the BgResult drain loop.
-smol = "2"
-rayon = "1"
-nucleo = "0.5"
-notify = "6"
-notify-debouncer-mini = "0.4"
-
-# Phase 5 — pinned to avoid fancy-regex gap (5.3 requires ^0.16.2 which doesn't exist)
-syntect = { version = ">=5.0, <5.3", default-features = false, features = ["default-syntaxes", "default-themes", "parsing", "regex-fancy"] }
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "tiff", "bmp", "ico"] }
-kamadak-exif = "0.6"
-
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "0.8"
-rusqlite = { version = "0.32", features = ["bundled"] }
-dirs = "5"
-open = "5"
-trash = "5"
-arboard = "3"
-rfd = "0.15"
-zip = "2"
-uuid = { version = "1", features = ["v4"] }
-walkdir = "2"
-jwalk = "0.8.1"
-anyhow = "1"
-thiserror = "2"
-once_cell = "1"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
-sysinfo = "0.38.4"
-
-# --- cloud feature (optional) -------------------------------------------------
-# reqwest with rustls (no system OpenSSL) for the rclone rc HTTP API + binary download.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"], optional = true }
-async-trait = { version = "0.1", optional = true }
-sha2 = { version = "0.10", optional = true }
-futures-util = { version = "0.3", default-features = false, optional = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-raw-window-handle = "0.6"
-winit = { version = "0.30", default-features = false, features = ["x11"] }
-x11rb = "0.13"
-
-[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
-drag = "2.1"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.58", features = [
-    "Win32_UI_Shell",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_Graphics_Gdi",
-    "Win32_Storage_FileSystem",
-    "Win32_Foundation",
-    "Win32_System_Com",
-]}
-
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.5"
-objc2-foundation = { version = "0.2", features = ["NSString", "NSData"] }
-objc2-app-kit = { version = "0.2", features = ["NSWorkspace", "NSImage"] }
 
 [lints.rust]
 unsafe_code = "deny"
 
 [lints.clippy]
+# Estricto total: grupos a deny con priority -1 para que los ajustes puntuales
+# de abajo puedan rebajarlos. unwrap/expect quedan en warn (restriction, no en
+# los grupos). I/O síncrona de filesystem está prohibida vía clippy.toml.
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
 unwrap_used = "warn"
 expect_used = "warn"
-
-[[bin]]
-name = "spike"
-path = "src/bin/spike.rs"
-required-features = ["spike"]
+# Ruido aceptado en una app GUI: módulos planos y futuros que sí queremos.
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Matemática de píxeles/tamaños/física: los casts numéricos son ubicuos y benignos
+# en una GUI; vetarlos solo añade `as` con anotaciones que no aportan seguridad.
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+# Era-migración: estos rebajan churn de firmas/nursery frágil mientras el código
+# se mueve a los crates atlas-* (Fase F). Revisar y re-activar tras el split.
+#   - nursery con falsos positivos en código con forma de framework (gpui):
+option_if_let_else = "allow"
+needless_pass_by_ref_mut = "allow"
+#   - cambiar estas firmas ripplea a los call-sites; se estabilizan en el split:
+needless_pass_by_value = "allow"
+trivially_copy_pass_by_ref = "allow"
+# Las funciones de render gpui son declarativas y largas por naturaleza.
+too_many_lines = "allow"
+similar_names = "allow"
+struct_excessive_bools = "allow"
 
 [profile.dev]
 opt-level = 1
 codegen-units = 16
 
-# Build all dependencies (egui, image, syntect, …) optimized even in debug.
+# Build all dependencies optimized even in debug.
 # Our own crate stays at opt-level 1 for fast incremental rebuilds, but the
 # heavy rendering/decoding deps run at full speed — this is what keeps the dev
-# build feeling smooth (egui debug builds are otherwise very sluggish).
+# build feeling smooth.
 [profile.dev.package."*"]
 opt-level = 3
 
@@ -137,3 +142,11 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Local fork of gpui-component (rev b2472cd) with the Dock TabPanel patched to render
+# segmented (pill) tabs — matches the Figma "Tab selector". Redirects every git
+# reference to that repo so there's a single source (avoids duplicate gpui App types).
+[patch."https://github.com/longbridge/gpui-component"]
+gpui-component = { path = "C:/Users/user/developer/gpui-component-fork/crates/ui" }
+gpui-component-assets = { path = "C:/Users/user/developer/gpui-component-fork/crates/assets" }
+gpui-component-macros = { path = "C:/Users/user/developer/gpui-component-fork/crates/macros" }

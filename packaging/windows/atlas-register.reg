@@ -1,8 +1,8 @@
 Windows Registry Editor Version 5.00
 
 ; Atlas — Windows shell integration.
-; Replace C:\\Program Files\\Atlas\\Atlas.exe below with the real install path
-; before importing (double-click the .reg, or run: reg import Atlas-register.reg).
+; Replace C:\\Program Files\\Atlas\\atlas.exe below with the real install path
+; before importing (double-click the .reg, or run: reg import atlas-register.reg).
 ;
 ; This adds:
 ;   * "Open with Atlas" on the right-click menu of folders and folder backgrounds
@@ -15,22 +15,22 @@ Windows Registry Editor Version 5.00
 ; --- Right-click a folder ---
 [HKEY_CURRENT_USER\Software\Classes\Directory\shell\Atlas]
 @="Open with Atlas"
-"Icon"="C:\\Program Files\\Atlas\\Atlas.exe,0"
+"Icon"="C:\\Program Files\\Atlas\\atlas.exe,0"
 
 [HKEY_CURRENT_USER\Software\Classes\Directory\shell\Atlas\command]
-@="\"C:\\Program Files\\Atlas\\Atlas.exe\" \"%1\""
+@="\"C:\\Program Files\\Atlas\\atlas.exe\" \"%1\""
 
 ; --- Right-click the background of an open folder ---
 [HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\Atlas]
 @="Open with Atlas"
-"Icon"="C:\\Program Files\\Atlas\\Atlas.exe,0"
+"Icon"="C:\\Program Files\\Atlas\\atlas.exe,0"
 
 [HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\Atlas\command]
-@="\"C:\\Program Files\\Atlas\\Atlas.exe\" \"%V\""
+@="\"C:\\Program Files\\Atlas\\atlas.exe\" \"%V\""
 
 ; --- "Open with" application registration (for associating file types) ---
-[HKEY_CURRENT_USER\Software\Classes\Applications\Atlas.exe]
+[HKEY_CURRENT_USER\Software\Classes\Applications\atlas.exe]
 "FriendlyAppName"="Atlas"
 
-[HKEY_CURRENT_USER\Software\Classes\Applications\Atlas.exe\shell\open\command]
-@="\"C:\\Program Files\\Atlas\\Atlas.exe\" \"%1\""
+[HKEY_CURRENT_USER\Software\Classes\Applications\atlas.exe\shell\open\command]
+@="\"C:\\Program Files\\Atlas\\atlas.exe\" \"%1\""

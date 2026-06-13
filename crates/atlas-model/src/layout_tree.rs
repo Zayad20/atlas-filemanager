@@ -1,9 +1,10 @@
+#![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
 //! Framework-neutral layout tree for panes/tabs/splits.
 //!
 //! Replaces `egui_tiles::Tree` so `src/state` carries no UI-framework dependency
 //! (see `the architecture notes`: state must never import the UI). The public surface mirrors
 //! the slice of the `egui_tiles` API the app actually used, so call sites migrate
-//! by swapping the `egui_tiles::` path for `crate::state::layout_tree::`.
+//! by swapping the `egui_tiles::` path for `crate::layout_tree::`.
 //!
 //! The renderer (gpui) reads this tree to lay out panes and emits `Action`s for any
 //! structural change — the tree never mutates itself during rendering.
@@ -14,16 +15,7 @@ use std::collections::BTreeMap;
 /// `BTreeMap` keeps tiles in insertion order — `all_pane_tile_ids().first()` is then
 /// deterministic (oldest pane), unlike the old hash-ordered slotmap.
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    serde::Serialize,
-    serde::Deserialize,
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub struct TileId(pub u64);
 
@@ -72,7 +64,7 @@ impl Tabs {
         self.children.push(id);
     }
 
-    pub fn set_active(&mut self, id: TileId) {
+    pub const fn set_active(&mut self, id: TileId) {
         self.active = Some(id);
     }
 }
@@ -110,7 +102,7 @@ impl<Pane> Default for Tiles<Pane> {
 impl<Pane> Tiles<Pane> {
     fn alloc_id(&mut self) -> TileId {
         // Never collide with ids restored from a persisted session.
-        let restored_max = self.map.keys().last().map(|id| id.0 + 1).unwrap_or(0);
+        let restored_max = self.map.keys().last().map_or(0, |id| id.0 + 1);
         let id = TileId(self.next_id.max(restored_max));
         self.next_id = id.0 + 1;
         id
@@ -197,7 +189,7 @@ impl<Pane> Tree<Pane> {
             .find(|(id, tile)| predicate(**id, tile))
             .map(|(id, _)| *id);
         let Some(target) = target else { return };
-        for (_, tile) in self.tiles.map.iter_mut() {
+        for tile in self.tiles.map.values_mut() {
             if let Tile::Container(Container::Tabs(tabs)) = tile {
                 if tabs.children.contains(&target) {
                     tabs.active = Some(target);

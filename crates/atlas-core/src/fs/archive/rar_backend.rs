@@ -1,14 +1,12 @@
 //! RAR archive provider.
 //!
-//! This module is compiled only with the `rar` feature. The current
-//! implementation relies on the system `unrar` executable for extraction.
-//! The crates.io `unrar` dependency could not be resolved in this environment:
-//! both `0.5` and the requested `0.4` fallback were missing from the local
-//! Cargo index, and network access to `index.crates.io` failed. A local stub
-//! keeps the optional dependency/feature shape intact until the real crate can
-//! be restored.
+//! This module is compiled only with the `rar` feature. It shells out to the
+//! `UnRAR.exe` CLI for listing and extraction. The binary is resolved in order:
+//! 1. Bundled next to the Atlas executable.
+//! 2. WinRAR default install (`C:\Program Files\WinRAR\UnRAR.exe`).
+//! 3. Bare `unrar` on the system PATH.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -24,7 +22,7 @@ pub struct RarProvider {
     path: PathBuf,
     /// `inner_dir` (with trailing '/') -> direct children entries
     index: HashMap<String, Vec<FileEntry>>,
-    files: HashSet<String>,
+    exact_names: HashMap<String, String>,
     encrypted: bool,
 }
 
@@ -42,21 +40,22 @@ impl RarProvider {
             return Ok(Self {
                 path: path.to_path_buf(),
                 index: HashMap::new(),
-                files: HashSet::new(),
+                exact_names: HashMap::new(),
                 encrypted,
             });
         }
 
         let mut index: HashMap<String, Vec<FileEntry>> = HashMap::new();
-        let mut files = HashSet::new();
+        let mut exact_names = HashMap::new();
         index.entry(String::new()).or_default();
 
         for line in listing.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
+            let original_name = line.trim();
+            if original_name.is_empty() {
                 continue;
             }
-            let normalized = trimmed.replace('\\', "/");
+            let normalized = original_name.replace('\\', "/");
+            exact_names.insert(normalized.clone(), original_name.to_string());
             let is_dir = normalized.ends_with('/');
             let inner = PathBuf::from(normalized.trim_end_matches('/'));
             let name = inner
@@ -113,10 +112,6 @@ impl RarProvider {
                 }
             }
 
-            if !is_dir {
-                files.insert(inner.to_string_lossy().replace('\\', "/"));
-            }
-
             let file_entry = make_entry(path, inner, name, is_dir, None);
             index.entry(parent_key).or_default().push(file_entry);
         }
@@ -124,7 +119,7 @@ impl RarProvider {
         Ok(Self {
             path: path.to_path_buf(),
             index,
-            files,
+            exact_names,
             encrypted,
         })
     }
@@ -139,12 +134,13 @@ impl RarProvider {
     fn read_entry(&self, inner_path: &Path) -> anyhow::Result<Vec<u8>> {
         self.ensure_unencrypted()?;
         let name = inner_path.to_string_lossy().replace('\\', "/");
-        if !self.files.contains(&name) {
-            anyhow::bail!("entry not found: {name}");
-        }
+        let exact_name = match self.exact_names.get(&name) {
+            Some(n) => n,
+            None => anyhow::bail!("entry not found: {name}"),
+        };
 
         let archive_arg = path_arg(&self.path);
-        let output = run_unrar(&["p", "-inul", "-c-", "-p-", archive_arg.as_str(), &name])?;
+        let output = run_unrar(&["p", "-inul", "-c-", "-p-", archive_arg.as_str(), exact_name])?;
         if password_required(&output.stderr) {
             anyhow::bail!("PasswordRequired");
         }
@@ -196,8 +192,38 @@ impl ArchiveProvider for RarProvider {
     }
 }
 
+const UNRAR_EXE: &[u8] = include_bytes!("../../../vendor/unrar-bin/UnRAR.exe");
+
+/// Resolve the path to the `UnRAR.exe` CLI binary.
+///
+/// Unpacks the natively bundled UnRAR.exe to the temporary directory,
+/// guaranteeing zero dependencies for the client.
+fn unrar_exe_path() -> PathBuf {
+    let mut temp = std::env::temp_dir();
+    temp.push("atlas_unrar_bundled.exe");
+
+    let should_write = match std::fs::metadata(&temp) {
+        Ok(meta) => meta.len() != UNRAR_EXE.len() as u64,
+        Err(_) => true,
+    };
+
+    if should_write {
+        // We ignore errors; if another instance is writing or locking it,
+        // it likely has the correct contents already.
+        let _ = std::fs::write(&temp, UNRAR_EXE);
+    }
+
+    temp
+}
+
 fn run_unrar(args: &[&str]) -> anyhow::Result<std::process::Output> {
-    let output = Command::new("unrar").args(args).output()?;
+    let unrar = unrar_exe_path();
+    let output = Command::new(&unrar).args(args).output().map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to run UnRAR at «{}»: {e}. Install WinRAR or place UnRAR.exe next to atlas.exe.",
+            unrar.display()
+        )
+    })?;
     if output.status.success() || password_required(&output.stderr) {
         Ok(output)
     } else {

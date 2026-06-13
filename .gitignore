@@ -1,8 +1,7 @@
 /target
 
-check_out.txt
+build*.txt
+*_out.txt
 *.bak
-build2.txt
-run_out.txt
-spike_build.txt
-build4.txt
+# Vendored binaries (not committed; distributed separately or resolved at runtime)
+crates/atlas-core/vendor/unrar-bin/
