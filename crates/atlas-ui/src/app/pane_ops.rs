@@ -76,16 +76,76 @@ impl App {
 
     pub(crate) fn split_pane(&mut self, tabs_container_id: TileId, vertical: bool) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+
+        // Inherit location + view settings from the source pane
+        let source_pane_id = self
+            .state
+            .pane_tree
+            .tiles
+            .get(tabs_container_id)
+            .and_then(|tile| {
+                if let Tile::Container(Container::Tabs(tabs)) = tile {
+                    tabs.active
+                } else {
+                    None
+                }
+            });
+
+        let (start_path, view_mode, thumbnail_size, preview_enabled) = source_pane_id
+            .and_then(|pane_id| self.state.pane_tree.tiles.get(pane_id))
+            .and_then(|tile| {
+                if let Tile::Pane(td) = tile {
+                    Some(td)
+                } else {
+                    None
+                }
+            })
+            .map(|td| {
+                let path = if let Location::Directory(p) = &td.location {
+                    p.clone()
+                } else {
+                    home.clone()
+                };
+                (
+                    path,
+                    td.view_mode.clone(),
+                    td.thumbnail_size,
+                    td.preview_enabled,
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    home,
+                    self.state.settings.view_mode.clone(),
+                    self.state.settings.thumbnail_size,
+                    self.state.settings.show_inspector,
+                )
+            });
+
         let tab_data = TabData::with_view(
-            home.clone(),
-            self.state.settings.view_mode.clone(),
-            self.state.settings.thumbnail_size,
-            self.state.settings.show_inspector,
+            start_path.clone(),
+            view_mode,
+            thumbnail_size,
+            preview_enabled,
         );
         let new_pane_id = self.state.pane_tree.tiles.insert_pane(tab_data);
         self.state
             .tab_states
             .insert(new_pane_id, TabState::default());
+        let cloned_loaded_snapshot = source_pane_id
+            .and_then(|source_id| self.state.tab_states.get(&source_id))
+            .and_then(|source| {
+                matches!(source.load_state, LoadState::Loaded).then(|| source.entries.clone())
+            })
+            .is_some_and(|entries| {
+                if let Some(target) = self.state.tab_states.get_mut(&new_pane_id) {
+                    target.set_entries(entries);
+                    target.load_state = LoadState::Loaded;
+                    true
+                } else {
+                    false
+                }
+            });
         let new_tabs_id = self
             .state
             .pane_tree
@@ -133,32 +193,111 @@ impl App {
             }
         }
 
+        self.push_focus_history();
         self.state.focused_tile = new_pane_id;
-        self.pane_animations.insert(
-            new_pane_id,
-            PaneAnimation::new(if vertical {
-                PaneAnimationKind::SplitVertical
-            } else {
-                PaneAnimationKind::SplitHorizontal
-            }),
-        );
-        self.navigate(new_pane_id, home);
+        if !self.state.settings.disable_animations {
+            self.pane_animations.insert(
+                new_pane_id,
+                PaneAnimation::new(if vertical {
+                    PaneAnimationKind::SplitVertical
+                } else {
+                    PaneAnimationKind::SplitHorizontal
+                }),
+            );
+        }
+        if cloned_loaded_snapshot {
+            self.state.focused_tile = new_pane_id;
+        } else {
+            self.navigate(new_pane_id, start_path);
+        }
         self.layout_revision += 1;
-        self.invalidate_dock_layout();
     }
 
     pub(crate) fn close_pane(&mut self, tabs_container_id: TileId) {
+        let focus_after = self.find_focus_after_close(tabs_container_id);
+
         if let Some(Tile::Container(Container::Tabs(tabs))) =
             self.state.pane_tree.tiles.get(tabs_container_id).cloned()
         {
             for child_id in tabs.children {
+                self.file_panel_cache.remove(&child_id);
                 self.state.tab_states.remove(&child_id);
                 self.state.pane_tree.tiles.remove(child_id);
+                self.pane_signals.remove(&child_id);
             }
         }
         self.state.pane_tree.tiles.remove(tabs_container_id);
+
+        if let Some(focus_id) = focus_after {
+            self.state.focused_tile = focus_id;
+        }
+
         self.layout_revision += 1;
-        self.invalidate_dock_layout();
+    }
+
+    /// Push the current `focused_tile` onto the MRU history before an intentional
+    /// focus change. Call this immediately before assigning `state.focused_tile`.
+    pub(crate) fn push_focus_history(&mut self) {
+        let cur = self.state.focused_tile;
+        if self.focus_history.back() == Some(&cur) {
+            return;
+        }
+        self.focus_history.push_back(cur);
+        if self.focus_history.len() > 64 {
+            self.focus_history.pop_front();
+        }
+    }
+
+    /// Pop the MRU history to find the best pane to focus after closing
+    /// `closing_pane_id`. Skips dead entries and the pane being closed.
+    fn pop_mru_focus(&mut self, closing_pane_id: TileId) -> Option<TileId> {
+        let live: HashSet<TileId> = self.state.all_pane_tile_ids().into_iter().collect();
+        while let Some(id) = self.focus_history.pop_back() {
+            if id != closing_pane_id && live.contains(&id) {
+                return Some(id);
+            }
+        }
+        None
+    }
+
+    /// Choose which pane should receive focus after `closing_tabs_id` is removed.
+    /// First tries MRU history (VS-Code-style "previous pane"), then falls back to
+    /// the layout sibling before the closed container.
+    fn find_focus_after_close(&mut self, closing_tabs_id: TileId) -> Option<TileId> {
+        // Collect panes in the closing container so we can skip them in history.
+        let closing_panes: HashSet<TileId> = match self.state.pane_tree.tiles.get(closing_tabs_id) {
+            Some(Tile::Container(Container::Tabs(t))) => t.children.iter().copied().collect(),
+            _ => HashSet::new(),
+        };
+
+        // Walk MRU history backwards until a live pane outside the closing set.
+        let live: HashSet<TileId> = self.state.all_pane_tile_ids().into_iter().collect();
+        while let Some(&id) = self.focus_history.back() {
+            if closing_panes.contains(&id) || !live.contains(&id) {
+                self.focus_history.pop_back();
+            } else {
+                self.focus_history.pop_back();
+                return Some(id);
+            }
+        }
+
+        // Fallback: sibling before/after in parent Linear container.
+        let parent_id = self.state.find_parent_of(closing_tabs_id)?;
+        let siblings = match self.state.pane_tree.tiles.get(parent_id)? {
+            Tile::Container(Container::Linear(l)) => l.children.clone(),
+            _ => return None,
+        };
+        let pos = siblings.iter().position(|id| *id == closing_tabs_id)?;
+        let target_id = if pos > 0 {
+            siblings[pos - 1]
+        } else {
+            *siblings.get(pos + 1)?
+        };
+        match self.state.pane_tree.tiles.get(target_id)? {
+            Tile::Container(Container::Tabs(t)) => t.active,
+            Tile::Pane(_) => Some(target_id),
+            _ => None,
+        }
     }
 
     pub(crate) fn new_tab(&mut self, pane_id: TileId) {
@@ -199,10 +338,12 @@ impl App {
             tabs.add_child(new_tile_id);
             tabs.set_active(new_tile_id);
         }
-        self.pane_animations
-            .insert(new_tile_id, PaneAnimation::new(PaneAnimationKind::NewTab));
+        if !self.state.settings.disable_animations {
+            self.pane_animations
+                .insert(new_tile_id, PaneAnimation::new(PaneAnimationKind::NewTab));
+        }
         self.activate_tab(new_tile_id);
-        self.invalidate_dock_layout();
+        self.layout_revision += 1;
         Some(new_tile_id)
     }
 
@@ -286,6 +427,7 @@ impl App {
         if !self.state.tab_states.contains_key(&tab_id) {
             return;
         }
+        self.push_focus_history();
         self.state
             .pane_tree
             .make_active(|tile_id, _| tile_id == tab_id);
@@ -318,7 +460,9 @@ impl App {
             }
         }
 
+        self.file_panel_cache.remove(&tab_id);
         self.state.pane_tree.tiles.remove(tab_id);
+        self.pane_signals.remove(&tab_id);
 
         // Always guarantee focused_tile points to a live pane
         if !self.state.tab_states.contains_key(&self.state.focused_tile) {
@@ -327,6 +471,5 @@ impl App {
             }
         }
         self.layout_revision += 1;
-        self.invalidate_dock_layout();
     }
 }

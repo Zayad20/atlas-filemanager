@@ -151,6 +151,10 @@ pub struct TabState {
     visible_show_files: bool,
     visible_show_folders: bool,
     counts: VisibleCounts,
+    /// Cached set of unique category labels (e.g. "Carpeta", "Imagen") derived from
+    /// `entries`, rebuilt only when `entries_version` advances.
+    pub type_labels_cache: Vec<String>,
+    type_labels_version: u64,
 }
 
 impl Default for TabState {
@@ -176,6 +180,8 @@ impl Default for TabState {
             visible_show_files: true,
             visible_show_folders: true,
             counts: VisibleCounts::default(),
+            type_labels_cache: Vec::new(),
+            type_labels_version: u64::MAX, // force rebuild on first call
         }
     }
 }
@@ -186,6 +192,22 @@ impl TabState {
         self.entries = entries;
         self.entries_version = self.entries_version.wrapping_add(1);
         self.visible_valid = false;
+    }
+
+    /// Returns a deduplicated sorted list of category labels for all entries.
+    ///
+    /// Rebuilt only when `entries_version` advances (i.e., when the directory listing
+    /// changes). The `label_fn` is called only during a rebuild, not on every render.
+    pub fn type_labels_cached(&mut self, label_fn: impl Fn(&FileEntry) -> String) -> &[String] {
+        if self.type_labels_version != self.entries_version {
+            let mut set = std::collections::BTreeSet::new();
+            for entry in &self.entries {
+                set.insert(label_fn(entry));
+            }
+            self.type_labels_cache = set.into_iter().collect();
+            self.type_labels_version = self.entries_version;
+        }
+        &self.type_labels_cache
     }
 
     pub fn begin_navigation(&mut self) {

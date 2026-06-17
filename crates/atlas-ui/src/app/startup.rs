@@ -225,7 +225,7 @@ impl App {
             Timer::after(DRAIN_INTERVAL).await;
             let alive = this
                 .update(cx, |app, cx| {
-                    let mut dirty = app.drain_bg_results();
+                    let mut dirty = app.drain_bg_results(cx);
                     // Drain Windows OLE drop payloads enqueued by our IDropTarget.
                     #[cfg(windows)]
                     {
@@ -283,6 +283,8 @@ impl App {
             icon_rx,
             // FASE A: dock built lazily on first render from the restored pane_tree.
             dock: None,
+            file_panel_cache: HashMap::new(),
+            focus_history: std::collections::VecDeque::new(),
             palette_host: None,
             palette_closing: None,
             layout_revision: 0,
@@ -327,6 +329,7 @@ impl App {
             thumb_wanted: std::sync::Arc::new(std::sync::Mutex::new(HashSet::new())),
             native_thumb_inflight: 0,
             pane_animations: HashMap::new(),
+            pane_signals: HashMap::new(),
             pane_layout_bounds: HashMap::new(),
             pane_layout_animations: HashMap::new(),
             pane_layout_frame_pending: false,
@@ -337,6 +340,7 @@ impl App {
             rename_remote_input: None,
             pending_select: None,
             col_widths: crate::app::ColWidths::default(),
+            details_column_order: crate::app::DetailsColumn::DEFAULT_ORDER,
             col_resize: None,
             type_filters: HashMap::new(),
             size_filters: HashMap::new(),

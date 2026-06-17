@@ -498,8 +498,14 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                         .as_ref()
                         .map(|cr| (cr.col, cr.start_x, cr.start_width))
                     {
-                        let dx = f32::from(pos.x) - start_x;
-                        let new_w = (start_width + dx).max(40.0);
+                        let dx = start_x - f32::from(pos.x);
+                        let min_w = match col {
+                            "size" => 46.0,
+                            "modified" => 92.0,
+                            "type" => 56.0,
+                            _ => 35.0,
+                        };
+                        let new_w = (start_width + dx).max(min_w);
                         match col {
                             "size" => this.col_widths.size = new_w,
                             "modified" => this.col_widths.modified = new_w,

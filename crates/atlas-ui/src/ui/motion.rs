@@ -11,8 +11,8 @@ use std::time::Duration;
 pub const MICRO_MS: u64 = 120;
 pub const PANEL_MS: u64 = 150;
 pub const TAB_MS: u64 = 170;
-pub const PANE_MS: u64 = 230;
-pub const GLOW_MS: u64 = 340;
+pub const PANE_MS: u64 = 220;
+pub const GLOW_MS: u64 = 280;
 
 pub const PALETTE_GROW_FROM: f32 = 0.80;
 
@@ -49,7 +49,7 @@ pub fn pane_intro(this: Div, openness: f32, offset: Pixels, vertical: bool) -> D
 }
 
 pub fn glow(this: Div, openness: f32, accent: Hsla) -> Div {
-    this.border_color(accent.opacity(0.72 * (1.0 - openness)))
+    this.border_color(accent.opacity(0.42 * (1.0 - openness)))
         .bg(accent.opacity(0.08 * (1.0 - openness)))
         .opacity(1.0 - openness)
 }

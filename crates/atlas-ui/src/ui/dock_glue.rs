@@ -126,6 +126,19 @@ impl App {
         }
     }
 
+    fn get_or_make_file_panel(
+        &mut self,
+        id: TileId,
+        cx: &mut Context<Self>,
+    ) -> Entity<crate::ui::pane_panel::FilePanel> {
+        if let Some(panel) = self.file_panel_cache.get(&id) {
+            return panel.clone();
+        }
+        let panel = make_file_panel(self, id, cx);
+        self.file_panel_cache.insert(id, panel.clone());
+        panel
+    }
+
     fn build_item(
         &mut self,
         id: TileId,
@@ -135,16 +148,22 @@ impl App {
     ) -> Option<DockItem> {
         match self.state.pane_tree.tiles.get(id) {
             Some(Tile::Pane(_)) => {
-                let panel = make_file_panel(id, cx);
+                let panel = self.get_or_make_file_panel(id, cx);
                 Some(DockItem::tab(panel, weak, window, cx))
             }
             Some(Tile::Container(Container::Tabs(tabs))) => {
                 let children = tabs.children.clone();
                 let active = tabs.active;
-                let panels: Vec<Arc<dyn PanelView>> = children
+                // Separate immutable filter pass from the mutable make_file_panel pass
+                // to satisfy the borrow checker.
+                let pane_ids: Vec<TileId> = children
                     .iter()
                     .filter(|&&c| matches!(self.state.pane_tree.tiles.get(c), Some(Tile::Pane(_))))
-                    .map(|&c| Arc::new(make_file_panel(c, cx)) as Arc<dyn PanelView>)
+                    .copied()
+                    .collect();
+                let panels: Vec<Arc<dyn PanelView>> = pane_ids
+                    .iter()
+                    .map(|&c| Arc::new(self.get_or_make_file_panel(c, cx)) as Arc<dyn PanelView>)
                     .collect();
                 if panels.is_empty() {
                     return None;
@@ -215,6 +234,11 @@ impl App {
         }
 
         self.reconcile_tree_state();
+
+        // Prune cache entries for panes that no longer exist.
+        let live: std::collections::HashSet<TileId> =
+            self.state.all_pane_tile_ids().into_iter().collect();
+        self.file_panel_cache.retain(|id, _| live.contains(id));
     }
 
     /// Recursively rebuild a `pane_tree` node from a dumped `PanelState`. Returns the
@@ -293,7 +317,10 @@ impl App {
 }
 
 /// Create a `FilePanel` entity for `id`, handing it a handle back to the app.
-fn make_file_panel(id: TileId, cx: &mut Context<App>) -> Entity<FilePanel> {
+fn make_file_panel(this: &mut App, id: TileId, cx: &mut Context<App>) -> Entity<FilePanel> {
     let app = cx.entity();
-    cx.new(|cx| FilePanel::new(app, id, cx))
+    // Compute the pane signal here (App context available) so FilePanel::new
+    // doesn't need to call app.update(cx, ...) while App is already leased.
+    let signal = this.pane_signal_for(id, cx);
+    cx.new(|cx| FilePanel::new(app, id, signal, cx))
 }

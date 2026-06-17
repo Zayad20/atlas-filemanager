@@ -68,6 +68,10 @@ pub struct Settings {
     pub recent_folders: Vec<PathBuf>,
     pub global_zoom: f32,
     pub language: Option<String>,
+    /// When true, all with_animation calls are bypassed: elements render at their
+    /// final state immediately. Eliminates the per-frame repaint cost of running
+    /// animations across multiple panes.
+    pub disable_animations: bool,
 }
 
 impl Settings {
@@ -118,6 +122,7 @@ impl Default for Settings {
             recent_folders: Vec::new(),
             global_zoom: 1.0,
             language: None,
+            disable_animations: false,
         }
     }
 }

@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use gpui::{Entity, FocusHandle, ScrollStrategy, UniformListScrollHandle};
+use gpui::{AppContext as _, Entity, FocusHandle, ScrollStrategy, UniformListScrollHandle};
 use gpui_component::input::InputState;
 
 use crate::search::nucleo_pool::NucleoPool;
@@ -125,6 +125,14 @@ pub struct App {
     // stays the source of truth; the Dock is rebuilt when `layout_revision` advances
     // (explicit ops) and reconciled back on interactive changes.
     pub(crate) dock: Option<Entity<gpui_component::dock::DockArea>>,
+    /// Cached `FilePanel` entities keyed by pane `TileId`. Reusing entities across
+    /// `rebuild_dock_center` calls keeps gpui animation state alive on existing panes
+    /// so they don't flash when a new split or close restructures the layout.
+    pub(crate) file_panel_cache: HashMap<TileId, Entity<crate::ui::pane_panel::FilePanel>>,
+    /// MRU focus history: pane TileIds in the order they last held focus.
+    /// `find_focus_after_close` pops entries until it finds a live pane,
+    /// giving VS-Code-style "go to previously used pane" on Ctrl+W.
+    pub(crate) focus_history: std::collections::VecDeque<TileId>,
     // The open palette hosted in its own view (see `ui::palette_host`). Cached like
     // `dock`; cleared on open/close so each open replays the panel's open animation.
     pub(crate) palette_host: Option<(
@@ -140,6 +148,10 @@ pub struct App {
     /// Short-lived visual affordances for panes that just entered through a tab
     /// create or split operation. UI-only; never persisted into AppState.
     pub(crate) pane_animations: HashMap<TileId, PaneAnimation>,
+    /// One lightweight entity per pane. `PaneContentView` observes its own signal
+    /// so only the affected pane re-renders on pane-specific state changes, instead
+    /// of every pane re-rendering on every `App::cx.notify()`.
+    pub(crate) pane_signals: HashMap<TileId, gpui::Entity<PaneSignal>>,
     /// Last painted bounds per pane, used for RAD-style FLIP layout transitions.
     /// This is intentionally separate from `pane_view_bounds`, which is cleared
     /// every frame for interaction hit-testing.
@@ -227,6 +239,8 @@ pub struct App {
     pub(crate) pending_select: Option<(TileId, PathBuf)>,
     /// Details-view column widths, shared across all panes.
     pub(crate) col_widths: ColWidths,
+    /// User-facing order for Details metadata columns. Name stays fixed first.
+    pub(crate) details_column_order: [DetailsColumn; 3],
     /// Active column-resize drag state (cleared on mouse-up).
     pub(crate) col_resize: Option<ColResizeState>,
     /// Per-pane active type-category filters for the Details view.
@@ -257,6 +271,10 @@ pub struct App {
     pub(crate) command_shortcut_capture: Option<String>,
 }
 
+/// Marker entity — one per pane. `PaneContentView` observes this instead of `App`
+/// so that only the affected pane re-renders on pane-specific state changes.
+pub struct PaneSignal;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PaneAnimationKind {
     NewTab,
@@ -271,7 +289,7 @@ pub(crate) struct PaneAnimation {
 }
 
 impl PaneAnimation {
-    const TTL: Duration = Duration::from_millis(420);
+    const TTL: Duration = Duration::from_millis(280);
 
     pub(crate) fn new(kind: PaneAnimationKind) -> Self {
         Self {
@@ -336,9 +354,28 @@ pub(crate) struct ColWidths {
 impl Default for ColWidths {
     fn default() -> Self {
         Self {
-            size: 90.,
-            modified: 150.,
-            type_w: 100.,
+            size: 65.,
+            modified: 115.,
+            type_w: 75.,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum DetailsColumn {
+    Size,
+    Modified,
+    Type,
+}
+
+impl DetailsColumn {
+    pub(crate) const DEFAULT_ORDER: [Self; 3] = [Self::Size, Self::Modified, Self::Type];
+
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::Size => "size",
+            Self::Modified => "modified",
+            Self::Type => "type",
         }
     }
 }
@@ -448,6 +485,40 @@ pub struct PendingPreview {
 impl App {
     const MAX_PANE_LAYOUT_ANIMATIONS: usize = 12;
 
+    /// Notify only the signal entity for `pane_id`. The `PaneContentView` for that
+    /// pane observes this signal, so only it re-renders — not every other pane.
+    pub(crate) fn notify_pane(&self, pane_id: TileId, cx: &mut gpui::Context<Self>) {
+        if let Some(signal) = self.pane_signals.get(&pane_id) {
+            signal.update(cx, |_, cx| cx.notify());
+        }
+    }
+
+    /// Notify all pane signals at once — used for global changes (settings, theme,
+    /// icon cache updates) that affect every pane simultaneously.
+    pub(crate) fn notify_all_panes(&self, cx: &mut gpui::Context<Self>) {
+        for signal in self.pane_signals.values() {
+            signal.update(cx, |_, cx| cx.notify());
+        }
+    }
+
+    /// Return (creating lazily) the signal entity for a pane. `PaneContentView`
+    /// calls this once at construction to get the entity to observe.
+    pub(crate) fn pane_signal_for(
+        &mut self,
+        pane_id: TileId,
+        cx: &mut gpui::Context<Self>,
+    ) -> gpui::Entity<PaneSignal> {
+        self.pane_signals
+            .entry(pane_id)
+            .or_insert_with(|| cx.new(|_| PaneSignal))
+            .clone()
+    }
+
+    /// Remove the signal entity when a pane is closed (no-op if already gone).
+    pub(crate) fn drop_pane_signal(&mut self, pane_id: TileId) {
+        self.pane_signals.remove(&pane_id);
+    }
+
     pub(crate) fn pane_animation_for(&self, pane_id: TileId) -> Option<PaneAnimation> {
         self.pane_animations
             .get(&pane_id)
@@ -511,9 +582,6 @@ impl App {
                 if !pane_bounds_changed(old, bounds) {
                     return false;
                 }
-
-                // DISABLED ANIMATIONS FOR TESTING
-                return false;
 
                 if !pane_bounds_moved(old, bounds)
                     || self.pane_layout_animations.len() >= Self::MAX_PANE_LAYOUT_ANIMATIONS

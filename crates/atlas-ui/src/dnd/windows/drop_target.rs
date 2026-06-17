@@ -310,8 +310,7 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
             tymed: TYMED_HGLOBAL.0 as u32,
         };
         let effect = unsafe {
-            if data_obj.QueryGetData(&hdrop_fmt).is_ok()
-                || data_obj.QueryGetData(&virt_fmt).is_ok()
+            if data_obj.QueryGetData(&hdrop_fmt).is_ok() || data_obj.QueryGetData(&virt_fmt).is_ok()
             {
                 DROPEFFECT_COPY
             } else {

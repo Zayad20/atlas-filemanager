@@ -115,9 +115,12 @@ pub(crate) fn zone_recorder(
 
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.drain_bg_results() {
-            cx.notify();
-        }
+        // Drain any results that arrived between the 60Hz background loop and this
+        // render frame.  The startup loop already calls cx.notify() when dirty; the
+        // drain here handles the narrow window where results arrive mid-frame.
+        // We do NOT call cx.notify() again — that would schedule a redundant render
+        // cycle on top of the one that is already executing right now.
+        self.drain_bg_results_state_only();
         // FASE C: reset per-frame item rects; each visible row/cell re-records via
         // on_prepaint while painting this frame (used for rubber-band hit-testing).
         self.row_rects.clear();

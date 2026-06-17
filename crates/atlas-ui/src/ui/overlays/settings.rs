@@ -411,6 +411,15 @@ impl App {
                 |app| app.state.settings.show_inspector = !app.state.settings.show_inspector,
                 view.clone(),
             ))
+            .child(toggle(
+                &rust_i18n::t!("settings_disable_animations"),
+                s.disable_animations,
+                "set-disable-anim",
+                |app| {
+                    app.state.settings.disable_animations = !app.state.settings.disable_animations
+                },
+                view.clone(),
+            ))
             .child(div().text_xs().text_color(muted).child(
                 rust_i18n::t!("settings_inspector_placement", placement = placement).to_string(),
             ))

@@ -10,6 +10,18 @@ use crate::state::app_state::BgResult;
 use crate::state::preview_cache::ImageData;
 use crate::state::tab::LoadState;
 
+/// Return value from `process_bg_results`: tracks what needs re-rendering
+/// without holding a `Context` reference. Callers apply notifications after
+/// all state mutations are done and only when a Context is safely available.
+pub(crate) struct BgDrainInfo {
+    /// Whether the App shell (sidebar, toolbars, overlays) needs a re-render.
+    pub changed: bool,
+    /// Set to true when all panes need notification (overrides `notify_panes`).
+    pub notify_all: bool,
+    /// Specific pane IDs that should be notified (used when `notify_all` is false).
+    pub notify_panes: Vec<TileId>,
+}
+
 impl App {
     /// Tear down a dismissed palette once its exit animation has elapsed. Returns
     /// `true` when it finalized (so the caller repaints to drop the now-hidden view).
@@ -120,8 +132,12 @@ impl App {
         had
     }
 
-    pub(crate) fn drain_bg_results(&mut self) -> bool {
-        // Drain icon channel first (dedicated channel, Arc<RenderImage> direct).
+    /// Drain background results, update App state, then dispatch per-pane
+    /// notifications via `signal.update`. Call this ONLY from outside a
+    /// render cycle (e.g., the 60 Hz async drain loop). During render use
+    /// `drain_bg_results_state_only` to avoid re-entering gpui's entity lease.
+    pub(crate) fn drain_bg_results(&mut self, cx: &mut gpui::Context<Self>) -> bool {
+        // Drain icon channel first.
         let icon_results: Vec<_> = self.icon_rx.try_iter().collect();
         let mut changed = !icon_results.is_empty();
         for (key, result) in icon_results {
@@ -133,12 +149,50 @@ impl App {
         }
 
         let results: Vec<BgResult> = self.rx.try_iter().collect();
-        changed |= self.process_bg_results(results);
+        let info = self.process_bg_results(results);
+        changed |= info.changed;
+
+        // Apply pane notifications now that state mutation is done.
+        if changed || info.notify_all || !info.notify_panes.is_empty() {
+            if changed || info.notify_all {
+                self.notify_all_panes(cx);
+            } else {
+                let mut seen = std::collections::HashSet::new();
+                for id in info.notify_panes {
+                    if seen.insert(id) {
+                        self.notify_pane(id, cx);
+                    }
+                }
+            }
+        }
         changed
     }
 
-    pub(crate) fn process_bg_results(&mut self, results: Vec<BgResult>) -> bool {
-        let mut changed = !results.is_empty();
+    /// Drain background results and update App state without calling
+    /// `signal.update`. Safe to call inside `App::render` because it never
+    /// re-enters gpui's entity lease machinery.
+    pub(crate) fn drain_bg_results_state_only(&mut self) -> bool {
+        let icon_results: Vec<_> = self.icon_rx.try_iter().collect();
+        let mut changed = !icon_results.is_empty();
+        for (key, result) in icon_results {
+            let state = match result {
+                Some(tex) => crate::icon_theme::IconState::Ready(tex),
+                None => crate::icon_theme::IconState::Missing,
+            };
+            self.icon_cache.insert(key, state);
+        }
+        let results: Vec<BgResult> = self.rx.try_iter().collect();
+        let info = self.process_bg_results(results);
+        changed |= info.changed;
+        changed
+    }
+
+    pub(crate) fn process_bg_results(&mut self, results: Vec<BgResult>) -> BgDrainInfo {
+        let mut info = BgDrainInfo {
+            changed: !results.is_empty(),
+            notify_all: false,
+            notify_panes: Vec::new(),
+        };
         for result in results {
             match result {
                 BgResult::DirListed {
@@ -191,6 +245,7 @@ impl App {
                     for key in icon_keys {
                         self.request_icon(key);
                     }
+                    info.notify_panes.push(tab);
                 }
                 BgResult::MillerListed {
                     tab,
@@ -209,6 +264,7 @@ impl App {
                             c.load_state = LoadState::Loaded;
                         }
                     }
+                    info.notify_panes.push(tab);
                 }
                 BgResult::DirListError { tab, op_id, error } => {
                     if let Some(ts) = self.state.tab_states.get_mut(&tab) {
@@ -216,6 +272,7 @@ impl App {
                             ts.load_state = LoadState::Error(error);
                         }
                     }
+                    info.notify_panes.push(tab);
                 }
                 BgResult::FsEvent(changed_path) => {
                     // Refresh any pane watching the directory containing the changed path
@@ -247,6 +304,7 @@ impl App {
                     // GPU texture and caches that handle on its own side (state holds no
                     // renderer texture).
                     self.state.preview.results.insert(tab, result);
+                    info.notify_panes.push(tab);
                 }
                 BgResult::MultiPreviewThumbnailReady {
                     tab,
@@ -273,6 +331,7 @@ impl App {
                             height,
                         },
                     ));
+                    info.notify_panes.push(tab);
                 }
                 BgResult::GridThumbnailReady {
                     path,
@@ -281,6 +340,7 @@ impl App {
                     height,
                 } => {
                     self.apply_grid_thumbnail(path, rgba, width, height);
+                    info.notify_all = true;
                 }
 
                 BgResult::SearchInPlaceResults { tab, gen, entries } => {
@@ -304,6 +364,7 @@ impl App {
                             }
                         }
                     }
+                    info.notify_panes.push(tab);
                 }
                 BgResult::SearchInPlaceError { tab, gen, error } => {
                     if let Some(ts) = self.state.tab_states.get_mut(&tab) {
@@ -312,6 +373,7 @@ impl App {
                             ts.search.error = Some(error);
                         }
                     }
+                    info.notify_panes.push(tab);
                 }
                 BgResult::OpComplete {
                     id,
@@ -327,6 +389,9 @@ impl App {
                         }
                     }
                     self.refresh_tabs(affected_tabs);
+                    // refresh_tabs spawns new list_dir ops that produce DirListed
+                    // events; notify all panes now so they can show loading state.
+                    info.notify_all = true;
                 }
                 BgResult::ClipboardPerformed { effect, paths } => {
                     // A paste target consumed our clipboard cut/copy.
@@ -353,6 +418,7 @@ impl App {
                                 .flat_map(|p| self.affected_tabs_for_path(p))
                                 .collect();
                             self.refresh_tabs(affected.into_iter().collect());
+                            info.notify_all = true;
                         }
                     }
                 }
@@ -416,6 +482,7 @@ impl App {
                         }
                     }
                     self.refresh_tabs(affected_tabs);
+                    info.notify_all = true;
                 }
                 BgResult::OpProgress {
                     id,
@@ -438,9 +505,11 @@ impl App {
                 }
                 BgResult::TagsForPaths { tags } => {
                     self.state.tag_cache.apply_for_paths(tags);
+                    info.notify_all = true;
                 }
                 BgResult::PathsForTag { tag, paths } => {
                     self.populate_tag_tabs(tag, paths);
+                    info.notify_all = true;
                 }
                 BgResult::ContentResults { gen, mut paths } => {
                     // Drop stale batches from a superseded query generation.
@@ -475,7 +544,7 @@ impl App {
                     self.ext_palette_input = None;
                     self.palette_host = None;
                     self.palette_closing = None;
-                    changed = true;
+                    info.changed = true;
                 }
                 BgResult::ArchiveListed {
                     tab,
@@ -489,6 +558,7 @@ impl App {
                             ts.load_state = LoadState::Loaded;
                         }
                     }
+                    info.notify_panes.push(tab);
                 }
                 BgResult::ArchiveListError { tab, op_id, error } => {
                     if let Some(ts) = self.state.tab_states.get_mut(&tab) {
@@ -496,9 +566,11 @@ impl App {
                             ts.load_state = LoadState::Error(error);
                         }
                     }
+                    info.notify_panes.push(tab);
                 }
                 BgResult::GridThumbnailSkipped { path } => {
                     self.apply_thumb_skipped(path);
+                    info.notify_all = true;
                 }
                 BgResult::ExtRegistryFetched(_)
                 | BgResult::ExtRemoteInstalled { .. }
@@ -507,6 +579,6 @@ impl App {
                 other => self.handle_cloud_bg(other),
             }
         }
-        changed
+        info
     }
 }

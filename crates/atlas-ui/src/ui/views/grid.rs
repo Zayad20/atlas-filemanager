@@ -227,6 +227,7 @@ impl App {
             })
             .on_click(move |_ev, _window, cx| {
                 focus_view.update(cx, |this, cx| {
+                    this.push_focus_history();
                     this.state.focused_tile = pane_id;
                     cx.notify();
                 });

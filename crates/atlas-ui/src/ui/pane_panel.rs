@@ -10,7 +10,7 @@
 //! DockArea drives invalidation. Avoid observing every `App` repaint here: doing so
 //! invalidates every file panel on each app notify and makes window movement stutter.
 
-use crate::app::{App as AtlasApp, PaneAnimation};
+use crate::app::{App as AtlasApp, PaneAnimation, PaneLayoutAnimation, PaneSignal};
 use crate::input::action::Action;
 use crate::state::pane::TabId;
 use crate::ui::icons::{icon, AtlasIcon};
@@ -27,6 +27,14 @@ use gpui_component::{h_flex, ActiveTheme as _, ElementExt};
 
 fn animation_key(prefix: &str, pane_id: TabId, animation: PaneAnimation) -> SharedString {
     motion::keyed(prefix, pane_id.0, (animation.kind, animation.started))
+}
+
+fn layout_animation_key(
+    prefix: &str,
+    pane_id: TabId,
+    animation: PaneLayoutAnimation,
+) -> SharedString {
+    motion::keyed(prefix, pane_id.0, animation.started)
 }
 
 pub struct FilePanel {
@@ -54,9 +62,17 @@ impl Render for PaneContentView {
 }
 
 impl FilePanel {
-    pub fn new(app: Entity<AtlasApp>, pane_id: TabId, cx: &mut Context<Self>) -> Self {
+    /// `signal` must be pre-computed by the caller using the App context BEFORE
+    /// `cx.new(|cx| FilePanel::new(...))` is called, because at that point the App
+    /// entity is already leased and `app.update(cx, ...)` would double-borrow it.
+    pub fn new(
+        app: Entity<AtlasApp>,
+        pane_id: TabId,
+        signal: Entity<PaneSignal>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let content = cx.new(|cx| {
-            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            cx.observe(&signal, |_, _, cx| cx.notify()).detach();
             PaneContentView {
                 app: app.downgrade(),
                 pane_id,
@@ -95,11 +111,16 @@ impl Panel for FilePanel {
             .upgrade()
             .map(|a| {
                 let app = a.read(cx);
+                let anim = if app.state.settings.disable_animations {
+                    None
+                } else {
+                    app.pane_animation_for(self.pane_id)
+                };
                 (
                     app.tab_data_for(self.pane_id)
                         .map(|t| display_name(&t.location.display_path()))
                         .unwrap_or_else(|| rust_i18n::t!("fallback_tab_title").to_string()),
-                    app.pane_animation_for(self.pane_id),
+                    anim,
                 )
             })
             .unwrap_or_else(|| (rust_i18n::t!("fallback_tab_title").to_string(), None));
@@ -235,10 +256,18 @@ impl Render for FilePanel {
         let pane_id = self.pane_id;
         match self.app.upgrade() {
             Some(app) => {
-                let animation = {
+                let (animation, layout_animation, animations_enabled) = {
                     let app = app.read(cx);
-                    app.pane_animation_for(pane_id)
+                    (
+                        app.pane_animation_for(pane_id),
+                        app.pane_layout_animation_for(pane_id),
+                        !app.state.settings.disable_animations,
+                    )
                 };
+                // Suppress animation when the setting is off — the pane renders at its
+                // final state immediately, saving all per-frame repaint cost.
+                let animation = animation.filter(|_| animations_enabled);
+                let layout_animation = layout_animation.filter(|_| animations_enabled);
                 let accent = cx.theme().accent;
                 let glow = animation.map(|animation| {
                     div()
@@ -272,27 +301,35 @@ impl Render for FilePanel {
                         });
                     });
 
-                if animation.is_some() {
+                if let Some(layout_animation) = layout_animation {
                     panel
                         .with_animation(
-                            animation_key("file-pane-motion", pane_id, animation.unwrap()),
+                            layout_animation_key("file-pane-layout", pane_id, layout_animation),
                             motion::animation(motion::PANE_MS),
                             move |this, t| {
-                                // Cubic ease-out for a snappier, premium feel
-                                let ease_out = 1.0 - (1.0 - t).powi(3);
-                                let inv = 1.0 - ease_out;
-
+                                let (x, y) = layout_animation.offset_at(t);
+                                this.paint_offset(point(px(x), px(y)))
+                            },
+                        )
+                        .into_any_element()
+                } else if let Some(animation) = animation {
+                    panel
+                        .with_animation(
+                            animation_key("file-pane-motion", pane_id, animation),
+                            motion::animation(motion::PANE_MS),
+                            move |this, t| {
+                                let inv = 1.0 - t;
                                 let mut x = 0.0;
                                 let mut y = 0.0;
-                                match animation.unwrap().kind {
-                                    crate::app::PaneAnimationKind::NewTab => y = 6.0 * inv,
+                                match animation.kind {
+                                    crate::app::PaneAnimationKind::NewTab => y = 8.0 * inv,
                                     crate::app::PaneAnimationKind::SplitHorizontal => {
-                                        x = 12.0 * inv
+                                        x = 22.0 * inv
                                     }
-                                    crate::app::PaneAnimationKind::SplitVertical => y = 12.0 * inv,
+                                    crate::app::PaneAnimationKind::SplitVertical => y = 22.0 * inv,
                                 }
-
-                                this.opacity(ease_out).paint_offset(point(px(x), px(y)))
+                                this.opacity(0.82 + 0.18 * t)
+                                    .paint_offset(point(px(x), px(y)))
                             },
                         )
                         .into_any_element()

@@ -166,7 +166,7 @@ impl App {
             let v = view.clone();
             let lc = label.clone();
 
-            // Derive kind + ext from the label string.
+            // Derive kind + representative ext for the icon.
             let (kind, ext_opt): (FileKind, Option<String>) = if label == "Carpeta" {
                 (FileKind::Dir, None)
             } else if label == "Enlace" {
@@ -174,7 +174,19 @@ impl App {
             } else if label.starts_with('.') {
                 (FileKind::File, Some(label[1..].to_string()))
             } else {
-                (FileKind::File, None)
+                let ext = match label.as_str() {
+                    "Imagen" => Some("png"),
+                    "Audio" => Some("mp3"),
+                    "Vídeo" => Some("mp4"),
+                    "Código" => Some("rs"),
+                    "Comprimido" => Some("zip"),
+                    "Documento" => Some("pdf"),
+                    "Hoja" => Some("xlsx"),
+                    "Presentación" => Some("pptx"),
+                    "Aplicación" => Some("exe"),
+                    _ => None,
+                };
+                (FileKind::File, ext.map(|s| s.to_string()))
             };
 
             let icon_el = Some(file_type_icon(&kind, ext_opt.as_deref(), 14.));
