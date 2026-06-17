@@ -15,31 +15,37 @@ use super::{FooterHint, FooterSpec, PaletteItem, PaletteKind, PaletteSpec, Short
 use crate::app::App;
 use crate::input::action::Action;
 use crate::ui::icons::{icon, AtlasIcon};
+use crate::ui::motion;
 use gpui::prelude::*;
 use gpui::AnimationExt;
 use gpui::{
-    div, px, AnyElement, Context, Entity, FontWeight, HighlightStyle, Hsla, KeyDownEvent,
+    div, px, relative, AnyElement, Context, Entity, FontWeight, HighlightStyle, Hsla, KeyDownEvent,
     MouseButton, SharedString, StyledText, Window,
 };
-use gpui_component::input::{Escape as InputEscape, IndentInline, InputState};
+use gpui_component::input::{
+    Backspace as InputBackspace, Delete as InputDelete, Escape as InputEscape, IndentInline,
+    InputState,
+};
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::{h_flex, kbd::Kbd, tooltip::Tooltip, v_flex, ActiveTheme};
 use std::rc::Rc;
 
 pub(crate) const PANEL_WIDTH: f32 = 620.0;
+const PANEL_MAX_VIEWPORT_RATIO: f32 = 0.60;
+const PANEL_TOP_VIEWPORT_RATIO: f32 = 0.20;
+const PANEL_MIN_VISIBLE_ROWS: f32 = 2.0;
+const PANEL_ROW_HEIGHT: f32 = 34.0;
+const PANEL_SEARCH_HEIGHT: f32 = 45.0;
+const PANEL_FOOTER_HEIGHT: f32 = 32.0;
+const SCROLLBAR_GUTTER: f32 = 16.0;
 // Open/close tween shared by every palette. gpui can't transform-scale a div, so
 // the "grow" is the panel's width going 80%→100% (centered by the scrim)
 // alongside opacity. `PALETTE_CLOSE_MS` must be ≤ `App::PALETTE_CLOSE_FINALIZE`
 // so the fade-out finishes before the hosting view is torn down.
 pub(crate) const PALETTE_OPEN_MS: u64 = 150;
 pub(crate) const PALETTE_CLOSE_MS: u64 = 130;
-const PALETTE_GROW_FROM: f32 = 0.80;
 /// Left inset for items under a titled header (chevron + icon width).
 const SECTION_INDENT: f32 = 26.0;
-
-fn ease_out_quart(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    1.0 - (1.0 - t).powi(4)
-}
 
 /// One keyboard-selectable row in the flattened, collapse-aware list.
 enum KeyRow {
@@ -108,6 +114,7 @@ fn shortcut_badge(
     badge_fg: Hsla,
     accent_fg: Hsla,
     window: &Window,
+    view: Option<Entity<App>>,
 ) -> Option<AnyElement> {
     // Restyle a Kbd for a selected row: no fill, faint outline, highlight text.
     let restyle = move |kbd: Kbd| -> AnyElement {
@@ -141,6 +148,54 @@ fn shortcut_badge(
         } else {
             label_badge(text.clone(), badge_bg, badge_fg)
         }),
+        ShortcutHint::CommandShortcut {
+            command_id,
+            key,
+            recording,
+        } => {
+            let view = view?;
+            let badge = if *recording {
+                label_badge(
+                    rust_i18n::t!("palette_shortcut_recording").into(),
+                    badge_bg,
+                    badge_fg,
+                )
+            } else if let Some(key) = key {
+                restyle(Kbd::new(key.clone()))
+            } else {
+                label_badge(
+                    rust_i18n::t!("palette_shortcut_none").into(),
+                    badge_bg,
+                    badge_fg,
+                )
+            };
+            let start_view = view.clone();
+            let start_id = command_id.clone();
+            Some(
+                div()
+                    .id(SharedString::from(format!("command-shortcut-{command_id}")))
+                    .cursor_pointer()
+                    .tooltip({
+                        let tooltip: SharedString = if *recording {
+                            rust_i18n::t!("palette_shortcut_recording_tooltip").into()
+                        } else {
+                            rust_i18n::t!("palette_shortcut_edit_tooltip").into()
+                        };
+                        move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)
+                    })
+                    .child(badge)
+                    .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
+                        cx.stop_propagation();
+                        start_view.update(cx, |this, cx| {
+                            this.process_actions(vec![Action::StartCommandShortcutCapture(
+                                start_id.clone(),
+                            )]);
+                            cx.notify();
+                        });
+                    })
+                    .into_any_element(),
+            )
+        }
     }
 }
 
@@ -175,13 +230,23 @@ impl App {
             PaletteKind::Commands => self
                 .palette_input
                 .get_or_insert_with(|| {
-                    crate::ui::text_input::single_line(window, cx, rust_i18n::t!("palette_search_commands"), "")
+                    crate::ui::text_input::single_line(
+                        window,
+                        cx,
+                        rust_i18n::t!("palette_search_commands"),
+                        "",
+                    )
                 })
                 .clone(),
             PaletteKind::Ext => self
                 .ext_palette_input
                 .get_or_insert_with(|| {
-                    crate::ui::text_input::single_line(window, cx, rust_i18n::t!("palette_search_options"), "")
+                    crate::ui::text_input::single_line(
+                        window,
+                        cx,
+                        rust_i18n::t!("palette_search_options"),
+                        "",
+                    )
                 })
                 .clone(),
         }
@@ -340,24 +405,46 @@ impl App {
         // ── results ─────────────────────────────────────────────────────────
         // Rows are direct children of the tracked scroll container so
         // `scroll_to_item(row_index)` maps 1:1 onto them.
-        let results = v_flex()
-            .id(SharedString::from(format!("{}-list", spec.id)))
+        let results = div()
+            .relative()
             .flex_1()
             .min_h(px(0.))
-            .overflow_y_scroll()
-            .track_scroll(&self.palette_scroll)
-            .p_1()
-            .gap(px(1.))
-            .when(empty, |s| {
-                s.child(div().p_3().text_color(muted).child(spec.empty_text))
-            })
-            .children(rows);
+            .child(
+                v_flex()
+                    .id(SharedString::from(format!("{}-list", spec.id)))
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.palette_scroll)
+                    .p_1()
+                    .pr(px(SCROLLBAR_GUTTER))
+                    .gap(px(1.))
+                    .when(empty, |s| {
+                        s.child(div().p_3().text_color(muted).child(spec.empty_text))
+                    })
+                    .children(rows),
+            )
+            .vertical_scrollbar(&self.palette_scroll);
 
         let result_count = key_rows
             .iter()
             .filter(|r| matches!(r, KeyRow::Item { .. }))
             .count();
         let footer = palette_footer(&spec.footer, result_count, muted, muted_bg, border, window);
+        let viewport_h = f32::from(window.bounds().size.height);
+        let max_panel_h = viewport_h * PANEL_MAX_VIEWPORT_RATIO;
+        let chrome_h = PANEL_SEARCH_HEIGHT
+            + if footer.is_some() {
+                PANEL_FOOTER_HEIGHT
+            } else {
+                0.0
+            };
+        let min_panel_h = chrome_h + PANEL_ROW_HEIGHT * PANEL_MIN_VISIBLE_ROWS;
+        let rows_h = if empty {
+            PANEL_ROW_HEIGHT * PANEL_MIN_VISIBLE_ROWS
+        } else {
+            row_count as f32 * PANEL_ROW_HEIGHT + 8.0
+        };
+        let panel_h = (chrome_h + rows_h).clamp(min_panel_h, max_panel_h);
 
         // Capture phase: intercept navigation/confirm/dismiss/expand before the
         // focused `TextInput` consumes them. Everything else falls through to
@@ -371,7 +458,7 @@ impl App {
         let input_for_tab = input.clone();
         let panel = v_flex()
             .w(px(PANEL_WIDTH))
-            .max_h(px(480.))
+            .h(px(panel_h))
             .bg(popover)
             .text_color(fg)
             .border_1()
@@ -382,8 +469,28 @@ impl App {
             .occlude()
             .capture_action(cx.listener(move |this, _: &IndentInline, window, cx| {
                 cx.stop_propagation();
-                this.palette_tab_key(kind, &key_rows, &input_for_tab, window, cx);
+                if this.command_shortcut_capture.is_some() {
+                    if let Some(command_id) = this.command_shortcut_capture.clone() {
+                        this.set_command_shortcut(command_id, "tab".to_string());
+                    }
+                } else {
+                    this.palette_tab_key(kind, &key_rows, &input_for_tab, window, cx);
+                }
                 cx.notify();
+            }))
+            .capture_action(cx.listener(|this, _: &InputBackspace, _window, cx| {
+                if let Some(command_id) = this.command_shortcut_capture.clone() {
+                    cx.stop_propagation();
+                    this.remove_command_shortcut(command_id);
+                    cx.notify();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &InputDelete, _window, cx| {
+                if let Some(command_id) = this.command_shortcut_capture.clone() {
+                    cx.stop_propagation();
+                    this.remove_command_shortcut(command_id);
+                    cx.notify();
+                }
             }))
             // Same trick for Escape: the input's own Escape action can consume
             // the key (context menu / IME / clean-on-escape paths); the palette
@@ -393,20 +500,26 @@ impl App {
                 let input = input.clone();
                 move |this, _: &InputEscape, window, cx| {
                     cx.stop_propagation();
-                    this.palette_escape(kind, &close, &input, window, cx);
+                    if this.command_shortcut_capture.is_some() {
+                        this.cancel_command_shortcut_capture();
+                    } else {
+                        this.palette_escape(kind, &close, &input, window, cx);
+                    }
                     cx.notify();
                 }
             }))
             .capture_key_down(cx.listener(move |this, ev: &KeyDownEvent, window, cx| {
-                if this.handle_palette_key(
-                    kind,
-                    ev,
-                    &rows_for_keys,
-                    &close_for_keys,
-                    &input_for_keys,
-                    window,
-                    cx,
-                ) {
+                if this.handle_command_shortcut_key(ev)
+                    || this.handle_palette_key(
+                        kind,
+                        ev,
+                        &rows_for_keys,
+                        &close_for_keys,
+                        &input_for_keys,
+                        window,
+                        cx,
+                    )
+                {
                     cx.stop_propagation();
                     cx.notify();
                 }
@@ -429,18 +542,26 @@ impl App {
         let animated = panel
             .with_animation(
                 SharedString::from(anim_id),
-                gpui::Animation::new(std::time::Duration::from_millis(ms))
-                    .with_easing(ease_out_quart),
+                motion::animation(ms),
                 move |this, delta| {
                     // `p` = openness (1 = fully open). Reversed while closing.
                     let p = if closing { 1.0 - delta } else { delta };
-                    let grow = (1.0 - PALETTE_GROW_FROM).mul_add(p, PALETTE_GROW_FROM);
-                    this.opacity(p).w(px(PANEL_WIDTH * grow))
+                    motion::panel_pop(this, p, PANEL_WIDTH)
                 },
             )
             .into_any_element();
 
-        self.overlay_scrim(view, close_action, focus, animated, true, cx)
+        let positioned = div()
+            .absolute()
+            .top(relative(PANEL_TOP_VIEWPORT_RATIO))
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(animated)
+            .into_any_element();
+
+        self.overlay_scrim(view, close_action, focus, positioned, false, cx)
     }
 
     /// A section header: chevron + optional icon + title. Selectable like any
@@ -598,9 +719,7 @@ impl App {
                             .group_hover(group_name.clone(), gpui::Styled::visible)
                     })
                     .hover(|h| h.bg(border))
-                    .tooltip(move |window, cx| {
-                        Tooltip::new(btn_tooltip.clone()).build(window, cx)
-                    })
+                    .tooltip(move |window, cx| Tooltip::new(btn_tooltip.clone()).build(window, cx))
                     .child(icon(b.icon, 14.0, color))
                     .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
                         cx.stop_propagation();
@@ -620,7 +739,17 @@ impl App {
         let badges: Vec<AnyElement> = item
             .shortcuts
             .iter()
-            .filter_map(|hint| shortcut_badge(hint, selected, muted_bg, muted, accent_fg, window))
+            .filter_map(|hint| {
+                shortcut_badge(
+                    hint,
+                    selected,
+                    muted_bg,
+                    muted,
+                    accent_fg,
+                    window,
+                    Some(view.clone()),
+                )
+            })
             .collect();
 
         let row_action = item.action.clone();
@@ -726,8 +855,8 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let has_query = matches!(kind, PaletteKind::Goto)
-            && !input.read(cx).value().trim().is_empty();
+        let has_query =
+            matches!(kind, PaletteKind::Goto) && !input.read(cx).value().trim().is_empty();
         if has_query {
             input.update(cx, |state, cx| state.set_value("", window, cx));
         } else {
@@ -814,7 +943,9 @@ fn palette_footer(
     for hint in hints {
         let mut cluster = h_flex().gap_1().items_center();
         for key in &hint.keys {
-            cluster = cluster.children(shortcut_badge(key, false, muted_bg, muted, muted, window));
+            cluster = cluster.children(shortcut_badge(
+                key, false, muted_bg, muted, muted, window, None,
+            ));
         }
         cluster = cluster.child(hint.label.clone());
         clusters = clusters.child(cluster);

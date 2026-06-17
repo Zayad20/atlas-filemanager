@@ -3,7 +3,7 @@
 //!
 //! - `Container::Tabs`  → a `TabBar` + the active pane's content.
 //! - `Container::Linear`→ a `Resizable` group (h/v) with one panel per child.
-//! - `Tile::Pane`       → the file listing for that tab (focus ring + click-to-focus).
+//! - `Tile::Pane`       → the file listing for that tab (click-to-focus).
 //!
 //! Structural change emits an `Action`/calls an `App` method; the tree never mutates
 //! itself during rendering.
@@ -12,13 +12,15 @@ use crate::app::App;
 use crate::input::action::Action;
 use crate::state::pane::TabId;
 use crate::state::settings::ViewMode;
-use crate::ui::interactions::rubber_layer;
+use crate::ui::drag_hover::drag_hover_layer;
 use crate::ui::glass::glass_chrome_fill;
+use crate::ui::icons::{icon, AtlasIcon};
+use crate::ui::interactions::rubber_layer;
 use crate::util::display::format_size;
 use gpui::prelude::*;
 use gpui::{
-    div, px, Context,
-    Entity, Focusable, MouseButton, NavigationDirection, SharedString, Window,
+    div, hsla, px, Context, Entity, MouseButton, NavigationDirection, SharedString, Window,
+    WindowControlArea,
 };
 use gpui_component::dock::DockPlacement;
 use gpui_component::{h_flex, v_flex, ActiveTheme};
@@ -41,7 +43,10 @@ impl Render for DraggedFiles {
             .rounded_md()
             .bg(cx.theme().accent)
             .text_color(cx.theme().accent_foreground)
-            .child(SharedString::from(rust_i18n::t!("root_elements", count = n)))
+            .child(SharedString::from(rust_i18n::t!(
+                "root_elements",
+                count = n
+            )))
     }
 }
 
@@ -77,6 +82,18 @@ pub(crate) fn rect_recorder(
     }
 }
 
+pub(crate) fn pane_bounds_recorder(
+    pane: TabId,
+    view: &Entity<App>,
+) -> impl Fn(gpui::Bounds<gpui::Pixels>, &mut Window, &mut gpui::App) + 'static {
+    let view = view.clone();
+    move |bounds, _window, cx| {
+        view.update(cx, |this, _| {
+            this.pane_view_bounds.insert(pane, bounds);
+        });
+    }
+}
+
 /// FASE F: record the pane's window-space rect every frame so the OLE drop target
 /// can route external file drops to the correct pane directory.  The recorded zones
 /// are committed to `dnd.zones` at the start of the next render frame (one-frame lag
@@ -98,9 +115,20 @@ pub(crate) fn zone_recorder(
 
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.drain_bg_results() {
+            cx.notify();
+        }
         // FASE C: reset per-frame item rects; each visible row/cell re-records via
         // on_prepaint while painting this frame (used for rubber-band hit-testing).
         self.row_rects.clear();
+        self.pane_view_bounds.clear();
+        self.pending_drag_hover_targets.clear();
+        self.begin_pane_layout_frame();
+        self.prune_pane_animations();
+        self.prune_pane_layout_animations();
+        if !self.pane_animations.is_empty() || !self.pane_layout_animations.is_empty() {
+            window.request_animation_frame();
+        }
         // FASE F (Windows): publish last frame's pane drop-zones to the OLE drop
         // target, then clear the vec so this frame re-populates it via on_prepaint.
         // One frame of lag is harmless — layout is stable between frames.
@@ -123,7 +151,11 @@ impl Render for App {
         if self.sidebar_width_dirty {
             self.sidebar_width_dirty = false;
             let width = self.state.settings.sidebar_width;
-            if let Some(left) = self.dock.as_ref().and_then(|d| d.read(cx).left_dock().cloned()) {
+            if let Some(left) = self
+                .dock
+                .as_ref()
+                .and_then(|d| d.read(cx).left_dock().cloned())
+            {
                 left.update(cx, |dock, cx| dock.set_size(px(width), window, cx));
             }
         }
@@ -164,7 +196,10 @@ impl Render for App {
                 }
                 let n_ops = self.state.ops.active_ops.len();
                 if n_ops > 1 {
-                    text.push_str(&format!(" ({})", rust_i18n::t!("root_operations", count = n_ops)));
+                    text.push_str(&format!(
+                        " ({})",
+                        rust_i18n::t!("root_operations", count = n_ops)
+                    ));
                 }
                 (*id, text, op.cancel.clone())
             });
@@ -181,7 +216,13 @@ impl Render for App {
 
         // FASE5: inspector panel (right of body) + overlay layers (above root).
         let inspector = if self.preview_visible_for_focused() {
-            Some(self.render_inspector(window, cx))
+            Some(
+                div()
+                    .h_full()
+                    .py(px(crate::ui::SIDE_PANEL_VERTICAL_INSET))
+                    .child(self.render_inspector(window, cx))
+                    .into_any_element(),
+            )
         } else {
             None
         };
@@ -327,28 +368,16 @@ impl Render for App {
                 this.process_actions(vec![Action::SetViewMode(ViewMode::Miller)]);
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &crate::ZoomIn, window_cx, cx| {
-                let mut settings = this.state.settings.clone();
-                settings.global_zoom = (settings.global_zoom * 1.1).min(3.0);
-                window_cx.set_rem_size(settings.global_zoom * 16.0);
-                crate::util::config::save_settings(&settings);
-                this.state.settings = settings;
+            .on_action(cx.listener(|this, _: &crate::ZoomIn, _w, cx| {
+                this.process_actions(vec![crate::input::action::Action::ZoomIn]);
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &crate::ZoomOut, window_cx, cx| {
-                let mut settings = this.state.settings.clone();
-                settings.global_zoom = (settings.global_zoom / 1.1).max(0.5);
-                window_cx.set_rem_size(settings.global_zoom * 16.0);
-                crate::util::config::save_settings(&settings);
-                this.state.settings = settings;
+            .on_action(cx.listener(|this, _: &crate::ZoomOut, _w, cx| {
+                this.process_actions(vec![crate::input::action::Action::ZoomOut]);
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &crate::ZoomReset, window_cx, cx| {
-                let mut settings = this.state.settings.clone();
-                settings.global_zoom = 1.0;
-                window_cx.set_rem_size(settings.global_zoom * 16.0);
-                crate::util::config::save_settings(&settings);
-                this.state.settings = settings;
+            .on_action(cx.listener(|this, _: &crate::ZoomReset, _w, cx| {
+                this.process_actions(vec![crate::input::action::Action::ZoomReset]);
                 cx.notify();
             }))
             // Type-to-filter: plain characters typed while no text field has focus
@@ -356,6 +385,11 @@ impl Render for App {
             // window root because keyboard focus often rests on untracked handles
             // (Dock panels), so per-pane listeners never see these keys.
             .capture_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
+                if this.handle_global_command_shortcut_key(ev, window, cx) {
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 this.handle_global_type_to_filter(ev, window, cx);
             }))
             .on_action(
@@ -390,6 +424,10 @@ impl Render for App {
             }))
             .on_action(cx.listener(|this, _: &crate::OpenSettings, _w, cx| {
                 this.process_actions(vec![Action::OpenSettings]);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::OpenExtManager, _w, cx| {
+                this.process_actions(vec![Action::OpenExtManager]);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::CloseOverlays, _w, cx| {
@@ -461,7 +499,11 @@ impl Render for App {
             }))
             // FASE D: clipboard / delete on the current selection.
             .on_action(cx.listener(|this, _: &crate::DeleteToTrash, _w, cx| {
-                if this.state.active_tab_data().map_or(false, |t| t.location.is_archive()) {
+                if this
+                    .state
+                    .active_tab_data()
+                    .map_or(false, |t| t.location.is_archive())
+                {
                     this.toast_error(rust_i18n::t!("root_delete_archive_error").into());
                     cx.notify();
                     return;
@@ -476,7 +518,11 @@ impl Render for App {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::DeletePermanent, _w, cx| {
-                if this.state.active_tab_data().map_or(false, |t| t.location.is_archive()) {
+                if this
+                    .state
+                    .active_tab_data()
+                    .map_or(false, |t| t.location.is_archive())
+                {
                     this.toast_error(rust_i18n::t!("root_delete_archive_error").into());
                     cx.notify();
                     return;
@@ -490,20 +536,30 @@ impl Render for App {
                 }
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &gpui_component::input::Copy, _w, cx| {
-                if this.state.active_tab_data().map_or(false, |t| t.location.is_archive()) {
-                    this.toast_error(rust_i18n::t!("root_copy_archive_error").into());
+            .on_action(
+                cx.listener(|this, _: &gpui_component::input::Copy, _w, cx| {
+                    if this
+                        .state
+                        .active_tab_data()
+                        .map_or(false, |t| t.location.is_archive())
+                    {
+                        this.toast_error(rust_i18n::t!("root_copy_archive_error").into());
+                        cx.notify();
+                        return;
+                    }
+                    let paths = this.selected_paths();
+                    if !paths.is_empty() {
+                        this.process_actions(vec![Action::Copy(paths)]);
+                    }
                     cx.notify();
-                    return;
-                }
-                let paths = this.selected_paths();
-                if !paths.is_empty() {
-                    this.process_actions(vec![Action::Copy(paths)]);
-                }
-                cx.notify();
-            }))
+                }),
+            )
             .on_action(cx.listener(|this, _: &gpui_component::input::Cut, _w, cx| {
-                if this.state.active_tab_data().map_or(false, |t| t.location.is_archive()) {
+                if this
+                    .state
+                    .active_tab_data()
+                    .map_or(false, |t| t.location.is_archive())
+                {
                     this.toast_error(rust_i18n::t!("root_cut_archive_error").into());
                     cx.notify();
                     return;
@@ -514,28 +570,105 @@ impl Render for App {
                 }
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &gpui_component::input::Paste, _w, cx| {
-                if let Some(dest) = this.state.active_tab_data().and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf())) {
-                    this.process_actions(vec![Action::Paste { dest }]);
-                    cx.notify();
-                }
-            }))
-            .child(
-                h_flex()
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .gap_2()
-                    .items_center()
-                    .bg(glass_chrome_fill())
-                    .child("Atlas"),
+            .on_action(
+                cx.listener(|this, _: &gpui_component::input::Paste, _w, cx| {
+                    let dest = this.state.active_tab_data().and_then(|t| {
+                        // Local tab: use the real filesystem dir.
+                        if let Some(p) = t.location.fs_dir() {
+                            return Some(p.to_path_buf());
+                        }
+                        // Remote tab: use an empty sentinel; the action handler
+                        // detects Location::Remote and routes to the cloud worker.
+                        #[cfg(feature = "cloud")]
+                        if matches!(t.location, crate::state::location::Location::Remote { .. }) {
+                            return Some(PathBuf::new());
+                        }
+                        None
+                    });
+                    if let Some(dest) = dest {
+                        this.process_actions(vec![Action::Paste { dest }]);
+                        cx.notify();
+                    }
+                }),
             )
+            // Custom title bar: ultra-thin draggable strip + grouped phosphor controls.
+            // Sits flush to the top edge; controls cluster right with 2px outer padding.
+            .child({
+                let icon_dim = cx.theme().muted_foreground;
+                let is_max = window.is_maximized();
+                h_flex()
+                    .id("titlebar")
+                    .w_full()
+                    .h(px(28.))
+                    .items_center()
+                    .px(px(4.))
+                    .window_control_area(WindowControlArea::Drag)
+                    .child(div().flex_1())
+                    // Grouped cluster: 3 controls in a tight h_flex, 2px gap
+                    .child(
+                        h_flex()
+                            .gap(px(1.))
+                            .items_center()
+                            .py(px(4.))
+                            // Minimize
+                            .child(
+                                div()
+                                    .id("wc-min")
+                                    .flex_none()
+                                    .w(px(30.))
+                                    .h(px(20.))
+                                    .rounded(px(5.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .hover(|s| s.bg(hsla(0., 0., 0.5, 0.10)))
+                                    .window_control_area(WindowControlArea::Min)
+                                    .child(icon(AtlasIcon::Minus, 10.0, icon_dim)),
+                            )
+                            // Maximize / Restore
+                            .child(
+                                div()
+                                    .id("wc-max")
+                                    .flex_none()
+                                    .w(px(30.))
+                                    .h(px(20.))
+                                    .rounded(px(5.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .hover(|s| s.bg(hsla(0., 0., 0.5, 0.10)))
+                                    .window_control_area(WindowControlArea::Max)
+                                    .child(icon(
+                                        if is_max {
+                                            AtlasIcon::Copy
+                                        } else {
+                                            AtlasIcon::Square
+                                        },
+                                        10.0,
+                                        icon_dim,
+                                    )),
+                            )
+                            // Close
+                            .child(
+                                div()
+                                    .id("wc-close")
+                                    .flex_none()
+                                    .w(px(30.))
+                                    .h(px(20.))
+                                    .rounded(px(5.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .hover(|s| s.bg(hsla(0., 0.65, 0.42, 0.75)))
+                                    .window_control_area(WindowControlArea::Close)
+                                    .child(icon(AtlasIcon::X, 10.0, icon_dim)),
+                            ),
+                    )
+            })
             .child(
                 h_flex()
                     .flex_1()
                     .min_h(px(0.))
-                    // Floating gutter so the glass panes sit over the blurred wallpaper
-                    // with a margin (Figma panels float, not edge-to-edge).
                     .p_2()
                     .gap_2()
                     .child(div().flex_1().h_full().min_w(px(0.)).child(center_content))
@@ -549,6 +682,7 @@ impl Render for App {
             // FASE C: global rubber-band motor (invisible canvas, registers window-wide
             // mouse move/up listeners that fire even outside the pane hitbox).
             .child(rubber_layer(cx.entity()))
+            .child(drag_hover_layer(cx.entity()))
             // Floating glass search pill (Figma "Window/Search Global"), bottom-center.
             .children(search_pill)
             // Operation progress toast: appears bottom-right while a transfer is active.
@@ -588,7 +722,6 @@ impl Render for App {
     }
 }
 
-
 /// Shared Ctrl+scroll handler for every pane container. Plain scrolls are ignored
 /// (the virtualized list scrolls itself); Ctrl+scroll routes to `pane_ctrl_scroll`.
 pub(crate) fn ctrl_scroll(
@@ -612,4 +745,3 @@ pub(crate) fn ctrl_scroll(
         cx.notify();
     });
 }
-

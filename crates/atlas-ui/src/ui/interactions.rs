@@ -7,10 +7,7 @@ use crate::state::layout_tree::Tile;
 use crate::state::pane::TabId;
 use crate::state::settings::ViewMode;
 use gpui::prelude::*;
-use gpui::{
-    canvas, Context, DispatchPhase,
-    Entity, MouseMoveEvent, MouseUpEvent, Window,
-};
+use gpui::{canvas, Context, DispatchPhase, Entity, MouseMoveEvent, MouseUpEvent, Window};
 use gpui_component::WindowExt;
 
 impl App {
@@ -29,7 +26,7 @@ impl App {
             crate::state::settings::ViewMode::Grid => {
                 let thumb = td.thumbnail_size;
                 const GAP: f32 = 8.0;
-                const PAD: f32 = 8.0;
+                const PAD: f32 = 0.0;
                 let pane_w = ts.last_pane_width.max(thumb + 1.0);
                 let inner = (pane_w - 2.0 * PAD).max(thumb);
                 let cols = (((inner + GAP) / (thumb + GAP)).floor() as usize).max(1);
@@ -78,7 +75,8 @@ impl App {
         r.swept.extend(hits.iter().copied());
         // Items visible but no longer under the rect get deselected; items that
         // scrolled off-screen stay in swept (can't re-check their position).
-        r.swept.retain(|idx| !visible.contains(idx) || hits.contains(idx));
+        r.swept
+            .retain(|idx| !visible.contains(idx) || hits.contains(idx));
         let mut sel: std::collections::HashSet<usize> = if r.additive {
             r.base.clone()
         } else {
@@ -141,6 +139,10 @@ impl App {
             return;
         };
 
+        if self.scroll_grid_row_to(pane, target, gpui::ScrollStrategy::Nearest) {
+            return;
+        }
+
         if let Some(handle) = self.scroll_handles.get(&pane) {
             let strategy = if target <= top_row {
                 gpui::ScrollStrategy::Top
@@ -149,6 +151,61 @@ impl App {
             };
             handle.scroll_to_item_strict(target, strategy);
         }
+    }
+
+    pub(crate) fn scroll_grid_row_to(
+        &mut self,
+        pane: TabId,
+        row: usize,
+        strategy: gpui::ScrollStrategy,
+    ) -> bool {
+        let Some(Tile::Pane(pane_data)) = self.state.pane_tree.tiles.get(pane) else {
+            return false;
+        };
+        if !matches!(pane_data.view_mode, ViewMode::Grid) {
+            return false;
+        }
+        let Some(handle) = self.scroll_handles.get(&pane) else {
+            return false;
+        };
+
+        const GRID_GAP: f32 = 8.0;
+        let row_pitch = pane_data.thumbnail_size * 0.62 + 32.0 + GRID_GAP;
+        let (_, row_count) = self.rubber_scroll_dims(pane);
+        if row_count == 0 {
+            return true;
+        }
+
+        let base = handle.0.borrow().base_handle.clone();
+        let viewport_h = f32::from(base.bounds().size.height);
+        if viewport_h <= 1.0 {
+            return false;
+        }
+
+        let row_top = row as f32 * row_pitch;
+        let row_bottom = row_top + row_pitch;
+        let content_h = row_count as f32 * row_pitch - GRID_GAP;
+        let max_scroll = (content_h - viewport_h).max(0.0);
+        let offset = base.offset();
+        let current_top = (-f32::from(offset.y)).max(0.0);
+        let target = match strategy {
+            gpui::ScrollStrategy::Top => row_top,
+            gpui::ScrollStrategy::Center => row_top - (viewport_h - row_pitch) * 0.5,
+            gpui::ScrollStrategy::Bottom => row_bottom - viewport_h,
+            gpui::ScrollStrategy::Nearest => {
+                if row_top < current_top {
+                    row_top
+                } else if row_bottom > current_top + viewport_h {
+                    row_bottom - viewport_h
+                } else {
+                    current_top
+                }
+            }
+        }
+        .clamp(0.0, max_scroll);
+
+        base.set_offset(gpui::point(offset.x, gpui::px(-target)));
+        true
     }
 
     /// Begin inline rename of the focused pane's cursor item: pre-fill a native input
@@ -174,6 +231,7 @@ impl App {
             idx,
             path,
             input,
+            initial_select_chars: None,
         });
     }
 
@@ -292,10 +350,7 @@ impl App {
             return;
         }
         let pane_id = self.state.focused_tile;
-        if !matches!(
-            self.state.pane_tree.tiles.get(pane_id),
-            Some(Tile::Pane(_))
-        ) {
+        if !matches!(self.state.pane_tree.tiles.get(pane_id), Some(Tile::Pane(_))) {
             return;
         }
         if self
@@ -357,33 +412,50 @@ impl App {
             .tab_data_for(pane_id)
             .map(|t| t.view_mode.clone())
             .unwrap_or_default();
+
+        let mut next_mode = mode.clone();
+
         if matches!(mode, ViewMode::Grid) {
             if let Some(Tile::Pane(p)) = self.state.pane_tree.tiles.get_mut(pane_id) {
                 let step = if dy > 0.0 { 16.0 } else { -16.0 };
-                p.thumbnail_size = (p.thumbnail_size + step).clamp(64.0, 384.0);
+                let new_size = p.thumbnail_size + step;
+                if new_size < 64.0 && dy < 0.0 {
+                    next_mode = ViewMode::List;
+                } else if new_size > 384.0 && dy > 0.0 {
+                    p.thumbnail_size = 384.0;
+                    return;
+                } else {
+                    p.thumbnail_size = new_size;
+                    return;
+                }
             }
+        } else if matches!(mode, ViewMode::List) {
+            if dy < 0.0 {
+                next_mode = ViewMode::Details;
+            } else if dy > 0.0 {
+                next_mode = ViewMode::Grid;
+            }
+        } else if matches!(mode, ViewMode::Details) {
+            if dy > 0.0 {
+                next_mode = ViewMode::List;
+            } else {
+                return;
+            }
+        } else {
+            return; // don't cycle out of Miller
+        }
+
+        if next_mode == mode {
             return;
         }
-        #[allow(clippy::items_after_statements)] // local constant kept next to its use
-        const ORDER: [ViewMode; 4] = [
-            ViewMode::Details,
-            ViewMode::List,
-            ViewMode::Grid,
-            ViewMode::Miller,
-        ];
-        let cur = ORDER.iter().position(|m| *m == mode).unwrap_or(0);
-        let next = if dy > 0.0 {
-            (cur + 1) % ORDER.len()
-        } else {
-            (cur + ORDER.len() - 1) % ORDER.len()
-        };
-        let next_mode = ORDER[next].clone();
+
+        let next_mode_clone = next_mode.clone();
         self.state.focused_tile = pane_id;
         if let Some(Tile::Pane(p)) = self.state.pane_tree.tiles.get_mut(pane_id) {
-            p.view_mode = next_mode.clone();
+            p.view_mode = next_mode;
         }
         // Leaving Miller can leave the canonical entries empty; reload for the others.
-        if next_mode != ViewMode::Miller {
+        if next_mode_clone != ViewMode::Miller {
             let needs_load = self
                 .state
                 .tab_states
@@ -420,6 +492,24 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                 }
                 let pos = ev.position;
                 vm.update(cx, |this, cx| {
+                    // Column resize takes priority over rubber-band selection.
+                    if let Some((col, start_x, start_width)) = this
+                        .col_resize
+                        .as_ref()
+                        .map(|cr| (cr.col, cr.start_x, cr.start_width))
+                    {
+                        let dx = f32::from(pos.x) - start_x;
+                        let new_w = (start_width + dx).max(40.0);
+                        match col {
+                            "size" => this.col_widths.size = new_w,
+                            "modified" => this.col_widths.modified = new_w,
+                            "type" => this.col_widths.type_w = new_w,
+                            _ => {}
+                        }
+                        cx.notify();
+                        return;
+                    }
+
                     let Some(r) = this.rubber.as_mut() else {
                         return;
                     };
@@ -450,6 +540,12 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                 }
                 let pos = ev.position;
                 vu.update(cx, |this, cx| {
+                    // End column resize.
+                    if this.col_resize.take().is_some() {
+                        cx.notify();
+                        return;
+                    }
+
                     if let Some(r) = this.rubber.take() {
                         if !r.started && !r.additive {
                             // Plain click on empty space → clear selection.

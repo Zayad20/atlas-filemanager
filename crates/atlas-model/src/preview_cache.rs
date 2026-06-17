@@ -8,6 +8,7 @@ pub const DIR_PREVIEW_LIMIT: usize = 200;
 #[derive(Debug)]
 pub struct DirPreviewEntry {
     pub name: String,
+    pub path: PathBuf,
     pub is_dir: bool,
     pub size: Option<u64>,
     #[allow(dead_code)] // reason: directory preview UI keeps this variant available
@@ -138,7 +139,10 @@ pub struct MultiPreviewKey {
 pub enum PreviewRequest {
     Single(PathBuf),
     /// Preview for a file entry inside an archive.
-    ArchiveSingle { archive: PathBuf, inner: PathBuf },
+    ArchiveSingle {
+        archive: PathBuf,
+        inner: PathBuf,
+    },
     Multiple {
         key: MultiPreviewKey,
         paths: Vec<PathBuf>,

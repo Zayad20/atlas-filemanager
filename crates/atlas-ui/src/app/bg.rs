@@ -5,11 +5,10 @@ use crate::state::layout_tree::{Tile, TileId};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-
+use super::*;
 use crate::state::app_state::BgResult;
 use crate::state::preview_cache::ImageData;
 use crate::state::tab::LoadState;
-use super::*;
 
 impl App {
     /// Tear down a dismissed palette once its exit animation has elapsed. Returns
@@ -69,6 +68,7 @@ impl App {
                     self.toast_error(msg);
                     continue;
                 }
+                DndEvent::DragOver { .. } | DndEvent::DragLeave => continue,
             };
             // Resolve destination: use the App's focused dir as fallback.
             let dest = if p.x >= 0.0 && p.y >= 0.0 {
@@ -84,9 +84,15 @@ impl App {
                         .ok()
                         .and_then(|z| z.hit(p.x, p.y).map(|z| z.dest.clone()))
                 });
-                dest.or_else(|| self.state.active_tab_data().and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf())))
+                dest.or_else(|| {
+                    self.state
+                        .active_tab_data()
+                        .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
+                })
             } else {
-                self.state.active_tab_data().and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
+                self.state
+                    .active_tab_data()
+                    .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
             };
             let Some(dest) = dest else { continue };
             // Vtable always enqueues Copy; decide move vs copy here by volume.
@@ -127,7 +133,12 @@ impl App {
         }
 
         let results: Vec<BgResult> = self.rx.try_iter().collect();
-        changed |= !results.is_empty();
+        changed |= self.process_bg_results(results);
+        changed
+    }
+
+    pub(crate) fn process_bg_results(&mut self, results: Vec<BgResult>) -> bool {
+        let mut changed = !results.is_empty();
         for result in results {
             match result {
                 BgResult::DirListed {
@@ -486,11 +497,16 @@ impl App {
                         }
                     }
                 }
+                BgResult::GridThumbnailSkipped { path } => {
+                    self.apply_thumb_skipped(path);
+                }
+                BgResult::ExtRegistryFetched(_)
+                | BgResult::ExtRemoteInstalled { .. }
+                | BgResult::ExtLocalInstalled(_) => {}
                 #[cfg(feature = "cloud")]
                 other => self.handle_cloud_bg(other),
             }
         }
         changed
     }
-
 }

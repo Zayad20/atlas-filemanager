@@ -67,6 +67,7 @@ gpui::actions!(
         ToggleSidebar,
         ToggleHidden,
         OpenSettings,
+        OpenExtManager,
         CloseOverlays,
         // FASE D: pane structure.
         CloseFocusedPane,
@@ -95,6 +96,27 @@ gpui::actions!(
         ZoomReset,
     ]
 );
+
+#[cfg(feature = "cloud")]
+#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
+#[action(namespace = atlas, no_json)]
+pub struct RemoveCloudRemote {
+    pub id: String,
+}
+
+#[cfg(feature = "cloud")]
+#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
+#[action(namespace = atlas, no_json)]
+pub struct StartRenameCloudRemote {
+    pub id: String,
+}
+
+#[cfg(all(feature = "cloud", windows))]
+#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
+#[action(namespace = atlas, no_json)]
+pub struct InstallWinFspForRemote {
+    pub id: String,
+}
 
 #[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
 #[action(namespace = atlas, no_json)]
@@ -128,12 +150,14 @@ pub struct SidebarResetSections;
 /// handle in; gpui drives the UI on the calling (main) thread.
 pub fn run(handle: tokio::runtime::Handle) {
     let settings = crate::util::config::load_settings();
-    let lang = settings.language.clone().unwrap_or_else(|| "en".to_string());
+    let lang = settings
+        .language
+        .clone()
+        .unwrap_or_else(|| "en".to_string());
     rust_i18n::set_locale(&lang);
 
     let application = gpui_platform::application().with_assets(crate::assets::AtlasAssets);
     application.run(move |cx: &mut GpuiApp| {
-
         gpui_component::init(cx);
 
         // Register the bundled Atlas themes (Mac-minimal set) and watch the user
@@ -184,45 +208,25 @@ pub fn run(handle: tokio::runtime::Handle) {
             KeyBinding::new("pageup", NavPageUp, Some("Atlas")),
             KeyBinding::new("pagedown", NavPageDown, Some("Atlas")),
             KeyBinding::new("enter", OpenSelected, Some("Atlas")),
-            KeyBinding::new("ctrl-a", SelectAllItems, Some("Atlas")),
             KeyBinding::new("f2", RenameSelected, Some("Atlas")),
-            KeyBinding::new("ctrl-t", NewTab, Some("Atlas")),
-            KeyBinding::new("ctrl-w", CloseTab, Some("Atlas")),
             KeyBinding::new("ctrl-tab", NextTab, Some("Atlas")),
             KeyBinding::new("ctrl-shift-tab", PrevTab, Some("Atlas")),
             // FASE D: overlays / panels / toggles.
             KeyBinding::new("ctrl-shift-p", OpenPalette, Some("Atlas")),
-            KeyBinding::new("ctrl-k", OpenGotoBar, Some("Atlas")),
             KeyBinding::new("ctrl-f", OpenSearchInPlace, Some("Atlas")),
             KeyBinding::new("space", TogglePreviewExpanded, Some("Atlas")),
-            KeyBinding::new("ctrl-i", ToggleInspector, Some("Atlas")),
-            KeyBinding::new("ctrl-b", ToggleSidebar, Some("Atlas")),
-            KeyBinding::new("ctrl-.", ToggleHidden, Some("Atlas")),
-            KeyBinding::new("ctrl-,", OpenSettings, Some("Atlas")),
             KeyBinding::new("escape", CloseOverlays, Some("Atlas")),
             // FASE D: pane structure.
-            KeyBinding::new("ctrl-shift-w", CloseFocusedPane, Some("Atlas")),
             KeyBinding::new("alt-tab", FocusNextPane, Some("Atlas")),
-            KeyBinding::new("ctrl-shift-s", SplitHorizontal, Some("Atlas")),
-            KeyBinding::new("ctrl-alt-s", SplitVertical, Some("Atlas")),
             // FASE D: history / location / refresh.
-            KeyBinding::new("ctrl-z", Undo, Some("Atlas")),
-            KeyBinding::new("ctrl-shift-z", Redo, Some("Atlas")),
             KeyBinding::new("f5", RefreshTab, Some("Atlas")),
             KeyBinding::new("ctrl-r", RefreshTab, Some("Atlas")),
             KeyBinding::new("ctrl-l", EditLocation, Some("Atlas")),
-            KeyBinding::new("alt-left", NavBack, Some("Atlas")),
-            KeyBinding::new("alt-right", NavForward, Some("Atlas")),
             KeyBinding::new("alt-up", NavParent, Some("Atlas")),
             // FASE D: clipboard / delete.
-            KeyBinding::new("delete", DeleteToTrash, Some("Atlas")),
-            KeyBinding::new("shift-delete", DeletePermanent, Some("Atlas")),
             KeyBinding::new("ctrl-c", gpui_component::input::Copy, Some("Atlas")),
             KeyBinding::new("ctrl-x", gpui_component::input::Cut, Some("Atlas")),
             KeyBinding::new("ctrl-v", gpui_component::input::Paste, Some("Atlas")),
-            KeyBinding::new("ctrl-=", ZoomIn, Some("Atlas")),
-            KeyBinding::new("ctrl--", ZoomOut, Some("Atlas")),
-            KeyBinding::new("ctrl-0", ZoomReset, Some("Atlas")),
         ]);
         cx.on_action(|_: &Quit, cx: &mut GpuiApp| {
             // Keep copied files available to other apps after Atlas exits.
@@ -235,6 +239,7 @@ pub fn run(handle: tokio::runtime::Handle) {
         let window_options = WindowOptions {
             titlebar: Some(TitleBar::title_bar_options()),
             window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
+            window_min_size: Some(size(px(900.), px(560.))),
             // Real OS glass: gpui native `Blurred` = ACCENT_ENABLE_ACRYLICBLURBEHIND (the
             // same path Zed uses on Windows). Unlike Mica/systembackdrop (which needs a
             // DWM redirection surface and no-ops against gpui's NoRedirectionBitmap +
@@ -250,7 +255,6 @@ pub fn run(handle: tokio::runtime::Handle) {
             ..Default::default()
         };
 
-        let _initial_zoom = settings.global_zoom;
         cx.spawn(async move |cx| {
             if let Err(err) = cx.open_window(window_options, move |window, cx| {
                 window.set_window_title("Atlas");

@@ -3,10 +3,7 @@
 
 use crate::app::App;
 use gpui::prelude::*;
-use gpui::{
-    deferred, div, px, AnyElement, Context,
-    MouseButton, SharedString,
-};
+use gpui::{deferred, div, px, AnyElement, Context, MouseButton, SharedString};
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
 impl App {
@@ -108,6 +105,4 @@ impl App {
         )
         .into_any_element()
     }
-
 }
-

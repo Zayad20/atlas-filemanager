@@ -5,8 +5,7 @@ use crate::app::App;
 use crate::input::action::Action;
 use gpui::prelude::*;
 use gpui::{
-    deferred, px, AnyElement, Context, Entity, FocusHandle, Hsla,
-    MouseButton, SharedString,
+    deferred, div, px, AnyElement, Context, Entity, FocusHandle, Hsla, MouseButton, SharedString,
 };
 use gpui_component::v_flex;
 
@@ -54,6 +53,35 @@ impl App {
         _cx: &mut Context<Self>,
     ) -> AnyElement {
         let scrim = scrim_base(SharedString::from(id), false)
+            .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
+                view.update(cx, |this, cx| {
+                    close(this);
+                    cx.notify();
+                });
+            })
+            .child(panel);
+        deferred(scrim).into_any_element()
+    }
+
+    /// Variant for right-side sheets: the backdrop does NOT center its child.
+    /// The child is expected to carry its own `absolute().right_0().top_0().h_full()`
+    /// to anchor itself to the right edge of the window.
+    #[allow(clippy::unused_self)]
+    pub(crate) fn overlay_scrim_right_sheet(
+        &mut self,
+        id: &'static str,
+        view: Entity<Self>,
+        close: impl Fn(&mut Self) + 'static,
+        _focus: FocusHandle,
+        panel: AnyElement,
+        _cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let scrim = div()
+            .id(SharedString::from(id))
+            .absolute()
+            .inset_0()
+            .size_full()
+            .bg(scrim_color())
             .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
                 view.update(cx, |this, cx| {
                     close(this);

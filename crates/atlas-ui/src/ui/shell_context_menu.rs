@@ -10,16 +10,21 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use atlas_model::ext_model::CommandRef;
+
 use gpui::{
     div, img, px, AnyElement, Context, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, ParentElement, Pixels, Point, RenderImage, SharedString, Styled,
-    Window,
+    KeyDownEvent, Keystroke, MouseButton, ParentElement, Pixels, Point, RenderImage, SharedString,
+    StatefulInteractiveElement, Styled, Window,
 };
-use gpui_component::{h_flex, v_flex, ActiveTheme};
+use gpui_component::scroll::ScrollableElement;
+use gpui_component::{h_flex, kbd::Kbd, v_flex, ActiveTheme};
 
 use crate::app::App;
 use crate::input::action::Action;
 use crate::ui::icons::AtlasIcon;
+
+const SCROLLBAR_GUTTER: f32 = 16.0;
 
 /// One native shell entry, ready for rendering (icon already a GPU texture).
 pub(crate) struct UiNativeItem {
@@ -53,8 +58,14 @@ pub(crate) struct CtxMenuState {
     pub loading: bool,
     /// Keyboard cursor into the flattened list of selectable rows.
     pub selected: usize,
+    /// Keyboard navigation requested that the selected row be scrolled into view.
+    pub scroll_to_selected: bool,
     /// Inline-expanded submenu ids (no query / tree mode).
     pub expanded: HashSet<u32>,
+    /// True when opened on empty space (background), not on a file selection.
+    pub background: bool,
+    /// Extension commands that apply to the current selection (prefix `ext.`).
+    pub ext_cmds: Vec<CommandRef>,
 }
 
 /// Atlas's own commands. Each maps to a label, icon and a boxed gpui action that
@@ -68,18 +79,26 @@ enum AtlasCmd {
     Paste,
     Trash,
     DeletePerm,
+    Restore,
+    Properties,
+    NewFolder,
+    SelectAll,
 }
 
 impl AtlasCmd {
-    fn label(self) -> &'static str {
+    fn label(self) -> String {
         match self {
-            Self::Open => "Abrir",
-            Self::Rename => "Renombrar",
-            Self::Copy => "Copiar",
-            Self::Cut => "Cortar",
-            Self::Paste => "Pegar",
-            Self::Trash => "Mover a la papelera",
-            Self::DeletePerm => "Eliminar permanentemente",
+            Self::Open => rust_i18n::t!("root_open").to_string(),
+            Self::Rename => rust_i18n::t!("root_rename").to_string(),
+            Self::Copy => rust_i18n::t!("root_copy").to_string(),
+            Self::NewFolder => rust_i18n::t!("root_new_folder").to_string(),
+            Self::SelectAll => rust_i18n::t!("root_select_all").to_string(),
+            Self::Cut => rust_i18n::t!("root_cut").to_string(),
+            Self::Paste => rust_i18n::t!("root_paste").to_string(),
+            Self::Trash => rust_i18n::t!("root_move_to_trash").to_string(),
+            Self::DeletePerm => rust_i18n::t!("root_delete_permanently").to_string(),
+            Self::Restore => rust_i18n::t!("root_restore").to_string(),
+            Self::Properties => rust_i18n::t!("root_properties").to_string(),
         }
     }
     fn icon(self) -> Option<AtlasIcon> {
@@ -87,14 +106,33 @@ impl AtlasCmd {
             Self::Open => Some(AtlasIcon::Eye),
             Self::Rename => Some(AtlasIcon::PencilSimple),
             Self::Copy => Some(AtlasIcon::Copy),
+            Self::Cut => Some(AtlasIcon::Scissors),
+            Self::Paste => Some(AtlasIcon::Clipboard),
             Self::Trash => Some(AtlasIcon::Trash),
             Self::DeletePerm => Some(AtlasIcon::X),
-            Self::Cut | Self::Paste => None,
+            Self::Restore => Some(AtlasIcon::ArrowCounterClockwise),
+            Self::Properties => Some(AtlasIcon::Gear),
+            Self::NewFolder => Some(AtlasIcon::Folder),
+            Self::SelectAll => Some(AtlasIcon::SelectionAll),
+        }
+    }
+
+    fn shortcut(self) -> Option<&'static str> {
+        match self {
+            Self::Open => Some("enter"),
+            Self::Rename => Some("f2"),
+            Self::Copy => Some("ctrl-c"),
+            Self::Cut => Some("ctrl-x"),
+            Self::Paste => Some("ctrl-v"),
+            Self::Trash => Some("delete"),
+            Self::DeletePerm => Some("shift-delete"),
+            Self::SelectAll => Some("ctrl-a"),
+            Self::Restore | Self::Properties | Self::NewFolder => None,
         }
     }
 }
 
-/// The Atlas section layout, in order. `true` = a separator follows the item.
+/// Atlas items for normal directory views. `true` = separator follows the item.
 const ATLAS_ITEMS: &[(AtlasCmd, bool)] = &[
     (AtlasCmd::Open, false),
     (AtlasCmd::Rename, true),
@@ -105,6 +143,21 @@ const ATLAS_ITEMS: &[(AtlasCmd, bool)] = &[
     (AtlasCmd::DeletePerm, false),
 ];
 
+/// Atlas items shown when the current tab is the Recycle Bin.
+const ATLAS_ITEMS_RECYCLE: &[(AtlasCmd, bool)] = &[
+    (AtlasCmd::Restore, false),
+    (AtlasCmd::Cut, false),
+    (AtlasCmd::DeletePerm, true),
+    (AtlasCmd::Properties, false),
+];
+
+/// Atlas items shown on right-click on empty background (no file selection).
+const ATLAS_ITEMS_BACKGROUND: &[(AtlasCmd, bool)] = &[
+    (AtlasCmd::NewFolder, true),
+    (AtlasCmd::Paste, false),
+    (AtlasCmd::SelectAll, false),
+];
+
 /// A logical (non-element) row, recomputed each frame and shared by the renderer
 /// and the keyboard handler so selection indices always agree.
 enum CtxRow {
@@ -112,6 +165,11 @@ enum CtxRow {
     Loading,
     Atlas {
         cmd: AtlasCmd,
+    },
+    Ext {
+        ext_id: String,
+        cmd_id: String,
+        title: String,
     },
     Native {
         id: u32,
@@ -127,7 +185,10 @@ enum CtxRow {
 
 impl CtxRow {
     fn selectable(&self) -> bool {
-        matches!(self, CtxRow::Atlas { .. } | CtxRow::Native { .. })
+        matches!(
+            self,
+            CtxRow::Atlas { .. } | CtxRow::Ext { .. } | CtxRow::Native { .. }
+        )
     }
 }
 
@@ -171,9 +232,16 @@ impl App {
             .map(|p0| paths.iter().all(|p| p.parent() == Some(p0)))
             .unwrap_or(false);
 
+        let is_recycle_bin = self
+            .state
+            .active_tab_data()
+            .is_some_and(|t| matches!(t.location, crate::state::location::Location::RecycleBin));
+
         #[cfg(windows)]
         let loading = {
-            if same_parent {
+            // Skip the native shell Build for RecycleBin items: the $R paths are not
+            // valid shell namespace objects and the native menu would duplicate Restore.
+            if same_parent && !is_recycle_bin {
                 if let Some(handle) = &self.shell_menu {
                     handle.send(crate::shell_menu::ShellMenuRequest::Build {
                         id: menu_id,
@@ -189,9 +257,20 @@ impl App {
         };
         #[cfg(not(windows))]
         let loading = {
-            let _ = same_parent;
+            let _ = (same_parent, is_recycle_bin);
             false
         };
+
+        let selection: Vec<(Option<String>, bool)> = paths
+            .iter()
+            .map(|p| {
+                (
+                    p.extension().map(|e| e.to_string_lossy().to_lowercase()),
+                    false,
+                )
+            })
+            .collect();
+        let ext_cmds = self.ext_registry.commands_for(&selection);
 
         self.ctx_menu = Some(CtxMenuState {
             menu_id,
@@ -201,7 +280,10 @@ impl App {
             native: Vec::new(),
             loading,
             selected: 0,
+            scroll_to_selected: true,
             expanded: HashSet::new(),
+            background: false,
+            ext_cmds,
         });
         cx.notify();
     }
@@ -291,14 +373,36 @@ impl App {
         let Some(state) = self.ctx_menu.as_ref() else {
             return Vec::new();
         };
+        let is_recycle_bin = self
+            .state
+            .active_tab_data()
+            .is_some_and(|t| matches!(t.location, crate::state::location::Location::RecycleBin));
+        let atlas_items = if state.background {
+            ATLAS_ITEMS_BACKGROUND
+        } else if is_recycle_bin {
+            ATLAS_ITEMS_RECYCLE
+        } else {
+            ATLAS_ITEMS
+        };
+
         let q = query.trim();
-        if q.is_empty() {
+        let rows = if q.is_empty() {
             // Tree mode: Atlas section, separator, native tree (loading skeleton).
             let mut rows = Vec::new();
-            for (cmd, sep_after) in ATLAS_ITEMS {
+            for (cmd, sep_after) in atlas_items {
                 rows.push(CtxRow::Atlas { cmd: *cmd });
                 if *sep_after {
                     rows.push(CtxRow::Separator);
+                }
+            }
+            if !state.ext_cmds.is_empty() {
+                rows.push(CtxRow::Separator);
+                for cmd in &state.ext_cmds {
+                    rows.push(CtxRow::Ext {
+                        ext_id: cmd.ext_id.clone(),
+                        cmd_id: cmd.command.id.clone(),
+                        title: cmd.command.title.clone(),
+                    });
                 }
             }
             if !state.native.is_empty() || state.loading {
@@ -310,14 +414,22 @@ impl App {
             }
             rows
         } else {
-            // Search mode: flatten every leaf (Atlas + native), rank, emit flat.
+            // Search mode: flatten every leaf (Atlas + native + ext), rank, emit flat.
             let _ = scorer_query;
             let mut cand_titles: Vec<String> = Vec::new();
             let mut cands: Vec<CtxRow> = Vec::new();
 
-            for (cmd, _) in ATLAS_ITEMS {
+            for (cmd, _) in atlas_items {
                 cand_titles.push(cmd.label().to_string());
                 cands.push(CtxRow::Atlas { cmd: *cmd });
+            }
+            for cmd in &state.ext_cmds {
+                cand_titles.push(cmd.command.title.clone());
+                cands.push(CtxRow::Ext {
+                    ext_id: cmd.ext_id.clone(),
+                    cmd_id: cmd.command.id.clone(),
+                    title: cmd.command.title.clone(),
+                });
             }
             collect_native_leaves(&state.native, "", &mut cand_titles, &mut cands);
 
@@ -329,7 +441,8 @@ impl App {
                 .map(|i| std::mem::replace(&mut cands[i], CtxRow::Separator))
                 .filter(|r| r.selectable())
                 .collect()
-        }
+        };
+        sanitize_separators(rows)
     }
 
     /// Render the context-menu overlay layer (scrim + anchored panel).
@@ -356,6 +469,15 @@ impl App {
             .unwrap_or_default();
 
         let rows = self.ctx_menu_rows(&query, &query);
+        let selectable_count = rows.iter().filter(|row| row.selectable()).count();
+        if let Some(state) = self.ctx_menu.as_mut() {
+            if selectable_count == 0 {
+                state.selected = 0;
+            } else if state.selected >= selectable_count {
+                state.selected = selectable_count - 1;
+                state.scroll_to_selected = true;
+            }
+        }
         let state = self.ctx_menu.as_ref();
         let (anchor, selected) = state
             .map(|s| (s.anchor, s.selected))
@@ -363,10 +485,16 @@ impl App {
 
         // Clamp the panel into the window so it never spills off an edge.
         let win = window.bounds().size;
-        const W: f32 = 290.;
-        let est_h = (rows.len() as f32 * 30.0 + 50.0).min(560.0);
+        const W: f32 = 340.;
         let (ax, ay) = (f32::from(anchor.x), f32::from(anchor.y));
         let (ww, wh) = (f32::from(win.width), f32::from(win.height));
+        const MAX_H: f32 = 640.;
+        const V_MARGIN: f32 = 72.;
+        const INPUT_H: f32 = 40.;
+        let content_h = rows.len() as f32 * 30.0 + 8.0;
+        let max_h = MAX_H.min((wh - V_MARGIN * 2.0).max(180.0));
+        let est_h = (content_h + INPUT_H).clamp(120.0, max_h);
+        let list_h = (est_h - INPUT_H).max(72.0);
         let left = ax.min((ww - W - 6.0).max(6.0)).max(6.0);
         let top = ay.min((wh - est_h - 6.0).max(6.0)).max(6.0);
 
@@ -375,6 +503,7 @@ impl App {
         // Map selectable index → element, tracking which selectable index each
         // selectable row occupies so we can highlight `selected`.
         let mut sel_idx = 0usize;
+        let mut selected_child_idx = None;
         let mut children: Vec<AnyElement> = Vec::new();
         for row in &rows {
             match row {
@@ -404,16 +533,20 @@ impl App {
                     let this_idx = sel_idx;
                     sel_idx += 1;
                     let is_sel = this_idx == selected;
+                    if is_sel {
+                        selected_child_idx = Some(children.len());
+                    }
                     let cmd = *cmd;
                     let v = view.clone();
-                    let icon_el = cmd
-                        .icon()
-                        .map(|i| crate::ui::icons::icon(i, 16., if is_sel { accent_fg } else { fg }));
+                    let icon_el = cmd.icon().map(|i| {
+                        crate::ui::icons::icon(i, 16., if is_sel { accent_fg } else { fg })
+                    });
                     children.push(
                         menu_row(
                             SharedString::from(format!("ctx-atlas-{this_idx}")),
                             icon_el,
                             cmd.label().to_string(),
+                            cmd.shortcut(),
                             false,
                             false,
                             false,
@@ -432,6 +565,50 @@ impl App {
                         .into_any_element(),
                     );
                 }
+                CtxRow::Ext {
+                    ext_id,
+                    cmd_id,
+                    title,
+                } => {
+                    let this_idx = sel_idx;
+                    sel_idx += 1;
+                    let is_sel = this_idx == selected;
+                    if is_sel {
+                        selected_child_idx = Some(children.len());
+                    }
+                    let ext_id = ext_id.clone();
+                    let cmd_id = cmd_id.clone();
+                    let title = title.clone();
+                    let v = view.clone();
+                    let icon_el = Some(crate::ui::icons::icon(
+                        AtlasIcon::PuzzlePiece,
+                        16.,
+                        if is_sel { accent_fg } else { fg },
+                    ));
+                    children.push(
+                        menu_row(
+                            SharedString::from(format!("ctx-ext-{this_idx}")),
+                            icon_el,
+                            title,
+                            None,
+                            false,
+                            false,
+                            false,
+                            is_sel,
+                            accent,
+                            accent_fg,
+                            fg,
+                            muted,
+                        )
+                        .on_mouse_move(ctx_hover_handler(&view, this_idx))
+                        .on_mouse_down(MouseButton::Left, move |_e, _window, cx| {
+                            v.update(cx, |this, cx| {
+                                this.run_ctx_ext(&ext_id, &cmd_id, cx);
+                            });
+                        })
+                        .into_any_element(),
+                    );
+                }
                 CtxRow::Native {
                     id,
                     title,
@@ -445,6 +622,9 @@ impl App {
                     let this_idx = sel_idx;
                     sel_idx += 1;
                     let is_sel = this_idx == selected;
+                    if is_sel {
+                        selected_child_idx = Some(children.len());
+                    }
                     let id = *id;
                     let submenu = *submenu;
                     let disabled = *disabled;
@@ -460,6 +640,7 @@ impl App {
                         SharedString::from(format!("ctx-native-{id}-{this_idx}")),
                         icon_el,
                         title.clone(),
+                        None,
                         submenu,
                         *expanded,
                         *is_default,
@@ -483,6 +664,19 @@ impl App {
             }
         }
 
+        if self
+            .ctx_menu
+            .as_ref()
+            .is_some_and(|state| state.scroll_to_selected)
+        {
+            if let Some(idx) = selected_child_idx {
+                self.ctx_menu_scroll.scroll_to_item(idx);
+            }
+            if let Some(state) = self.ctx_menu.as_mut() {
+                state.scroll_to_selected = false;
+            }
+        }
+
         let input_row = input.as_ref().map(|state| {
             h_flex()
                 .w_full()
@@ -502,7 +696,7 @@ impl App {
             .left(px(left))
             .top(px(top))
             .w(px(W))
-            .max_h(px(560.))
+            .h(px(est_h))
             .bg(popover)
             .text_color(fg)
             .border_1()
@@ -512,7 +706,24 @@ impl App {
             .occlude()
             .overflow_hidden()
             .children(input_row)
-            .child(v_flex().py_1().children(children))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .max_h(px(list_h))
+                    .child(
+                        v_flex()
+                            .id("ctx-menu-list")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.ctx_menu_scroll)
+                            .py_1()
+                            .pr(px(SCROLLBAR_GUTTER))
+                            .children(children),
+                    )
+                    .vertical_scrollbar(&self.ctx_menu_scroll),
+            )
             .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 if this.handle_ctx_menu_key(ev, window, cx) {
                     cx.stop_propagation();
@@ -574,6 +785,7 @@ impl App {
                 if let Some(m) = self.ctx_menu.as_mut() {
                     if count > 0 {
                         m.selected = (m.selected + 1) % count;
+                        m.scroll_to_selected = true;
                     }
                 }
                 true
@@ -582,6 +794,7 @@ impl App {
                 if let Some(m) = self.ctx_menu.as_mut() {
                     if count > 0 {
                         m.selected = (m.selected + count - 1) % count;
+                        m.scroll_to_selected = true;
                     }
                 }
                 true
@@ -646,6 +859,11 @@ impl App {
         };
         match &rows[row_i] {
             CtxRow::Atlas { cmd } => self.run_ctx_atlas(*cmd, window, cx),
+            CtxRow::Ext { ext_id, cmd_id, .. } => {
+                let ext_id = ext_id.clone();
+                let cmd_id = cmd_id.clone();
+                self.run_ctx_ext(&ext_id, &cmd_id, cx);
+            }
             CtxRow::Native { id, submenu, .. } => {
                 self.activate_ctx_native(*id, *submenu, window, cx)
             }
@@ -653,15 +871,30 @@ impl App {
         }
     }
 
+    fn run_ctx_ext(&mut self, ext_id: &str, cmd_id: &str, cx: &mut Context<Self>) {
+        self.close_ctx_menu(cx);
+        self.handle_ext_action(crate::app::ext::ExtAction::Run {
+            ext_id: ext_id.to_string(),
+            cmd_id: cmd_id.to_string(),
+        });
+        cx.notify();
+    }
+
     /// Run an Atlas command against the current selection, then close. We call the
     /// App methods directly (rather than dispatching the gpui action) so the menu's
     /// focused search input can't intercept `Copy`/`Cut`/`Paste` as text edits.
     fn run_ctx_atlas(&mut self, cmd: AtlasCmd, window: &mut Window, cx: &mut Context<Self>) {
-        self.close_ctx_menu(cx);
         let is_archive = self
             .state
             .active_tab_data()
             .is_some_and(|t| t.location.is_archive());
+        let menu_paths = self
+            .ctx_menu
+            .as_ref()
+            .filter(|m| !m.background)
+            .map(|m| m.paths.clone())
+            .unwrap_or_default();
+        self.close_ctx_menu(cx);
         match cmd {
             AtlasCmd::Open => self.open_cursor(),
             AtlasCmd::Rename => self.begin_rename(window, cx),
@@ -669,7 +902,11 @@ impl App {
                 if is_archive {
                     self.toast_error(rust_i18n::t!("root_copy_archive_error").into());
                 } else {
-                    let paths = self.selected_paths();
+                    let paths = if menu_paths.is_empty() {
+                        self.selected_paths()
+                    } else {
+                        menu_paths.clone()
+                    };
                     if !paths.is_empty() {
                         self.process_actions(vec![Action::Copy(paths)]);
                     }
@@ -679,7 +916,11 @@ impl App {
                 if is_archive {
                     self.toast_error(rust_i18n::t!("root_cut_archive_error").into());
                 } else {
-                    let paths = self.selected_paths();
+                    let paths = if menu_paths.is_empty() {
+                        self.selected_paths()
+                    } else {
+                        menu_paths.clone()
+                    };
                     if !paths.is_empty() {
                         self.process_actions(vec![Action::Cut(paths)]);
                     }
@@ -698,7 +939,11 @@ impl App {
                 if is_archive {
                     self.toast_error(rust_i18n::t!("root_delete_archive_error").into());
                 } else {
-                    let paths = self.selected_paths();
+                    let paths = if menu_paths.is_empty() {
+                        self.selected_paths()
+                    } else {
+                        menu_paths.clone()
+                    };
                     if !paths.is_empty() {
                         self.process_actions(vec![Action::Delete {
                             paths,
@@ -707,7 +952,155 @@ impl App {
                     }
                 }
             }
+            AtlasCmd::Restore => {
+                self.restore_selected_from_recycle_bin(cx);
+            }
+            AtlasCmd::Properties => {
+                let paths = if menu_paths.is_empty() {
+                    self.selected_paths()
+                } else {
+                    menu_paths.clone()
+                };
+                if let Some(path) = paths.into_iter().next() {
+                    show_properties(&path);
+                }
+            }
+            AtlasCmd::SelectAll => {
+                self.process_actions(vec![Action::SelectAll]);
+            }
+            AtlasCmd::NewFolder => {
+                if let Some(dir) = self
+                    .state
+                    .active_tab_data()
+                    .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
+                {
+                    let tile = self.state.focused_tile;
+                    let base = rust_i18n::t!("root_new_folder").to_string();
+                    let name = unique_folder_name(&dir, &base);
+                    let path = dir.join(&name);
+                    self.pending_select = Some((tile, path));
+                    self.process_actions(vec![Action::CreateFolder { parent: dir, name }]);
+                }
+            }
         }
+        cx.notify();
+    }
+
+    /// Open the background right-click menu anchored at `anchor` (no file selection).
+    pub(crate) fn open_background_ctx_menu(
+        &mut self,
+        anchor: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.ctx_menu_seq += 1;
+        let menu_id = self.ctx_menu_seq;
+        let screen_pt = cursor_screen_pos();
+        let input = crate::ui::text_input::single_line(window, cx, "Buscar acciones…", "");
+        self.ctx_menu_sub = Some(cx.subscribe(
+            &input,
+            |_this, _input, ev: &gpui_component::input::InputEvent, cx| {
+                if matches!(ev, gpui_component::input::InputEvent::Change) {
+                    cx.notify();
+                }
+            },
+        ));
+        self.ctx_menu_input = Some(input);
+
+        // Request native shell items for the current directory (background menu).
+        let current_dir = self
+            .state
+            .active_tab_data()
+            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()));
+
+        #[cfg(windows)]
+        let loading = {
+            if let Some(ref dir) = current_dir {
+                if let Some(handle) = &self.shell_menu {
+                    handle.send(crate::shell_menu::ShellMenuRequest::Build {
+                        id: menu_id,
+                        paths: vec![dir.clone()],
+                    });
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+        #[cfg(not(windows))]
+        let loading = {
+            let _ = &current_dir;
+            false
+        };
+
+        self.ctx_menu = Some(CtxMenuState {
+            menu_id,
+            anchor,
+            screen_pt,
+            paths: current_dir.into_iter().collect(),
+            native: Vec::new(),
+            loading,
+            selected: 0,
+            scroll_to_selected: true,
+            expanded: HashSet::new(),
+            background: true,
+            ext_cmds: vec![],
+        });
+        cx.notify();
+    }
+
+    fn restore_selected_from_recycle_bin(&mut self, cx: &mut Context<Self>) {
+        let entries: Vec<(PathBuf, PathBuf, PathBuf)> = self
+            .state
+            .active_tab_state()
+            .map(|ts| {
+                ts.selection
+                    .selected
+                    .iter()
+                    .filter_map(|&i| ts.entries.get(i))
+                    .filter_map(|e| {
+                        e.recycle_info
+                            .as_ref()
+                            .map(|ri| (e.path.clone(), ri.i_file.clone(), ri.original_path.clone()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if entries.is_empty() {
+            return;
+        }
+
+        let tab_id = self.state.focused_tile;
+        let tx = self.tx.clone();
+        let op_id = self.state.next_op_id();
+        if let Some(ts) = self.state.tab_states.get_mut(&tab_id) {
+            ts.load_state = crate::state::tab::LoadState::Loading;
+            ts.last_nav_op_id = op_id;
+        }
+
+        self.rt.spawn(async move {
+            for (r_path, i_path, original_path) in entries {
+                if let Err(e) =
+                    atlas_core::fs::recycle_bin::restore(r_path, i_path, original_path).await
+                {
+                    tracing::warn!("restore failed: {e}");
+                }
+            }
+            // Refresh the recycle bin listing after restore.
+            let entries = atlas_core::fs::recycle_bin::list_recycle_bin(
+                Default::default(),
+                Default::default(),
+            )
+            .await;
+            let _ = tx.send(crate::state::app_state::BgResult::DirListed {
+                tab: tab_id,
+                op_id,
+                entries,
+            });
+        });
         cx.notify();
     }
 
@@ -770,6 +1163,63 @@ impl App {
         self.ctx_menu_sub = None;
         cx.notify();
     }
+}
+
+/// Remove leading, trailing, and consecutive `Separator` rows so no orphaned
+/// dividers appear when a context-menu section is empty.
+fn sanitize_separators(rows: Vec<CtxRow>) -> Vec<CtxRow> {
+    let mut out: Vec<CtxRow> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let is_sep = matches!(row, CtxRow::Separator);
+        if is_sep && matches!(out.last(), None | Some(CtxRow::Separator)) {
+            continue;
+        }
+        out.push(row);
+    }
+    // Strip trailing separator.
+    if matches!(out.last(), Some(CtxRow::Separator)) {
+        out.pop();
+    }
+    out
+}
+
+/// Open the native shell Properties dialog for `path`.
+/// On Windows uses `ShellExecuteExW` with the "properties" verb and
+/// `SEE_MASK_INVOKEIDLIST` so the dialog works for any file system object.
+/// No-op on non-Windows.
+#[allow(unsafe_code)]
+fn show_properties(path: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::Shell::{
+            ShellExecuteExW, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
+
+        let verb: Vec<u16> = "properties\0".encode_utf16().collect();
+        let file: Vec<u16> = path
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let mut info = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_INVOKEIDLIST,
+            hwnd: HWND::default(),
+            lpVerb: PCWSTR(verb.as_ptr()),
+            lpFile: PCWSTR(file.as_ptr()),
+            nShow: SW_SHOW.0,
+            ..Default::default()
+        };
+        unsafe {
+            let _ = ShellExecuteExW(&mut info);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = path;
 }
 
 /// Rank `titles` against `query` (best first). Standalone so it doesn't need the
@@ -921,6 +1371,7 @@ fn menu_row(
     id: SharedString,
     icon: Option<AnyElement>,
     label: String,
+    shortcut: Option<&'static str>,
     submenu: bool,
     expanded: bool,
     is_default: bool,
@@ -928,7 +1379,7 @@ fn menu_row(
     accent: gpui::Hsla,
     accent_fg: gpui::Hsla,
     fg: gpui::Hsla,
-    _muted: gpui::Hsla,
+    muted: gpui::Hsla,
 ) -> gpui::Stateful<gpui::Div> {
     let text_color = if selected { accent_fg } else { fg };
     let mut row = h_flex()
@@ -946,30 +1397,37 @@ fn menu_row(
         row = row.bg(accent);
     }
     // Icon slot (fixed width so labels align with and without icons).
-    row = row.child(
-        div()
-            .w(px(16.))
-            .h(px(16.))
-            .flex_none()
-            .children(icon),
-    );
-    let mut label_div = div().flex_1().child(label);
+    row = row.child(div().w(px(16.)).h(px(16.)).flex_none().children(icon));
+    let mut label_div = div().flex_1().min_w(px(0.)).truncate().child(label);
     if is_default {
         label_div = label_div.font_weight(gpui::FontWeight::SEMIBOLD);
     }
     row = row.child(label_div);
+    if let Some(shortcut) = shortcut {
+        let mut badge = Kbd::new(Keystroke::parse(shortcut).unwrap())
+            .outline()
+            .flex_shrink_0();
+        if selected {
+            badge = badge
+                .bg(gpui::transparent_black())
+                .border_1()
+                .border_color(accent_fg.opacity(0.4))
+                .text_color(accent_fg);
+        } else {
+            badge = badge.text_color(muted);
+        }
+        row = row.child(badge);
+    }
     if submenu {
-        row = row.child(
-            crate::ui::icons::icon(
-                if expanded {
-                    AtlasIcon::CaretDown
-                } else {
-                    AtlasIcon::CaretRight
-                },
-                12.,
-                text_color,
-            ),
-        );
+        row = row.child(crate::ui::icons::icon(
+            if expanded {
+                AtlasIcon::CaretDown
+            } else {
+                AtlasIcon::CaretRight
+            },
+            12.,
+            text_color,
+        ));
     }
     row
 }
@@ -1033,4 +1491,20 @@ fn raw_icon_to_texture(raw: crate::shell_menu::RawIcon) -> Option<Arc<RenderImag
     }
     let buf = image::RgbaImage::from_raw(raw.w, raw.h, bytes)?;
     Some(Arc::new(RenderImage::new(vec![image::Frame::new(buf)])))
+}
+
+/// Return a folder name that doesn't already exist under `dir`.
+/// Tries `base`, then `base 2`, `base 3`, …
+fn unique_folder_name(dir: &std::path::Path, base: &str) -> String {
+    if !dir.join(base).exists() {
+        return base.to_string();
+    }
+    let mut n = 2u32;
+    loop {
+        let name = format!("{base} {n}");
+        if !dir.join(&name).exists() {
+            return name;
+        }
+        n += 1;
+    }
 }

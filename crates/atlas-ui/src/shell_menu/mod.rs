@@ -53,7 +53,9 @@ pub enum NativeItemKind {
     Normal,
     Separator,
     /// A submenu. `children` is `None` until expanded (lazy for depth ≥ 2).
-    Submenu { children: Option<Vec<NativeMenuItem>> },
+    Submenu {
+        children: Option<Vec<NativeMenuItem>>,
+    },
 }
 
 /// One native shell menu entry, flattened to plain `Send` data.

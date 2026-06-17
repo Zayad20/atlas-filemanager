@@ -70,6 +70,8 @@ phosphor_icons!(
     "list-dashes",
     "columns",
     "copy-simple",
+    "scissors",
+    "clipboard",
     // Palette engine: section/command icons + per-item buttons.
     "star",
     "star-fill",
@@ -91,8 +93,12 @@ phosphor_icons!(
     "sort-ascending",
     "tree-structure",
     "x",
+    "minus",
+    "square",
     "arrow-left",
     "arrow-right",
+    "arrow-up",
+    "arrow-down",
 );
 
 liquid_glass_filetype_icons!(

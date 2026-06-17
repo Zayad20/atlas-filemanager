@@ -5,19 +5,15 @@ use crate::app::App;
 use crate::input::action::Action;
 use crate::state::file_entry::{FileEntry, FileKind};
 use crate::state::pane::TabId;
-use crate::state::tab::LoadState;
-use crate::ui::glass::GLASS_RADIUS;
 use crate::ui::icons::file_type_icon;
+use crate::ui::root::{ctrl_scroll, rect_recorder, zone_recorder, DraggedFiles};
 use gpui::prelude::*;
 use gpui::{
-    div, img, px, uniform_list, AnyElement, Context,
-    Entity, Hsla, MouseButton,
-    RenderImage, SharedString, Window,
+    div, img, px, uniform_list, AnyElement, Context, Entity, Hsla, MouseButton, RenderImage,
+    SharedString, Window,
 };
-use gpui_component::button::ButtonVariants as _;
 use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt};
 use std::sync::Arc;
-use crate::ui::root::{ctrl_scroll, rect_recorder, zone_recorder, DraggedFiles};
 
 impl App {
     /// Compact List view: small `icon + name` cells flowing row-major into as many
@@ -30,7 +26,6 @@ impl App {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let view = cx.entity();
-        let focused = self.state.focused_tile == pane_id;
         let (fg, accent, accent_fg, hover, muted, header_bg) = {
             let t = cx.theme();
             (
@@ -56,17 +51,13 @@ impl App {
         let row_count = count.div_ceil(cols);
 
         let inner = if count == 0 {
-            let msg = match self.state.tab_states.get(&pane_id).map(|t| &t.load_state) {
-                Some(LoadState::Loading) => "Cargando…",
-                Some(LoadState::Error(_)) => "No se pudo leer la carpeta",
-                _ => "Carpeta vacía",
-            };
+            let msg = self.empty_pane_message(pane_id, "Carpeta vacía");
             v_flex()
                 .size_full()
                 .items_center()
                 .justify_center()
                 .text_color(muted)
-                .child(msg)
+                .children(msg)
                 .into_any_element()
         } else {
             let scroll = self.scroll_handle_for(pane_id);
@@ -126,12 +117,8 @@ impl App {
             .id(SharedString::from(format!("pane-{}", pane_id.0)))
             .size_full()
             // The pane content is transparent: the hosting TabPanel (fork) is the
-            // rounded glass card, with the tab selector inside it. Clip the list to the
-            // card radius; show an accent ring only on the focused pane.
+            // rounded glass card, with the tab selector inside it.
             .overflow_hidden()
-            .when(focused, |s| {
-                s.rounded(px(GLASS_RADIUS)).border_2().border_color(accent)
-            })
             .on_mouse_down(MouseButton::Left, {
                 let v = rubber_view.clone();
                 move |ev, _window, cx| {
@@ -148,7 +135,10 @@ impl App {
                 move |d, _window, cx| {
                     let paths = d.paths.clone();
                     v.update(cx, |this, cx| {
-                        if let Some(dest) = this.tab_data_for(pane_id).and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf())) {
+                        if let Some(dest) = this
+                            .tab_data_for(pane_id)
+                            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
+                        {
                             this.process_actions(vec![Action::Move { paths, dest }]);
                             cx.notify();
                         }
@@ -160,7 +150,10 @@ impl App {
                 move |paths, _window, cx| {
                     let paths = paths.paths().to_vec();
                     v.update(cx, |this, cx| {
-                        if let Some(dest) = this.tab_data_for(pane_id).and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf())) {
+                        if let Some(dest) = this
+                            .tab_data_for(pane_id)
+                            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
+                        {
                             this.process_actions(vec![Action::CopyTo { paths, dest }]);
                             cx.notify();
                         }
@@ -190,7 +183,6 @@ impl App {
             )
             .into_any_element()
     }
-
 }
 
 /// One compact List cell: 16px icon + truncated name in a fixed 220px row. Click
@@ -324,4 +316,3 @@ fn render_cell_compact(
         })
         .into_any_element()
 }
-

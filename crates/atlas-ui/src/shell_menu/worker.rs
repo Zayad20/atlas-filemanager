@@ -16,20 +16,20 @@ use std::sync::{Arc, Mutex};
 use windows::core::{w, Interface, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::Com::{
-    CoInitializeEx, CoTaskMemFree, COINIT_APARTMENTTHREADED, IBindCtx,
+    CoInitializeEx, CoTaskMemFree, IBindCtx, COINIT_APARTMENTTHREADED,
 };
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     IContextMenu, IContextMenu2, IContextMenu3, IShellFolder, SHBindToObject, SHParseDisplayName,
     CMF_NORMAL, CMINVOKECOMMANDINFOEX,
 };
+use windows::Win32::UI::WindowsAndMessaging::HWND_MESSAGE;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, GetMessageW, RegisterClassW,
     TranslateMessage, CW_USEDEFAULT, HMENU, MSG, SW_SHOWNORMAL, WINDOW_EX_STYLE, WINDOW_STYLE,
     WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR, WNDCLASSW,
 };
-use windows::Win32::UI::WindowsAndMessaging::HWND_MESSAGE;
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 
 // CMIC_MASK_* are plain bit flags; declared locally to avoid version-skewed
 // constant paths in the `windows` crate.
@@ -37,7 +37,7 @@ const CMIC_MASK_UNICODE: u32 = 0x0000_4000;
 const CMIC_MASK_PTINVOKE: u32 = 0x2000_0000;
 
 use super::enumerate::walk_menu;
-use super::{ShellMenuEvent, ShellMenuRequest, NativeMenuItem, WM_ATLAS_SHELLMENU};
+use super::{NativeMenuItem, ShellMenuEvent, ShellMenuRequest, WM_ATLAS_SHELLMENU};
 
 /// The live shell context menu and its backing COM objects. `Drop` frees the
 /// HMENU; the `IContextMenu*` are released by their own refcounts.
@@ -141,12 +141,7 @@ pub(crate) fn run(
     }
 }
 
-unsafe extern "system" fn wndproc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
+unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_ATLAS_SHELLMENU => {
             drain_requests(hwnd);
@@ -160,7 +155,10 @@ unsafe extern "system" fn wndproc(
                 let am = ws.as_ref().and_then(|s| s.active.as_ref())?;
                 if let Some(icm3) = &am.icm3 {
                     let mut res = LRESULT(0);
-                    if icm3.HandleMenuMsg2(msg, wparam, lparam, Some(&mut res)).is_ok() {
+                    if icm3
+                        .HandleMenuMsg2(msg, wparam, lparam, Some(&mut res))
+                        .is_ok()
+                    {
                         return Some(res);
                     }
                 }
@@ -205,11 +203,7 @@ unsafe fn process(hwnd: HWND, req: ShellMenuRequest) {
         },
         ShellMenuRequest::ExpandSubmenu { id, item_id } => {
             let items = expand_submenu(id, item_id);
-            push_event(ShellMenuEvent::SubmenuExpanded {
-                id,
-                item_id,
-                items,
-            });
+            push_event(ShellMenuEvent::SubmenuExpanded { id, item_id, items });
         }
         ShellMenuRequest::Invoke {
             id,
@@ -330,10 +324,11 @@ unsafe fn acquire_context_menu(
         return Err(windows::core::Error::from_win32());
     }
 
-    let apidl: Vec<*const ITEMIDLIST> =
-        child_pidls.iter().map(|p| *p as *const ITEMIDLIST).collect();
-    let icm: windows::core::Result<IContextMenu> =
-        folder.GetUIObjectOf(hwnd, &apidl, None);
+    let apidl: Vec<*const ITEMIDLIST> = child_pidls
+        .iter()
+        .map(|p| *p as *const ITEMIDLIST)
+        .collect();
+    let icm: windows::core::Result<IContextMenu> = folder.GetUIObjectOf(hwnd, &apidl, None);
     for c in child_pidls {
         CoTaskMemFree(Some(c as *const c_void));
     }
@@ -366,10 +361,7 @@ unsafe fn expand_submenu(id: u64, item_id: u32) -> Vec<NativeMenuItem> {
 }
 
 /// Depth-first search for the submenu HMENU owned by command `id`.
-unsafe fn find_submenu(
-    hmenu: HMENU,
-    target_id: u32,
-) -> Option<HMENU> {
+unsafe fn find_submenu(hmenu: HMENU, target_id: u32) -> Option<HMENU> {
     use windows::Win32::UI::WindowsAndMessaging::{
         GetMenuItemCount, GetMenuItemInfoW, MENUITEMINFOW, MIIM_ID, MIIM_SUBMENU,
     };
@@ -396,12 +388,7 @@ unsafe fn find_submenu(
 }
 
 /// Invoke command `item_id` (offset by `id_first`) at `screen_pt`.
-unsafe fn invoke(
-    _hwnd: HWND,
-    id: u64,
-    item_id: u32,
-    screen_pt: (i32, i32),
-) -> Result<(), String> {
+unsafe fn invoke(_hwnd: HWND, id: u64, item_id: u32, screen_pt: (i32, i32)) -> Result<(), String> {
     // Clone the COM handle out under a short borrow; do NOT hold it across the
     // invoke (which re-enters wndproc via the nested loop).
     let cloned = WORKER.with(|w| {

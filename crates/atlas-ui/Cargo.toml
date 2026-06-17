@@ -32,7 +32,7 @@ serde_json.workspace = true
 smol = "2"
 arboard = "3"
 dirs = "6"
-image = "0.25"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "ico"] }
 open = "5"
 rfd = "0.15"
 resvg = "0.45"
@@ -51,6 +51,7 @@ windows = { version = "0.61", features = [
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_System_SystemServices",
+    "Win32_System_Registry",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",

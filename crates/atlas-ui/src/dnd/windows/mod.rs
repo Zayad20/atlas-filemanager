@@ -41,6 +41,10 @@ use drop_target::DropPayload;
 
 /// Events pushed by the OLE layer and drained by `App::drain_dnd_queue`.
 pub enum DndEvent {
+    /// Current drag cursor position over the Atlas window.
+    DragOver { x: f32, y: f32 },
+    /// The external/native drag left the Atlas window.
+    DragLeave,
     /// Something was dropped onto an Atlas window.
     DropIn(DropPayload),
     /// A drag *out of* Atlas ended with the target reporting MOVE: the source

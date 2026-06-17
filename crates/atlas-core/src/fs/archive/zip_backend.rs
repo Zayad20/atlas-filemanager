@@ -37,7 +37,9 @@ impl ZipProvider {
             if s.ends_with('/') || s.ends_with('\\') {
                 let mut s = s.into_owned();
                 s.pop();
-                if s.is_empty() { continue; }
+                if s.is_empty() {
+                    continue;
+                }
                 inner = PathBuf::from(s);
             }
             let raw_name = entry.name();
@@ -167,8 +169,8 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let file = std::fs::File::create(tmp.path()).unwrap();
         let mut zip = zip::ZipWriter::new(file);
-        let opts =
-            zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
         for (name, content) in entries {
             if let Some(data) = content {
                 zip.start_file(*name, opts).unwrap();
@@ -195,20 +197,35 @@ mod tests {
         // Root should show top.txt + sub/
         let root = prov.list(Path::new("")).unwrap();
         let names: Vec<_> = root.iter().map(|e| e.name.as_str()).collect();
-        assert!(names.contains(&"top.txt"), "root missing top.txt: {names:?}");
+        assert!(
+            names.contains(&"top.txt"),
+            "root missing top.txt: {names:?}"
+        );
         assert!(names.contains(&"sub"), "root missing sub/: {names:?}");
 
         // sub/ should show a.txt, b.txt, deep/
         let sub = prov.list(Path::new("sub")).unwrap();
         let sub_names: Vec<_> = sub.iter().map(|e| e.name.as_str()).collect();
-        assert!(sub_names.contains(&"a.txt"), "sub missing a.txt: {sub_names:?}");
-        assert!(sub_names.contains(&"b.txt"), "sub missing b.txt: {sub_names:?}");
-        assert!(sub_names.contains(&"deep"), "sub missing deep/: {sub_names:?}");
+        assert!(
+            sub_names.contains(&"a.txt"),
+            "sub missing a.txt: {sub_names:?}"
+        );
+        assert!(
+            sub_names.contains(&"b.txt"),
+            "sub missing b.txt: {sub_names:?}"
+        );
+        assert!(
+            sub_names.contains(&"deep"),
+            "sub missing deep/: {sub_names:?}"
+        );
 
         // sub/deep/ should show c.txt
         let deep = prov.list(Path::new("sub/deep")).unwrap();
         let deep_names: Vec<_> = deep.iter().map(|e| e.name.as_str()).collect();
-        assert!(deep_names.contains(&"c.txt"), "deep missing c.txt: {deep_names:?}");
+        assert!(
+            deep_names.contains(&"c.txt"),
+            "deep missing c.txt: {deep_names:?}"
+        );
     }
 
     #[test]
@@ -224,15 +241,27 @@ mod tests {
 
         let root = prov.list(Path::new("")).unwrap();
         let root_names: Vec<_> = root.iter().map(|e| e.name.as_str()).collect();
-        assert!(root_names.contains(&"sub"), "root missing sub: {root_names:?}");
+        assert!(
+            root_names.contains(&"sub"),
+            "root missing sub: {root_names:?}"
+        );
 
         let sub = prov.list(Path::new("sub")).unwrap();
         let sub_names: Vec<_> = sub.iter().map(|e| e.name.as_str()).collect();
-        assert!(sub_names.contains(&"a.txt"), "sub missing a.txt: {sub_names:?}");
-        assert!(sub_names.contains(&"deep"), "sub missing deep: {sub_names:?}");
+        assert!(
+            sub_names.contains(&"a.txt"),
+            "sub missing a.txt: {sub_names:?}"
+        );
+        assert!(
+            sub_names.contains(&"deep"),
+            "sub missing deep: {sub_names:?}"
+        );
 
         let deep = prov.list(Path::new("sub/deep")).unwrap();
         let deep_names: Vec<_> = deep.iter().map(|e| e.name.as_str()).collect();
-        assert!(deep_names.contains(&"c.txt"), "deep missing c.txt: {deep_names:?}");
+        assert!(
+            deep_names.contains(&"c.txt"),
+            "deep missing c.txt: {deep_names:?}"
+        );
     }
 }

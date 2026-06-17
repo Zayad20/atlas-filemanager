@@ -5,15 +5,16 @@ use crate::app::{App, BatchRenameField};
 use crate::input::action::Action;
 use crate::state::batch_rename::{RenameIssue, RenameMode};
 use gpui::prelude::*;
-use gpui::{
-    div, px, AnyElement, Context, Entity, KeyDownEvent,
-    MouseButton, SharedString, Window,
-};
+use gpui::{div, px, AnyElement, Context, Entity, KeyDownEvent, MouseButton, SharedString, Window};
 use gpui_component::{h_flex, input::InputState, v_flex, ActiveTheme};
 use std::path::PathBuf;
 
 impl App {
-    pub(crate) fn render_batch_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_batch_rename(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let (popover, fg, muted, border, accent, accent_fg) = {
             let t = cx.theme();
             (
@@ -232,11 +233,15 @@ impl App {
                     .child(field(&rust_i18n::t!("batch_find"), &pat_input))
                     .child(field(&rust_i18n::t!("batch_replace"), &rep_input))
                     .into_any_element(),
-                RenameMode::Prefix => field(&rust_i18n::t!("batch_prefix"), &pat_input).into_any_element(),
+                RenameMode::Prefix => {
+                    field(&rust_i18n::t!("batch_prefix"), &pat_input).into_any_element()
+                }
                 RenameMode::Suffix => {
                     field(&rust_i18n::t!("batch_suffix"), &pat_input).into_any_element()
                 }
-                RenameMode::Number => field(&rust_i18n::t!("batch_separator"), &rep_input).into_any_element(),
+                RenameMode::Number => {
+                    field(&rust_i18n::t!("batch_separator"), &rep_input).into_any_element()
+                }
             })
             .child(
                 div()
@@ -380,6 +385,4 @@ impl App {
     }
 
     // ── scrim helpers ──────────────────────────────────────────────────────────
-
 }
-

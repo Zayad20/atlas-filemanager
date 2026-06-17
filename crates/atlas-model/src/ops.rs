@@ -8,6 +8,9 @@ use crate::undo::UndoStack;
 pub struct ClipboardState {
     pub paths: Vec<PathBuf>,
     pub is_cut: bool,
+    /// Set when the paths come from a remote tab (remote-relative paths, not local).
+    /// `None` = local filesystem paths.
+    pub remote_id: Option<String>,
 }
 
 /// How to handle a destination file that already exists when pasting.

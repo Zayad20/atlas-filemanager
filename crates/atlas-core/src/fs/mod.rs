@@ -7,6 +7,7 @@ pub mod udisks;
 pub mod ops;
 pub mod transfer;
 
+pub mod recycle_bin;
 pub mod watcher;
 
 pub mod archive;

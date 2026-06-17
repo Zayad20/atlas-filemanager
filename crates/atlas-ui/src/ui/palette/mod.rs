@@ -106,6 +106,13 @@ pub(crate) enum ShortcutHint {
     Keys(Keystroke),
     /// Free-form badge text ("MouseMiddle", "↑").
     Label(SharedString),
+    /// Command-palette shortcut badge. Click records a replacement; while
+    /// recording, Delete/Backspace clears the binding and Esc cancels.
+    CommandShortcut {
+        command_id: String,
+        key: Option<Keystroke>,
+        recording: bool,
+    },
 }
 
 impl ShortcutHint {

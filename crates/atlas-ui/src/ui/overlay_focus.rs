@@ -21,7 +21,8 @@
 
 use crate::app::{App, BatchRenameField};
 use crate::state::batch_rename::RenameMode;
-use gpui::{Context, Focusable, FocusHandle, Window};
+use gpui::{Context, FocusHandle, Focusable, Window};
+use gpui_component::input::{Position, SelectToStartOfLine};
 use gpui_component::WindowExt;
 
 impl App {
@@ -46,6 +47,21 @@ impl App {
             || self.state.batch_rename.is_some()
             || self.rename_edit.is_some()
             || self.ctx_menu.is_some()
+            || self.type_filter_menu.is_some()
+            || self.size_filter_menu.is_some()
+            || self.tag_picker_menu.is_some()
+            || self.state.ext.show_manager
+            || {
+                #[cfg(feature = "cloud")]
+                {
+                    self.state.cloud.show_add_dialog
+                        || self.state.cloud.renaming_remote_id.is_some()
+                }
+                #[cfg(not(feature = "cloud"))]
+                {
+                    false
+                }
+            }
             || self
                 .state
                 .active_tab_state()
@@ -87,6 +103,21 @@ impl App {
     ) -> Option<FocusHandle> {
         use crate::ui::palette::PaletteKind;
 
+        // The tag-picker overlay's search input owns the keyboard while open.
+        if self.tag_picker_menu.is_some() {
+            if let Some(input) = &self.tag_picker_input {
+                return Some(input.read(cx).focus_handle(cx));
+            }
+        }
+        // The type-filter overlay's search input owns the keyboard while open.
+        if self.type_filter_menu.is_some() {
+            if let Some(input) = &self.type_filter_input {
+                return Some(input.read(cx).focus_handle(cx));
+            }
+        }
+        if self.size_filter_menu.is_some() {
+            return Some(self.overlay_focus(cx));
+        }
         // The right-click menu's search input owns the keyboard while open. Placed
         // first: opening a palette closes the menu, so they never contend.
         if self.ctx_menu.is_some() {
@@ -104,11 +135,22 @@ impl App {
             let input = self.palette_input_for(PaletteKind::Ext, window, cx);
             return Some(input.read(cx).focus_handle(cx));
         }
+        if self.state.ext.show_manager {
+            return Some(self.ext_manager_focus_handle(window, cx));
+        }
         if self.state.batch_rename.is_some() {
             return Some(self.batch_focus_handle(window, cx));
         }
         if self.state.overlay.renaming_profile {
             return Some(self.rename_profile_focus(window, cx));
+        }
+        #[cfg(feature = "cloud")]
+        if self.state.cloud.show_add_dialog {
+            return Some(self.cloud_add_focus(window, cx));
+        }
+        #[cfg(feature = "cloud")]
+        if self.state.cloud.renaming_remote_id.is_some() {
+            return Some(self.rename_remote_focus(window, cx));
         }
         // Text-less modals: a neutral handle so Esc/buttons work but no input steals.
         if self.state.overlay.show_settings
@@ -118,8 +160,22 @@ impl App {
             return Some(self.overlay_focus(cx));
         }
         // Inline (in-row) rename owns the keyboard while active.
-        if let Some(edit) = self.rename_edit.as_ref() {
-            return Some(edit.input.read(cx).focus_handle(cx));
+        if self.rename_edit.is_some() {
+            let pending = self.rename_edit.as_mut().and_then(|edit| {
+                edit.initial_select_chars
+                    .take()
+                    .map(|chars| (edit.input.clone(), chars))
+            });
+            if let Some((input, chars)) = pending {
+                input.update(cx, |state, cx| {
+                    state.set_cursor_position(Position::new(0, chars), window, cx);
+                });
+                window.dispatch_action(Box::new(SelectToStartOfLine), cx);
+            }
+            return self
+                .rename_edit
+                .as_ref()
+                .map(|edit| edit.input.read(cx).focus_handle(cx));
         }
         // The focused pane's local filter owns the keyboard while active; arrows/
         // enter/escape still work via the filter pill's key capture.
@@ -182,5 +238,26 @@ impl App {
         self.overlay_focus
             .get_or_insert_with(|| cx.focus_handle())
             .clone()
+    }
+
+    /// Ensure the extension-manager search input exists and return its focus handle.
+    pub(crate) fn ext_manager_focus_handle(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> FocusHandle {
+        if self.ext_manager_input.is_none() {
+            self.ext_manager_input = Some(crate::ui::text_input::single_line(
+                window,
+                cx,
+                rust_i18n::t!("ext_manager_search").as_ref(),
+                "",
+            ));
+        }
+        if let Some(input) = &self.ext_manager_input {
+            input.read(cx).focus_handle(cx)
+        } else {
+            self.overlay_focus(cx)
+        }
     }
 }

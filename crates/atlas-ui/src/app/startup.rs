@@ -7,14 +7,12 @@ use std::collections::{HashMap, HashSet};
 use gpui::{Context, Window};
 use smol::Timer;
 
+use super::*;
 use crate::fs::list::list_dir;
 use crate::search::nucleo_pool::NucleoPool;
 use crate::state::app_state::{AppState, BgResult};
 use crate::state::tab::LoadState;
-use crate::util::config::{
-    load_profiles, load_session, load_settings,
-};
-use super::*;
+use crate::util::config::{load_profiles, load_session, load_settings};
 
 impl App {
     pub fn new(rt: tokio::runtime::Handle, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -317,7 +315,39 @@ impl App {
             ctx_menu_input: None,
             ctx_menu_sub: None,
             ctx_menu_seq: 0,
+            ctx_menu_scroll: gpui::ScrollHandle::new(),
+            type_filter_scroll: gpui::ScrollHandle::new(),
+            settings_scroll: gpui::ScrollHandle::new(),
+            ext_manager_scroll: gpui::ScrollHandle::new(),
+            preview_editor: None,
+            tag_picker_menu: None,
+            tag_picker_input: None,
+            tag_picker_sub: None,
+            tag_picker_scroll: gpui::ScrollHandle::new(),
+            thumb_wanted: std::sync::Arc::new(std::sync::Mutex::new(HashSet::new())),
+            native_thumb_inflight: 0,
+            pane_animations: HashMap::new(),
+            pane_layout_bounds: HashMap::new(),
+            pane_layout_animations: HashMap::new(),
+            pane_layout_frame_pending: false,
+            ext_manager_input: None,
+            #[cfg(feature = "cloud")]
+            cloud_add_inputs: None,
+            #[cfg(feature = "cloud")]
+            rename_remote_input: None,
+            pending_select: None,
+            col_widths: crate::app::ColWidths::default(),
+            col_resize: None,
+            type_filters: HashMap::new(),
+            size_filters: HashMap::new(),
+            type_filter_menu: None,
+            type_filter_input: None,
+            type_filter_sub: None,
+            size_filter_menu: None,
+            drag_hover: crate::ui::drag_hover::DragHoverState::default(),
+            pending_drag_hover_targets: Vec::new(),
+            pane_view_bounds: HashMap::new(),
+            command_shortcut_capture: None,
         }
     }
-
 }

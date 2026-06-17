@@ -4,10 +4,7 @@
 use crate::app::App;
 use crate::input::action::Action;
 use gpui::prelude::*;
-use gpui::{
-    div, px, AnyElement, Context, KeyDownEvent,
-    MouseButton, SharedString,
-};
+use gpui::{div, px, AnyElement, Context, KeyDownEvent, MouseButton, SharedString};
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
 impl App {
@@ -96,7 +93,12 @@ impl App {
             .child(
                 v_flex()
                     .gap_1()
-                    .child(div().text_xs().text_color(muted).child(rust_i18n::t!("tag_name").to_string()))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(rust_i18n::t!("tag_name").to_string()),
+                    )
                     .child(
                         div()
                             .id("create-tag-name")
@@ -108,7 +110,9 @@ impl App {
                             .border_1()
                             .border_color(accent)
                             .child(if name.is_empty() {
-                                div().text_color(muted).child(rust_i18n::t!("tag_name_placeholder").to_string())
+                                div()
+                                    .text_color(muted)
+                                    .child(rust_i18n::t!("tag_name_placeholder").to_string())
                             } else {
                                 div().child(name)
                             }),
@@ -117,7 +121,12 @@ impl App {
             .child(
                 v_flex()
                     .gap_1()
-                    .child(div().text_xs().text_color(muted).child(rust_i18n::t!("tag_color").to_string()))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(rust_i18n::t!("tag_color").to_string()),
+                    )
                     .child(h_flex().gap_2().children(color_buttons)),
             )
             .child(
@@ -213,6 +222,4 @@ impl App {
             Action::CloseCreateTagOverlay,
         ]);
     }
-
 }
-

@@ -95,8 +95,14 @@ impl App {
 
             let tx_clone = self.tx.clone();
             self.rt.spawn(async move {
-                match crate::fs::list::list_dir(&path, show_hidden, sort_col, sort_dir, folders_first)
-                    .await
+                match crate::fs::list::list_dir(
+                    &path,
+                    show_hidden,
+                    sort_col,
+                    sort_dir,
+                    folders_first,
+                )
+                .await
                 {
                     Ok(entries) => {
                         let _ = tx_clone.send(crate::state::app_state::BgResult::DirListed {
@@ -184,6 +190,14 @@ impl App {
         self.state.profiles.active_idx = usize::MAX;
         self.switch_profile(new_idx);
     }
+}
+
+/// Per-profile Details-view column widths.
+/// Blueprint: same pattern as `IconSelection`.
+pub(crate) struct DetailsColumns;
+impl crate::state::profiles::ProfileScoped for DetailsColumns {
+    const KEY: &'static str = "details_columns";
+    type State = crate::app::ColWidths;
 }
 
 /// Official per-profile icon-theme selection: the `extension → SVG-path` mappings

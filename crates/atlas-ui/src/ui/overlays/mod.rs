@@ -14,9 +14,7 @@
 
 use crate::app::App;
 use gpui::prelude::*;
-use gpui::{
-    AnyElement, Context, Window,
-};
+use gpui::{AnyElement, Context, Window};
 
 impl App {
     /// Build the overlay layers for the current frame. Empty when nothing is open.
@@ -58,6 +56,9 @@ impl App {
         if self.state.overlay.show_settings {
             layers.push(self.render_settings(cx));
         }
+        if self.state.ext.show_manager {
+            layers.push(self.render_ext_manager(window, cx));
+        }
         if self.state.overlay.transfer_conflict.is_some() {
             layers.push(self.render_transfer_conflict(cx));
         }
@@ -70,8 +71,27 @@ impl App {
         if self.state.overlay.renaming_profile {
             layers.push(self.render_rename_profile(window, cx));
         }
+        #[cfg(feature = "cloud")]
+        if self.state.cloud.show_add_dialog {
+            layers.push(self.render_add_cloud(window, cx));
+        }
+        #[cfg(feature = "cloud")]
+        if self.state.cloud.renaming_remote_id.is_some() {
+            layers.push(self.render_rename_remote(window, cx));
+        }
         if !self.state.overlay.op_errors.is_empty() {
             layers.push(self.render_op_errors(cx));
+        }
+        // Details type-filter overlay. Painted below the right-click menu.
+        if self.type_filter_menu.is_some() {
+            layers.push(self.render_type_filter_layer(window, cx));
+        }
+        if self.size_filter_menu.is_some() {
+            layers.push(self.render_size_filter_layer(window, cx));
+        }
+        // Tag-picker overlay (inspector "Añadir tag" button).
+        if self.tag_picker_menu.is_some() {
+            layers.push(self.render_tag_picker_layer(window, cx));
         }
         // Right-click menu (Atlas items + native shell items). Painted last so it
         // sits above the other overlays; it owns the keyboard via the branch in
@@ -136,13 +156,17 @@ impl App {
     }
 
     // ── transfer conflict ──────────────────────────────────────────────────────
-
 }
 
-mod transfer_conflict;
-mod settings;
-mod create_tag;
-mod toasts;
+#[cfg(feature = "cloud")]
+pub(crate) mod add_cloud;
 mod batch_rename;
+mod create_tag;
+mod ext_manager;
 mod rename_profile;
+#[cfg(feature = "cloud")]
+mod rename_remote;
 mod scrim;
+mod settings;
+mod toasts;
+mod transfer_conflict;

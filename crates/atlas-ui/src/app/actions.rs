@@ -11,11 +11,16 @@ impl App {
         for action in actions {
             match action {
                 Action::Navigate { tab, path } => self.navigate(tab, path),
+                Action::NavigateLocation { tab, location } => {
+                    self.navigate_to(tab, location, crate::app::nav::NavKind::Push)
+                }
                 Action::NavigateBack(tab_id) => self.navigate_back(tab_id),
                 Action::NavigateForward(tab_id) => self.navigate_forward(tab_id),
                 Action::NavigateUp(tab_id) => self.navigate_up(tab_id),
                 Action::EditLocation(tab_id) => {
-                    let path = self.tab_data_for(tab_id).map(|pane| pane.location.display_path());
+                    let path = self
+                        .tab_data_for(tab_id)
+                        .map(|pane| pane.location.display_path());
                     if let (Some(path), Some(tab_state)) =
                         (path, self.state.tab_states.get_mut(&tab_id))
                     {
@@ -64,6 +69,11 @@ impl App {
                 Action::OpenSettings => {
                     self.state.overlay.show_settings = true;
                 }
+                Action::OpenExtManager => {
+                    self.handle_ext_action(crate::app::ext::ExtAction::OpenManager(true));
+                    self.handle_ext_action(crate::app::ext::ExtAction::FetchRegistry);
+                    self.ext_manager_input = None;
+                }
                 Action::ToggleAnalyzer => {
                     self.state.overlay.show_analyzer = !self.state.overlay.show_analyzer;
                 }
@@ -94,6 +104,13 @@ impl App {
                     }
                     self.state.overlay.show_palette = false;
                     self.palette_input = None;
+                    self.command_shortcut_capture = None;
+
+                    // Close the extension manager sheet if open.
+                    if self.state.ext.show_manager {
+                        self.state.ext.show_manager = false;
+                        self.ext_manager_input = None;
+                    }
 
                     self.state.overlay.show_ext_palette = false;
                     self.ext_palette_input = None;
@@ -132,9 +149,13 @@ impl App {
                         self.goto_index_root = None;
                     } else {
                         // Rebuild the global index from the current pane's directory.
-                        let root = self.state.active_tab_data().and_then(|td| {
-                            td.location.fs_dir().map(|p| p.to_path_buf())
-                        }).unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+                        let root = self
+                            .state
+                            .active_tab_data()
+                            .and_then(|td| td.location.fs_dir().map(|p| p.to_path_buf()))
+                            .unwrap_or_else(|| {
+                                dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+                            });
                         let injector = self.nucleo.injector();
                         crate::fs::index::build_index(root.clone(), injector);
                         self.goto_index_root = Some((root, false));
@@ -145,6 +166,7 @@ impl App {
                     self.state.overlay.show_goto_bar = false;
                     self.state.overlay.palette_state.reset();
                     self.palette_input = None;
+                    self.command_shortcut_capture = None;
                     // Hard-dismiss the goto (no fade) when switching to the palette.
                     self.palette_closing = None;
                     self.goto_input = None;
@@ -158,6 +180,18 @@ impl App {
                         pinned.push(id);
                     }
                     crate::util::config::save_profiles(&self.state.profiles);
+                }
+                Action::StartCommandShortcutCapture(id) => {
+                    self.start_command_shortcut_capture(id);
+                }
+                Action::CancelCommandShortcutCapture => {
+                    self.cancel_command_shortcut_capture();
+                }
+                Action::SetCommandShortcut { id, keystroke } => {
+                    self.set_command_shortcut(id, keystroke);
+                }
+                Action::RemoveCommandShortcut(id) => {
+                    self.remove_command_shortcut(id);
                 }
                 Action::OpenSearchInPlace => {
                     let tile = self.state.focused_tile;
@@ -220,7 +254,11 @@ impl App {
                                 })
                             };
                             ts.selection.selected.retain(|&i| kind_visible(i));
-                            if ts.selection.keyboard_cursor.is_some_and(|i| !kind_visible(i)) {
+                            if ts
+                                .selection
+                                .keyboard_cursor
+                                .is_some_and(|i| !kind_visible(i))
+                            {
                                 ts.selection.keyboard_cursor = None;
                                 ts.selection.selection_anchor = None;
                             }
@@ -233,6 +271,7 @@ impl App {
                     self.palette_closing = None;
                     self.goto_input = None;
                     self.palette_input = None;
+                    self.command_shortcut_capture = None;
                     self.palette_host = None;
                 }
                 Action::Refresh(tab_id) => {
@@ -330,6 +369,10 @@ impl App {
                             if is_archive {
                                 self.navigate_into_archive(tile, path, std::path::PathBuf::new());
                             } else {
+                                #[cfg(feature = "cloud")]
+                                if self.open_remote_paths_for(tile, &[path.clone()]) {
+                                    continue;
+                                }
                                 self.spawn_open_files(vec![path]);
                             }
                         }
@@ -366,18 +409,122 @@ impl App {
                     }
                 }
                 Action::Copy(paths) => {
+                    #[cfg(feature = "cloud")]
+                    if let Some((remote_id, _)) = self.focused_remote_tab() {
+                        self.set_clipboard_with_remote(paths, false, Some(remote_id));
+                        continue;
+                    }
                     self.set_clipboard(paths, false);
                 }
                 Action::Cut(paths) => {
+                    #[cfg(feature = "cloud")]
+                    if let Some((remote_id, _)) = self.focused_remote_tab() {
+                        self.set_clipboard_with_remote(paths, true, Some(remote_id));
+                        continue;
+                    }
                     self.set_clipboard(paths, true);
                 }
-                Action::Delete { paths, to_trash } => self.delete_files(paths, to_trash),
-                Action::Rename { from, to } => self.rename_file(from, to),
+                Action::Delete { paths, to_trash } => {
+                    #[cfg(feature = "cloud")]
+                    if let Some((remote_id, current_path)) = self.focused_remote_tab() {
+                        let tile = self.state.focused_tile;
+                        let entries: Vec<(String, bool)> = paths
+                            .iter()
+                            .map(|p| {
+                                let path_str = p.to_string_lossy().replace('\\', "/");
+                                let is_dir = self
+                                    .state
+                                    .tab_states
+                                    .get(&tile)
+                                    .and_then(|ts| ts.entries.iter().find(|e| e.path == *p))
+                                    .is_some_and(|e| {
+                                        matches!(e.kind, crate::state::file_entry::FileKind::Dir)
+                                    });
+                                (path_str, is_dir)
+                            })
+                            .collect();
+                        if !entries.is_empty() {
+                            let _ = self.cloud_tx.send(crate::cloud::CloudCmd::DeleteRemote {
+                                id: remote_id,
+                                entries,
+                                parent: current_path,
+                            });
+                        }
+                        continue;
+                    }
+                    self.delete_files(paths, to_trash);
+                }
+                Action::Rename { from, to } => {
+                    #[cfg(feature = "cloud")]
+                    if let Some((remote_id, current_path)) = self.focused_remote_tab() {
+                        let from_str = from.to_string_lossy().replace('\\', "/");
+                        let to_str = to.to_string_lossy().replace('\\', "/");
+                        let _ = self
+                            .cloud_tx
+                            .send(crate::cloud::CloudCmd::RenameRemoteEntry {
+                                id: remote_id,
+                                from: from_str,
+                                to: to_str,
+                                parent: current_path,
+                            });
+                        continue;
+                    }
+                    self.rename_file(from, to);
+                }
                 Action::CreateFolder { parent, name } => {
+                    #[cfg(feature = "cloud")]
+                    if let Some((remote_id, current_path)) = self.focused_remote_tab() {
+                        let parent_str = parent.to_string_lossy().replace('\\', "/");
+                        let folder_path = if parent_str.is_empty() {
+                            name.clone()
+                        } else {
+                            format!("{}/{}", parent_str.trim_end_matches('/'), name)
+                        };
+                        let _ = self.cloud_tx.send(crate::cloud::CloudCmd::MkdirRemote {
+                            id: remote_id,
+                            path: folder_path,
+                            parent: current_path,
+                        });
+                        continue;
+                    }
                     let path = parent.join(&name);
                     self.create_dir(path);
                 }
-                Action::Paste { dest } => self.paste_files(dest),
+                Action::Paste { dest } => {
+                    #[cfg(feature = "cloud")]
+                    {
+                        let remote_dest = self.focused_remote_tab();
+                        let clipboard_remote = self
+                            .state
+                            .ops
+                            .clipboard
+                            .as_ref()
+                            .and_then(|c| c.remote_id.clone());
+                        match (&remote_dest, &clipboard_remote) {
+                            // Local clipboard → remote tab: upload each file.
+                            (Some((dst_id, dst_path)), None) => {
+                                self.paste_local_into_remote(dst_id.clone(), dst_path.clone());
+                                continue;
+                            }
+                            // Remote clipboard → local tab (or different remote): download.
+                            (None, Some(_src_id)) => {
+                                self.paste_remote_into_local(dest.clone());
+                                continue;
+                            }
+                            // Same-remote clipboard → same-remote tab: server-side copy.
+                            (Some((dst_id, dst_path)), Some(src_id)) if dst_id == src_id => {
+                                let dst_id = dst_id.clone();
+                                let dst_path = dst_path.clone();
+                                let src_id = src_id.clone();
+                                self.paste_remote_within(src_id, dst_id, dst_path);
+                                continue;
+                            }
+                            // Cross-remote or both local: fall through.
+                            _ => {}
+                        }
+                    }
+                    self.paste_files(dest);
+                }
                 Action::ResolveTransferConflict(policy) => self.apply_transfer_resolution(policy),
                 Action::Transfer(req) => self.request_transfer(req),
                 // gpui drop handlers: `Move` carries an internal drag,
@@ -579,14 +726,19 @@ impl App {
                         crate::state::profiles::default_sections();
                 }
                 Action::RemoveBookmark(idx) => {
-                    self.state.profiles.active_mut().bookmarks.remove(idx);
+                    if idx < self.state.profiles.active().bookmarks.len() {
+                        self.state.profiles.active_mut().bookmarks.remove(idx);
+                        crate::util::config::save_profiles(&self.state.profiles);
+                    }
                 }
                 Action::AddBookmark { name, path } => {
-                    self.state
-                        .profiles
-                        .active_mut()
-                        .bookmarks
-                        .push(crate::state::profiles::Bookmark { name, path });
+                    let bookmarks = &mut self.state.profiles.active_mut().bookmarks;
+                    if let Some(existing) = bookmarks.iter_mut().find(|b| b.path == path) {
+                        existing.name = name;
+                    } else {
+                        bookmarks.push(crate::state::profiles::Bookmark { name, path });
+                    }
+                    crate::util::config::save_profiles(&self.state.profiles);
                 }
                 Action::CreateTag {
                     name,
@@ -625,14 +777,37 @@ impl App {
                     let _ = self
                         .tag_db_tx
                         .send(crate::fs::tag_db::TagDbCmd::AssignTag { tag, paths });
+                    let _ = self
+                        .tag_db_tx
+                        .send(crate::fs::tag_db::TagDbCmd::QueryPathsForTag(tag));
                 }
                 Action::UnassignTagFromFiles { tag, paths } => {
                     self.state.tag_cache.unassign_local(tag, &paths);
                     let _ = self
                         .tag_db_tx
                         .send(crate::fs::tag_db::TagDbCmd::UnassignTag { tag, paths });
+                    let _ = self
+                        .tag_db_tx
+                        .send(crate::fs::tag_db::TagDbCmd::QueryPathsForTag(tag));
                 }
                 Action::OpenTagResults { pane, tag } => self.open_tag_results(pane, tag),
+                Action::ZoomIn => {
+                    self.state.settings.global_zoom =
+                        (self.state.settings.global_zoom * 1.1).min(3.0);
+                    crate::util::config::save_settings(&self.state.settings);
+                    self.theme_dirty = true;
+                }
+                Action::ZoomOut => {
+                    self.state.settings.global_zoom =
+                        (self.state.settings.global_zoom / 1.1).max(0.5);
+                    crate::util::config::save_settings(&self.state.settings);
+                    self.theme_dirty = true;
+                }
+                Action::ZoomReset => {
+                    self.state.settings.global_zoom = 1.0;
+                    crate::util::config::save_settings(&self.state.settings);
+                    self.theme_dirty = true;
+                }
                 Action::MountDevice(dev) => self.mount_device(dev),
                 Action::UnmountDevice(dev) => self.unmount_device(dev),
                 Action::NavigateIntoArchive {
@@ -648,6 +823,74 @@ impl App {
                 #[cfg(feature = "cloud")]
                 Action::Cloud(c) => self.handle_cloud_action(c),
                 Action::Ext(e) => self.handle_ext_action(e),
+
+                // ── Preview editor ────────────────────────────────────────────
+                Action::SavePreviewFile => {
+                    if let Some(editor) = &mut self.preview_editor {
+                        if editor.dirty {
+                            // `cached_text` is kept current by the InputState Change
+                            // subscription; no `cx` needed here.
+                            let text = editor.cached_text.clone();
+                            let path = editor.path.clone();
+                            editor.dirty = false;
+                            // Write on a blocking thread so the UI stays responsive.
+                            let rt = self.rt.clone();
+                            rt.spawn(async move {
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    #[allow(clippy::disallowed_methods)]
+                                    let _ = std::fs::write(&path, text.as_bytes());
+                                })
+                                .await;
+                            });
+                        }
+                    }
+                }
+                Action::TogglePreviewEditMode => {
+                    use crate::state::profiles::PreviewFeature;
+                    let mut prefs = self.state.profiles.active().scoped::<PreviewFeature>();
+                    prefs.edit_mode = !prefs.edit_mode;
+                    // Update the live editor state; the render uses editor.editing.
+                    if let Some(editor) = &mut self.preview_editor {
+                        editor.editing = prefs.edit_mode;
+                    }
+                    self.state
+                        .profiles
+                        .active_mut()
+                        .set_scoped::<PreviewFeature>(&prefs);
+                    crate::util::config::save_profiles(&self.state.profiles);
+                }
+                Action::TogglePreviewLineNumbers => {
+                    use crate::state::profiles::PreviewFeature;
+                    let mut prefs = self.state.profiles.active().scoped::<PreviewFeature>();
+                    prefs.show_line_numbers = !prefs.show_line_numbers;
+                    // Mark the live editor so render_text_preview syncs InputState.
+                    if let Some(editor) = &mut self.preview_editor {
+                        editor.line_numbers = prefs.show_line_numbers;
+                        editor.ln_needs_sync = true;
+                    }
+                    self.state
+                        .profiles
+                        .active_mut()
+                        .set_scoped::<PreviewFeature>(&prefs);
+                    crate::util::config::save_profiles(&self.state.profiles);
+                }
+                Action::PreviewZoomIn => {
+                    let tab = self.state.focused_tile;
+                    let v = self.preview_view.entry(tab).or_default();
+                    v.zoom = (v.zoom * 1.25).clamp(0.1, 48.0);
+                }
+                Action::PreviewZoomOut => {
+                    let tab = self.state.focused_tile;
+                    let v = self.preview_view.entry(tab).or_default();
+                    v.zoom = (v.zoom / 1.25).clamp(0.1, 48.0);
+                }
+                Action::PreviewZoomFit => {
+                    let tab = self.state.focused_tile;
+                    let v = self.preview_view.entry(tab).or_default();
+                    v.zoom = 1.0;
+                    v.pan_x = 0.0;
+                    v.pan_y = 0.0;
+                }
             }
         }
     }
@@ -703,7 +946,10 @@ impl App {
             return;
         }
 
-        let Some(root) = self.tab_data_for(tile).and_then(|td| td.location.fs_dir().map(|p| p.to_path_buf())) else {
+        let Some(root) = self
+            .tab_data_for(tile)
+            .and_then(|td| td.location.fs_dir().map(|p| p.to_path_buf()))
+        else {
             return;
         };
         let show_hidden = self.state.settings.show_hidden;

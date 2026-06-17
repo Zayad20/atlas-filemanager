@@ -6,8 +6,15 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
 use super::registry::CommandRef;
 use atlas_model::app_state::BgResult;
+
+#[derive(Serialize)]
+struct WasmPayload {
+    paths: Vec<String>,
+}
 
 /// Substitute placeholders for one input path into a single argument token.
 // reason: "{dir}"/"{stem}"/"{ext}" are literal template placeholders for .replace(),
@@ -143,15 +150,30 @@ pub fn run(
                 bg_tx.clone(),
             );
 
+            let wasm_payload = WasmPayload {
+                paths: paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect(),
+            };
+            let payload_json = serde_json::to_string(&wasm_payload).unwrap_or_default();
+
             tracing::info!("Delegando comando WASM {} a {}", cmd.command.id, ext_id);
-            if let Err(e) = manager.execute_command(&cmd.command.id, "") {
+            if let Err(e) = manager.execute_command(&cmd.command.id, &payload_json) {
                 tracing::error!("Error executing WASM: {:#}", e);
             }
+
+            let dirs: Vec<PathBuf> = paths
+                .iter()
+                .filter_map(|p| p.parent().map(Path::to_path_buf))
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
 
             let _ = bg_tx.send(BgResult::ExtCommandDone {
                 ext_id,
                 error: None,
-                dirs: vec![],
+                dirs,
             });
         });
         return;

@@ -158,6 +158,7 @@ async fn preview_dir(path: &Path) -> PreviewResult {
     while let Ok(Some(entry)) = rd.next_entry().await {
         total_count += 1;
         let name = entry.file_name().to_string_lossy().into_owned();
+        let path = entry.path();
         let Ok(meta) = entry.metadata().await else {
             continue;
         };
@@ -176,6 +177,7 @@ async fn preview_dir(path: &Path) -> PreviewResult {
         };
         let e = DirPreviewEntry {
             name,
+            path,
             is_dir,
             size,
             extension,
@@ -666,7 +668,11 @@ pub async fn load_archive_preview(
         .unwrap_or_else(|e| PreviewResult::Error(e.to_string()))
     };
 
-    let _ = tx.send(BgResult::PreviewReady { tab, path: inner, result });
+    let _ = tx.send(BgResult::PreviewReady {
+        tab,
+        path: inner,
+        result,
+    });
 }
 
 fn bytes_to_preview(bytes: Vec<u8>, ext: &str) -> PreviewResult {

@@ -89,6 +89,8 @@ pub trait CloudProvider: Send + Sync {
     async fn mkdir(&self, id: &str, path: &str) -> anyhow::Result<()>;
     async fn delete(&self, id: &str, path: &str, is_dir: bool) -> anyhow::Result<()>;
     async fn rename(&self, id: &str, from: &str, to: &str) -> anyhow::Result<()>;
+    /// Server-side copy (no local download). Falls back to download+upload if unsupported.
+    async fn copy(&self, id: &str, from: &str, to: &str) -> anyhow::Result<()>;
 
     /// FUSE-mount the remote root at `mount_point` (requires `can_mount`).
     async fn mount(&self, id: &str, mount_point: &Path) -> anyhow::Result<()>;

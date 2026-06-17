@@ -131,8 +131,8 @@ pub(super) unsafe fn read_virtual_files(data_obj: &IDataObject) -> Vec<PathBuf> 
     // Prepare the temp directory.
     let session_id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_millis();
+        .map(|d| d.as_micros())
+        .unwrap_or(0);
     let tmp_dir = std::env::temp_dir()
         .join("atlas-dnd")
         .join(session_id.to_string());
@@ -292,19 +292,31 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
             zones.drag_active = true;
         }
 
-        // Check CF_HDROP availability via QueryGetData (cheap, Zed-style).
+        // Accept if the source offers real files (CF_HDROP) or virtual files
+        // (CFSTR_FILEDESCRIPTORW — WinRAR, 7-Zip, Outlook attachments, etc.).
         use windows::Win32::System::Ole::CF_HDROP;
-        let fmt = FORMATETC {
+        let hdrop_fmt = FORMATETC {
             cfFormat: CF_HDROP.0,
             ptd: std::ptr::null_mut(),
             dwAspect: DVASPECT_CONTENT.0,
             lindex: -1,
             tymed: TYMED_HGLOBAL.0 as u32,
         };
-        let effect = if unsafe { data_obj.QueryGetData(&fmt).is_ok() } {
-            DROPEFFECT_COPY
-        } else {
-            DROPEFFECT_NONE
+        let virt_fmt = FORMATETC {
+            cfFormat: cf_file_descriptor_w(),
+            ptd: std::ptr::null_mut(),
+            dwAspect: DVASPECT_CONTENT.0,
+            lindex: -1,
+            tymed: TYMED_HGLOBAL.0 as u32,
+        };
+        let effect = unsafe {
+            if data_obj.QueryGetData(&hdrop_fmt).is_ok()
+                || data_obj.QueryGetData(&virt_fmt).is_ok()
+            {
+                DROPEFFECT_COPY
+            } else {
+                DROPEFFECT_NONE
+            }
         };
         self.last_effect.set(effect);
         unsafe { *pdweffect = effect };
@@ -333,12 +345,19 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
                 let _ = helper.DragOver(&POINT { x: pt.x, y: pt.y }, effect);
             }
         }
+        let (x, y) = self.to_logical(pt);
+        if let Ok(mut q) = self.action_queue.lock() {
+            q.push(super::DndEvent::DragOver { x, y });
+        }
         Ok(())
     }
 
     fn DragLeave(&self) -> Result<()> {
         if let Ok(mut zones) = self.zones.lock() {
             zones.drag_active = false;
+        }
+        if let Ok(mut q) = self.action_queue.lock() {
+            q.push(super::DndEvent::DragLeave);
         }
         if let Some(helper) = &self.helper {
             unsafe {

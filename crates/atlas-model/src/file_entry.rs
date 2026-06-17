@@ -1,6 +1,13 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+#[derive(Debug, Clone)]
+pub struct RecycleBinInfo {
+    pub original_path: PathBuf,
+    pub deleted_at: SystemTime,
+    pub i_file: PathBuf,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileKind {
     Dir,
@@ -45,4 +52,6 @@ pub struct FileEntry {
     /// When `Some(archive_path)`, this entry is a virtual item inside that archive
     /// and `path` is its path relative to the archive root.
     pub archive_root: Option<PathBuf>,
+    /// Populated only for entries listed from `Location::RecycleBin`.
+    pub recycle_info: Option<RecycleBinInfo>,
 }

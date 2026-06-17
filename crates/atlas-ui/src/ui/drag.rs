@@ -10,9 +10,9 @@ use gpui::prelude::*;
 use gpui::{Entity, Window};
 
 use crate::app::App;
-use crate::ui::root::DraggedFiles;
 #[cfg(windows)]
 use crate::ui::root::DragNoop;
+use crate::ui::root::DraggedFiles;
 
 /// The view entity gpui renders as the drag ghost. On Windows the OLE path owns
 /// the cursor, so we hand gpui an invisible [`DragNoop`]; elsewhere gpui paints
@@ -33,6 +33,10 @@ pub(crate) fn file_drag_handler(
 ) -> impl Fn(&DraggedFiles, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> Entity<DragView>
        + 'static {
     move |_d, _pos, _window, cx| {
+        view.update(cx, |app, cx| {
+            app.begin_drag_hover();
+            cx.notify();
+        });
         // Full multi-selection at drag-start time (fix: was single entry).
         let (paths, archive_items) = {
             let app = view.read(&*cx);
@@ -50,7 +54,11 @@ pub(crate) fn file_drag_handler(
                 }
             }
             let p = app.state.selected_paths();
-            let p = if p.is_empty() { vec![anchor.clone()] } else { p };
+            let p = if p.is_empty() {
+                vec![anchor.clone()]
+            } else {
+                p
+            };
             (p, arc)
         };
         // Windows: schedule DoDragDrop via PostMessage so it runs AFTER this closure
@@ -58,7 +66,8 @@ pub(crate) fn file_drag_handler(
         // "RefCell already borrowed" panic from DoDragDrop's nested message loop).
         #[cfg(windows)]
         {
-            view.read(&*cx).trigger_os_drag(paths.clone(), archive_items);
+            view.read(&*cx)
+                .trigger_os_drag(paths.clone(), archive_items);
             // Invisible zero-size placeholder; OLE provides cursor feedback and a
             // synthetic WM_LBUTTONUP clears gpui's active_drag without firing any
             // on_drop handler (DragNoop has no matching handlers).

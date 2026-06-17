@@ -1,27 +1,22 @@
 id = "file-tools"
 name = "File Tools"
-version = "0.1.0"
+version = "0.2.0"
+author = "Atlas Team"
 description = "Resize images, convert media, and compress PDFs using local tools"
-kind = "declarative"
-
-# Each command shows in the right-click menu + command palette when the
-# selection matches `accepts` and the `requires` binaries are on PATH.
-# Placeholders: {input} {dir} {stem} {ext} {output} {prompt:NAME}
+kind = "wasm"
+wasm_module = "plugin.wasm"
 
 [[commands]]
 id = "resize-image"
 title = "Resize image…"
 requires = ["magick"]
-run = "magick {input} -resize {prompt:width}x {dir}/{stem}_resized.{ext}"
 per_file = true
 accepts = { extensions = ["jpg", "jpeg", "png", "webp", "gif", "bmp", "tiff"] }
-prompts = [ { name = "width", label = "Width (px)", default = "1280" } ]
 
 [[commands]]
 id = "image-to-png"
 title = "Convert image to PNG"
 requires = ["magick"]
-run = "magick {input} {dir}/{stem}.png"
 per_file = true
 accepts = { extensions = ["jpg", "jpeg", "webp", "gif", "bmp", "tiff", "heic"] }
 
@@ -29,7 +24,6 @@ accepts = { extensions = ["jpg", "jpeg", "webp", "gif", "bmp", "tiff", "heic"] }
 id = "compress-pdf"
 title = "Compress PDF"
 requires = ["gs"]
-run = "gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/ebook -dNOPAUSE -dQUIET -dBATCH -sOutputFile={dir}/{stem}_compressed.pdf {input}"
 per_file = true
 accepts = { extensions = ["pdf"] }
 
@@ -37,6 +31,5 @@ accepts = { extensions = ["pdf"] }
 id = "video-to-mp4"
 title = "Convert video to MP4 (H.264)"
 requires = ["ffmpeg"]
-run = "ffmpeg -i {input} -c:v libx264 -c:a aac {dir}/{stem}.mp4"
 per_file = true
 accepts = { extensions = ["mkv", "avi", "mov", "webm", "flv", "wmv"] }

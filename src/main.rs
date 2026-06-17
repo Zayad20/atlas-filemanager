@@ -17,7 +17,7 @@ fn main() {
     // the process; gpui drives the UI on the main thread.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
-        .max_blocking_threads(4)
+        .max_blocking_threads(16)
         .thread_name("atlas-worker")
         .enable_all()
         .build();

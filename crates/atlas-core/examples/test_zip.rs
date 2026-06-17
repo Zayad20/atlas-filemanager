@@ -5,6 +5,10 @@ fn main() {
     println!("p: {:?}", p);
     println!("parent: {:?}", p.parent());
     let s = p.to_string_lossy();
-    let key = if s.is_empty() { String::new() } else { format!("{s}/") };
+    let key = if s.is_empty() {
+        String::new()
+    } else {
+        format!("{s}/")
+    };
     println!("key: {:?}", key);
 }

@@ -7,6 +7,7 @@
 use crate::app::App;
 use atlas_model::profiles::DEFAULT_THEME;
 use gpui::{App as GpuiApp, SharedString, Window};
+use gpui_component::scroll::ScrollbarShow;
 use gpui_component::{Theme, ThemeRegistry};
 
 impl App {
@@ -54,6 +55,20 @@ impl App {
         }
 
         Theme::global_mut(cx).apply_config(&config);
+        // Re-apply zoom so Root's per-frame set_rem_size(theme.font_size) picks up
+        // the user's scale instead of the theme default (px(16.)).
+        Theme::global_mut(cx).font_size = gpui::px(16.0 * self.state.settings.global_zoom);
+        // Always show scrollbar on hover (not only while scrolling) and boost thumb
+        // opacity so it's actually visible against glass backgrounds.
+        {
+            let t = Theme::global_mut(cx);
+            t.scrollbar_show = ScrollbarShow::Hover;
+            t.scrollbar = gpui::transparent_black();
+            let base = t.scrollbar_thumb;
+            t.scrollbar_thumb = gpui::hsla(base.h, base.s, base.l, 0.45);
+            let hover_base = t.scrollbar_thumb_hover;
+            t.scrollbar_thumb_hover = gpui::hsla(hover_base.h, hover_base.s, hover_base.l, 0.75);
+        }
         window.refresh();
     }
 }

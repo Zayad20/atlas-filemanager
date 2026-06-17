@@ -4,10 +4,17 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Location {
     Directory(PathBuf),
-    Archive { archive: PathBuf, inner: PathBuf },
+    Archive {
+        archive: PathBuf,
+        inner: PathBuf,
+    },
     Tag(TagId),
+    RecycleBin,
     #[cfg(feature = "cloud")]
-    Remote { id: String, path: String },
+    Remote {
+        id: String,
+        path: String,
+    },
 }
 
 impl Location {
@@ -32,6 +39,7 @@ impl Location {
                 }
             }
             Self::Tag(id) => PathBuf::from(format!("tag:{}", id.0)),
+            Self::RecycleBin => PathBuf::from("Recycle Bin"),
             #[cfg(feature = "cloud")]
             Self::Remote { id, path } => PathBuf::from(format!("{id}:{path}")),
         }
@@ -75,7 +83,7 @@ impl Location {
                     })
                 }
             }
-            Self::Tag(_) => None,
+            Self::Tag(_) | Self::RecycleBin => None,
             #[cfg(feature = "cloud")]
             Self::Remote { .. } => None,
         }

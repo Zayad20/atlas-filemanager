@@ -8,20 +8,58 @@ pub async fn list_dir(
     sort_dir: SortDir,
     folders_first: bool,
 ) -> anyhow::Result<Vec<FileEntry>> {
-    let mut rd = tokio::fs::read_dir(path).await?;
-    let mut entries = Vec::new();
-
-    while let Ok(Some(entry)) = rd.next_entry().await {
-        let path = entry.path();
-        if !show_hidden && crate::util::display::is_hidden(&path) {
-            continue;
+    let dir = path.to_path_buf();
+    // Single blocking call: `DirEntry::file_type()` and `DirEntry::metadata()` on
+    // Windows reuse the WIN32_FIND_DATA already fetched by read_dir, so no extra
+    // stat syscall per file (versus the previous N async symlink_metadata round-trips).
+    let entries = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<FileEntry>> {
+        let mut entries = Vec::new();
+        for raw in std::fs::read_dir(&dir)? {
+            let Ok(de) = raw else { continue };
+            let path = de.path();
+            if !show_hidden && crate::util::display::is_hidden(&path) {
+                continue;
+            }
+            let Ok(ft) = de.file_type() else { continue };
+            let is_symlink = ft.is_symlink();
+            let kind = if ft.is_dir() {
+                FileKind::Dir
+            } else if is_symlink {
+                FileKind::Symlink
+            } else {
+                FileKind::File
+            };
+            let meta = de.metadata().ok();
+            let size = ft
+                .is_file()
+                .then(|| meta.as_ref().map(|m| m.len()))
+                .flatten();
+            let modified = meta.as_ref().and_then(|m| m.modified().ok());
+            let name = path.file_name().map_or_else(
+                || path.to_string_lossy().to_string(),
+                |n| n.to_string_lossy().to_string(),
+            );
+            let name_lower = name.to_lowercase();
+            let extension = path.extension().map(|e| e.to_string_lossy().to_lowercase());
+            let is_hidden = crate::util::display::is_hidden(&path);
+            entries.push(FileEntry {
+                name,
+                name_lower,
+                path,
+                kind,
+                size,
+                modified,
+                extension,
+                _is_hidden: is_hidden,
+                _is_symlink: is_symlink,
+                archive_root: None,
+                recycle_info: None,
+            });
         }
-        if let Some(file_entry) = entry_for_path(&path).await {
-            entries.push(file_entry);
-        }
-    }
-
-    sort_entries(&mut entries, &sort_col, &sort_dir, folders_first);
+        sort_entries(&mut entries, &sort_col, &sort_dir, folders_first);
+        Ok(entries)
+    })
+    .await??;
     Ok(entries)
 }
 
@@ -84,6 +122,7 @@ pub(crate) async fn entry_for_path(path: &Path) -> Option<FileEntry> {
         _is_hidden: crate::util::display::is_hidden(path),
         _is_symlink: is_symlink,
         archive_root: None,
+        recycle_info: None,
     })
 }
 
@@ -137,6 +176,7 @@ mod tests {
             _is_hidden: false,
             _is_symlink: false,
             archive_root: None,
+            recycle_info: None,
         }
     }
 

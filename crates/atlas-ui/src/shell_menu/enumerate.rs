@@ -27,11 +27,7 @@ const DEDUPE_VERBS: &[&str] = &["cut", "copy", "paste", "delete", "rename", "ope
 /// (`children: None`, filled on demand via `ExpandSubmenu`) so the initial build
 /// only enumerates the top level — no eager `WM_INITMENUPOPUP` round-trips to
 /// slow third-party handlers (Open with, Send to, 7-Zip).
-pub(crate) fn walk_menu(
-    hmenu: HMENU,
-    icm: &IContextMenu,
-    id_first: u32,
-) -> Vec<NativeMenuItem> {
+pub(crate) fn walk_menu(hmenu: HMENU, icm: &IContextMenu, id_first: u32) -> Vec<NativeMenuItem> {
     let mut out = Vec::new();
     unsafe {
         let count = GetMenuItemCount(Some(hmenu));
@@ -39,12 +35,7 @@ pub(crate) fn walk_menu(
             // First pass: get the string length + fixed fields.
             let mut info = MENUITEMINFOW {
                 cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
-                fMask: MIIM_STRING
-                    | MIIM_ID
-                    | MIIM_FTYPE
-                    | MIIM_SUBMENU
-                    | MIIM_BITMAP
-                    | MIIM_STATE,
+                fMask: MIIM_STRING | MIIM_ID | MIIM_FTYPE | MIIM_SUBMENU | MIIM_BITMAP | MIIM_STATE,
                 ..Default::default()
             };
             if GetMenuItemInfoW(hmenu, i as u32, true, &mut info).is_err() {

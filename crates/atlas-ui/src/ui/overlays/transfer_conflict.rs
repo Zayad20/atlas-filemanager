@@ -5,10 +5,7 @@ use crate::app::App;
 use crate::input::action::Action;
 use crate::state::ops::Resolution;
 use gpui::prelude::*;
-use gpui::{
-    div, px, AnyElement, Context, Entity,
-    MouseButton, SharedString,
-};
+use gpui::{div, px, AnyElement, Context, Entity, MouseButton, SharedString};
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
 impl App {
@@ -102,14 +99,23 @@ impl App {
                                 .child(name),
                         )
                         .when(item.is_dir, |r| {
-                            r.child(div().text_color(muted).child(rust_i18n::t!("overlay_folder_label").to_string()))
+                            r.child(
+                                div()
+                                    .text_color(muted)
+                                    .child(rust_i18n::t!("overlay_folder_label").to_string()),
+                            )
                         }),
                 )
-                .child(div().text_color(muted).child(rust_i18n::t!(
-                    "overlay_existing_new",
-                    existing = detail(item.dst_size, item.dst_modified),
-                    new = detail(item.src_size, item.src_modified)
-                ).to_string()));
+                .child(
+                    div().text_color(muted).child(
+                        rust_i18n::t!(
+                            "overlay_existing_new",
+                            existing = detail(item.dst_size, item.dst_modified),
+                            new = detail(item.src_size, item.src_modified)
+                        )
+                        .to_string(),
+                    ),
+                );
             if let Some(choices) = &per_item {
                 let chosen = choices.get(i).copied().unwrap_or(Resolution::Skip);
                 let mut choice_row = h_flex().gap_1().pt_1();
@@ -171,7 +177,12 @@ impl App {
             let back_view = view.clone();
             h_flex()
                 .gap_2()
-                .child(policy_btn(&rust_i18n::t!("overlay_apply"), Some(apply), true, view.clone()))
+                .child(policy_btn(
+                    &rust_i18n::t!("overlay_apply"),
+                    Some(apply),
+                    true,
+                    view.clone(),
+                ))
                 .child(
                     div()
                         .id("tc-back")
@@ -192,7 +203,12 @@ impl App {
                             });
                         }),
                 )
-                .child(policy_btn(&rust_i18n::t!("overlay_cancel"), None, false, view.clone()))
+                .child(policy_btn(
+                    &rust_i18n::t!("overlay_cancel"),
+                    None,
+                    false,
+                    view.clone(),
+                ))
         } else {
             let n = count;
             let per_item_view = view.clone();
@@ -242,7 +258,12 @@ impl App {
                             });
                         }),
                 )
-                .child(policy_btn(&rust_i18n::t!("overlay_cancel"), None, false, view.clone()))
+                .child(policy_btn(
+                    &rust_i18n::t!("overlay_cancel"),
+                    None,
+                    false,
+                    view.clone(),
+                ))
         };
 
         let subtitle = if has_dirs {
@@ -285,6 +306,4 @@ impl App {
     }
 
     // ── settings ─────────────────────────────────────────────────────────────
-
 }
-

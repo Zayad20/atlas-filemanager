@@ -176,6 +176,21 @@ impl CloudProvider for RcloneProvider {
         self.rc.operations_movefile(&fs, from, &fs, to).await
     }
 
+    async fn copy(&self, id: &str, from: &str, to: &str) -> anyhow::Result<()> {
+        let fs = format!("{id}:");
+        let group = format!("copy-{}-{}", id, from.len());
+        let job = self.rc.copyfile_async(&fs, from, &fs, to, &group).await?;
+        // Poll until done (no progress reporting for inline copies).
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            match self.rc.job_status(job.jobid).await? {
+                Some(Ok(())) => return Ok(()),
+                Some(Err(e)) => return Err(e),
+                None => {} // still running
+            }
+        }
+    }
+
     async fn mount(&self, id: &str, mount_point: &Path) -> anyhow::Result<()> {
         tokio::fs::create_dir_all(mount_point)
             .await

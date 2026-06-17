@@ -16,27 +16,28 @@
 //! entirely (`sync_active_preview_gpui` / `load_preview_gpui` / `load_multi_preview_gpui`).
 
 use crate::app::App;
+use crate::input::action::Action;
 use crate::state::file_entry::FileKind;
 use crate::state::layout_tree::TileId;
 use crate::state::preview_cache::{
     MultiPreviewState, PreviewRequest, PreviewResult, DIR_PREVIEW_LIMIT,
 };
+use crate::state::profiles::PreviewFeature;
 use crate::state::settings::ViewMode;
 use crate::state::tab::TabState;
 use crate::ui::icons::{file_type_icon, icon, AtlasIcon};
+use crate::ui::root::DraggedFiles;
 use crate::util::display::{format_date, format_size};
 use gpui::prelude::*;
+use gpui::SharedString;
 use gpui::{
     div, img, px, AnyElement, ClickEvent, Context, Hsla, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, RenderImage, ScrollDelta, ScrollWheelEvent, Window,
 };
-use gpui_component::{
-    h_flex, v_flex, ActiveTheme,
-};
+use gpui_component::input::InputEvent;
+use gpui_component::{h_flex, v_flex, ActiveTheme, Sizable as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-
 
 /// Scale `w`×`h` to fit inside `box_w`×`box_h` preserving aspect ratio. Returns the
 /// fitted display size. A zero/empty source falls back to the box size.
@@ -98,6 +99,61 @@ pub fn rgba_to_render_image(rgba: &[u8], width: usize, height: usize) -> Option<
 }
 
 impl App {
+    // ── Code editor lifecycle ────────────────────────────────────────────────
+
+    /// Ensure `self.preview_editor` exists and matches `path`/`lang`. If the path or
+    /// language changed (new file selected), the old editor is dropped and a fresh
+    /// `InputState` is created. Returns `true` when the editor is ready.
+    fn ensure_preview_editor(
+        &mut self,
+        path: PathBuf,
+        text: &str,
+        lang: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let prefs = self.state.profiles.active().scoped::<PreviewFeature>();
+        let same = self.preview_editor.as_ref().is_some_and(|e| e.path == path);
+        if same {
+            return true;
+        }
+        // New file — build a fresh code editor.
+        let state_entity = crate::ui::text_input::code_editor(
+            window,
+            cx,
+            gpui::SharedString::from(lang.to_string()),
+            text,
+            prefs.show_line_numbers,
+        );
+        let text_str = text.to_string();
+        let sub = cx.subscribe_in(
+            &state_entity,
+            window,
+            |this, st, ev: &InputEvent, _w, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    let new_text = st.read(cx).value().to_string();
+                    if let Some(editor) = &mut this.preview_editor {
+                        editor.cached_text = new_text;
+                        editor.dirty = true;
+                    }
+                    cx.notify();
+                }
+            },
+        );
+        self.preview_editor = Some(crate::app::PreviewEditor {
+            state: state_entity,
+            path,
+            cached_text: text_str,
+            dirty: false,
+            editing: prefs.edit_mode,
+            line_numbers: prefs.show_line_numbers,
+            ln_needs_sync: false,
+            lang: gpui::SharedString::from(lang.to_string()),
+            _sub: sub,
+        });
+        true
+    }
+
     // ── Preview loading (gpui variants, no egui ctx) ─────────────────────────
 
     /// gpui replacement for `sync_active_preview(ctx)`: decides what (if anything)
@@ -391,12 +447,16 @@ impl App {
             return col
                 .items_center()
                 .justify_center()
-                .child(div().text_color(muted).child(rust_i18n::t!("inspector_no_selection").to_string()))
+                .child(
+                    div()
+                        .text_color(muted)
+                        .child(rust_i18n::t!("inspector_no_selection").to_string()),
+                )
                 .into_any_element();
         }
 
         if summary.count > 1 {
-            col = col.child(self.render_multi(&summary, muted, cx));
+            col = col.child(self.render_multi(&summary, muted, window, cx));
             return col.into_any_element();
         }
 
@@ -437,10 +497,13 @@ impl App {
             );
             let mut meta = v_flex().text_xs().text_color(muted).gap_1();
             if let Some(size) = entry.size {
-                meta = meta.child(rust_i18n::t!("inspector_size", size = format_size(size)).to_string());
+                meta = meta
+                    .child(rust_i18n::t!("inspector_size", size = format_size(size)).to_string());
             }
             if let Some(modified) = entry.modified {
-                meta = meta.child(rust_i18n::t!("inspector_modified", date = format_date(modified)).to_string());
+                meta = meta.child(
+                    rust_i18n::t!("inspector_modified", date = format_date(modified)).to_string(),
+                );
             }
             if let Some(ext) = &entry.extension {
                 meta = meta.child(rust_i18n::t!("inspector_type", ext = ext).to_string());
@@ -448,9 +511,335 @@ impl App {
             col = col.child(meta);
         }
 
+        // Capture the single-selection path before the mutable borrows below.
+        let single_path: Option<PathBuf> = summary.single.as_ref().map(|e| e.path.clone());
+
         col = col.child(div().h(px(1.)).w_full().bg(border));
+
+        // ── Preview toolbar ──────────────────────────────────────────────────
+        col = col.child(self.render_preview_toolbar(muted, window, cx));
+
+        // ── Preview body ─────────────────────────────────────────────────────
         col = col.child(self.render_preview_body(muted, danger, box_w, box_h, window, cx));
+
+        // ── Tags + "Añadir tag" (all file types, single selection) ───────────
+        if let Some(ref path) = single_path {
+            col = col.child(self.render_inspector_tags(path, muted, cx));
+            col = col.child(self.render_tag_section(vec![path.clone()], muted, cx));
+        }
+
         col.into_any_element()
+    }
+
+    /// Toolbar rendered just above the preview body. Shows buttons relevant to the
+    /// current preview kind (code editor controls for text/md, zoom controls for images).
+    fn render_preview_toolbar(
+        &mut self,
+        muted: Hsla,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tab = self.state.focused_tile;
+        let kind = match self.state.preview.results.get(&tab) {
+            None => return div().into_any_element(),
+            Some(PreviewResult::Text { .. }) => PreviewKind::Text,
+            Some(PreviewResult::Markdown { .. }) => PreviewKind::Markdown,
+            Some(PreviewResult::Image { .. }) => PreviewKind::Image,
+            Some(PreviewResult::Pdf { .. }) => PreviewKind::Pdf,
+            _ => return div().into_any_element(),
+        };
+
+        let (surface, border, fg) = {
+            let t = cx.theme();
+            (t.secondary, t.border, t.foreground)
+        };
+
+        let view = cx.entity();
+
+        let is_code = matches!(kind, PreviewKind::Text | PreviewKind::Markdown);
+        let is_image = matches!(kind, PreviewKind::Image | PreviewKind::Pdf);
+
+        let dirty = self.preview_editor.as_ref().is_some_and(|e| e.dirty);
+        let editing = self.preview_editor.as_ref().is_some_and(|e| e.editing);
+        let line_numbers = self.preview_editor.as_ref().is_some_and(|e| e.line_numbers);
+
+        let mut bar = h_flex()
+            .w_full()
+            .px_1()
+            .py(px(2.))
+            .gap_1()
+            .bg(surface)
+            .border_1()
+            .border_color(border)
+            .rounded(px(crate::ui::RADIUS))
+            .items_center();
+
+        if is_code {
+            // ── Save button ─────────────────────────────────────────────────
+            let v_save = view.clone();
+            let save_label = if dirty { "Guardar *" } else { "Guardar" };
+            bar = bar.child(
+                toolbar_text_button("tb-save", save_label, !dirty || !editing, fg, muted)
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        v_save.update(cx, |this, _cx| {
+                            this.process_actions(vec![Action::SavePreviewFile]);
+                        });
+                    }),
+            );
+
+            // ── Toggle edit mode ────────────────────────────────────────────
+            let v_edit = view.clone();
+            let edit_label = if editing { "Vista" } else { "Editar" };
+            let edit_color = if editing { fg } else { muted };
+            bar =
+                bar.child(
+                    toolbar_text_button("tb-edit", edit_label, false, edit_color, muted)
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            v_edit.update(cx, |this, _cx| {
+                                this.process_actions(vec![Action::TogglePreviewEditMode]);
+                            });
+                        }),
+                );
+
+            // ── Toggle line numbers ─────────────────────────────────────────
+            let v_ln = view.clone();
+            let ln_color = if line_numbers { fg } else { muted };
+            bar = bar.child(
+                toolbar_icon_button(
+                    "tb-ln",
+                    gpui_component::IconName::Menu,
+                    "Líneas",
+                    false,
+                    ln_color,
+                    muted,
+                )
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    v_ln.update(cx, |this, _cx| {
+                        this.process_actions(vec![Action::TogglePreviewLineNumbers]);
+                    });
+                }),
+            );
+        }
+
+        if is_image {
+            // ── Zoom out ────────────────────────────────────────────────────
+            let v_zo = view.clone();
+            bar = bar.child(
+                toolbar_icon_button(
+                    "tb-zout",
+                    gpui_component::IconName::Minus,
+                    "−",
+                    false,
+                    fg,
+                    muted,
+                )
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    v_zo.update(cx, |this, _cx| {
+                        this.process_actions(vec![Action::PreviewZoomOut]);
+                    });
+                }),
+            );
+
+            // ── Zoom fit ─────────────────────────────────────────────────────
+            let v_fit = view.clone();
+            bar = bar.child(
+                toolbar_icon_button(
+                    "tb-fit",
+                    gpui_component::IconName::Minimize,
+                    "Ajustar",
+                    false,
+                    fg,
+                    muted,
+                )
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    v_fit.update(cx, |this, _cx| {
+                        this.process_actions(vec![Action::PreviewZoomFit]);
+                    });
+                }),
+            );
+
+            // ── Zoom in ──────────────────────────────────────────────────────
+            let v_zi = view.clone();
+            bar = bar.child(
+                toolbar_icon_button(
+                    "tb-zin",
+                    gpui_component::IconName::Plus,
+                    "+",
+                    false,
+                    fg,
+                    muted,
+                )
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    v_zi.update(cx, |this, _cx| {
+                        this.process_actions(vec![Action::PreviewZoomIn]);
+                    });
+                }),
+            );
+
+            // Show current zoom level.
+            let pv = self.preview_view_for_focused();
+            let zoom_label = format!("{:.0}%", pv.zoom * 100.0);
+            bar = bar.child(div().text_xs().text_color(muted).px_1().child(zoom_label));
+        }
+
+        bar.into_any_element()
+    }
+
+    /// Tags shared by ALL paths in a multiselect (intersection). Empty when none.
+    fn render_multi_tags(
+        &mut self,
+        paths: &[PathBuf],
+        muted: Hsla,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if paths.is_empty() {
+            return div().into_any_element();
+        }
+        // Intersection: tags present in every path's tag list.
+        let first_ids = self.state.tag_cache.tags_of(&paths[0]).to_vec();
+        let shared: Vec<crate::state::tag_cache::TagId> = first_ids
+            .into_iter()
+            .filter(|id| {
+                paths[1..]
+                    .iter()
+                    .all(|p| self.state.tag_cache.tags_of(p).contains(id))
+            })
+            .collect();
+        if shared.is_empty() {
+            return div().into_any_element();
+        }
+        let profile_name = self.state.profiles.active().name.clone();
+        let chips: Vec<AnyElement> = shared
+            .iter()
+            .filter_map(|&id| {
+                self.state
+                    .tag_cache
+                    .visible_defs(&profile_name)
+                    .find(|d| d.id == id)
+                    .map(|d| {
+                        let [r, g, b] = d.color;
+                        let swatch = gpui::rgb(((r as u32) << 16) | ((g as u32) << 8) | (b as u32));
+                        h_flex()
+                            .gap_1()
+                            .px(px(6.))
+                            .py(px(2.))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(swatch)
+                            .text_xs()
+                            .text_color(muted)
+                            .child(
+                                div()
+                                    .w(px(8.))
+                                    .h(px(8.))
+                                    .rounded_full()
+                                    .flex_none()
+                                    .bg(swatch),
+                            )
+                            .child(SharedString::from(d.name.clone()))
+                            .into_any_element()
+                    })
+            })
+            .collect();
+        let _ = cx;
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap_1()
+            .children(chips)
+            .into_any_element()
+    }
+
+    /// Renders the row of tag chips assigned to `path`. Empty when no tags are known.
+    fn render_inspector_tags(
+        &mut self,
+        path: &std::path::Path,
+        muted: Hsla,
+        _cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tag_ids = self.state.tag_cache.tags_of(path).to_vec();
+        if tag_ids.is_empty() {
+            return div().into_any_element();
+        }
+
+        let profile_name = self.state.profiles.active().name.clone();
+        let chips: Vec<AnyElement> = tag_ids
+            .iter()
+            .filter_map(|&id| {
+                self.state
+                    .tag_cache
+                    .visible_defs(&profile_name)
+                    .find(|d| d.id == id)
+                    .map(|d| {
+                        let [r, g, b] = d.color;
+                        let swatch_color =
+                            gpui::rgb(((r as u32) << 16) | ((g as u32) << 8) | (b as u32));
+                        let name = SharedString::from(d.name.clone());
+                        h_flex()
+                            .gap_1()
+                            .px(px(6.))
+                            .py(px(2.))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(swatch_color)
+                            .text_xs()
+                            .text_color(muted)
+                            .child(
+                                div()
+                                    .w(px(8.))
+                                    .h(px(8.))
+                                    .rounded_full()
+                                    .flex_none()
+                                    .bg(swatch_color),
+                            )
+                            .child(name)
+                            .into_any_element()
+                    })
+            })
+            .collect();
+
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap_1()
+            .children(chips)
+            .into_any_element()
+    }
+
+    /// Renders the "Añadir tag" button for any file type / multiselect.
+    fn render_tag_section(
+        &mut self,
+        paths: Vec<PathBuf>,
+        muted: Hsla,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if paths.is_empty() {
+            return div().into_any_element();
+        }
+        div()
+            .id("tag-add-btn")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .rounded(px(crate::ui::RADIUS))
+            .text_sm()
+            .text_color(muted)
+            .cursor_pointer()
+            .hover(|s| s.opacity(0.8))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    this.open_tag_picker(ev.position, paths.clone(), window, cx);
+                }),
+            )
+            .child(icon(AtlasIcon::Tag, 14.0, muted))
+            .child(rust_i18n::t!("inspector_add_tag").to_string())
+            .into_any_element()
     }
 
     /// The content-preview portion for a single selection.
@@ -481,16 +870,19 @@ impl App {
         match kind {
             PreviewKind::Loading => div()
                 .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
                 .text_color(muted)
                 .child(rust_i18n::t!("inspector_loading").to_string())
                 .into_any_element(),
             PreviewKind::Text => self.render_text_preview(muted, window, cx),
-            PreviewKind::Markdown => self.render_markdown_preview(muted, cx),
+            PreviewKind::Markdown => self.render_markdown_preview(muted, window, cx),
             PreviewKind::Image | PreviewKind::Pdf => {
                 self.render_image_preview(muted, box_w, box_h, cx)
             }
             PreviewKind::Audio => self.render_audio_preview(muted),
-            PreviewKind::Dir => self.render_dir_preview(muted),
+            PreviewKind::Dir => self.render_dir_preview(muted, cx),
             PreviewKind::Binary => {
                 let size = match self.state.preview.results.get(&tab) {
                     Some(PreviewResult::Binary { size }) => *size,
@@ -498,6 +890,7 @@ impl App {
                 };
                 div()
                     .flex_1()
+                    .flex()
                     .text_color(muted)
                     .items_center()
                     .justify_center()
@@ -511,19 +904,22 @@ impl App {
                 };
                 div()
                     .flex_1()
+                    .flex()
                     .text_color(danger)
+                    .items_center()
+                    .justify_center()
                     .child(msg)
                     .into_any_element()
             }
         }
     }
 
-    /// Selectable text/code preview. The `InputState` is kept read-only by rendering it
-    /// disabled, but still gives users native selection and `Ctrl+C` behavior.
+    /// Code/text preview with real syntax highlighting via gpui-component's code editor.
+    /// The editor starts read-only (`.disabled`); the toolbar's edit-mode toggle enables editing.
     fn render_text_preview(
         &mut self,
         muted: Hsla,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tab = self.state.focused_tile;
@@ -538,29 +934,44 @@ impl App {
             .get(&tab)
             .cloned()
             .unwrap_or_else(|| PathBuf::from("<preview>"));
-        let language = preview_language_for_path(&path);
-        let markdown = format!("```{}\n{}\n```", language, raw);
+        let lang = preview_language_for_path(&path);
 
-        div()
+        // Ensure the editor entity exists (creates lazily or on file change).
+        self.ensure_preview_editor(path, &raw, lang, window, cx);
+
+        // Sync line-number setting into InputState if it was toggled.
+        if let Some(editor) = &mut self.preview_editor {
+            if editor.ln_needs_sync {
+                editor.ln_needs_sync = false;
+                let ln = editor.line_numbers;
+                editor.state.update(cx, |s, cx| {
+                    s.set_line_number(ln, window, cx);
+                });
+            }
+        }
+
+        let Some(editor) = self.preview_editor.as_ref() else {
+            return div().into_any_element();
+        };
+
+        let state_ref = editor.state.clone();
+        let editing = editor.editing;
+        let raw_for_copy = raw.clone();
+
+        v_flex()
             .id("inspector-text")
-            .relative()
             .flex_1()
             .min_h(px(0.))
+            .gap_0()
             .child(
-                gpui_component::text::TextView::markdown(
-                    gpui::SharedString::from(format!("preview-{:?}", tab)),
-                    markdown,
-                )
-                .selectable(true)
-                .scrollable(true)
-                .h_full()
-                .p_0()
+                gpui_component::input::Input::new(&state_ref)
+                    .h_full()
+                    .disabled(!editing)
+                    .appearance(false),
             )
-            .child(Self::copy_button(raw, muted, cx))
+            .child(Self::copy_button(raw_for_copy, muted, cx))
             .into_any_element()
     }
-
-
 
     /// A floating icon button that writes `text` to the system clipboard.
     fn copy_button(text: String, _muted: Hsla, _cx: &mut Context<Self>) -> AnyElement {
@@ -568,19 +979,54 @@ impl App {
             .absolute()
             .top(px(8.))
             .right(px(8.))
-            .child(
-                gpui_component::clipboard::Clipboard::new("preview-copy")
-                    .value(text),
-            )
+            .child(gpui_component::clipboard::Clipboard::new("preview-copy").value(text))
             .into_any_element()
     }
 
-    fn render_markdown_preview(&self, muted: Hsla, cx: &mut Context<Self>) -> AnyElement {
+    fn render_markdown_preview(
+        &mut self,
+        muted: Hsla,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let tab = self.state.focused_tile;
-        let source: String = match self.state.preview.results.get(&tab) {
-            Some(PreviewResult::Markdown { source, .. }) => source.clone(),
-            _ => String::new(),
+        let (source, path) = match self.state.preview.results.get(&tab) {
+            Some(PreviewResult::Markdown { source, .. }) => (
+                source.clone(),
+                self.state
+                    .preview
+                    .paths
+                    .get(&tab)
+                    .cloned()
+                    .unwrap_or_else(|| PathBuf::from("<preview>")),
+            ),
+            _ => return div().into_any_element(),
         };
+
+        // Check if the user has toggled edit mode; if so, render the code editor instead.
+        let editing = self
+            .preview_editor
+            .as_ref()
+            .map(|e| e.editing)
+            .unwrap_or(false);
+
+        if editing {
+            // Ensure a markdown code editor exists for this file.
+            self.ensure_preview_editor(path, &source, "markdown", window, cx);
+            if let Some(editor) = &self.preview_editor {
+                let state_ref = editor.state.clone();
+                return v_flex()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .child(
+                        gpui_component::input::Input::new(&state_ref)
+                            .h_full()
+                            .appearance(false),
+                    )
+                    .into_any_element();
+            }
+        }
+
         v_flex()
             .flex_1()
             .min_h(px(0.))
@@ -598,7 +1044,7 @@ impl App {
                         .selectable(true)
                         .scrollable(true)
                         .h_full()
-                        .p_0()
+                        .p_0(),
                     )
                     .child(Self::copy_button(source, muted, cx)),
             )
@@ -678,7 +1124,7 @@ impl App {
                             let tab = this.state.focused_tile;
                             let v = this.preview_view.entry(tab).or_default();
                             let factor = if dy > 0.0 { 1.1 } else { 1.0 / 1.1 };
-                            v.zoom = (v.zoom * factor).clamp(0.1, 12.0);
+                            v.zoom = (v.zoom * factor).clamp(0.1, 48.0);
                             cx.notify();
                         }
                         cx.stop_propagation();
@@ -817,8 +1263,9 @@ impl App {
         col.child(meta).into_any_element()
     }
 
-    fn render_dir_preview(&self, muted: Hsla) -> AnyElement {
+    fn render_dir_preview(&mut self, muted: Hsla, cx: &mut Context<Self>) -> AnyElement {
         let tab = self.state.focused_tile;
+        let view = cx.entity();
         let Some(PreviewResult::Dir {
             entries,
             total_count,
@@ -834,22 +1281,33 @@ impl App {
             } else {
                 FileKind::File
             };
+            let path = e.path.clone();
+            let is_dir = e.is_dir;
             let size = e.size.map(format_size).unwrap_or_default();
             list = list.child(
                 h_flex()
+                    .id(SharedString::from(format!(
+                        "inspector-dir-row-{}",
+                        path.display()
+                    )))
                     .gap_2()
                     .items_center()
+                    .rounded(px(6.))
+                    .px_1()
+                    .py(px(2.))
+                    .cursor_pointer()
+                    .hover(|s| s.opacity(0.82))
                     .child(
-                        div()
-                            .w(px(16.))
-                            .child(match self.icon_tex_for_entry(&row_kind, None) {
+                        div().w(px(16.)).child(
+                            match self.icon_tex_for_entry(&row_kind, e.extension.as_deref()) {
                                 Some(tex) => gpui::img(tex)
                                     .w(px(14.))
                                     .h(px(14.))
                                     .flex_none()
                                     .into_any_element(),
-                                None => file_type_icon(&row_kind, None, 14.0),
-                            }),
+                                None => file_type_icon(&row_kind, e.extension.as_deref(), 14.0),
+                            },
+                        ),
                     )
                     .child(
                         div()
@@ -858,14 +1316,64 @@ impl App {
                             .truncate()
                             .child(e.name.clone()),
                     )
-                    .child(div().text_color(muted).child(size)),
+                    .child(div().text_color(muted).child(size))
+                    .on_click({
+                        let view = view.clone();
+                        let path = path.clone();
+                        move |ev, _window, cx| {
+                            if ev.click_count() < 2 {
+                                return;
+                            }
+                            view.update(cx, |this, cx| {
+                                let tile = this.state.focused_tile;
+                                if is_dir {
+                                    this.navigate(tile, path.clone());
+                                } else {
+                                    this.process_actions(vec![Action::Open(vec![path.clone()])]);
+                                }
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .on_drag(
+                        DraggedFiles {
+                            paths: vec![path.clone()],
+                        },
+                        crate::ui::drag::file_drag_handler(view.clone(), path.clone()),
+                    )
+                    .when(is_dir, {
+                        let dest_move = path.clone();
+                        let dest_copy = path.clone();
+                        let mv = view.clone();
+                        let cpv = view.clone();
+                        move |row| {
+                            row.on_drop::<DraggedFiles>(move |d, _window, cx| {
+                                let (paths, dest) = (d.paths.clone(), dest_move.clone());
+                                mv.update(cx, |this, cx| {
+                                    this.process_actions(vec![Action::Move { paths, dest }]);
+                                    cx.notify();
+                                });
+                            })
+                            .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
+                                let (paths, dest) = (paths.paths().to_vec(), dest_copy.clone());
+                                cpv.update(cx, |this, cx| {
+                                    this.process_actions(vec![Action::CopyTo { paths, dest }]);
+                                    cx.notify();
+                                });
+                            })
+                        }
+                    }),
             );
         }
         if *total_count > DIR_PREVIEW_LIMIT {
             list = list.child(
-                div()
-                    .text_color(muted)
-                    .child(rust_i18n::t!("inspector_and_more", count = total_count - DIR_PREVIEW_LIMIT).to_string()),
+                div().text_color(muted).child(
+                    rust_i18n::t!(
+                        "inspector_and_more",
+                        count = total_count - DIR_PREVIEW_LIMIT
+                    )
+                    .to_string(),
+                ),
             );
         }
         v_flex()
@@ -876,7 +1384,9 @@ impl App {
                 h_flex()
                     .gap_2()
                     .text_color(muted)
-                    .child(rust_i18n::t!("inspector_elements_count", count = total_count).to_string())
+                    .child(
+                        rust_i18n::t!("inspector_elements_count", count = total_count).to_string(),
+                    )
                     .child("·")
                     .child(format_size(*total_size)),
             )
@@ -898,7 +1408,8 @@ impl App {
         &mut self,
         summary: &SelectionSummary,
         muted: Hsla,
-        _cx: &mut Context<Self>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         let textures = self.focused_multi_textures();
         let mut col = v_flex().flex_1().min_h(px(0.)).gap_2();
@@ -906,14 +1417,20 @@ impl App {
             div()
                 .text_lg()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(rust_i18n::t!("inspector_elements_selected", count = summary.count).to_string()),
+                .child(
+                    rust_i18n::t!("inspector_elements_selected", count = summary.count).to_string(),
+                ),
         );
         let mut meta = h_flex().gap_2().text_xs().text_color(muted);
         if summary.file_count > 0 {
-            meta = meta.child(rust_i18n::t!("inspector_files_count", count = summary.file_count).to_string());
+            meta = meta.child(
+                rust_i18n::t!("inspector_files_count", count = summary.file_count).to_string(),
+            );
         }
         if summary.dir_count > 0 {
-            meta = meta.child(rust_i18n::t!("inspector_folders_count", count = summary.dir_count).to_string());
+            meta = meta.child(
+                rust_i18n::t!("inspector_folders_count", count = summary.dir_count).to_string(),
+            );
         }
         if summary.known_size_count > 0 {
             meta = meta.child(format_size(summary.total_size));
@@ -922,7 +1439,11 @@ impl App {
 
         if summary.image_count > 0 {
             if textures.is_empty() {
-                col = col.child(div().text_color(muted).child(rust_i18n::t!("inspector_loading_thumbnails").to_string()));
+                col = col.child(
+                    div()
+                        .text_color(muted)
+                        .child(rust_i18n::t!("inspector_loading_thumbnails").to_string()),
+                );
             } else {
                 // The first four thumbnails arrive with a tilt baked into the bitmap
                 // (gpui can't rotate rasters on screen), so we just overlap them into a
@@ -940,10 +1461,15 @@ impl App {
                     .collect();
                 col = col.child(h_flex().pl_2().items_center().children(thumbs));
                 if summary.count > summary.image_count {
-                    col = col.child(div().text_xs().text_color(muted).child(rust_i18n::t!(
-                        "inspector_not_images",
-                        count = summary.count - summary.image_count
-                    ).to_string()));
+                    col = col.child(
+                        div().text_xs().text_color(muted).child(
+                            rust_i18n::t!(
+                                "inspector_not_images",
+                                count = summary.count - summary.image_count
+                            )
+                            .to_string(),
+                        ),
+                    );
                 }
             }
         } else {
@@ -956,6 +1482,12 @@ impl App {
                     .child(rust_i18n::t!("inspector_mixed_selection").to_string()),
             );
         }
+
+        // ── Tags shared by the selection + "Añadir tag" ─────────────────────
+        let paths = self.selected_paths();
+        col = col.child(self.render_multi_tags(&paths, muted, cx));
+        col = col.child(self.render_tag_section(paths, muted, cx));
+        let _ = window; // kept for future use
         col.into_any_element()
     }
 }
@@ -970,6 +1502,69 @@ enum PreviewKind {
     Dir,
     Binary,
     Error,
+}
+
+/// Compact toolbar button with an icon + text label.
+fn toolbar_icon_button(
+    id: &'static str,
+    icon_name: gpui_component::IconName,
+    label: &str,
+    disabled: bool,
+    active_color: Hsla,
+    muted: Hsla,
+) -> gpui::Stateful<gpui::Div> {
+    let color = if disabled { muted } else { active_color };
+    let el = div()
+        .id(gpui::SharedString::from(id))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .px(px(5.))
+        .py(px(2.))
+        .rounded(px(4.))
+        .text_xs()
+        .text_color(color)
+        .cursor_pointer();
+    if !disabled {
+        el.hover(|s| s.opacity(0.75))
+    } else {
+        el
+    }
+    .child(
+        gpui_component::Icon::new(icon_name)
+            .with_size(gpui_component::Size::XSmall)
+            .text_color(color),
+    )
+    .child(gpui::SharedString::from(label.to_string()))
+}
+
+/// Compact toolbar button with a text-only label (for Save / Vista / Editar).
+fn toolbar_text_button(
+    id: &'static str,
+    label: &str,
+    disabled: bool,
+    active_color: Hsla,
+    muted: Hsla,
+) -> gpui::Stateful<gpui::Div> {
+    let color = if disabled { muted } else { active_color };
+    let el = div()
+        .id(gpui::SharedString::from(id))
+        .flex()
+        .flex_row()
+        .items_center()
+        .px(px(6.))
+        .py(px(2.))
+        .rounded(px(4.))
+        .text_xs()
+        .text_color(color)
+        .cursor_pointer();
+    if !disabled {
+        el.hover(|s| s.opacity(0.75))
+    } else {
+        el
+    }
+    .child(gpui::SharedString::from(label.to_string()))
 }
 
 // ── Selection summary (neutral; mirrors the egui inspector's SelectionSummary) ──

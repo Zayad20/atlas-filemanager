@@ -35,6 +35,11 @@ impl App {
         self.state.overlay.op_errors.push_back(msg);
     }
 
+    /// Queue an informational toast (non-fatal; reuses the same queue for now).
+    pub(crate) fn toast_info(&mut self, msg: String) {
+        self.toast_error(msg);
+    }
+
     // -----------------------------------------------------------------------
     // Unified transfer pipeline (paste, drag-and-drop, menu copy/move, undo)
     // -----------------------------------------------------------------------
@@ -141,14 +146,34 @@ impl App {
 
     /// Set the file clipboard: internal state always; on Windows the system
     /// clipboard too (`CF_HDROP` + preferred effect), so other apps can paste.
+    /// `remote_id`: `Some(id)` when paths are remote-relative (not local FS paths).
     pub(crate) fn set_clipboard(&mut self, paths: Vec<PathBuf>, is_cut: bool) {
-        #[cfg(windows)]
-        if let Err(e) =
-            crate::dnd::windows::ole_clipboard::set_clipboard_files(&paths, is_cut, self.tx.clone())
-        {
-            self.toast_error(rust_i18n::t!("err_clipboard", e = e).to_string());
+        self.set_clipboard_with_remote(paths, is_cut, None);
+    }
+
+    pub(crate) fn set_clipboard_with_remote(
+        &mut self,
+        paths: Vec<PathBuf>,
+        is_cut: bool,
+        remote_id: Option<String>,
+    ) {
+        // Only put local paths on the system clipboard (CF_HDROP); remote paths
+        // are virtual and have no meaning outside Atlas.
+        if remote_id.is_none() {
+            #[cfg(windows)]
+            if let Err(e) = crate::dnd::windows::ole_clipboard::set_clipboard_files(
+                &paths,
+                is_cut,
+                self.tx.clone(),
+            ) {
+                self.toast_error(rust_i18n::t!("err_clipboard", e = e).to_string());
+            }
         }
-        self.state.ops.clipboard = Some(crate::state::ops::ClipboardState { paths, is_cut });
+        self.state.ops.clipboard = Some(crate::state::ops::ClipboardState {
+            paths,
+            is_cut,
+            remote_id,
+        });
     }
 
     pub(crate) fn paste_files(&mut self, dest: PathBuf) {
@@ -274,10 +299,13 @@ impl App {
         // Renaming onto an existing entry would fail (or worse); only the
         // case-change of the same file is allowed.
         if to.exists() && !transfer::paths_equal_ci(&from, &to) {
-            self.toast_error(rust_i18n::t!(
-                "err_collision",
-                name = to.file_name().unwrap_or_default().to_string_lossy()
-            ).to_string());
+            self.toast_error(
+                rust_i18n::t!(
+                    "err_collision",
+                    name = to.file_name().unwrap_or_default().to_string_lossy()
+                )
+                .to_string(),
+            );
             return;
         }
         self.state.ops.undo_stack.push(UndoEntry::Rename {
@@ -307,10 +335,13 @@ impl App {
             }
         }
         if path.exists() {
-            self.toast_error(rust_i18n::t!(
-                "err_collision",
-                name = path.file_name().unwrap_or_default().to_string_lossy()
-            ).to_string());
+            self.toast_error(
+                rust_i18n::t!(
+                    "err_collision",
+                    name = path.file_name().unwrap_or_default().to_string_lossy()
+                )
+                .to_string(),
+            );
             return;
         }
         let op_id = self.state.next_op_id();

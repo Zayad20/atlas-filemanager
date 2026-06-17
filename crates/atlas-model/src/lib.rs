@@ -6,7 +6,6 @@
 
 pub mod app_state;
 pub mod batch_rename;
-pub mod location;
 #[cfg(feature = "cloud")]
 pub mod cloud_model;
 #[cfg(feature = "cloud")]
@@ -15,6 +14,7 @@ pub mod ext_model;
 pub mod ext_state;
 pub mod file_entry;
 pub mod layout_tree;
+pub mod location;
 pub mod ops;
 pub mod overlay;
 pub mod pane;

@@ -197,6 +197,46 @@ impl<Pane> Tree<Pane> {
             }
         }
     }
+
+    /// Insert `new_id` immediately after `target_id` when the target already lives
+    /// in a `Linear` container with the requested direction. Returns `true` when
+    /// the insertion happened, or `false` when callers should wrap `target_id` in a
+    /// new two-child split instead.
+    pub fn insert_linear_sibling_after(
+        &mut self,
+        target_id: TileId,
+        new_id: TileId,
+        dir: LinearDir,
+    ) -> bool {
+        for tile in self.tiles.map.values_mut() {
+            let Tile::Container(Container::Linear(linear)) = tile else {
+                continue;
+            };
+            if linear.dir != dir {
+                continue;
+            }
+            let Some(pos) = linear.children.iter().position(|id| *id == target_id) else {
+                continue;
+            };
+
+            let old_len = linear.children.len();
+            if linear.shares.len() != old_len {
+                linear.shares = vec![1.0; old_len];
+            }
+
+            let sum: f32 = linear.shares.iter().copied().filter(|v| *v > 0.0).sum();
+            let new_share = if old_len == 0 || sum <= f32::EPSILON {
+                1.0
+            } else {
+                sum / old_len as f32
+            };
+
+            linear.children.insert(pos + 1, new_id);
+            linear.shares.insert(pos + 1, new_share);
+            return true;
+        }
+        false
+    }
 }
 
 #[cfg(test)]
@@ -246,5 +286,75 @@ mod tests {
         tiles.map.insert(TileId(5), Tile::Pane("restored"));
         let fresh = tiles.insert_pane("fresh");
         assert_eq!(fresh, TileId(6));
+    }
+
+    #[test]
+    fn same_axis_split_inserts_sibling_instead_of_nesting() {
+        let mut tree: Tree<&str> = Tree::empty();
+        let p1 = tree.tiles.insert_pane("1");
+        let p2 = tree.tiles.insert_pane("2");
+        let p3 = tree.tiles.insert_pane("3");
+        let t1 = tree.tiles.insert_tab_tile(vec![p1]);
+        let t2 = tree.tiles.insert_tab_tile(vec![p2]);
+        let t3 = tree.tiles.insert_tab_tile(vec![p3]);
+        let root = tree.tiles.insert_horizontal_tile(vec![t1, t2]);
+        tree.root = Some(root);
+
+        assert!(tree.insert_linear_sibling_after(t2, t3, LinearDir::Horizontal));
+
+        match tree.tiles.get(root) {
+            Some(Tile::Container(Container::Linear(linear))) => {
+                assert_eq!(linear.children, vec![t1, t2, t3]);
+                assert_eq!(linear.shares, vec![1.0, 1.0, 1.0]);
+            }
+            _ => panic!("expected linear root"),
+        }
+    }
+
+    #[test]
+    fn same_axis_split_preserves_existing_share_ratios() {
+        let mut tree: Tree<&str> = Tree::empty();
+        let p1 = tree.tiles.insert_pane("1");
+        let p2 = tree.tiles.insert_pane("2");
+        let p3 = tree.tiles.insert_pane("3");
+        let t1 = tree.tiles.insert_tab_tile(vec![p1]);
+        let t2 = tree.tiles.insert_tab_tile(vec![p2]);
+        let t3 = tree.tiles.insert_tab_tile(vec![p3]);
+        let root = tree.tiles.insert_horizontal_tile(vec![t1, t2]);
+        if let Some(Tile::Container(Container::Linear(linear))) = tree.tiles.get_mut(root) {
+            linear.shares = vec![2.0, 1.0];
+        }
+
+        assert!(tree.insert_linear_sibling_after(t1, t3, LinearDir::Horizontal));
+
+        match tree.tiles.get(root) {
+            Some(Tile::Container(Container::Linear(linear))) => {
+                assert_eq!(linear.children, vec![t1, t3, t2]);
+                assert_eq!(linear.shares, vec![2.0, 1.5, 1.0]);
+            }
+            _ => panic!("expected linear root"),
+        }
+    }
+
+    #[test]
+    fn different_axis_split_reports_no_insert() {
+        let mut tree: Tree<&str> = Tree::empty();
+        let p1 = tree.tiles.insert_pane("1");
+        let p2 = tree.tiles.insert_pane("2");
+        let p3 = tree.tiles.insert_pane("3");
+        let t1 = tree.tiles.insert_tab_tile(vec![p1]);
+        let t2 = tree.tiles.insert_tab_tile(vec![p2]);
+        let t3 = tree.tiles.insert_tab_tile(vec![p3]);
+        let root = tree.tiles.insert_horizontal_tile(vec![t1, t2]);
+        tree.root = Some(root);
+
+        assert!(!tree.insert_linear_sibling_after(t2, t3, LinearDir::Vertical));
+
+        match tree.tiles.get(root) {
+            Some(Tile::Container(Container::Linear(linear))) => {
+                assert_eq!(linear.children, vec![t1, t2]);
+            }
+            _ => panic!("expected linear root"),
+        }
     }
 }

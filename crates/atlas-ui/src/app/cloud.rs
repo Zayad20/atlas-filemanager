@@ -46,6 +46,12 @@ pub enum CloudAction {
     ResumeTransfer(TransferId),
     CancelTransfer(TransferId),
     RetryTransfer(TransferId),
+    /// Open the rename overlay for a remote.
+    StartRenameRemote(RemoteId),
+    /// Commit the new name (read from input before dispatch).
+    SubmitRenameRemote(String),
+    /// Cancel the rename overlay.
+    CancelRenameRemote,
 }
 
 impl App {
@@ -89,6 +95,27 @@ impl App {
             }
             CloudAction::RetryTransfer(id) => {
                 let _ = self.cloud_tx.send(CloudCmd::RetryTransfer(id));
+            }
+            CloudAction::StartRenameRemote(id) => {
+                self.state.cloud.renaming_remote_id = Some(id);
+                self.rename_remote_input = None; // re-seed on next render
+            }
+            CloudAction::SubmitRenameRemote(new_name) => {
+                if let Some(id) = self.state.cloud.renaming_remote_id.clone() {
+                    let trimmed = new_name.trim().to_string();
+                    if !trimmed.is_empty() {
+                        if let Some(r) = self.state.cloud.remote_mut(&id) {
+                            r.name = trimmed;
+                        }
+                        atlas_core::util::config::save_cloud_remotes(&self.state.cloud.remotes);
+                    }
+                }
+                self.state.cloud.renaming_remote_id = None;
+                self.rename_remote_input = None;
+            }
+            CloudAction::CancelRenameRemote => {
+                self.state.cloud.renaming_remote_id = None;
+                self.rename_remote_input = None;
             }
         }
     }
@@ -261,32 +288,42 @@ impl App {
         true
     }
 
-    /// Release FUSE mounts + kill the rclone daemon on app exit. Synchronous and
+    /// Release mounts + kill the rclone daemon on app exit. Synchronous and
     /// best-effort: the daemon lives on a never-joined runtime thread, so its
     /// `Drop` won't run at process exit — we unmount and kill the PID directly.
     pub(crate) fn cleanup_cloud_on_exit(&self) {
         use crate::cloud::RemoteStatus;
         for r in &self.state.cloud.remotes {
             if let RemoteStatus::Mounted(path) = &r.status {
-                let p = path.to_string_lossy();
-                // fusermount3 (fuse3) → fusermount (fuse2) → umount, first that works.
-                let _ = std::process::Command::new("fusermount3")
-                    .args(["-u", &p])
-                    .status()
-                    .or_else(|_| {
-                        std::process::Command::new("fusermount")
-                            .args(["-u", &p])
-                            .status()
-                    })
-                    .or_else(|_| {
-                        std::process::Command::new("umount")
-                            .arg(p.as_ref())
-                            .status()
-                    });
+                // Windows: WinFsp FUSE mounts are cleaned up when the rclone daemon
+                // process is killed below — no extra unmount step needed.
+                #[cfg(not(windows))]
+                {
+                    let p = path.to_string_lossy();
+                    // fusermount3 (fuse3) → fusermount (fuse2) → umount
+                    let _ = std::process::Command::new("fusermount3")
+                        .args(["-u", &p])
+                        .status()
+                        .or_else(|_| {
+                            std::process::Command::new("fusermount")
+                                .args(["-u", &p])
+                                .status()
+                        })
+                        .or_else(|_| {
+                            std::process::Command::new("umount")
+                                .arg(p.as_ref())
+                                .status()
+                        });
+                }
             }
         }
         let pid = crate::cloud::rclone::sidecar::RCD_PID.load(std::sync::atomic::Ordering::SeqCst);
         if pid != 0 {
+            #[cfg(windows)]
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
+                .status();
+            #[cfg(not(windows))]
             let _ = std::process::Command::new("kill")
                 .arg(pid.to_string())
                 .status();
@@ -297,9 +334,145 @@ impl App {
     /// (remote-relative) into the downloads folder and open them when done.
     /// Returns `true` when handled (so the caller skips the local open path).
     pub(crate) fn open_remote_paths(&mut self, paths: &[PathBuf]) -> bool {
-        let Some(Location::Remote { id, .. }) = self
-            .tab_data_for(self.state.focused_tile)
-            .map(|td| td.location.clone())
+        let tile = self.state.focused_tile;
+        self.open_remote_paths_for(tile, paths)
+    }
+
+    /// If the focused tab is an Access-mode remote tab, return `(remote_id, current_path)`.
+    /// Used by action interceptors to route Delete/Rename/Mkdir to the cloud worker.
+    pub(crate) fn focused_remote_tab(&self) -> Option<(RemoteId, String)> {
+        let tile = self.state.focused_tile;
+        match self.tab_data_for(tile)?.location.clone() {
+            Location::Remote { id, path } => Some((id, path)),
+            _ => None,
+        }
+    }
+
+    /// Paste local clipboard files into a remote directory (upload).
+    pub(crate) fn paste_local_into_remote(&mut self, dst_id: RemoteId, dst_path: String) {
+        let Some(cb) = self.state.ops.clipboard.take() else {
+            return;
+        };
+        let is_cut = cb.is_cut;
+        for local_path in cb.paths {
+            let name = local_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if name.is_empty() {
+                continue;
+            }
+            let remote_path = if dst_path.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{}", dst_path.trim_end_matches('/'), name)
+            };
+            let label = name.clone();
+            let _ = self.cloud_tx.send(CloudCmd::EnqueueUpload {
+                id: dst_id.clone(),
+                local_path: local_path.clone(),
+                remote_path,
+                label,
+                delete_source: is_cut,
+            });
+        }
+    }
+
+    /// Paste remote clipboard files into a local directory (download).
+    pub(crate) fn paste_remote_into_local(&mut self, local_dest: PathBuf) {
+        let Some(cb) = self.state.ops.clipboard.take() else {
+            return;
+        };
+        let Some(src_id) = cb.remote_id else {
+            return;
+        };
+        for remote_path in cb.paths {
+            let remote_str = remote_path.to_string_lossy().replace('\\', "/");
+            let name = remote_str
+                .rsplit('/')
+                .next()
+                .unwrap_or(&remote_str)
+                .to_string();
+            let local_path = local_dest.join(&name);
+            let _ = self.cloud_tx.send(CloudCmd::EnqueueDownload {
+                id: src_id.clone(),
+                remote_path: remote_str,
+                local_path,
+                label: name,
+                open_on_done: false,
+            });
+        }
+        if cb.is_cut {
+            // Source files will be deleted after each download completes.
+            // The EnqueueDownload + delete_source pattern isn't hooked here yet;
+            // for now cut from remote to local is treated as copy (safe default).
+        }
+    }
+
+    /// Copy/move files within the same remote (server-side, no download).
+    pub(crate) fn paste_remote_within(
+        &mut self,
+        src_id: RemoteId,
+        _dst_id: RemoteId,
+        dst_path: String,
+    ) {
+        let Some(cb) = self.state.ops.clipboard.take() else {
+            return;
+        };
+        let is_move = cb.is_cut;
+        let tile = self.state.focused_tile;
+        let is_dir_map: std::collections::HashMap<PathBuf, bool> = self
+            .state
+            .tab_states
+            .get(&tile)
+            .map(|ts| {
+                ts.entries
+                    .iter()
+                    .map(|e| {
+                        (
+                            e.path.clone(),
+                            matches!(e.kind, crate::state::file_entry::FileKind::Dir),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let entries: Vec<(String, String, bool)> = cb
+            .paths
+            .iter()
+            .filter_map(|p| {
+                let src_str = p.to_string_lossy().replace('\\', "/");
+                let name = src_str.rsplit('/').next().unwrap_or(&src_str).to_string();
+                let dst_str = if dst_path.is_empty() {
+                    name
+                } else {
+                    format!("{}/{}", dst_path.trim_end_matches('/'), name)
+                };
+                let is_dir = is_dir_map.get(p).copied().unwrap_or(false);
+                Some((src_str, dst_str, is_dir))
+            })
+            .collect();
+
+        if !entries.is_empty() {
+            let _ = self.cloud_tx.send(CloudCmd::CopyRemoteEntries {
+                id: src_id,
+                entries,
+                is_move,
+                parent: dst_path,
+            });
+        }
+    }
+
+    /// Same as `open_remote_paths` but checks `tile` instead of the focused tile.
+    /// Used by `Action::Activate` which carries the tile id explicitly.
+    pub(crate) fn open_remote_paths_for(
+        &mut self,
+        tile: crate::state::layout_tree::TileId,
+        paths: &[PathBuf],
+    ) -> bool {
+        let Some(Location::Remote { id, .. }) =
+            self.tab_data_for(tile).map(|td| td.location.clone())
         else {
             return false;
         };
@@ -343,6 +516,7 @@ impl App {
                 if auto_mount {
                     let _ = self.cloud_tx.send(CloudCmd::Mount { id });
                 }
+                atlas_core::util::config::save_cloud_remotes(&self.state.cloud.remotes);
             }
             BgResult::RemoteConfigFailed { id, error } => {
                 // Mark the optimistic row as errored so the user sees why + can remove it.
@@ -353,12 +527,21 @@ impl App {
             }
             BgResult::RemoteRemoved(id) => {
                 self.state.cloud.remotes.retain(|r| r.id != id);
+                atlas_core::util::config::save_cloud_remotes(&self.state.cloud.remotes);
             }
             BgResult::RemoteStatusChanged { id, status } => {
                 let mount_path = match &status {
                     RemoteStatus::Mounted(p) => Some(p.clone()),
                     RemoteStatus::Error(e) => {
-                        self.state.cloud.last_error = Some(format!("{id}: {e}"));
+                        let msg = format!("{id}: {e}");
+                        self.state.cloud.last_error = Some(msg.clone());
+                        self.toast_error(msg);
+                        None
+                    }
+                    RemoteStatus::BrowseFallback(reason) => {
+                        // Informational: not an error, just a capability downgrade.
+                        let msg = format!("{id}: {reason}");
+                        self.toast_info(msg);
                         None
                     }
                     _ => None,
@@ -401,6 +584,21 @@ impl App {
                 self.state.cloud.transfers = snapshot;
                 if any_active {
                     self.state.cloud.show_transfers = true;
+                }
+            }
+            #[cfg(windows)]
+            BgResult::WinFspProgress { done, total } => {
+                // Re-use the rclone download progress indicator for WinFsp.
+                let _ = self
+                    .tx
+                    .send(crate::state::app_state::BgResult::CloudRcloneProgress { done, total });
+            }
+            #[cfg(windows)]
+            BgResult::WinFspInstalled { retry_id } => {
+                self.toast_info("WinFsp installed. Drive mounting is now available.".to_string());
+                if let Some(id) = retry_id {
+                    // Retry the mount that originally triggered the install prompt.
+                    let _ = self.cloud_tx.send(CloudCmd::Mount { id });
                 }
             }
             _ => {}

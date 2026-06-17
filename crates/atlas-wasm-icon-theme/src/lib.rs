@@ -61,7 +61,12 @@ pub fn execute_command(input: String) -> FnResult<String> {
                 .get("files")
                 .and_then(|f| f.get("download"))
                 .and_then(|url| url.as_str())
-                .ok_or_else(|| extism_pdk::Error::msg(format!("No download URL found. URL: {}, API response: {}", api_url, json_body)))?;
+                .ok_or_else(|| {
+                    extism_pdk::Error::msg(format!(
+                        "No download URL found. URL: {}, API response: {}",
+                        api_url, json_body
+                    ))
+                })?;
 
             // 3. Descargar el archivo .vsix
             let vsix_req = extism_pdk::HttpRequest::new(download_url);
@@ -144,12 +149,16 @@ pub fn execute_command(input: String) -> FnResult<String> {
                 .unwrap()
                 .trim_start_matches("./");
             let theme_json_path = format!("{}/extension/{}", out_dir, rel_path);
-            
+
             // Calculamos el directorio relativo dentro del zip para poder construir el path absoluto del host
-            let host_theme_dir = format!("{}/{}/extension/{}", 
-                query.host_dir, 
+            let host_theme_dir = format!(
+                "{}/{}/extension/{}",
+                query.host_dir,
                 ext_id.replace('/', "_"),
-                std::path::Path::new(rel_path).parent().unwrap_or(std::path::Path::new("")).to_string_lossy()
+                std::path::Path::new(rel_path)
+                    .parent()
+                    .unwrap_or(std::path::Path::new(""))
+                    .to_string_lossy()
             );
 
             // 8. Leer el JSON del tema de iconos de VSCode
@@ -186,7 +195,8 @@ pub fn execute_command(input: String) -> FnResult<String> {
                                     let clean_ipath = icon_path.trim_start_matches("./");
                                     // Limpiamos los "../" para rutas simples asumiendo que los iconos están al lado o en subcarpetas
                                     // No es un path resolve perfecto pero sirve para la mayoría de temas.
-                                    let absolute_path = format!("{}/{}", host_theme_dir, clean_ipath);
+                                    let absolute_path =
+                                        format!("{}/{}", host_theme_dir, clean_ipath);
                                     host_mappings.insert(
                                         ext.clone(),
                                         serde_json::Value::String(absolute_path),

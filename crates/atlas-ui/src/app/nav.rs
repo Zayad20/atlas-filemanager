@@ -88,9 +88,8 @@ impl App {
     /// through the cloud worker.
     pub(crate) fn navigate(&mut self, tab_id: TileId, path: PathBuf) {
         #[cfg(feature = "cloud")]
-        if let Some(Location::Remote { id, .. }) = self
-            .tab_data_for(tab_id)
-            .map(|td| td.location.clone())
+        if let Some(Location::Remote { id, .. }) =
+            self.tab_data_for(tab_id).map(|td| td.location.clone())
         {
             let rpath = path.to_string_lossy().into_owned();
             return self.navigate_remote(tab_id, id, rpath);
@@ -173,6 +172,9 @@ impl App {
                 let _ = self
                     .tag_db_tx
                     .send(crate::fs::tag_db::TagDbCmd::QueryPathsForTag(tag));
+            }
+            Location::RecycleBin => {
+                self.spawn_list_recycle_bin(tab_id, col, dir);
             }
             #[cfg(feature = "cloud")]
             Location::Remote { id, path } => {

@@ -58,6 +58,29 @@ pub trait ProfileScoped {
     type State: serde::Serialize + serde::de::DeserializeOwned + Default;
 }
 
+/// Persisted preferences for the preview / inspector panel, scoped per profile.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct PreviewPrefs {
+    /// Show line numbers in the code editor. Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub show_line_numbers: bool,
+    /// Open files in edit mode (editable) by default. Defaults to `false`.
+    #[serde(default)]
+    pub edit_mode: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Marker for [`ProfileScoped`] — stores [`PreviewPrefs`] under key `"preview"`.
+pub struct PreviewFeature;
+
+impl ProfileScoped for PreviewFeature {
+    const KEY: &'static str = "preview";
+    type State = PreviewPrefs;
+}
+
 /// Name of the theme applied to new profiles. Must match a theme registered in
 /// `ThemeRegistry` (see `crates/atlas-ui/assets/themes/atlas-themes.json`).
 pub const DEFAULT_THEME: &str = "Atlas Frost";

@@ -40,6 +40,8 @@ pub(crate) enum AtlasIcon {
     Music,
     Search,
     Copy,
+    Scissors,
+    Clipboard,
     // Palette engine: section/command icons + per-item buttons.
     Star,
     StarFill,
@@ -62,10 +64,15 @@ pub(crate) enum AtlasIcon {
     TreeStructure,
     ClockCounterClockwise,
     Trash,
+    Tag,
     BookmarkSimple,
     X,
+    Minus,
+    Square,
     ArrowLeft,
     ArrowRight,
+    ArrowUp,
+    ArrowDown,
 }
 
 #[derive(Clone, Copy)]
@@ -106,6 +113,8 @@ impl AtlasIcon {
             Self::CaretRight => "icons/ph/caret-right.svg",
             Self::Search => "icons/ph/magnifying-glass.svg",
             Self::Copy => "icons/ph/copy-simple.svg",
+            Self::Scissors => "icons/ph/scissors.svg",
+            Self::Clipboard => "icons/ph/clipboard.svg",
             Self::Star => "icons/ph/star.svg",
             Self::StarFill => "icons/ph/star-fill.svg",
             Self::Plus => "icons/ph/plus.svg",
@@ -127,10 +136,15 @@ impl AtlasIcon {
             Self::TreeStructure => "icons/ph/tree-structure.svg",
             Self::ClockCounterClockwise => "icons/ph/clock-counter-clockwise.svg",
             Self::Trash => "icons/ph/trash.svg",
+            Self::Tag => "icons/ph/tag.svg",
             Self::BookmarkSimple => "icons/ph/bookmark-simple.svg",
             Self::X => "icons/ph/x.svg",
+            Self::Minus => "icons/ph/minus.svg",
+            Self::Square => "icons/ph/square.svg",
             Self::ArrowLeft => "icons/ph/arrow-left.svg",
             Self::ArrowRight => "icons/ph/arrow-right.svg",
+            Self::ArrowUp => "icons/ph/arrow-up.svg",
+            Self::ArrowDown => "icons/ph/arrow-down.svg",
         }
     }
 }

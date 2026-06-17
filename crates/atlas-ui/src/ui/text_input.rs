@@ -8,7 +8,7 @@
 //! for free, cross-platform, with one code path.
 
 use crate::app::App;
-use gpui::{AppContext, Context, Entity, Window};
+use gpui::{AppContext, Context, Entity, SharedString, Window};
 use gpui_component::input::{Input, InputState};
 
 /// Create a fresh single-line input, optionally pre-filled. Bound to `App`'s context
@@ -39,4 +39,30 @@ pub fn flat(state: &Entity<InputState>) -> Input {
 /// Render a bordered input for standalone form fields (batch rename, inline rename).
 pub fn bordered(state: &Entity<InputState>) -> Input {
     Input::new(state)
+}
+
+/// Create a multi-line code-editor `InputState` pre-filled with `initial` text.
+/// `language` is the tree-sitter language token (e.g. `"rust"`, `"python"`).
+/// `line_numbers` controls the initial line-number gutter visibility.
+///
+/// Callers own the returned `Entity<InputState>`; subscribe to
+/// `gpui_component::input::InputEvent::Change` to track edits.
+pub fn code_editor(
+    window: &mut Window,
+    cx: &mut Context<App>,
+    language: impl Into<SharedString>,
+    initial: &str,
+    line_numbers: bool,
+) -> Entity<InputState> {
+    let language = language.into();
+    let text = initial.to_string();
+    cx.new(|cx| {
+        let mut state = InputState::new(window, cx)
+            .code_editor(language)
+            .line_number(line_numbers);
+        if !text.is_empty() {
+            state.set_value(text, window, cx);
+        }
+        state
+    })
 }

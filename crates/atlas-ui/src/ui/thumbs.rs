@@ -34,24 +34,48 @@ const THUMB_MAX_EDGE: u32 = 384;
 /// dropped and re-issued on the next frame (the cell isn't cached yet).
 const MAX_EXT_THUMB_INFLIGHT: usize = 4;
 
+/// Max concurrent native image decodes. Over-cap requests are dropped and re-issued
+/// next frame (no Loading marker inserted), keeping the blocking pool free for
+/// directory listing while preventing a burst of hundreds of simultaneous decodes.
+const MAX_NATIVE_THUMB_INFLIGHT: usize = 8;
+
 impl App {
-    /// Ensure a thumbnail decode is requested for `path` (idempotent — a path already
-    /// loading/ready/missing is left alone). The decode runs on the blocking pool and
-    /// reports back via `BgResult::GridThumbnailReady`.
+    /// Ensure a thumbnail decode is requested for `path`. If the native-decode cap is
+    /// reached the request is silently dropped (the cell will re-request next frame
+    /// because no Loading marker is inserted). The task checks `thumb_wanted` before
+    /// the expensive decode; if the path left the viewport it sends `GridThumbnailSkipped`
+    /// so the Loading marker is cleared and the cell can re-request when visible again.
     pub(crate) fn request_thumbnail(&mut self, path: PathBuf) {
         if self.thumb_textures.contains_key(&path) {
             return;
         }
+        if self.native_thumb_inflight >= MAX_NATIVE_THUMB_INFLIGHT {
+            return;
+        }
         self.thumb_textures
             .insert(path.clone(), ThumbState::Loading);
+        self.native_thumb_inflight += 1;
         let tx = self.tx.clone();
+        let wanted = self.thumb_wanted.clone();
         self.rt.spawn(async move {
-            if let Ok(bg) =
-                tokio::task::spawn_blocking(move || decode_thumbnail(&path, THUMB_MAX_EDGE)).await
+            if let Ok(bg) = tokio::task::spawn_blocking(move || {
+                if !wanted.lock().unwrap().contains(&path) {
+                    return BgResult::GridThumbnailSkipped { path };
+                }
+                decode_thumbnail(&path, THUMB_MAX_EDGE)
+            })
+            .await
             {
                 let _ = tx.send(bg);
             }
         });
+    }
+
+    /// Remove `path` from the thumbnail cache (called when a decode was skipped because
+    /// the path left the viewport), so the cell can re-request it when visible again.
+    pub(crate) fn apply_thumb_skipped(&mut self, path: PathBuf) {
+        self.native_thumb_inflight = self.native_thumb_inflight.saturating_sub(1);
+        self.thumb_textures.remove(&path);
     }
 
     /// Request a thumbnail produced by an extension thumbnailer (`run_tmpl` is the
@@ -110,8 +134,12 @@ impl App {
         width: usize,
         height: usize,
     ) {
-        // Free an extension-thumbnailer slot if this path used one (no-op otherwise).
-        self.ext_thumb_inflight.remove(&path);
+        // Free an extension-thumbnailer slot if this path used one; otherwise it was
+        // a native decode — decrement the native inflight counter.
+        let was_ext = self.ext_thumb_inflight.remove(&path);
+        if !was_ext {
+            self.native_thumb_inflight = self.native_thumb_inflight.saturating_sub(1);
+        }
         let state = if rgba.is_empty() {
             ThumbState::Missing
         } else {

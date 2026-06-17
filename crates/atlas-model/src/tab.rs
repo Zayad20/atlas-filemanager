@@ -28,7 +28,9 @@ impl MillerColumn {
 
     /// The primary selected index (first selected item), used for column-open logic.
     pub fn primary_selected(&self) -> Option<usize> {
-        self.selection.keyboard_cursor.or_else(|| self.selection.selected.iter().copied().next())
+        self.selection
+            .keyboard_cursor
+            .or_else(|| self.selection.selected.iter().copied().next())
     }
 }
 
@@ -310,6 +312,7 @@ mod tests {
             _is_hidden: false,
             _is_symlink: false,
             archive_root: None,
+            recycle_info: None,
         }
     }
 

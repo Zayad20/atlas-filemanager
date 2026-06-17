@@ -93,8 +93,7 @@ impl SevenzProvider {
                                 format!("{s}/")
                             }
                         };
-                        let synthetic =
-                            make_entry(path, cur.clone(), dir_name.clone(), true, None);
+                        let synthetic = make_entry(path, cur.clone(), dir_name.clone(), true, None);
                         let parent_list = index.entry(prev_key).or_default();
                         if !parent_list.iter().any(|e| e.name == dir_name) {
                             parent_list.push(synthetic);

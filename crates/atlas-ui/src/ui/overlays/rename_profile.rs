@@ -8,7 +8,9 @@
 use crate::app::App;
 use crate::input::action::Action;
 use gpui::prelude::*;
-use gpui::{div, px, AnyElement, Context, Entity, Focusable, FocusHandle, KeyDownEvent, MouseButton, Window};
+use gpui::{
+    div, px, AnyElement, Context, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton, Window,
+};
 use gpui_component::input::InputState;
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
@@ -32,7 +34,9 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> FocusHandle {
-        self.rename_profile_input(window, cx).read(cx).focus_handle(cx)
+        self.rename_profile_input(window, cx)
+            .read(cx)
+            .focus_handle(cx)
     }
 
     fn close_rename_profile(&mut self) {

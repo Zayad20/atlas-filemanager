@@ -1,6 +1,6 @@
 #![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
-use crate::app::App;
-use crate::state::layout_tree::{Container, Tile, TileId};
+use crate::app::{App, PaneAnimation, PaneAnimationKind};
+use crate::state::layout_tree::{Container, LinearDir, Tile, TileId};
 use crate::state::location::Location;
 use crate::state::pane::TabData;
 use crate::state::settings::ViewMode;
@@ -92,34 +92,56 @@ impl App {
             .tiles
             .insert_tab_tile(vec![new_pane_id]);
 
-        let split_id = if vertical {
-            self.state
-                .pane_tree
-                .tiles
-                .insert_vertical_tile(vec![tabs_container_id, new_tabs_id])
+        let split_dir = if vertical {
+            LinearDir::Vertical
         } else {
-            self.state
-                .pane_tree
-                .tiles
-                .insert_horizontal_tile(vec![tabs_container_id, new_tabs_id])
+            LinearDir::Horizontal
         };
 
-        // Replace tabs_container_id with split_id everywhere it appears
-        if self.state.pane_tree.root == Some(tabs_container_id) {
-            self.state.pane_tree.root = Some(split_id);
-        } else if let Some(parent_id) = self.state.find_parent_of(tabs_container_id) {
-            if let Some(Tile::Container(c)) = self.state.pane_tree.tiles.get_mut(parent_id) {
-                let children: &mut Vec<TileId> = match c {
-                    Container::Linear(l) => &mut l.children,
-                    Container::Tabs(t) => &mut t.children,
-                };
-                if let Some(slot) = children.iter_mut().find(|id| **id == tabs_container_id) {
-                    *slot = split_id;
+        let inserted_in_parent = self.state.pane_tree.insert_linear_sibling_after(
+            tabs_container_id,
+            new_tabs_id,
+            split_dir,
+        );
+
+        if !inserted_in_parent {
+            let split_id = if vertical {
+                self.state
+                    .pane_tree
+                    .tiles
+                    .insert_vertical_tile(vec![tabs_container_id, new_tabs_id])
+            } else {
+                self.state
+                    .pane_tree
+                    .tiles
+                    .insert_horizontal_tile(vec![tabs_container_id, new_tabs_id])
+            };
+
+            // Replace tabs_container_id with split_id everywhere it appears.
+            if self.state.pane_tree.root == Some(tabs_container_id) {
+                self.state.pane_tree.root = Some(split_id);
+            } else if let Some(parent_id) = self.state.find_parent_of(tabs_container_id) {
+                if let Some(Tile::Container(c)) = self.state.pane_tree.tiles.get_mut(parent_id) {
+                    let children: &mut Vec<TileId> = match c {
+                        Container::Linear(l) => &mut l.children,
+                        Container::Tabs(t) => &mut t.children,
+                    };
+                    if let Some(slot) = children.iter_mut().find(|id| **id == tabs_container_id) {
+                        *slot = split_id;
+                    }
                 }
             }
         }
 
         self.state.focused_tile = new_pane_id;
+        self.pane_animations.insert(
+            new_pane_id,
+            PaneAnimation::new(if vertical {
+                PaneAnimationKind::SplitVertical
+            } else {
+                PaneAnimationKind::SplitHorizontal
+            }),
+        );
         self.navigate(new_pane_id, home);
         self.layout_revision += 1;
         self.invalidate_dock_layout();
@@ -177,6 +199,8 @@ impl App {
             tabs.add_child(new_tile_id);
             tabs.set_active(new_tile_id);
         }
+        self.pane_animations
+            .insert(new_tile_id, PaneAnimation::new(PaneAnimationKind::NewTab));
         self.activate_tab(new_tile_id);
         self.invalidate_dock_layout();
         Some(new_tile_id)

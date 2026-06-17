@@ -13,6 +13,10 @@ pub enum Action {
         tab: TabId,
         path: PathBuf,
     },
+    NavigateLocation {
+        tab: TabId,
+        location: Location,
+    },
     NavigateBack(TabId),
     NavigateForward(TabId),
     NavigateUp(TabId),
@@ -109,6 +113,17 @@ pub enum Action {
     SubmitExtPalette(String),
     /// Pin/unpin a command-palette command (by stable id) to the "Quick" section.
     ToggleCommandPin(String),
+    /// Begin recording the next keypress as a command-palette shortcut.
+    StartCommandShortcutCapture(String),
+    /// Cancel command shortcut recording without changing the persisted binding.
+    CancelCommandShortcutCapture,
+    /// Persist a command-palette shortcut override.
+    SetCommandShortcut {
+        id: String,
+        keystroke: String,
+    },
+    /// Disable a command-palette shortcut.
+    RemoveCommandShortcut(String),
     OpenSearchInPlace,
     CloseSearchInPlace,
     ToggleSearchInSubfolders,
@@ -121,6 +136,7 @@ pub enum Action {
     ToggleSidebar,
     OpenBatchRename,
     OpenSettings,
+    OpenExtManager,
     ToggleAnalyzer,
     Refresh(TabId),
     CopyPathToClipboard(PathBuf),
@@ -178,6 +194,10 @@ pub enum Action {
     MountDevice(String),
     /// Unmount/eject a block device via udisksctl.
     UnmountDevice(String),
+    // ── Zoom ──
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
     // ── Archives ──
     /// Navigate inside an archive, entering the `inner` directory within it.
     /// Pass `inner = PathBuf::new()` to open at the archive root.
@@ -198,4 +218,19 @@ pub enum Action {
     Cloud(crate::app::cloud::CloudAction),
     // ── Extensions ──
     Ext(crate::app::ext::ExtAction),
+    // ── Preview editor ──
+    /// Save the current preview editor's content back to its source file.
+    SavePreviewFile,
+    /// Toggle the preview editor between read-only (disabled) and editable mode.
+    /// The preference is persisted per profile.
+    TogglePreviewEditMode,
+    /// Toggle line-number gutter in the preview code editor.
+    /// The preference is persisted per profile.
+    TogglePreviewLineNumbers,
+    /// Zoom in on the previewed image (same factor as scroll-zoom).
+    PreviewZoomIn,
+    /// Zoom out on the previewed image.
+    PreviewZoomOut,
+    /// Reset the previewed image to fit-in-panel zoom and center pan.
+    PreviewZoomFit,
 }

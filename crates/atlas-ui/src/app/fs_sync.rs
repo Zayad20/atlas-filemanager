@@ -16,9 +16,7 @@ impl App {
         sort_col: crate::state::file_entry::SortColumn,
         sort_dir: crate::state::file_entry::SortDir,
     ) {
-        let folders_first = self
-            .tab_data_for(tab_id)
-            .is_none_or(|td| td.folders_first);
+        let folders_first = self.tab_data_for(tab_id).is_none_or(|td| td.folders_first);
         let op_id = self.state.next_op_id();
         let ts = self.state.tab_states.entry(tab_id).or_default();
         ts.load_state = LoadState::Loading;
@@ -144,8 +142,7 @@ impl App {
             let paths = paths.clone();
             self.rt.spawn(async move {
                 let entries =
-                    entries_for_paths(&paths, show_hidden, sort_col, sort_dir, folders_first)
-                        .await;
+                    entries_for_paths(&paths, show_hidden, sort_col, sort_dir, folders_first).await;
                 let _ = tx.send(BgResult::DirListed {
                     tab: tab_id,
                     op_id,
@@ -164,7 +161,12 @@ impl App {
             .map(|td| (td.sort_col.clone(), td.sort_dir.clone(), td.folders_first))
             .unwrap_or((Default::default(), Default::default(), true));
         if let Some(ts) = self.state.tab_states.get_mut(&tile) {
-            if let Some(c) = ts.miller.columns.iter_mut().find(|c| c.location == location) {
+            if let Some(c) = ts
+                .miller
+                .columns
+                .iter_mut()
+                .find(|c| c.location == location)
+            {
                 c.op_id = op_id;
                 c.load_state = LoadState::Loading;
             }
@@ -173,20 +175,16 @@ impl App {
         let loc = location.clone();
         self.rt.spawn(async move {
             let entries = match loc.clone() {
-                Location::Directory(path) => {
-                    list_dir(&path, show_hidden, col, dir, folders_first)
-                        .await
-                        .unwrap_or_default()
-                }
-                Location::Archive { archive, inner } => {
-                    tokio::task::spawn_blocking(move || {
-                        crate::fs::archive::open(&archive)
-                            .and_then(|p| p.list(&inner).ok())
-                            .unwrap_or_default()
-                    })
+                Location::Directory(path) => list_dir(&path, show_hidden, col, dir, folders_first)
                     .await
-                    .unwrap_or_default()
-                }
+                    .unwrap_or_default(),
+                Location::Archive { archive, inner } => tokio::task::spawn_blocking(move || {
+                    crate::fs::archive::open(&archive)
+                        .and_then(|p| p.list(&inner).ok())
+                        .unwrap_or_default()
+                })
+                .await
+                .unwrap_or_default(),
                 _ => Vec::new(),
             };
             let _ = tx.send(BgResult::MillerListed {
@@ -228,7 +226,10 @@ impl App {
             if kind == crate::state::file_entry::FileKind::Dir {
                 let child_loc = if let Some(archive) = archive_root {
                     // Dir inside an archive — navigate as virtual path.
-                    Location::Archive { archive, inner: path.clone() }
+                    Location::Archive {
+                        archive,
+                        inner: path.clone(),
+                    }
                 } else {
                     Location::Directory(path.clone())
                 };
@@ -263,9 +264,7 @@ impl App {
         sort_col: crate::state::file_entry::SortColumn,
         sort_dir: crate::state::file_entry::SortDir,
     ) {
-        let folders_first = self
-            .tab_data_for(tab_id)
-            .is_none_or(|td| td.folders_first);
+        let folders_first = self.tab_data_for(tab_id).is_none_or(|td| td.folders_first);
         let op_id = self.state.next_op_id();
         let ts = self.state.tab_states.entry(tab_id).or_default();
         ts.load_state = LoadState::Loading;
@@ -280,7 +279,12 @@ impl App {
                     let provider = crate::fs::archive::open(&archive)
                         .ok_or_else(|| rust_i18n::t!("app_archive_unsupported").to_string())?;
                     let mut entries = provider.list(&inner).map_err(|e| e.to_string())?;
-                    crate::fs::list::sort_entries(&mut entries, &sort_col, &sort_dir, folders_first);
+                    crate::fs::list::sort_entries(
+                        &mut entries,
+                        &sort_col,
+                        &sort_dir,
+                        folders_first,
+                    );
                     Ok(entries)
                 }
             })
@@ -316,6 +320,27 @@ impl App {
             .map(|td| (td.sort_col.clone(), td.sort_dir.clone()))
             .unwrap_or_default();
         self.dispatch_list(tab_id, loc, col, dir);
+    }
+
+    pub(crate) fn spawn_list_recycle_bin(
+        &mut self,
+        tab_id: TileId,
+        sort_col: crate::state::file_entry::SortColumn,
+        sort_dir: crate::state::file_entry::SortDir,
+    ) {
+        let op_id = self.state.next_op_id();
+        let ts = self.state.tab_states.entry(tab_id).or_default();
+        ts.load_state = LoadState::Loading;
+        ts.last_nav_op_id = op_id;
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let entries = atlas_core::fs::recycle_bin::list_recycle_bin(sort_col, sort_dir).await;
+            let _ = tx.send(BgResult::DirListed {
+                tab: tab_id,
+                op_id,
+                entries,
+            });
+        });
     }
 
     pub(crate) fn spawn_open_files(&self, paths: Vec<PathBuf>) {
@@ -362,15 +387,28 @@ impl App {
                 let mut done = 0u64;
                 'outer: for (archive_path, inners) in by_archive {
                     let Some(provider) = crate::fs::archive::open(&archive_path) else {
-                        errors.push(rust_i18n::t!(
-                            "fs_sync_open_err",
-                            path = archive_path.file_name().unwrap_or_default().to_string_lossy()
-                        ).to_string());
+                        errors.push(
+                            rust_i18n::t!(
+                                "fs_sync_open_err",
+                                path = archive_path
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                            )
+                            .to_string(),
+                        );
                         continue;
                     };
                     for inner in inners {
                         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                            errors.push(rust_i18n::t!("fs_sync_extract_cancelled", done = done, total = total).to_string());
+                            errors.push(
+                                rust_i18n::t!(
+                                    "fs_sync_extract_cancelled",
+                                    done = done,
+                                    total = total
+                                )
+                                .to_string(),
+                            );
                             break 'outer;
                         }
                         let name = inner
@@ -385,10 +423,8 @@ impl App {
                             bytes_total: 0,
                             current_file: PathBuf::from(&name),
                         });
-                        let out_base = crate::fs::transfer::unique_target(
-                            &dest,
-                            std::ffi::OsStr::new(&name),
-                        );
+                        let out_base =
+                            crate::fs::transfer::unique_target(&dest, std::ffi::OsStr::new(&name));
                         let written = extract_entry_recursive(
                             provider.as_ref(),
                             &inner,
@@ -426,9 +462,9 @@ fn extract_entry_recursive(
     cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     errors: &mut Vec<String>,
 ) -> u64 {
-    use std::io::Read as _;
-    use crate::fs::archive::sanitize::sanitize_inner_path;
     use crate::fs::archive::bomb_guard::BombGuard;
+    use crate::fs::archive::sanitize::sanitize_inner_path;
+    use std::io::Read as _;
 
     if cancel.load(std::sync::atomic::Ordering::Relaxed) {
         return 0;
@@ -449,13 +485,8 @@ fn extract_entry_recursive(
                     .and_then(|p| p.file_name().map(|n| n.to_os_string()))
                     .unwrap_or_else(|| child.name.clone().into());
                 let child_dest = dest_path.join(&child_name);
-                total += extract_entry_recursive(
-                    provider,
-                    &child.path,
-                    &child_dest,
-                    cancel,
-                    errors,
-                );
+                total +=
+                    extract_entry_recursive(provider, &child.path, &child_dest, cancel, errors);
             }
             total
         }
@@ -477,11 +508,14 @@ fn extract_entry_recursive(
             let mut out = match std::fs::File::create(dest_path) {
                 Ok(f) => f,
                 Err(e) => {
-                    errors.push(rust_i18n::t!(
-                        "fs_sync_create_err",
-                        path = dest_path.file_name().unwrap_or_default().to_string_lossy(),
-                        e = e
-                    ).to_string());
+                    errors.push(
+                        rust_i18n::t!(
+                            "fs_sync_create_err",
+                            path = dest_path.file_name().unwrap_or_default().to_string_lossy(),
+                            e = e
+                        )
+                        .to_string(),
+                    );
                     return 0;
                 }
             };
@@ -499,10 +533,14 @@ fn extract_entry_recursive(
                     Ok(0) => break,
                     Ok(n) => {
                         if guard.check_chunk(n as u64).is_err() {
-                            errors.push(rust_i18n::t!(
-                                "fs_sync_zip_bomb",
-                                path = dest_path.file_name().unwrap_or_default().to_string_lossy()
-                            ).to_string());
+                            errors.push(
+                                rust_i18n::t!(
+                                    "fs_sync_zip_bomb",
+                                    path =
+                                        dest_path.file_name().unwrap_or_default().to_string_lossy()
+                                )
+                                .to_string(),
+                            );
                             drop(out);
                             #[allow(clippy::disallowed_methods)]
                             let _ = std::fs::remove_file(dest_path);
@@ -510,21 +548,28 @@ fn extract_entry_recursive(
                         }
                         use std::io::Write as _;
                         if let Err(e) = out.write_all(&buf[..n]) {
-                            errors.push(rust_i18n::t!(
-                                "fs_sync_write_err",
-                                path = dest_path.file_name().unwrap_or_default().to_string_lossy(),
-                                e = e
-                            ).to_string());
+                            errors.push(
+                                rust_i18n::t!(
+                                    "fs_sync_write_err",
+                                    path =
+                                        dest_path.file_name().unwrap_or_default().to_string_lossy(),
+                                    e = e
+                                )
+                                .to_string(),
+                            );
                             return total;
                         }
                         total += n as u64;
                     }
                     Err(e) => {
-                        errors.push(rust_i18n::t!(
-                            "fs_sync_read_err",
-                            path = dest_path.file_name().unwrap_or_default().to_string_lossy(),
-                            e = e
-                        ).to_string());
+                        errors.push(
+                            rust_i18n::t!(
+                                "fs_sync_read_err",
+                                path = dest_path.file_name().unwrap_or_default().to_string_lossy(),
+                                e = e
+                            )
+                            .to_string(),
+                        );
                         return total;
                     }
                 }

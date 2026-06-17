@@ -1,8 +1,21 @@
 use anyhow::{Context, Result};
 use atlas_model::app_state::BgResult;
 use extism::{Function, Manifest, Plugin, Val, ValType, Wasm};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+#[derive(Deserialize)]
+struct RunRequest {
+    cmd: String,
+    args: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct RunResponse {
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+}
 
 pub struct WasmPluginManager {
     plugin_bytes: Vec<u8>,
@@ -71,7 +84,47 @@ impl WasmPluginManager {
             },
         );
 
-        let plugin = Plugin::new(&manifest, [show_quick_pick], true)
+        let run_command = Function::new(
+            "host_run_command",
+            [ValType::I64],
+            [ValType::I64],
+            extism::UserData::new(()),
+            move |plugin, inputs, outputs, _user_data| {
+                let offset = inputs[0].unwrap_i64() as u64;
+                let handle = plugin
+                    .memory_handle(offset)
+                    .context("host_run_command: invalid memory handle")?;
+                let json_req = plugin.memory_str(handle)?;
+                let req: RunRequest = serde_json::from_str(json_req)
+                    .context("host_run_command: invalid request JSON")?;
+
+                #[allow(clippy::disallowed_methods)] // reason: already inside spawn_blocking
+                let output = std::process::Command::new(&req.cmd)
+                    .args(&req.args)
+                    .output();
+
+                let resp = match output {
+                    Ok(out) => RunResponse {
+                        exit_code: out.status.code().unwrap_or(-1),
+                        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+                        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                    },
+                    Err(e) => RunResponse {
+                        exit_code: -1,
+                        stdout: String::new(),
+                        stderr: e.to_string(),
+                    },
+                };
+
+                let resp_json =
+                    serde_json::to_string(&resp).context("host_run_command: serialize failed")?;
+                let out_handle = plugin.memory_new(resp_json)?;
+                outputs[0] = Val::I64(out_handle.offset() as i64);
+                Ok(())
+            },
+        );
+
+        let plugin = Plugin::new(&manifest, [show_quick_pick, run_command], true)
             .context("Error instanciando plugin WASM")?;
 
         Ok(plugin)
@@ -100,7 +153,6 @@ impl WasmPluginManager {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,11 +160,12 @@ mod tests {
 
     #[test]
     fn test_execute_wasm() {
-        let path = PathBuf::from(std::env::var("APPDATA").unwrap()).join("atlas\\extensions\\icon-manager\\plugin.wasm");
+        let path = PathBuf::from(std::env::var("APPDATA").unwrap())
+            .join("atlas\\extensions\\icon-manager\\plugin.wasm");
         let bytes = std::fs::read(&path).unwrap();
         let (tx, rx) = flume::unbounded();
         let manager = WasmPluginManager::new(bytes, path.parent().unwrap().to_path_buf(), tx);
-        
+
         std::thread::spawn(move || {
             if let Ok(BgResult::ExtShowQuickPick { items, reply_tx }) = rx.recv() {
                 println!("WASM requested quick pick with items: {:?}", items);

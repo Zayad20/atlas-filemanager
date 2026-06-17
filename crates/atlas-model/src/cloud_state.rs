@@ -64,6 +64,8 @@ pub struct CloudState {
     pub show_add_dialog: bool,
     pub add_form: AddRemoteForm,
     pub show_transfers: bool,
+    /// ID of the remote currently being renamed (`None` = overlay closed).
+    pub renaming_remote_id: Option<RemoteId>,
 }
 
 impl CloudState {

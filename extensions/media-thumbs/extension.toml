@@ -1,6 +1,7 @@
 id = "media-thumbs"
 name = "Media Thumbnails"
 version = "0.1.0"
+author = "Atlas Team"
 description = "Grid thumbnails for video and PSD/large-raster files using local tools"
 kind = "declarative"
 

@@ -1,6 +1,7 @@
 id = "icon-manager"
 name = "Icon Theme Manager"
 version = "0.1.0"
+author = "Atlas Team"
 description = "Downloads and manages VSCode icon themes."
 kind = "wasm"
 wasm_module = "plugin.wasm"

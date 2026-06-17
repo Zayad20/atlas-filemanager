@@ -4,6 +4,7 @@
 //! filesystem scans and process execution live in `crate::ext`.
 
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// How an extension's commands are executed.
@@ -134,6 +135,31 @@ impl Manifest {
         Ok(toml::from_str(toml_str)?)
     }
 }
+
+// ── Marketplace / remote registry ────────────────────────────────────────────
+
+/// Metadata for a single extension published in the remote R2 marketplace.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RemoteExtension {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub author: String,
+    pub icon_url: Option<String>,
+    pub latest_version: String,
+    pub download_url: String,
+}
+
+/// The `registry.json` document served from the R2 bucket.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RemoteRegistry {
+    pub last_updated: String,
+    pub extensions: HashMap<String, RemoteExtension>,
+}
+
+// ── Installed command resolution ──────────────────────────────────────────────
 
 /// A command resolved for the current selection, ready to run.
 #[derive(Debug, Clone)]

@@ -85,6 +85,9 @@ pub enum RemoteStatus {
     Connecting,
     Mounting,
     Mounted(PathBuf),
+    /// Drive mounting not available (e.g. WinFsp absent); falling back to
+    /// browse-via-API (Access mode). Not an error — click still browses.
+    BrowseFallback(String),
     Error(String),
 }
 

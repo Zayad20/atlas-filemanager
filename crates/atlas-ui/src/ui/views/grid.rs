@@ -5,20 +5,17 @@ use crate::app::App;
 use crate::input::action::Action;
 use crate::state::file_entry::{FileEntry, FileKind};
 use crate::state::pane::TabId;
-use crate::state::tab::LoadState;
-use crate::ui::glass::GLASS_RADIUS;
 use crate::ui::icons::file_type_icon;
+use crate::ui::root::{ctrl_scroll, rect_recorder, DraggedFiles};
+use crate::ui::views::virtual_grid::AnimatedVirtualGrid;
 use gpui::prelude::*;
 use gpui::{
-    div, img, px, uniform_list, AnyElement, Context,
-    Entity, Hsla, MouseButton,
-    RenderImage, SharedString, Window,
+    div, img, px, AnyElement, Context, Entity, Hsla, MouseButton, RenderImage, SharedString, Window,
 };
-use gpui_component::button::ButtonVariants as _;
-use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt};
-use std::path::PathBuf;
+use gpui_component::scroll::ScrollableElement;
+use gpui_component::{v_flex, ActiveTheme, ElementExt};
+use std::ops::Range;
 use std::sync::Arc;
-use crate::ui::root::{ctrl_scroll, rect_recorder, DraggedFiles};
 
 impl App {
     /// Icons (Grid) view: a virtualized grid of fixed-size cells. Column count is
@@ -31,7 +28,6 @@ impl App {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let view = cx.entity();
-        let focused = self.state.focused_tile == pane_id;
         let (fg, accent, accent_fg, hover, muted, header_bg) = {
             let t = cx.theme();
             (
@@ -52,13 +48,12 @@ impl App {
             .tab_states
             .get_mut(&pane_id)
             .map_or(0, |ts| ts.visible_indices().len());
-        // Grid layout constants matching the row's gap_2 / px_2 styling.
-        const GRID_GAP: f32 = 8.0; // gap_2 between cells
-        const GRID_PAD: f32 = 8.0; // px_2 on each side of the row
-                                   // Use the width captured by on_prepaint from the previous frame — this
-                                   // reflects the real pane size and adapts to preview panels and splitter
-                                   // drags. Fall back to a viewport estimate on the very first frame before
-                                   // any paint has run.
+        const GRID_GAP: f32 = 8.0;
+        const GRID_PAD: f32 = 0.0;
+        // Use the width captured by on_prepaint from the previous frame. This
+        // reflects the real pane size and adapts to preview panels and splitter
+        // drags. Fall back to a viewport estimate on the very first frame before
+        // any paint has run.
         let pane_w = self
             .state
             .tab_states
@@ -69,122 +64,113 @@ impl App {
         let inner_avail = (pane_w - 2.0 * GRID_PAD).max(thumb);
         // n*(thumb+GAP) - GAP = inner_avail  →  n = ⌊(inner_avail + GAP) / (thumb + GAP)⌋
         let cols = (((inner_avail + GRID_GAP) / (thumb + GRID_GAP)).floor() as usize).max(1);
-        // Distribute remaining space so every cell fills exactly its column width.
-        let fill_w = ((inner_avail - (cols - 1) as f32 * GRID_GAP) / cols as f32).max(thumb);
-        let row_count = count.div_ceil(cols);
+
+        // Hoist scroll handle so the outer relative wrapper can host the scrollbar
+        // (vertical_scrollbar must NOT be inside overflow_y_scroll — it scrolls away).
+        let scroll = self.scroll_handle_for(pane_id);
+        let base_scroll = scroll.0.borrow().base_handle.clone();
 
         let inner = if count == 0 {
-            let msg = match self.state.tab_states.get(&pane_id).map(|t| &t.load_state) {
-                Some(LoadState::Loading) => "Cargando…",
-                Some(LoadState::Error(_)) => "No se pudo leer la carpeta",
-                _ => "Carpeta vacía",
-            };
+            let msg = self.empty_pane_message(pane_id, "Carpeta vacía");
             v_flex()
                 .size_full()
                 .items_center()
                 .justify_center()
                 .text_color(muted)
-                .child(msg)
+                .children(msg)
                 .into_any_element()
         } else {
-            let scroll = self.scroll_handle_for(pane_id);
+            let mut scroll_y = (-f32::from(base_scroll.offset().y)).max(0.0);
+            let viewport_h = {
+                let tracked = f32::from(base_scroll.bounds().size.height);
+                if tracked > 1.0 {
+                    tracked
+                } else {
+                    f32::from(window.viewport_size().height)
+                }
+            };
+            let cell_h = thumb * 0.62 + 32.0;
+            let pitch = cell_h + GRID_GAP;
+            let rows = count.div_ceil(cols);
+            let content_h = if rows == 0 {
+                0.0
+            } else {
+                rows as f32 * pitch - GRID_GAP
+            };
+            let max_scroll = (content_h - viewport_h).max(0.0);
+            if scroll_y > max_scroll {
+                let offset = base_scroll.offset();
+                base_scroll.set_offset(gpui::point(offset.x, gpui::px(-max_scroll)));
+                scroll_y = max_scroll;
+            }
+            let start_row = (scroll_y / pitch).floor().max(0.0) as usize;
+            let end_row = ((scroll_y + viewport_h) / pitch).ceil() as usize + 1;
+            let start = (start_row * cols).min(count);
+            let end = ((end_row * cols).min(count)).max(start);
+            self.prepare_grid_visible(pane_id, start..end);
+
             let list_view = view.clone();
-            uniform_list(
-                SharedString::from(format!("grid-{}", pane_id.0)),
-                row_count,
-                move |range, _window, cx| {
-                    // Phase 1: collect visible paths still missing a thumbnail. Native
-                    // images decode in-process; other types (video/3D/psd) go through an
-                    // extension thumbnailer if one accepts the extension.
-                    let (to_request, to_request_ext): (Vec<PathBuf>, Vec<(PathBuf, String)>) = {
+            let inner_scroll_view = view.clone();
+            div()
+                .id(SharedString::from(format!(
+                    "anim-grid-scroll-{}",
+                    pane_id.0
+                )))
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&base_scroll)
+                .on_scroll_wheel(move |ev, _window, cx| {
+                    ctrl_scroll(ev, pane_id, &inner_scroll_view, cx);
+                    cx.stop_propagation();
+                })
+                .child(AnimatedVirtualGrid::new(
+                    SharedString::from(format!("anim-grid-{}", pane_id.0)),
+                    count,
+                    cols,
+                    gpui::Size {
+                        width: gpui::px(thumb),
+                        height: gpui::px(cell_h),
+                    },
+                    gpui::Size {
+                        width: gpui::px(GRID_GAP),
+                        height: gpui::px(GRID_GAP),
+                    },
+                    scroll_y,
+                    viewport_h,
+                    move |idx, _window, cx| {
                         let app = list_view.read(cx);
                         let Some(ts) = app.state.tab_states.get(&pane_id) else {
-                            return Vec::new();
+                            return div().into_any_element();
                         };
-                        let mut imgs = Vec::new();
-                        let mut exts: Vec<(PathBuf, String)> = Vec::new();
-                        for row in range.clone() {
-                            for c in 0..cols {
-                                let vi = row * cols + c;
-                                let Some(&ei) = ts.visible.get(vi) else { break };
-                                let Some(entry) = ts.entries.get(ei) else {
-                                    continue;
-                                };
-                                if app.thumb_textures.contains_key(&entry.path) {
-                                    continue;
-                                }
-                                if is_thumbnailable(entry) {
-                                    imgs.push(entry.path.clone());
-                                } else if entry.kind == FileKind::File {
-                                    if let Some(ext) = entry.extension.as_deref() {
-                                        if let Some(cmd) = app.ext_registry.thumbnailer_for(ext) {
-                                            exts.push((
-                                                entry.path.clone(),
-                                                cmd.command.run.clone(),
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        (imgs, exts)
-                    };
-                    // Phase 2: enqueue off-thread decodes / thumbnailer runs.
-                    if !to_request.is_empty() || !to_request_ext.is_empty() {
-                        list_view.update(cx, |this, _| {
-                            for p in to_request {
-                                this.request_thumbnail(p);
-                            }
-                            for (p, run) in to_request_ext {
-                                this.request_ext_thumbnail(p, run);
-                            }
-                        });
-                    }
-                    // Phase 3: build the rows, painting ready thumbnails.
-                    let app = list_view.read(cx);
-                    let Some(ts) = app.state.tab_states.get(&pane_id) else {
-                        return Vec::new();
-                    };
-                    let record_rects = app.rubber.as_ref().is_some_and(|r| r.pane == pane_id);
-                    range
-                        .map(|row| {
-                            let mut cells: Vec<AnyElement> = Vec::with_capacity(cols);
-                            for c in 0..cols {
-                                let vi = row * cols + c;
-                                let Some(&entry_idx) = ts.visible.get(vi) else {
-                                    break;
-                                };
-                                let Some(entry) = ts.entries.get(entry_idx) else {
-                                    continue;
-                                };
-                                let selected = ts.selection.selected.contains(&entry_idx);
-                                let thumb_tex = app.grid_thumbnail(&entry.path);
-                                let icon_tex =
-                                    app.icon_tex_for_entry(&entry.kind, entry.extension.as_deref());
-                                cells.push(render_cell(
-                                    entry,
-                                    entry_idx,
-                                    selected,
-                                    pane_id,
-                                    &list_view,
-                                    thumb,
-                                    fill_w,
-                                    thumb_tex,
-                                    icon_tex,
-                                    accent,
-                                    accent_fg,
-                                    hover,
-                                    record_rects,
-                                ));
-                            }
-                            h_flex().w_full().gap_2().px_2().py_1().children(cells)
-                        })
-                        .collect::<Vec<_>>()
-                },
-            )
-            .track_scroll(&scroll)
-            .h_full()
-            .into_any_element()
+                        let Some(&entry_idx) = ts.visible.get(idx) else {
+                            return div().into_any_element();
+                        };
+                        let Some(entry) = ts.entries.get(entry_idx) else {
+                            return div().into_any_element();
+                        };
+                        let selected = ts.selection.selected.contains(&entry_idx);
+                        let thumb_tex = app.grid_thumbnail(&entry.path);
+                        let icon_tex =
+                            app.icon_tex_for_entry(&entry.kind, entry.extension.as_deref());
+                        let record_rects = app.rubber.as_ref().is_some_and(|r| r.pane == pane_id);
+                        render_cell(
+                            entry,
+                            entry_idx,
+                            selected,
+                            pane_id,
+                            &list_view,
+                            thumb,
+                            thumb,
+                            thumb_tex,
+                            icon_tex,
+                            accent,
+                            accent_fg,
+                            hover,
+                            record_rects,
+                        )
+                    },
+                ))
+                .into_any_element()
         };
 
         let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
@@ -196,12 +182,8 @@ impl App {
             .id(SharedString::from(format!("pane-{}", pane_id.0)))
             .size_full()
             // The pane content is transparent: the hosting TabPanel (fork) is the
-            // rounded glass card, with the tab selector inside it. Clip the list to the
-            // card radius; show an accent ring only on the focused pane.
+            // rounded glass card, with the tab selector inside it.
             .overflow_hidden()
-            .when(focused, |s| {
-                s.rounded(px(GLASS_RADIUS)).border_2().border_color(accent)
-            })
             .on_mouse_down(MouseButton::Left, {
                 let v = rubber_view.clone();
                 move |ev, _window, cx| {
@@ -218,7 +200,10 @@ impl App {
                 move |d, _window, cx| {
                     let paths = d.paths.clone();
                     v.update(cx, |this, cx| {
-                        if let Some(dest) = this.tab_data_for(pane_id).and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf())) {
+                        if let Some(dest) = this
+                            .tab_data_for(pane_id)
+                            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
+                        {
                             this.process_actions(vec![Action::Move { paths, dest }]);
                             cx.notify();
                         }
@@ -230,7 +215,10 @@ impl App {
                 move |paths, _window, cx| {
                     let paths = paths.paths().to_vec();
                     v.update(cx, |this, cx| {
-                        if let Some(dest) = this.tab_data_for(pane_id).and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf())) {
+                        if let Some(dest) = this
+                            .tab_data_for(pane_id)
+                            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
+                        {
                             this.process_actions(vec![Action::CopyTo { paths, dest }]);
                             cx.notify();
                         }
@@ -268,11 +256,64 @@ impl App {
                     .relative()
                     .child(inner)
                     .child(filter_pill)
-                    .child(controls_pill),
+                    .child(controls_pill)
+                    .vertical_scrollbar(&base_scroll),
             )
             .into_any_element()
     }
 
+    fn prepare_grid_visible(&mut self, pane_id: TabId, range: Range<usize>) {
+        let (to_request, to_request_ext, all_visible) = {
+            let Some(ts) = self.state.tab_states.get(&pane_id) else {
+                return;
+            };
+            let mut imgs = Vec::new();
+            let mut exts: Vec<(std::path::PathBuf, String)> = Vec::new();
+            let mut all_visible = Vec::new();
+            for vi in range {
+                let Some(&entry_idx) = ts.visible.get(vi) else {
+                    break;
+                };
+                let Some(entry) = ts.entries.get(entry_idx) else {
+                    continue;
+                };
+                let thumbable = is_thumbnailable(entry);
+                let ext_cmd = if !thumbable && entry.kind == FileKind::File {
+                    entry.extension.as_deref().and_then(|ext| {
+                        self.ext_registry
+                            .thumbnailer_for(ext)
+                            .map(|cmd| cmd.command.run.clone())
+                    })
+                } else {
+                    None
+                };
+                if thumbable || ext_cmd.is_some() {
+                    all_visible.push(entry.path.clone());
+                }
+                if self.thumb_textures.contains_key(&entry.path) {
+                    continue;
+                }
+                if thumbable {
+                    imgs.push(entry.path.clone());
+                } else if let Some(run) = ext_cmd {
+                    exts.push((entry.path.clone(), run));
+                }
+            }
+            (imgs, exts, all_visible)
+        };
+
+        {
+            let mut wanted = self.thumb_wanted.lock().unwrap();
+            wanted.clear();
+            wanted.extend(all_visible);
+        }
+        for path in to_request {
+            self.request_thumbnail(path);
+        }
+        for (path, run) in to_request_ext {
+            self.request_ext_thumbnail(path, run);
+        }
+    }
 }
 
 /// Extensions worth decoding into a grid thumbnail.
@@ -447,4 +488,3 @@ fn render_cell(
         })
         .into_any_element()
 }
-

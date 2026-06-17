@@ -85,6 +85,12 @@ fn find_existing() -> Option<PathBuf> {
     managed.is_file().then_some(managed)
 }
 
+/// Return the path of the currently usable rclone binary (PATH or managed copy),
+/// without downloading. Returns `None` if rclone is not present.
+pub fn binary_path() -> Option<PathBuf> {
+    find_existing()
+}
+
 /// Ensure an rclone binary exists, downloading + verifying it if necessary.
 /// Returns the path to invoke.
 pub async fn ensure_binary(progress: DownloadProgress) -> anyhow::Result<PathBuf> {

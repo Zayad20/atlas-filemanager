@@ -11,11 +11,10 @@ use crate::search::nucleo_pool::NucleoPool;
 use crate::state::app_state::{AppState, BgResult};
 use crate::state::pane::TabData;
 use crate::state::preview_cache::PreviewRequest;
-use crate::util::config::{
-    save_profiles, save_session, save_settings,
-};
+use crate::util::config::{save_profiles, save_session, save_settings};
 
 pub mod actions;
+mod bg;
 #[cfg(feature = "cloud")]
 pub mod cloud;
 pub mod devices;
@@ -26,9 +25,8 @@ pub mod nav;
 pub mod ops;
 pub mod pane_ops;
 pub mod profiles;
-pub mod theme;
-mod bg;
 mod startup;
+pub mod theme;
 
 pub struct App {
     pub(crate) state: AppState,
@@ -59,6 +57,10 @@ pub struct App {
     /// Scroll state of the open palette's result list (keyboard nav keeps the
     /// selected row in view). Shared: only one palette is open at a time.
     pub(crate) palette_scroll: gpui::ScrollHandle,
+    pub(crate) ctx_menu_scroll: gpui::ScrollHandle,
+    pub(crate) type_filter_scroll: gpui::ScrollHandle,
+    pub(crate) settings_scroll: gpui::ScrollHandle,
+    pub(crate) ext_manager_scroll: gpui::ScrollHandle,
     /// Runtime extension registry. Kept out of `AppState` because loading it scans
     /// extension folders and PATH.
     pub(crate) ext_registry: crate::ext::Registry,
@@ -81,6 +83,18 @@ pub struct App {
     pub(crate) preview_view: HashMap<TileId, PreviewView>,
     // Transient: last cursor position while panning the preview image.
     pub(crate) preview_drag: Option<gpui::Point<gpui::Pixels>>,
+    /// Code/text editor state for the currently focused tab's preview. `None` when the
+    /// preview is not a text/code file or has not loaded yet. Recreated when the tab or
+    /// selected file changes.
+    pub(crate) preview_editor: Option<PreviewEditor>,
+    /// State for the open tag-picker overlay. `None` when closed.
+    pub(crate) tag_picker_menu: Option<crate::ui::tag_picker_menu::TagPickerState>,
+    /// Search input inside the tag-picker overlay.
+    pub(crate) tag_picker_input: Option<Entity<InputState>>,
+    /// Subscription that notifies on input changes so the tag picker repaints.
+    pub(crate) tag_picker_sub: Option<gpui::Subscription>,
+    /// Scroll handle for the tag-picker list.
+    pub(crate) tag_picker_scroll: gpui::ScrollHandle,
     // FASE5: keyboard focus for the active overlay (fuzzy bars / modals capture keys here).
     pub(crate) overlay_focus: Option<FocusHandle>,
     pub(crate) batch_rename_field: BatchRenameField,
@@ -90,6 +104,14 @@ pub struct App {
     // external processes (ffmpeg/magick) run at once so a big folder can't spawn
     // hundreds. Native image decodes are CPU-only and not throttled here.
     pub(crate) ext_thumb_inflight: std::collections::HashSet<PathBuf>,
+    // Viewport-priority cancellation: paths currently visible in the grid.
+    // Workers check this before decoding; paths absent are skipped (and removed
+    // from thumb_textures so they re-request when scrolled back into view).
+    pub(crate) thumb_wanted: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<PathBuf>>>,
+    // Count of in-flight native image decodes (incremented on spawn, decremented
+    // on Ready or Skipped). Caps concurrent decodes so the blocking pool stays
+    // available for directory listing and icon rasterisation.
+    pub(crate) native_thumb_inflight: usize,
     // Icon theme: parsed VSCode icon-theme index (extension → SVG path) + rasterised
     // textures. `None` when no supported theme was found at startup.
     pub(crate) icon_theme: Option<crate::icon_theme::IconThemeIndex>,
@@ -115,6 +137,15 @@ pub struct App {
     pub(crate) palette_closing: Option<(crate::ui::palette::PaletteKind, Instant)>,
     pub(crate) layout_revision: u64,
     pub(crate) dock_revision: u64,
+    /// Short-lived visual affordances for panes that just entered through a tab
+    /// create or split operation. UI-only; never persisted into AppState.
+    pub(crate) pane_animations: HashMap<TileId, PaneAnimation>,
+    /// Last painted bounds per pane, used for RAD-style FLIP layout transitions.
+    /// This is intentionally separate from `pane_view_bounds`, which is cleared
+    /// every frame for interaction hit-testing.
+    pub(crate) pane_layout_bounds: HashMap<TileId, gpui::Bounds<gpui::Pixels>>,
+    pub(crate) pane_layout_animations: HashMap<TileId, PaneLayoutAnimation>,
+    pub(crate) pane_layout_frame_pending: bool,
     // FASE C: rubber-band (select box) drag state, UI-side. `row_rects` holds the
     // window-space rect of each *visible* item, rebuilt every frame via on_prepaint;
     // the active drag intersects its rectangle against them to drive the selection.
@@ -138,6 +169,13 @@ pub struct App {
     pub(crate) batch_replacement_input: Option<Entity<InputState>>,
     /// Native input backing the rename-active-profile dialog.
     pub(crate) rename_profile_input: Option<Entity<InputState>>,
+    pub(crate) ext_manager_input: Option<Entity<InputState>>,
+    /// Inputs for the add-remote dialog; created on open, cleared on close.
+    #[cfg(feature = "cloud")]
+    pub(crate) cloud_add_inputs: Option<crate::ui::overlays::add_cloud::CloudAddInputs>,
+    /// Input backing the rename-cloud-remote dialog.
+    #[cfg(feature = "cloud")]
+    pub(crate) rename_remote_input: Option<Entity<InputState>>,
     /// In-flight inline rename (one row at a time). Holds the native input being edited.
     pub(crate) rename_edit: Option<RenameEdit>,
     // Goto bar "search in content": matching file paths from the latest grep, the
@@ -184,6 +222,133 @@ pub struct App {
     pub(crate) ctx_menu_sub: Option<gpui::Subscription>,
     // Monotonic id: stale `Built` events from a previous open are ignored.
     pub(crate) ctx_menu_seq: u64,
+    /// When `NewFolder` is invoked, stores (tile, path) so the FS-watcher result
+    /// can auto-select that entry once it appears in the listing.
+    pub(crate) pending_select: Option<(TileId, PathBuf)>,
+    /// Details-view column widths, shared across all panes.
+    pub(crate) col_widths: ColWidths,
+    /// Active column-resize drag state (cleared on mouse-up).
+    pub(crate) col_resize: Option<ColResizeState>,
+    /// Per-pane active type-category filters for the Details view.
+    /// Empty set = no filter. Values are `file_type_label()` strings.
+    pub(crate) type_filters: HashMap<TileId, HashSet<String>>,
+    /// Per-pane active size-category filters for the Details view.
+    /// Empty set = no filter.
+    pub(crate) size_filters: HashMap<TileId, HashSet<crate::ui::size_filter_menu::SizeFilter>>,
+    // ── Details type-filter overlay ───────────────────────────────────────
+    /// State for the open type-filter overlay. `None` when closed.
+    pub(crate) type_filter_menu: Option<crate::ui::type_filter_menu::TypeFilterMenuState>,
+    /// Search input inside the type-filter overlay.
+    pub(crate) type_filter_input: Option<Entity<InputState>>,
+    /// Subscription that notifies on input changes so the overlay repaints.
+    pub(crate) type_filter_sub: Option<gpui::Subscription>,
+    // ── Details size-filter overlay ───────────────────────────────────────
+    /// State for the open size-filter overlay. `None` when closed.
+    pub(crate) size_filter_menu: Option<crate::ui::size_filter_menu::SizeFilterMenuState>,
+    // ── Drag-hover navigation ─────────────────────────────────────────────
+    /// Finder-style hover-to-navigate state (updated each animation frame while a drag is live).
+    pub(crate) drag_hover: crate::ui::drag_hover::DragHoverState,
+    /// Buffer of targets registered by renderers each frame; consumed by `tick_drag_hover`.
+    pub(crate) pending_drag_hover_targets: Vec<crate::ui::drag_hover::DragHoverTarget>,
+    /// Window-space bounds of each pane view, used for edge-scroll + tag-drop detection.
+    pub(crate) pane_view_bounds: HashMap<TileId, gpui::Bounds<gpui::Pixels>>,
+    // ── Command shortcut capture ──────────────────────────────────────────
+    /// Non-None while the user is recording a new keyboard shortcut for a palette command.
+    pub(crate) command_shortcut_capture: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PaneAnimationKind {
+    NewTab,
+    SplitHorizontal,
+    SplitVertical,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PaneAnimation {
+    pub(crate) kind: PaneAnimationKind,
+    pub(crate) started: Instant,
+}
+
+impl PaneAnimation {
+    const TTL: Duration = Duration::from_millis(420);
+
+    pub(crate) fn new(kind: PaneAnimationKind) -> Self {
+        Self {
+            kind,
+            started: Instant::now(),
+        }
+    }
+
+    pub(crate) fn is_alive(self) -> bool {
+        self.started.elapsed() < Self::TTL
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PaneLayoutAnimation {
+    pub(crate) from: gpui::Bounds<gpui::Pixels>,
+    pub(crate) to: gpui::Bounds<gpui::Pixels>,
+    pub(crate) started: Instant,
+}
+
+impl PaneLayoutAnimation {
+    const TTL: Duration = Duration::from_millis(crate::ui::motion::PANE_MS);
+
+    pub(crate) fn new(from: gpui::Bounds<gpui::Pixels>, to: gpui::Bounds<gpui::Pixels>) -> Self {
+        Self {
+            from,
+            to,
+            started: Instant::now(),
+        }
+    }
+
+    pub(crate) fn is_alive(self) -> bool {
+        self.started.elapsed() < Self::TTL
+    }
+
+    pub(crate) fn progress(self) -> f32 {
+        let elapsed = self.started.elapsed().as_secs_f32();
+        let total = Self::TTL.as_secs_f32().max(f32::EPSILON);
+        crate::ui::motion::ease_out_quart((elapsed / total).min(1.0))
+    }
+
+    pub(crate) fn offset(self) -> (f32, f32) {
+        self.offset_at(self.progress())
+    }
+
+    pub(crate) fn offset_at(self, t: f32) -> (f32, f32) {
+        let dx = f32::from(self.from.origin.x) - f32::from(self.to.origin.x);
+        let dy = f32::from(self.from.origin.y) - f32::from(self.to.origin.y);
+        (dx * (1.0 - t), dy * (1.0 - t))
+    }
+}
+
+/// Widths of the fixed-width columns in the Details view (Name is flex_1, not stored).
+/// Serialized into ProfilePrefs via `DetailsColumns: ProfileScoped`.
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ColWidths {
+    pub(crate) size: f32,
+    pub(crate) modified: f32,
+    pub(crate) type_w: f32,
+}
+
+impl Default for ColWidths {
+    fn default() -> Self {
+        Self {
+            size: 90.,
+            modified: 150.,
+            type_w: 100.,
+        }
+    }
+}
+
+/// Active column-resize drag state for the Details header.
+pub(crate) struct ColResizeState {
+    /// Which column: "size", "modified", or "type".
+    pub(crate) col: &'static str,
+    pub(crate) start_x: f32,
+    pub(crate) start_width: f32,
 }
 
 /// Per-tab interaction state for the inspector image preview. `zoom` is a multiplier
@@ -209,15 +374,43 @@ impl Default for PreviewView {
     }
 }
 
+/// Per-tab code/text editor state for the inspector preview. Holds the native
+/// `InputState` in code-editor mode, the source path for saving, a dirty flag
+/// (set on any change), whether the editor is in editable mode, and the language
+/// token (so the toolbar can display it).
+pub(crate) struct PreviewEditor {
+    /// The gpui-component `InputState` in `code_editor(lang)` mode.
+    pub(crate) state: Entity<InputState>,
+    /// Absolute path of the file being previewed/edited.
+    pub(crate) path: PathBuf,
+    /// Most recent text content, kept current by the Change subscription.
+    /// Used by `SavePreviewFile` without needing `cx`.
+    pub(crate) cached_text: String,
+    /// True when the content has changed since last save (or since load).
+    pub(crate) dirty: bool,
+    /// When false the editor is rendered `.disabled(true)` — read-only with highlight.
+    pub(crate) editing: bool,
+    /// Current line-number visibility (mirrors the profile pref). The render path
+    /// syncs this into the `InputState` when `ln_needs_sync` is set.
+    pub(crate) line_numbers: bool,
+    /// Set by `TogglePreviewLineNumbers`; cleared by the render after syncing.
+    pub(crate) ln_needs_sync: bool,
+    /// Language token passed to `code_editor` (e.g. `"rust"`, `"python"`).
+    pub(crate) lang: gpui::SharedString,
+    /// Change subscription — kept alive as long as the editor is open.
+    pub(crate) _sub: gpui::Subscription,
+}
+
 /// In-flight inline rename of a single row in the focused pane.
 pub struct RenameEdit {
     pub(crate) pane: TileId,
     pub(crate) idx: usize,
     pub(crate) path: PathBuf,
     pub(crate) input: Entity<InputState>,
+    /// When set, the next focus-sync selects this many chars from the start
+    /// (to pre-highlight the stem; None after consumed).
+    pub(crate) initial_select_chars: Option<u32>,
 }
-
-
 
 /// In-flight rubber-band selection (one pane at a time).
 pub struct RubberDrag {
@@ -253,6 +446,88 @@ pub struct PendingPreview {
 }
 
 impl App {
+    const MAX_PANE_LAYOUT_ANIMATIONS: usize = 12;
+
+    pub(crate) fn pane_animation_for(&self, pane_id: TileId) -> Option<PaneAnimation> {
+        self.pane_animations
+            .get(&pane_id)
+            .copied()
+            .filter(|animation| animation.is_alive())
+    }
+
+    pub(crate) fn prune_pane_animations(&mut self) {
+        self.pane_animations
+            .retain(|_, animation| animation.is_alive());
+    }
+
+    pub(crate) fn pane_layout_animation_for(&self, pane_id: TileId) -> Option<PaneLayoutAnimation> {
+        self.pane_layout_animations
+            .get(&pane_id)
+            .copied()
+            .filter(|animation| animation.is_alive())
+    }
+
+    pub(crate) fn prune_pane_layout_animations(&mut self) {
+        self.pane_layout_animations
+            .retain(|_, animation| animation.is_alive());
+    }
+
+    pub(crate) fn begin_pane_layout_frame(&mut self) {
+        self.pane_layout_frame_pending = false;
+    }
+
+    pub(crate) fn request_pane_layout_frame(&mut self) -> bool {
+        if self.pane_layout_frame_pending {
+            return false;
+        }
+        self.pane_layout_frame_pending = true;
+        true
+    }
+
+    pub(crate) fn record_pane_layout_bounds(
+        &mut self,
+        pane_id: TileId,
+        bounds: gpui::Bounds<gpui::Pixels>,
+    ) -> bool {
+        if self
+            .pane_animations
+            .get(&pane_id)
+            .copied()
+            .is_some_and(PaneAnimation::is_alive)
+            || self
+                .pane_layout_animations
+                .get(&pane_id)
+                .copied()
+                .is_some_and(PaneLayoutAnimation::is_alive)
+        {
+            return false;
+        }
+
+        let changed = self
+            .pane_layout_bounds
+            .get(&pane_id)
+            .copied()
+            .is_some_and(|old| {
+                if !pane_bounds_changed(old, bounds) {
+                    return false;
+                }
+
+                // DISABLED ANIMATIONS FOR TESTING
+                return false;
+
+                if !pane_bounds_moved(old, bounds)
+                    || self.pane_layout_animations.len() >= Self::MAX_PANE_LAYOUT_ANIMATIONS
+                {
+                    return false;
+                }
+                self.pane_layout_animations
+                    .insert(pane_id, PaneLayoutAnimation::new(old, bounds));
+                true
+            });
+        self.pane_layout_bounds.insert(pane_id, bounds);
+        changed
+    }
+
     /// (Re)launch the goto bar's content search for the current query + directory.
     /// Cancels any in-flight search, bumps the generation so its stale results are
     /// ignored, and spawns a fresh grep that streams matches back via `tx`.
@@ -301,10 +576,13 @@ impl App {
             if let Some(q) = queue.as_ref().and_then(|q| q.lock().ok()) {
                 let mut q = q;
                 for p in &stale {
-                    q.push(crate::dnd::windows::DndEvent::Error(rust_i18n::t!(
-                        "app_path_not_exists",
-                        path = p.file_name().unwrap_or_default().to_string_lossy()
-                    ).to_string()));
+                    q.push(crate::dnd::windows::DndEvent::Error(
+                        rust_i18n::t!(
+                            "app_path_not_exists",
+                            path = p.file_name().unwrap_or_default().to_string_lossy()
+                        )
+                        .to_string(),
+                    ));
                 }
             }
         }
@@ -321,7 +599,10 @@ impl App {
     /// No-op on non-Windows (OLE drag-and-drop not used; field always empty).
     pub(crate) fn push_pane_zone(&mut self, pane_id: TileId, bounds: gpui::Bounds<gpui::Pixels>) {
         #[cfg(windows)]
-        if let Some(dest) = self.tab_data_for(pane_id).and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf())) {
+        if let Some(dest) = self
+            .tab_data_for(pane_id)
+            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
+        {
             self.pending_pane_zones.push(crate::dnd::DropZone {
                 x: f32::from(bounds.origin.x),
                 y: f32::from(bounds.origin.y),
@@ -410,8 +691,21 @@ impl App {
             }
             np
         };
-        if let Some(h) = self.scroll_handles.get(&tile) {
-            h.scroll_to_item(next_pos, ScrollStrategy::Center);
+        let (is_grid, cols) = self
+            .tab_data_for(tile)
+            .map(|td| {
+                (
+                    matches!(td.view_mode, crate::state::settings::ViewMode::Grid),
+                    self.rubber_scroll_dims(tile).0,
+                )
+            })
+            .unwrap_or((false, 1));
+        if is_grid && self.scroll_grid_row_to(tile, next_pos / cols.max(1), ScrollStrategy::Center)
+        {
+            return;
+        }
+        if let Some(handle) = self.scroll_handles.get(&tile) {
+            handle.scroll_to_item(next_pos, ScrollStrategy::Center);
         }
     }
 
@@ -492,6 +786,22 @@ impl App {
     pub fn on_exit(&mut self) {
         self.cleanup_cloud_on_exit();
     }
+}
+
+fn pane_bounds_changed(old: gpui::Bounds<gpui::Pixels>, new: gpui::Bounds<gpui::Pixels>) -> bool {
+    const MIN_DELTA: f32 = 1.25;
+    let dx = (f32::from(old.origin.x) - f32::from(new.origin.x)).abs();
+    let dy = (f32::from(old.origin.y) - f32::from(new.origin.y)).abs();
+    let dw = (f32::from(old.size.width) - f32::from(new.size.width)).abs();
+    let dh = (f32::from(old.size.height) - f32::from(new.size.height)).abs();
+    dx > MIN_DELTA || dy > MIN_DELTA || dw > MIN_DELTA || dh > MIN_DELTA
+}
+
+fn pane_bounds_moved(old: gpui::Bounds<gpui::Pixels>, new: gpui::Bounds<gpui::Pixels>) -> bool {
+    const MIN_MOVE_DELTA: f32 = 1.25;
+    let dx = (f32::from(old.origin.x) - f32::from(new.origin.x)).abs();
+    let dy = (f32::from(old.origin.y) - f32::from(new.origin.y)).abs();
+    dx > MIN_MOVE_DELTA || dy > MIN_MOVE_DELTA
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

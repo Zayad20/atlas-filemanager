@@ -49,6 +49,11 @@ pub enum BgResult {
         width: usize,
         height: usize,
     },
+    /// Decode was skipped because the path left the visible viewport before the
+    /// blocking task ran. Remove from thumb_textures so the cell can re-request.
+    GridThumbnailSkipped {
+        path: PathBuf,
+    },
 
     /// Virtual listing of an archive directory completed.
     ArchiveListed {
@@ -135,6 +140,15 @@ pub enum BgResult {
         error: Option<String>,
         dirs: Vec<PathBuf>,
     },
+    /// Remote marketplace registry fetched from R2.
+    ExtRegistryFetched(Result<crate::ext_model::RemoteRegistry, String>),
+    /// A remote extension finished downloading and installing.
+    ExtRemoteInstalled {
+        id: String,
+        result: Result<(), String>,
+    },
+    /// A local extension (zip/folder) finished installing on the background thread.
+    ExtLocalInstalled(Result<String, String>),
     /// A WASM extension requested the fuzzy panel. The background worker blocks on `reply_tx`.
     ExtShowQuickPick {
         items: Vec<String>,
@@ -153,6 +167,18 @@ pub enum BgResult {
     /// A non-fatal cloud error to surface in the UI.
     #[cfg(feature = "cloud")]
     CloudError(String),
+    /// WinFsp download progress `(bytes_done, bytes_total)`.
+    #[cfg(all(feature = "cloud", windows))]
+    WinFspProgress {
+        done: u64,
+        total: u64,
+    },
+    /// WinFsp installed successfully; retry the pending mount.
+    #[cfg(all(feature = "cloud", windows))]
+    WinFspInstalled {
+        /// Remote to mount now that WinFsp is available (if any).
+        retry_id: Option<crate::cloud_model::RemoteId>,
+    },
     /// A remote's backend config was created successfully.
     #[cfg(feature = "cloud")]
     RemoteConfigured(crate::cloud_model::CloudRemote),
@@ -467,7 +493,9 @@ impl AppState {
     }
 }
 
-fn entry_to_preview_request(entry: &crate::file_entry::FileEntry) -> crate::preview_cache::PreviewRequest {
+fn entry_to_preview_request(
+    entry: &crate::file_entry::FileEntry,
+) -> crate::preview_cache::PreviewRequest {
     use crate::preview_cache::PreviewRequest;
     if let Some(archive) = entry.archive_root.clone() {
         PreviewRequest::ArchiveSingle {
@@ -503,6 +531,7 @@ mod tests {
             _is_hidden: false,
             _is_symlink: false,
             archive_root: None,
+            recycle_info: None,
         }
     }
 

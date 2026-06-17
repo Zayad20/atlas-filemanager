@@ -35,6 +35,13 @@ pub enum ExtAction {
     /// Pick a `.zip`/folder and install it.
     Install,
     Uninstall(String),
+    /// Fetch the remote marketplace catalogue from R2.
+    FetchRegistry,
+    /// Download + install an extension from the marketplace.
+    InstallRemote {
+        id: String,
+        download_url: String,
+    },
 }
 
 impl App {
@@ -77,14 +84,122 @@ impl App {
                     self.reload_ext_registry();
                 }
             }
+            ExtAction::FetchRegistry => {
+                self.state.ext.remote_loading = true;
+                self.state.ext.last_error = None;
+                let tx = self.tx.clone();
+                self.rt.spawn(async move {
+                    let mut result = crate::ext::marketplace::fetch_registry()
+                        .await
+                        .map_err(|e| e.to_string());
+
+                    if let Ok(registry) = &mut result {
+                        let cache_dir = std::env::temp_dir().join("atlas_ext_icons");
+                        let _ = std::fs::create_dir_all(&cache_dir);
+                        for (id, ext) in &mut registry.extensions {
+                            if let Some(url) = &ext.icon_url {
+                                let local_path = cache_dir.join(format!("{}.png", id));
+                                if crate::ext::marketplace::download_icon(url, &local_path)
+                                    .await
+                                    .is_ok()
+                                {
+                                    ext.icon_url = Some(format!(
+                                        "file:///{}",
+                                        local_path.display().to_string().replace('\\', "/")
+                                    ));
+                                }
+                            }
+                        }
+                    }
+
+                    let _ = tx.send(crate::state::app_state::BgResult::ExtRegistryFetched(
+                        result,
+                    ));
+                });
+            }
+            ExtAction::InstallRemote { id, download_url } => {
+                self.state.ext.installing.insert(id.clone());
+                self.state.ext.last_error = None;
+                let tx = self.tx.clone();
+                self.rt.spawn(async move {
+                    let result = async {
+                        let zip_path = crate::ext::marketplace::download_zip(&download_url)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        crate::ext::install::install_zip(&zip_path).map_err(|e| e.to_string())?;
+                        // Clean up temp zip.
+                        let _ = std::fs::remove_file(&zip_path);
+                        Ok::<(), String>(())
+                    }
+                    .await;
+                    let _ = tx
+                        .send(crate::state::app_state::BgResult::ExtRemoteInstalled { id, result });
+                });
+            }
+        }
+    }
+
+    /// Handle background results for the marketplace (called from `bg.rs`).
+    pub(crate) fn handle_ext_registry_fetched(
+        &mut self,
+        result: Result<crate::state::ext_model::RemoteRegistry, String>,
+    ) {
+        self.state.ext.remote_loading = false;
+        match result {
+            Ok(registry) => {
+                let mut list: Vec<crate::state::ext_model::RemoteExtension> =
+                    registry.extensions.into_values().collect();
+                list.sort_by(|a, b| a.name.cmp(&b.name));
+                self.state.ext.remote = Some(list);
+            }
+            Err(e) => {
+                self.state.ext.last_error = Some(format!("Marketplace: {e}"));
+            }
+        }
+    }
+
+    /// Handle background result for a remote-install (called from `bg.rs`).
+    pub(crate) fn handle_ext_remote_installed(&mut self, id: String, result: Result<(), String>) {
+        self.state.ext.installing.remove(&id);
+        match result {
+            Ok(()) => {
+                self.state.ext.feedback =
+                    Some(rust_i18n::t!("ext_installed", id = &id).to_string());
+                self.reload_ext_registry();
+            }
+            Err(e) => {
+                self.state.ext.last_error = Some(format!("{id}: {e}"));
+            }
+        }
+    }
+
+    /// Handle background result for a local file/folder install (called from `bg.rs`).
+    pub(crate) fn handle_ext_local_installed(&mut self, result: Result<String, String>) {
+        match result {
+            Ok(id) => {
+                self.state.ext.feedback =
+                    Some(rust_i18n::t!("ext_installed", id = &id).to_string());
+                self.reload_ext_registry();
+            }
+            Err(e) => {
+                self.state.ext.last_error = Some(e);
+            }
         }
     }
 
     /// Resolve a command + selection and either run it or open the prompt modal.
     fn start_ext_command(&mut self, ext_id: &str, cmd_id: &str) {
-        tracing::info!("start_ext_command called with ext_id={}, cmd_id={}", ext_id, cmd_id);
+        tracing::info!(
+            "start_ext_command called with ext_id={}, cmd_id={}",
+            ext_id,
+            cmd_id
+        );
         let Some(cmd) = self.ext_registry.command(ext_id, cmd_id) else {
-            tracing::error!("Command not found in registry: ext_id={}, cmd_id={}", ext_id, cmd_id);
+            tracing::error!(
+                "Command not found in registry: ext_id={}, cmd_id={}",
+                ext_id,
+                cmd_id
+            );
             return;
         };
         let paths = self.state.selected_paths();
@@ -110,25 +225,26 @@ impl App {
     }
 
     fn install_extension(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("Extension", &["zip"])
-            .pick_file()
-            .or_else(|| rfd::FileDialog::new().pick_folder())
-        else {
-            return;
-        };
-        let result = if path.is_dir() {
-            crate::ext::install::install_folder(&path)
-        } else {
-            crate::ext::install::install_zip(&path)
-        };
-        match result {
-            Ok(id) => {
-                self.state.ext.feedback = Some(rust_i18n::t!("ext_installed", id = id).to_string());
-                self.reload_ext_registry();
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            // pick_file/pick_folder are blocking COM calls — spawn_blocking keeps
+            // them off the GPUI render thread so the window stays responsive.
+            let outcome = tokio::task::spawn_blocking(|| -> Option<Result<String, String>> {
+                let path = rfd::FileDialog::new()
+                    .add_filter("Extension", &["zip"])
+                    .pick_file()
+                    .or_else(|| rfd::FileDialog::new().pick_folder())?; // None = cancelled
+                Some(if path.is_dir() {
+                    crate::ext::install::install_folder(&path).map_err(|e| e.to_string())
+                } else {
+                    crate::ext::install::install_zip(&path).map_err(|e| e.to_string())
+                })
+            })
+            .await;
+            if let Ok(Some(result)) = outcome {
+                let _ = tx.send(crate::state::app_state::BgResult::ExtLocalInstalled(result));
             }
-            Err(e) => self.state.ext.last_error = Some(e.to_string()),
-        }
+        });
     }
 
     pub(crate) fn handle_ext_bg(
@@ -170,7 +286,8 @@ impl App {
             .into_iter()
             .filter_map(|tile| {
                 let td = self.tab_data_for(tile)?;
-                td.location.fs_dir()
+                td.location
+                    .fs_dir()
                     .filter(|p| icons_changed || dirs.iter().any(|d| d.as_path() == *p))
                     .map(|p| p.to_path_buf())
                     .map(|path| (tile, path, td.sort_col.clone(), td.sort_dir.clone()))

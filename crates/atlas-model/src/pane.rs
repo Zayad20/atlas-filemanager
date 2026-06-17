@@ -14,8 +14,13 @@ enum TabSource {
     Directory,
     Tag(TagId),
     #[cfg(feature = "cloud")]
-    Remote { id: String, path: String },
-    Archive { inner: PathBuf },
+    Remote {
+        id: String,
+        path: String,
+    },
+    Archive {
+        inner: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -99,7 +104,10 @@ impl From<TabDataRaw> for TabData {
                 let path = r.path.unwrap_or_default();
                 match r.source {
                     TabSource::Directory => Location::Directory(path),
-                    TabSource::Archive { inner } => Location::Archive { archive: path, inner },
+                    TabSource::Archive { inner } => Location::Archive {
+                        archive: path,
+                        inner,
+                    },
                     TabSource::Tag(id) => Location::Tag(id),
                     #[cfg(feature = "cloud")]
                     TabSource::Remote { id, path: rpath } => Location::Remote { id, path: rpath },

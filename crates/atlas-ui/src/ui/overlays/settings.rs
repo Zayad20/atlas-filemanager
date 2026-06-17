@@ -4,12 +4,11 @@
 use crate::app::App;
 use crate::input::action::Action;
 use crate::state::settings::{InspectorPlacement, ViewMode};
+use crate::ui::motion;
 use gpui::prelude::*;
 use gpui::AnimationExt;
-use gpui::{
-    div, px, AnyElement, Context, Entity,
-    MouseButton, SharedString,
-};
+use gpui::{div, px, AnyElement, Context, Entity, MouseButton, SharedString};
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
 impl App {
@@ -213,145 +212,183 @@ impl App {
             .children(theme_buttons);
 
         let panel = v_flex()
-            .w(px(480.))
-            .max_h(px(560.))
-            .bg(popover)
-            .text_color(fg)
-            .border_1()
-            .border_color(border)
-            .rounded_lg()
-            .shadow_lg()
-            .occlude()
+            .id("settings-content")
+            .size_full()
             .p_4()
             .gap_2()
+            .overflow_y_scroll()
+            .track_scroll(&self.settings_scroll)
             .child(
                 div()
                     .text_lg()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(rust_i18n::t!("settings_title").to_string()),
             )
-            .child(div().text_xs().text_color(muted).child(rust_i18n::t!("settings_general").to_string()))
             .child(
-                h_flex().gap_2().items_center().justify_between()
-                    .child(div().text_sm().child(rust_i18n::t!("settings_language").to_string()))
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(rust_i18n::t!("settings_general").to_string()),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .justify_between()
                     .child(
-                        h_flex().gap_1()
+                        div()
+                            .text_sm()
+                            .child(rust_i18n::t!("settings_language").to_string()),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
                             .child({
                                 let is_selected = s.language.is_none();
-                                div().cursor_pointer().px_2().py_1().rounded_md()
+                                div()
+                                    .cursor_pointer()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
                                     .bg(if is_selected { accent } else { surface })
                                     .text_color(if is_selected { accent_fg } else { fg })
                                     .child("Auto")
                                     .on_mouse_down(MouseButton::Left, {
                                         let view = view.clone();
-                                        move |_ev, _w, cx| view.update(cx, |app, cx| {
-                                            let mut settings = app.state.settings.clone();
-                                            settings.language = None;
-                                            crate::util::config::save_settings(&settings);
-                                            app.state.settings = settings;
-                                            rust_i18n::set_locale("en"); // auto fallback for now
-                                            cx.notify();
-                                        })
+                                        move |_ev, _w, cx| {
+                                            view.update(cx, |app, cx| {
+                                                let mut settings = app.state.settings.clone();
+                                                settings.language = None;
+                                                crate::util::config::save_settings(&settings);
+                                                app.state.settings = settings;
+                                                rust_i18n::set_locale("en"); // auto fallback for now
+                                                cx.notify();
+                                            })
+                                        }
                                     })
                             })
                             .child({
                                 let is_selected = s.language.as_deref() == Some("en");
-                                div().cursor_pointer().px_2().py_1().rounded_md()
+                                div()
+                                    .cursor_pointer()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
                                     .bg(if is_selected { accent } else { surface })
                                     .text_color(if is_selected { accent_fg } else { fg })
                                     .child("EN")
                                     .on_mouse_down(MouseButton::Left, {
                                         let view = view.clone();
-                                        move |_ev, _w, cx| view.update(cx, |app, cx| {
-                                            let mut settings = app.state.settings.clone();
-                                            settings.language = Some("en".to_string());
-                                            crate::util::config::save_settings(&settings);
-                                            app.state.settings = settings;
-                                            rust_i18n::set_locale("en");
-                                            cx.notify();
-                                        })
+                                        move |_ev, _w, cx| {
+                                            view.update(cx, |app, cx| {
+                                                let mut settings = app.state.settings.clone();
+                                                settings.language = Some("en".to_string());
+                                                crate::util::config::save_settings(&settings);
+                                                app.state.settings = settings;
+                                                rust_i18n::set_locale("en");
+                                                cx.notify();
+                                            })
+                                        }
                                     })
                             })
                             .child({
                                 let is_selected = s.language.as_deref() == Some("es");
-                                div().cursor_pointer().px_2().py_1().rounded_md()
+                                div()
+                                    .cursor_pointer()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
                                     .bg(if is_selected { accent } else { surface })
                                     .text_color(if is_selected { accent_fg } else { fg })
                                     .child("ES")
                                     .on_mouse_down(MouseButton::Left, {
                                         let view = view.clone();
-                                        move |_ev, _w, cx| view.update(cx, |app, cx| {
-                                            let mut settings = app.state.settings.clone();
-                                            settings.language = Some("es".to_string());
-                                            crate::util::config::save_settings(&settings);
-                                            app.state.settings = settings;
-                                            rust_i18n::set_locale("es");
-                                            cx.notify();
-                                        })
+                                        move |_ev, _w, cx| {
+                                            view.update(cx, |app, cx| {
+                                                let mut settings = app.state.settings.clone();
+                                                settings.language = Some("es".to_string());
+                                                crate::util::config::save_settings(&settings);
+                                                app.state.settings = settings;
+                                                rust_i18n::set_locale("es");
+                                                cx.notify();
+                                            })
+                                        }
                                     })
-                            })
-                    )
+                            }),
+                    ),
             )
             .child(
-                h_flex().gap_2().items_center().justify_between()
-                    .child(div().text_sm().child(rust_i18n::t!("settings_zoom").to_string()))
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .justify_between()
                     .child(
-                        h_flex().gap_1().items_center()
+                        div()
+                            .text_sm()
+                            .child(rust_i18n::t!("settings_zoom").to_string()),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
                             .child(
-                                div().cursor_pointer().px_2().py_1().rounded_md().bg(surface).text_color(fg)
+                                div()
+                                    .cursor_pointer()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(surface)
+                                    .text_color(fg)
                                     .child("-")
                                     .on_mouse_down(MouseButton::Left, {
                                         let view = view.clone();
-                                        move |_ev, window_cx, cx| {
+                                        move |_ev, _w, cx| {
                                             view.update(cx, |app, cx| {
-                                                let mut settings = app.state.settings.clone();
-                                                settings.global_zoom = (settings.global_zoom / 1.1).max(0.5);
-                                                crate::util::config::save_settings(&settings);
-                                                app.state.settings = settings;
+                                                app.process_actions(vec![Action::ZoomOut]);
                                                 cx.notify();
                                             });
-                                            let zoom = view.read(cx).state.settings.global_zoom;
-                                            window_cx.set_rem_size(zoom * 16.0);
                                         }
-                                    })
+                                    }),
                             )
                             .child(
-                                div().cursor_pointer().px_2().py_1().rounded_md().bg(surface).text_color(fg)
+                                div()
+                                    .cursor_pointer()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(surface)
+                                    .text_color(fg)
                                     .child(format!("{:.0}%", s.global_zoom * 100.0))
                                     .on_mouse_down(MouseButton::Left, {
                                         let view = view.clone();
-                                        move |_ev, window_cx, cx| {
+                                        move |_ev, _w, cx| {
                                             view.update(cx, |app, cx| {
-                                                let mut settings = app.state.settings.clone();
-                                                settings.global_zoom = 1.0;
-                                                crate::util::config::save_settings(&settings);
-                                                app.state.settings = settings;
+                                                app.process_actions(vec![Action::ZoomReset]);
                                                 cx.notify();
                                             });
-                                            let zoom = view.read(cx).state.settings.global_zoom;
-                                            window_cx.set_rem_size(zoom * 16.0);
                                         }
-                                    })
+                                    }),
                             )
                             .child(
-                                div().cursor_pointer().px_2().py_1().rounded_md().bg(surface).text_color(fg)
+                                div()
+                                    .cursor_pointer()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(surface)
+                                    .text_color(fg)
                                     .child("+")
                                     .on_mouse_down(MouseButton::Left, {
                                         let view = view.clone();
-                                        move |_ev, window_cx, cx| {
+                                        move |_ev, _w, cx| {
                                             view.update(cx, |app, cx| {
-                                                let mut settings = app.state.settings.clone();
-                                                settings.global_zoom = (settings.global_zoom * 1.1).min(3.0);
-                                                crate::util::config::save_settings(&settings);
-                                                app.state.settings = settings;
+                                                app.process_actions(vec![Action::ZoomIn]);
                                                 cx.notify();
                                             });
-                                            let zoom = view.read(cx).state.settings.global_zoom;
-                                            window_cx.set_rem_size(zoom * 16.0);
                                         }
-                                    })
-                            )
-                    )
+                                    }),
+                            ),
+                    ),
             )
             .child(toggle(
                 &rust_i18n::t!("settings_show_hidden"),
@@ -374,12 +411,9 @@ impl App {
                 |app| app.state.settings.show_inspector = !app.state.settings.show_inspector,
                 view.clone(),
             ))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(muted)
-                    .child(rust_i18n::t!("settings_inspector_placement", placement = placement).to_string()),
-            )
+            .child(div().text_xs().text_color(muted).child(
+                rust_i18n::t!("settings_inspector_placement", placement = placement).to_string(),
+            ))
             .child(
                 h_flex()
                     .gap_2()
@@ -402,10 +436,9 @@ impl App {
                     )),
             )
             .child(
-                div()
-                    .text_xs()
-                    .text_color(muted)
-                    .child(rust_i18n::t!("settings_default_view", view_mode = view_mode).to_string()),
+                div().text_xs().text_color(muted).child(
+                    rust_i18n::t!("settings_default_view", view_mode = view_mode).to_string(),
+                ),
             )
             .child(
                 h_flex()
@@ -448,7 +481,12 @@ impl App {
                     .child(rust_i18n::t!("settings_theme", theme = active_theme).to_string()),
             )
             .child(theme_section)
-            .child(div().text_xs().text_color(muted).child(rust_i18n::t!("settings_sizes").to_string()))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(rust_i18n::t!("settings_sizes").to_string()),
+            )
             .child(stepper(
                 "set-sidebar-width",
                 &rust_i18n::t!("settings_sidebar"),
@@ -509,7 +547,12 @@ impl App {
                 },
                 view,
             ))
-            .child(div().text_xs().text_color(muted).child(rust_i18n::t!("settings_about").to_string()))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(rust_i18n::t!("settings_about").to_string()),
+            )
             .child(
                 h_flex()
                     .gap_1()
@@ -537,10 +580,24 @@ impl App {
             move |this| this.state.overlay.show_settings = false,
             scrim_focus,
             // FASE I: subtle fade-in for the settings panel.
-            panel
+            div()
+                .id("settings-panel")
+                .w(px(480.))
+                .max_h(px(560.))
+                .bg(popover)
+                .text_color(fg)
+                .border_1()
+                .border_color(border)
+                .rounded_lg()
+                .shadow_lg()
+                .overflow_hidden()
+                .occlude()
+                .relative()
+                .child(panel)
+                .vertical_scrollbar(&self.settings_scroll)
                 .with_animation(
                     "settings-fade",
-                    gpui::Animation::new(std::time::Duration::from_millis(140)),
+                    motion::animation(motion::PANEL_MS),
                     gpui::Styled::opacity,
                 )
                 .into_any_element(),
@@ -549,6 +606,4 @@ impl App {
     }
 
     // ── batch rename ─────────────────────────────────────────────────────────
-
 }
-

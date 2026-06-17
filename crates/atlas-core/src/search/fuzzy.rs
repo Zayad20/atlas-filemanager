@@ -68,11 +68,7 @@ impl FuzzyScorer {
     /// Byte ranges of the characters in `hay` matched by `query` (for match
     /// highlighting), contiguous runs merged. `None` when there is no match
     /// or the query is empty.
-    pub fn match_ranges(
-        &mut self,
-        query: &str,
-        hay: &str,
-    ) -> Option<Vec<std::ops::Range<usize>>> {
+    pub fn match_ranges(&mut self, query: &str, hay: &str) -> Option<Vec<std::ops::Range<usize>>> {
         if query.trim().is_empty() {
             return None;
         }
@@ -119,7 +115,12 @@ mod tests {
     #[test]
     fn ranks_and_filters() {
         let mut scorer = FuzzyScorer::new();
-        let items = ["Open Settings", "New Tab", "Toggle Sidebar", "Split Vertical"];
+        let items = [
+            "Open Settings",
+            "New Tab",
+            "Toggle Sidebar",
+            "Split Vertical",
+        ];
         let ranked = scorer.rank("set", items);
         // Only "Open Settings" matches all of s-e-t contiguously best; others may
         // fuzzy-match but must rank below it.

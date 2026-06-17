@@ -5,3 +5,4 @@ build*.txt
 *.bak
 # Vendored binaries (not committed; distributed separately or resolved at runtime)
 crates/atlas-core/vendor/unrar-bin/
+.env
