@@ -33,6 +33,9 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.tick_tab_close() {
+            cx.notify();
+        }
         crate::perf::count("render.dock");
         let _perf = crate::perf::span_detail("dock.render", || {
             format!(

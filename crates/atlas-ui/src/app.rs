@@ -726,8 +726,7 @@ const DRAIN_INTERVAL: Duration = Duration::from_millis(100);
 const PALETTE_CLOSE_FINALIZE: Duration = Duration::from_millis(150);
 // How long a pane's close-out animation runs before it's removed from the dock.
 pub(crate) const PANE_CLOSE_FINALIZE: Duration = DockSplitAnimation::DURATION;
-pub(crate) const TAB_CLOSE_FINALIZE: Duration =
-    Duration::from_millis(crate::ui::motion::PANEL_MS);
+pub(crate) const TAB_CLOSE_FINALIZE: Duration = Duration::from_millis(crate::ui::motion::TAB_MS);
 
 /// Map the user's scroll-smoothness setting (0 = instant … 1 = silky) to the gpui
 /// scroll handle's (ease, boost). `ease` is the fraction of remaining distance closed
