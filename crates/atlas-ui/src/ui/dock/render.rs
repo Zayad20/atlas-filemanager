@@ -267,6 +267,7 @@ impl App {
     ) -> AnyElement {
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
+        let accent = cx.theme().accent;
         let tab_bar_bg = backdrop_tint(cx.theme().tab_bar, 0.16);
         let active_bg = backdrop_tint(cx.theme().tab_active, 0.22);
         let active_fg = cx.theme().tab_active_foreground;
@@ -368,6 +369,7 @@ impl App {
                     move |this, t| {
                         this.opacity(0.35 + 0.65 * t)
                             .paint_offset(gpui::point(px(0.), px(3.0 * (1.0 - t))))
+                            .bg(accent.opacity(0.18 * (1.0 - t)))
                     },
                 )
                 .into_any_element()

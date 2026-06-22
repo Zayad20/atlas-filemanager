@@ -249,12 +249,21 @@ impl Panel for FilePanel {
 }
 
 impl Render for FilePanel {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pane_id = self.pane_id;
         crate::perf::count("render.file_panel");
         let _perf = crate::perf::span_detail("file_panel.render", || format!("pane={}", pane_id.0));
         match self.app.upgrade() {
-            Some(_app) => {
+            Some(app) => {
+                let animation = {
+                    let app = app.read(cx);
+                    (!app.state.settings.disable_animations)
+                        .then(|| app.pane_animation_for(pane_id))
+                        .flatten()
+                        .filter(|animation| {
+                            matches!(animation.kind, crate::app::PaneAnimationKind::NewTab)
+                        })
+                };
                 let content = AnyView::from(self.content.clone())
                     .cached(StyleRefinement::default().v_flex().size_full());
                 let bounds_app = self.app.clone();
@@ -270,7 +279,17 @@ impl Render for FilePanel {
                     },
                 );
 
-                panel.into_any_element()
+                if let Some(animation) = animation {
+                    panel
+                        .with_animation(
+                            animation_key("file-pane-motion", pane_id, animation),
+                            motion::animation(motion::TAB_MS),
+                            |this, t| this.opacity(0.55 + 0.45 * t),
+                        )
+                        .into_any_element()
+                } else {
+                    panel.into_any_element()
+                }
             }
             None => div().into_any_element(),
         }
