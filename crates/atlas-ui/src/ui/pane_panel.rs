@@ -265,7 +265,11 @@ impl Render for FilePanel {
                 };
                 // Suppress animation when the setting is off — the pane renders at its
                 // final state immediately, saving all per-frame repaint cost.
-                let animation = animation.filter(|_| animations_enabled);
+                let animation = animation
+                    .filter(|_| animations_enabled)
+                    .filter(|animation| {
+                        matches!(animation.kind, crate::app::PaneAnimationKind::NewTab)
+                    });
                 let closing = closing.filter(|_| animations_enabled);
                 let content = AnyView::from(self.content.clone())
                     .cached(StyleRefinement::default().v_flex().size_full());
@@ -313,20 +317,13 @@ impl Render for FilePanel {
                                 let s = motion::PANE_SPRING.value(t * settle_secs);
                                 let inv = 1.0 - s; // overshoots slightly negative
                                 let mut y = 0.0;
-                                let mut scale = 1.0;
-                                let mut inset = 0.0;
                                 if matches!(animation.kind, crate::app::PaneAnimationKind::NewTab) {
                                     y = 10.0 * inv;
-                                } else {
-                                    scale = (0.62 + 0.38 * s).clamp(0.62, 1.08);
-                                    inset = (24.0 * inv).max(0.0);
                                 }
                                 // Opacity ramps ahead of position so content is readable
                                 // while the pane is still settling.
                                 this.opacity((0.35 + 0.9 * s).clamp(0.0, 1.0))
                                     .paint_offset(point(px(0.), px(y)))
-                                    .m(px(inset))
-                                    .scale(scale)
                             },
                         )
                         .into_any_element()
