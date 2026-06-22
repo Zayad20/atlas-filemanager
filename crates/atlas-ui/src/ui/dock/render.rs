@@ -138,7 +138,12 @@ impl App {
         child: AnyElement,
         intro: Option<PaneAnimation>,
     ) -> AnyElement {
-        let inner = div().size_full().min_w(px(0.)).min_h(px(0.)).child(child);
+        let inner = div()
+            .size_full()
+            .min_w(px(0.))
+            .min_h(px(0.))
+            .overflow_hidden()
+            .child(child);
         let Some(intro) = intro else {
             return inner.into_any_element();
         };
@@ -151,7 +156,7 @@ impl App {
                     let s = crate::ui::motion::PANE_SPRING.value(t * settle_secs);
                     let inv = (1.0 - s).max(0.0);
                     this.opacity((0.25 + 0.9 * s).clamp(0.0, 1.0))
-                        .m(px(42.0 * inv))
+                        .p(px(42.0 * inv))
                         .scale((0.48 + 0.52 * s).clamp(0.48, 1.10))
                 },
             )

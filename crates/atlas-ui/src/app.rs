@@ -366,7 +366,7 @@ pub(crate) struct PaneAnimation {
 }
 
 impl PaneAnimation {
-    const TTL: Duration = Duration::from_millis(crate::ui::motion::PANE_MS);
+    const TTL: Duration = DockSplitAnimation::DURATION;
 
     pub(crate) fn new(kind: PaneAnimationKind) -> Self {
         Self {
