@@ -411,6 +411,7 @@ pub(crate) struct DockSplitAnimation {
     pub(crate) from: Vec<f32>,
     pub(crate) to: Vec<f32>,
     pub(crate) started: Instant,
+    pub(crate) closing: bool,
 }
 
 impl DockSplitAnimation {
@@ -422,6 +423,7 @@ impl DockSplitAnimation {
                 from: Vec::new(),
                 to,
                 started: Instant::now(),
+                closing: false,
             };
         }
         let mut from = to.clone();
@@ -452,6 +454,7 @@ impl DockSplitAnimation {
             from,
             to,
             started: Instant::now(),
+            closing: false,
         }
     }
 
@@ -474,12 +477,18 @@ impl DockSplitAnimation {
             from,
             to,
             started: Instant::now(),
+            closing: true,
         }
     }
 
     pub(crate) fn shares(&self) -> Vec<f32> {
         let t = (self.started.elapsed().as_secs_f32() / Self::DURATION.as_secs_f32()).min(1.0);
         let eased = split_spring(t * Self::DURATION.as_secs_f32());
+        let eased = if self.closing {
+            eased.clamp(0.0, 1.0)
+        } else {
+            eased
+        };
         self.from
             .iter()
             .zip(&self.to)

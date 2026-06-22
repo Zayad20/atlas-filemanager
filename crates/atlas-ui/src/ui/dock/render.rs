@@ -174,7 +174,8 @@ impl App {
                     let visible = match motion {
                         SplitMotion::Opening(_) => s,
                         SplitMotion::Closing(_) => 1.0 - s,
-                    };
+                    }
+                    .clamp(0.0, 1.0);
                     let hidden = (1.0 - visible).clamp(0.0, 1.0);
                     this.opacity((0.25 + 0.9 * visible).clamp(0.0, 1.0))
                         .p(px(42.0 * hidden))
