@@ -170,6 +170,9 @@ pub struct App {
     /// Panes mid close-out animation: kept mounted (and in the dock) until the exit
     /// animation elapses, then a `DockOp::Remove` is queued. Mirrors `palette_closing`.
     pub(crate) pane_closing: HashMap<TileId, Instant>,
+    /// Tabs mid close-out animation inside an existing tab strip. Separate from
+    /// `pane_closing` so a tab close never triggers split/pane collapse motion.
+    pub(crate) tab_closing: HashMap<TileId, Instant>,
     /// Set when the dock's structure changed (programmatic op or interactive drag) and
     /// `pane_tree` needs to be resynced. Drained once per render in `ensure_dock`, so
     /// many `LayoutChanged` events coalesce into a single synchronous reconcile (no
@@ -723,6 +726,8 @@ const DRAIN_INTERVAL: Duration = Duration::from_millis(100);
 const PALETTE_CLOSE_FINALIZE: Duration = Duration::from_millis(150);
 // How long a pane's close-out animation runs before it's removed from the dock.
 pub(crate) const PANE_CLOSE_FINALIZE: Duration = DockSplitAnimation::DURATION;
+pub(crate) const TAB_CLOSE_FINALIZE: Duration =
+    Duration::from_millis(crate::ui::motion::PANEL_MS);
 
 /// Map the user's scroll-smoothness setting (0 = instant … 1 = silky) to the gpui
 /// scroll handle's (ease, boost). `ease` is the fraction of remaining distance closed

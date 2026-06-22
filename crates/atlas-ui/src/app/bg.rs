@@ -78,6 +78,26 @@ impl App {
         !done.is_empty()
     }
 
+    /// Remove inner tabs whose close-out chip animation has elapsed.
+    pub(crate) fn tick_tab_close(&mut self) -> bool {
+        if self.tab_closing.is_empty() {
+            return false;
+        }
+        let done: Vec<TileId> = self
+            .tab_closing
+            .iter()
+            .filter(|(_, started)| started.elapsed() >= crate::app::TAB_CLOSE_FINALIZE)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &done {
+            self.tab_closing.remove(id);
+        }
+        if !done.is_empty() {
+            self.remove_panes_from_tree(&done);
+        }
+        !done.is_empty()
+    }
+
     /// Apply every queued background result to state. Returns `true` if at least
     /// one result was processed (i.e. a repaint is warranted).
     /// Drain the Windows OLE drop-target action queue and route payloads to

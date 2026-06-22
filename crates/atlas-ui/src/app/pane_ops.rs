@@ -564,7 +564,7 @@ impl App {
             )
         });
         // Already animating out — a held Ctrl+W must not re-queue it.
-        if self.pane_closing.contains_key(&tab_id) {
+        if self.pane_closing.contains_key(&tab_id) || self.tab_closing.contains_key(&tab_id) {
             return;
         }
         // Keep at least one open (non-closing) pane.
@@ -578,16 +578,22 @@ impl App {
                 _ => 0,
             };
             if tab_count > 1 {
-                if self.focus_needs_reassign(&[tab_id]) {
-                    if let Some(next) = self.focus_after_closing(&[tab_id]) {
-                        self.state.focused_tile = next;
-                    }
+                let next = self.focus_after_closing(&[tab_id]);
+                if let Some(next) = next {
+                    self.state
+                        .pane_tree
+                        .make_active(|tile_id, _| tile_id == next);
+                    self.state.focused_tile = next;
                 }
                 eprintln!(
                     "[atlas close] close_inner_tab tab={} tabs={} count={}",
                     tab_id.0, tabs_id.0, tab_count
                 );
-                self.remove_panes_from_tree(&[tab_id]);
+                if self.state.settings.disable_animations {
+                    self.remove_panes_from_tree(&[tab_id]);
+                } else {
+                    self.tab_closing.insert(tab_id, Instant::now());
+                }
                 return;
             }
         }
@@ -770,6 +776,7 @@ impl App {
         self.state.clear_preview(pane_id);
         self.drop_pane_signal(pane_id);
         self.file_panel_cache.remove(&pane_id);
+        self.tab_closing.remove(&pane_id);
         self.pane_items_appear.remove(&pane_id);
         self.pane_animations.remove(&pane_id);
         self.pane_layout_bounds.remove(&pane_id);

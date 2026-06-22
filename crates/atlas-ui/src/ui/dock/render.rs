@@ -21,6 +21,12 @@ enum SplitMotion {
     Closing(Instant),
 }
 
+#[derive(Clone, Copy, Debug)]
+enum TabMotion {
+    Opening(Instant),
+    Closing(Instant),
+}
+
 impl App {
     pub(crate) fn render_custom_dock(
         &mut self,
@@ -293,9 +299,18 @@ impl App {
                 .then(|| self.pane_animation_for(pane_id))
                 .flatten()
                 .filter(|animation| matches!(animation.kind, PaneAnimationKind::NewTab));
+            let motion = if let Some(started) = self.tab_closing.get(&pane_id).copied() {
+                Some(TabMotion::Closing(started))
+            } else {
+                animation.map(|animation| TabMotion::Opening(animation.started))
+            };
             let activate_app = app.clone();
             let close_app = app.clone();
-            let tab_glow = animation.map(|animation| {
+            let tab_glow = motion.map(|motion| {
+                let (key, color) = match motion {
+                    TabMotion::Opening(started) => (("open", started), accent),
+                    TabMotion::Closing(started) => (("close", started), cx.theme().danger),
+                };
                 div()
                     .absolute()
                     .left_0()
@@ -303,9 +318,9 @@ impl App {
                     .bottom_0()
                     .h(px(2.))
                     .rounded(px(2.))
-                    .bg(accent)
+                    .bg(color)
                     .with_animation(
-                        crate::ui::motion::keyed("custom-tab-glow", pane_id.0, animation.started),
+                        crate::ui::motion::keyed("custom-tab-glow", pane_id.0, key),
                         crate::ui::motion::animation(crate::ui::motion::PANEL_MS),
                         move |this, t| this.opacity((1.0 - t).clamp(0.0, 1.0)),
                     )
@@ -379,13 +394,18 @@ impl App {
                         }),
                 )
                 .children(tab_glow);
-            let tab = if let Some(animation) = animation {
+            let tab = if let Some(motion) = motion {
+                let (key, closing) = match motion {
+                    TabMotion::Opening(started) => (("open", started), false),
+                    TabMotion::Closing(started) => (("close", started), true),
+                };
                 tab.with_animation(
-                    crate::ui::motion::keyed("custom-tab-intro", pane_id.0, animation.started),
+                    crate::ui::motion::keyed("custom-tab-intro", pane_id.0, key),
                     crate::ui::motion::animation(crate::ui::motion::PANEL_MS),
                     move |this, t| {
-                        this.opacity(0.20 + 0.80 * t)
-                            .paint_offset(gpui::point(px(0.), px(3.0 * (1.0 - t))))
+                        let visible = if closing { 1.0 - t } else { t };
+                        this.opacity(0.20 + 0.80 * visible)
+                            .paint_offset(gpui::point(px(0.), px(3.0 * (1.0 - visible))))
                     },
                 )
                 .into_any_element()
