@@ -211,9 +211,7 @@ impl App {
         if anim.closing && (elapsed_ms < 20 || elapsed_ms % 80 < 18) {
             eprintln!(
                 "[atlas close] split_frame parent={} elapsed_ms={} shares={:?}",
-                id.0,
-                elapsed_ms,
-                shares
+                id.0, elapsed_ms, shares
             );
         }
         shares
@@ -290,6 +288,10 @@ impl App {
                 .map(|t| display_name(&t.location.display_path()))
                 .unwrap_or_else(|| rust_i18n::t!("fallback_tab_title").to_string());
             let is_active = Some(pane_id) == active;
+            let animation = (!self.state.settings.disable_animations)
+                .then(|| self.pane_animation_for(pane_id))
+                .flatten()
+                .filter(|animation| matches!(animation.kind, PaneAnimationKind::NewTab));
             let activate_app = app.clone();
             let close_app = app.clone();
             let tab = h_flex()
@@ -359,6 +361,19 @@ impl App {
                             cx.stop_propagation();
                         }),
                 );
+            let tab = if let Some(animation) = animation {
+                tab.with_animation(
+                    crate::ui::motion::keyed("custom-tab-intro", pane_id.0, animation.started),
+                    crate::ui::motion::animation(crate::ui::motion::TAB_MS),
+                    move |this, t| {
+                        this.opacity(0.35 + 0.65 * t)
+                            .paint_offset(gpui::point(px(0.), px(3.0 * (1.0 - t))))
+                    },
+                )
+                .into_any_element()
+            } else {
+                tab.into_any_element()
+            };
             strip = strip.child(tab);
         }
 

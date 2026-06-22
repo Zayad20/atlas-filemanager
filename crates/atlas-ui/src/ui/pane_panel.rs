@@ -19,8 +19,8 @@ use crate::ui::tooltips::shortcut_tooltip;
 use crate::util::display::display_name;
 use gpui::prelude::*;
 use gpui::{
-    div, point, px, AnimationExt, AnyView, App, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, IntoElement, MouseButton, Render, SharedString, StyleRefinement, WeakEntity, Window,
+    div, px, AnimationExt, AnyView, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    IntoElement, MouseButton, Render, SharedString, StyleRefinement, WeakEntity, Window,
 };
 use gpui_component::dock::{Panel, PanelEvent, PanelInfo, PanelState};
 use gpui_component::{h_flex, ActiveTheme as _, ElementExt as _, StyledExt as _};
@@ -249,26 +249,12 @@ impl Panel for FilePanel {
 }
 
 impl Render for FilePanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let pane_id = self.pane_id;
         crate::perf::count("render.file_panel");
         let _perf = crate::perf::span_detail("file_panel.render", || format!("pane={}", pane_id.0));
         match self.app.upgrade() {
-            Some(app) => {
-                let (animation, animations_enabled) = {
-                    let app = app.read(cx);
-                    (
-                        app.pane_animation_for(pane_id),
-                        !app.state.settings.disable_animations,
-                    )
-                };
-                // Suppress animation when the setting is off — the pane renders at its
-                // final state immediately, saving all per-frame repaint cost.
-                let animation = animation
-                    .filter(|_| animations_enabled)
-                    .filter(|animation| {
-                        matches!(animation.kind, crate::app::PaneAnimationKind::NewTab)
-                    });
+            Some(_app) => {
                 let content = AnyView::from(self.content.clone())
                     .cached(StyleRefinement::default().v_flex().size_full());
                 let bounds_app = self.app.clone();
@@ -284,20 +270,7 @@ impl Render for FilePanel {
                     },
                 );
 
-                if let Some(animation) = animation {
-                    panel
-                        .with_animation(
-                            animation_key("file-pane-motion", pane_id, animation),
-                            motion::animation(motion::TAB_MS),
-                            move |this, t| {
-                                this.opacity(0.45 + 0.55 * t)
-                                    .paint_offset(point(px(0.), px(4.0 * (1.0 - t))))
-                            },
-                        )
-                        .into_any_element()
-                } else {
-                    panel.into_any_element()
-                }
+                panel.into_any_element()
             }
             None => div().into_any_element(),
         }
