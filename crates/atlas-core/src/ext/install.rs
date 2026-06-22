@@ -66,16 +66,24 @@ pub fn uninstall(id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Write a manifest-only extension to disk if it isn't already installed. Used to
-/// seed bundled extensions (e.g. file-tools) on first run.
+/// Write/update a manifest-only bundled extension on disk.
 pub fn ensure_bundled(id: &str, manifest_toml: &str) -> anyhow::Result<()> {
     let dir = super::extensions_dir().join(id);
     let manifest_path = dir.join("extension.toml");
-    if manifest_path.is_file() {
-        return Ok(());
-    }
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(&manifest_path, manifest_toml)?;
+    let current = std::fs::read_to_string(&manifest_path).unwrap_or_default();
+    if current != manifest_toml {
+        std::fs::write(&manifest_path, manifest_toml)?;
+    }
+    Ok(())
+}
+
+/// Seed a bundled extension and copy any bundled assets that are not already present.
+pub fn ensure_bundled_with_assets(id: &str, manifest_toml: &str, src: &Path) -> anyhow::Result<()> {
+    ensure_bundled(id, manifest_toml)?;
+    if src.is_dir() {
+        copy_dir_missing(src, &super::extensions_dir().join(id))?;
+    }
     Ok(())
 }
 
@@ -89,6 +97,21 @@ fn copy_dir(src: &Path, dest: &Path) -> anyhow::Result<()> {
         if from.is_dir() {
             copy_dir(&from, &to)?;
         } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_dir_missing(src: &Path, dest: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dest)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_missing(&from, &to)?;
+        } else if !to.exists() {
             std::fs::copy(&from, &to)?;
         }
     }

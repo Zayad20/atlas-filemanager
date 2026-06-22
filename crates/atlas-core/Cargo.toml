@@ -69,6 +69,7 @@ futures-util = { version = "0.3", default-features = false, optional = true }
 extism = "1.0.1"
 sevenz-rust2 = { version = "0.21.0", optional = true }
 tempfile = "3"
+calamine = "0.26"
 
 [dev-dependencies]
 

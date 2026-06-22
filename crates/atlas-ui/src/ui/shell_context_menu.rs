@@ -211,7 +211,12 @@ impl App {
         // Physical screen pixels for the eventual native invoke.
         let screen_pt = cursor_screen_pos();
 
-        let input = crate::ui::text_input::single_line(window, cx, "Buscar acciones…", "");
+        let input = crate::ui::text_input::single_line(
+            window,
+            cx,
+            rust_i18n::t!("search_actions").into_owned(),
+            "",
+        );
         // The menu is painted inline by App; typed characters change the InputState
         // but won't repaint unless we notify. Mirror `PaletteHost`'s subscription.
         self.ctx_menu_sub = Some(cx.subscribe(
@@ -462,6 +467,9 @@ impl App {
                 t.accent_foreground,
             )
         };
+        let (smooth_ease, smooth_boost) =
+            crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
+        self.ctx_menu_scroll.set_smooth(smooth_ease, smooth_boost);
         let input = self.ctx_menu_input.clone();
         let query = input
             .as_ref()
@@ -525,7 +533,7 @@ impl App {
                             .gap_2()
                             .text_color(muted)
                             .text_sm()
-                            .child(div().child("Cargando acciones del sistema…"))
+                            .child(div().child(rust_i18n::t!("loading_actions")))
                             .into_any_element(),
                     );
                 }
@@ -987,6 +995,7 @@ impl App {
     }
 
     /// Open the background right-click menu anchored at `anchor` (no file selection).
+    #[allow(dead_code)]
     pub(crate) fn open_background_ctx_menu(
         &mut self,
         anchor: Point<Pixels>,
@@ -996,7 +1005,12 @@ impl App {
         self.ctx_menu_seq += 1;
         let menu_id = self.ctx_menu_seq;
         let screen_pt = cursor_screen_pos();
-        let input = crate::ui::text_input::single_line(window, cx, "Buscar acciones…", "");
+        let input = crate::ui::text_input::single_line(
+            window,
+            cx,
+            rust_i18n::t!("search_actions").into_owned(),
+            "",
+        );
         self.ctx_menu_sub = Some(cx.subscribe(
             &input,
             |_this, _input, ev: &gpui_component::input::InputEvent, cx| {

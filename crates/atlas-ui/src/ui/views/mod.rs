@@ -19,8 +19,8 @@ impl App {
     pub(super) fn empty_pane_message(
         &self,
         pane_id: TabId,
-        empty_message: &'static str,
-    ) -> Option<&'static str> {
+        empty_message: String,
+    ) -> Option<String> {
         let load_state = self.state.tab_states.get(&pane_id).map(|t| &t.load_state);
         match load_state {
             Some(LoadState::Loading) => {
@@ -34,9 +34,9 @@ impl App {
                         _ => None,
                     })
                     .is_some_and(should_suppress_loading);
-                (!local_dir).then_some("Cargando…")
+                (!local_dir).then(|| rust_i18n::t!("miller_loading").into_owned())
             }
-            Some(LoadState::Error(_)) => Some("No se pudo leer la carpeta"),
+            Some(LoadState::Error(_)) => Some(rust_i18n::t!("miller_error").into_owned()),
             _ => Some(empty_message),
         }
     }

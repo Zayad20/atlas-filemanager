@@ -7,10 +7,11 @@
 //! plus declarative/sidecar extensions discovered under the extensions directory.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::manifest::{ExtCommand, ExtKind, Manifest};
 pub use atlas_model::ext_model::CommandRef;
+use atlas_model::ext_model::ToolSpec;
 
 /// A loaded extension and its runtime state.
 #[derive(Debug, Clone)]
@@ -25,6 +26,13 @@ pub struct Extension {
 #[derive(Default)]
 pub struct Registry {
     pub extensions: Vec<Extension>,
+    tools: HashMap<String, PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolInstallRequest {
+    pub provider_dir: PathBuf,
+    pub tool: ToolSpec,
 }
 
 impl Registry {
@@ -64,7 +72,8 @@ impl Registry {
                 });
             }
         }
-        Self { extensions }
+        let tools = collect_tools(&extensions);
+        Self { extensions, tools }
     }
 
     pub fn get(&self, id: &str) -> Option<&Extension> {
@@ -82,12 +91,13 @@ impl Registry {
     pub fn declarative_commands(&self) -> Vec<(String, ExtCommand)> {
         self.extensions
             .iter()
-            .filter(|e| e.enabled && e.manifest.kind == ExtKind::Declarative)
+            .filter(|e| e.enabled && !e.manifest.hidden && e.manifest.kind == ExtKind::Declarative)
             .flat_map(|e| {
                 let id = e.manifest.id.clone();
                 e.manifest
                     .commands
                     .iter()
+                    .filter(|c| !c.thumbnail && !c.preview)
                     .map(move |c| (id.clone(), c.clone()))
             })
             .collect()
@@ -102,6 +112,7 @@ impl Registry {
             ext_dir: ext.dir.clone(),
             kind: ext.manifest.kind,
             command: command.clone(),
+            tools: self.required_tools(command)?,
         })
     }
 
@@ -119,18 +130,72 @@ impl Registry {
                 if !cmd.accepts.matches(Some(ext), false) {
                     continue;
                 }
-                if !cmd.requires.iter().all(|b| has_binary(b)) {
+                let Some(tools) = self.required_tools(cmd) else {
                     continue;
-                }
+                };
                 return Some(CommandRef {
                     ext_id: extension.manifest.id.clone(),
                     ext_dir: extension.dir.clone(),
                     kind: extension.manifest.kind,
                     command: cmd.clone(),
+                    tools,
                 });
             }
         }
         None
+    }
+
+    /// Find an enabled inspector previewer command that accepts files with extension
+    /// `ext`. Returns the first match; required binaries must be present.
+    pub fn previewer_for(&self, ext: &str) -> Option<CommandRef> {
+        for extension in self.extensions.iter().filter(|e| e.enabled) {
+            for cmd in &extension.manifest.commands {
+                if !cmd.preview {
+                    continue;
+                }
+                if !cmd.accepts.matches(Some(ext), false) {
+                    continue;
+                }
+                let Some(tools) = self.required_tools(cmd) else {
+                    continue;
+                };
+                return Some(CommandRef {
+                    ext_id: extension.manifest.id.clone(),
+                    ext_dir: extension.dir.clone(),
+                    kind: extension.manifest.kind,
+                    command: cmd.clone(),
+                    tools,
+                });
+            }
+        }
+        None
+    }
+
+    pub fn missing_preview_tools_for(&self, ext: &str) -> Option<(String, Vec<String>)> {
+        for extension in self.extensions.iter().filter(|e| e.enabled) {
+            for cmd in &extension.manifest.commands {
+                if !cmd.preview || !cmd.accepts.matches(Some(ext), false) {
+                    continue;
+                }
+                let missing: Vec<String> = cmd
+                    .requires
+                    .iter()
+                    .filter(|name| self.resolve_tool(name).is_none())
+                    .cloned()
+                    .collect();
+                if !missing.is_empty() {
+                    return Some((extension.manifest.name.clone(), missing));
+                }
+            }
+        }
+        None
+    }
+
+    pub fn missing_preview_tool_install_for(&self, ext: &str) -> Option<ToolInstallRequest> {
+        let (_, missing) = self.missing_preview_tools_for(ext)?;
+        missing
+            .into_iter()
+            .find_map(|name| self.install_request_for_tool(&name))
     }
 
     /// Commands offered for a selection, described as `(extension, is_dir)` pairs.
@@ -138,12 +203,17 @@ impl Registry {
     pub fn commands_for(&self, selection: &[(Option<String>, bool)]) -> Vec<CommandRef> {
         let mut out = Vec::new();
         for ext in self.extensions.iter().filter(|e| e.enabled) {
-            if ext.manifest.kind == ExtKind::Builtin {
+            if ext.manifest.hidden
+                || matches!(ext.manifest.kind, ExtKind::Builtin | ExtKind::ToolProvider)
+            {
                 continue; // builtins wire their own UI
             }
             for cmd in &ext.manifest.commands {
                 if cmd.thumbnail {
                     continue; // thumbnailers are background-only, not menu entries
+                }
+                if cmd.preview {
+                    continue; // previewers are background-only, not menu entries
                 }
                 let applies = !selection.is_empty()
                     && selection
@@ -152,19 +222,94 @@ impl Registry {
                 if !applies {
                     continue;
                 }
-                if !cmd.requires.iter().all(|b| has_binary(b)) {
+                let Some(tools) = self.required_tools(cmd) else {
                     continue;
-                }
+                };
                 out.push(CommandRef {
                     ext_id: ext.manifest.id.clone(),
                     ext_dir: ext.dir.clone(),
                     kind: ext.manifest.kind,
                     command: cmd.clone(),
+                    tools,
                 });
             }
         }
         out
     }
+
+    pub fn resolve_tool(&self, name: &str) -> Option<PathBuf> {
+        self.tools.get(name).cloned().or_else(|| binary_path(name))
+    }
+
+    fn required_tools(&self, cmd: &ExtCommand) -> Option<HashMap<String, PathBuf>> {
+        let mut tools = HashMap::new();
+        for name in &cmd.requires {
+            tools.insert(name.clone(), self.resolve_tool(name)?);
+        }
+        Some(tools)
+    }
+
+    fn install_request_for_tool(&self, name: &str) -> Option<ToolInstallRequest> {
+        for ext in self
+            .extensions
+            .iter()
+            .filter(|e| e.enabled && e.manifest.kind == ExtKind::ToolProvider)
+        {
+            for tool in &ext.manifest.tools {
+                if tool.name == name
+                    && platform_matches(&tool.os, &tool.arch)
+                    && !tool.download_url.is_empty()
+                    && tool_archive_supported(&tool.archive_format)
+                {
+                    return Some(ToolInstallRequest {
+                        provider_dir: ext.dir.clone(),
+                        tool: tool.clone(),
+                    });
+                }
+            }
+        }
+        None
+    }
+}
+
+fn tool_archive_supported(format: &str) -> bool {
+    matches!(format, "zip" | "tgz") || cfg!(feature = "sevenz") && format == "7z"
+}
+
+fn collect_tools(extensions: &[Extension]) -> HashMap<String, PathBuf> {
+    let mut tools = HashMap::new();
+    for ext in extensions
+        .iter()
+        .filter(|e| e.enabled && e.manifest.kind == ExtKind::ToolProvider)
+    {
+        for tool in &ext.manifest.tools {
+            if !platform_matches(&tool.os, &tool.arch) {
+                continue;
+            }
+            let path = ext.dir.join(&tool.path);
+            if installed_tool_ok(&tool.name, &path) {
+                tools.insert(tool.name.clone(), path);
+            }
+        }
+    }
+    tools
+}
+
+fn installed_tool_ok(name: &str, path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    match name {
+        "pdftoppm" => path
+            .parent()
+            .is_some_and(|dir| dir.join("lcms2.dll").is_file()),
+        _ => true,
+    }
+}
+
+fn platform_matches(os: &str, arch: &str) -> bool {
+    (os.is_empty() || os == std::env::consts::OS)
+        && (arch.is_empty() || arch == std::env::consts::ARCH)
 }
 
 /// Compiled-in extensions. Cloud is one when its feature is enabled.
@@ -184,6 +329,8 @@ fn builtins(enabled: &HashMap<String, bool>) -> Vec<Extension> {
                 kind: ExtKind::Builtin,
                 sidecar: None,
                 wasm_module: None,
+                hidden: false,
+                tools: Vec::new(),
                 commands: Vec::new(),
             },
             dir: PathBuf::new(),
@@ -197,11 +344,250 @@ fn builtins(enabled: &HashMap<String, bool>) -> Vec<Extension> {
 
 /// Is `name` an executable on `PATH`? Cheap PATH scan (no process spawn).
 pub fn has_binary(name: &str) -> bool {
+    binary_path(name).is_some()
+}
+
+pub fn binary_path(name: &str) -> Option<PathBuf> {
+    let direct = Path::new(name);
+    if direct.is_file() {
+        return Some(direct.to_path_buf());
+    }
     let Some(paths) = std::env::var_os("PATH") else {
-        return false;
+        return None;
     };
-    std::env::split_paths(&paths).any(|dir| {
-        let candidate = dir.join(name);
-        candidate.is_file() || candidate.with_extension("exe").is_file()
-    })
+    std::env::split_paths(&paths)
+        .find_map(|dir| {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                Some(candidate)
+            } else {
+                let exe = candidate.with_extension("exe");
+                exe.is_file().then_some(exe)
+            }
+        })
+        .or_else(|| well_known_binary_path(name))
+}
+
+#[cfg(windows)]
+fn well_known_binary_path(name: &str) -> Option<PathBuf> {
+    match name {
+        "magick" => find_in_program_files("ImageMagick", "magick.exe"),
+        "gs" => find_in_program_files("gs", "gswin64c.exe"),
+        _ => None,
+    }
+}
+
+#[cfg(not(windows))]
+fn well_known_binary_path(_name: &str) -> Option<PathBuf> {
+    None
+}
+
+#[cfg(windows)]
+fn find_in_program_files(dir_prefix: &str, exe_name: &str) -> Option<PathBuf> {
+    ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .flat_map(|root| std::fs::read_dir(root).ok().into_iter().flatten())
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find_map(|path| {
+            let name = path.file_name()?.to_string_lossy();
+            if name.starts_with(dir_prefix) {
+                let exe = path.join(exe_name);
+                exe.is_file().then_some(exe)
+            } else {
+                None
+            }
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn registry_with(manifest: Manifest) -> Registry {
+        Registry {
+            extensions: vec![Extension {
+                manifest,
+                dir: PathBuf::new(),
+                enabled: true,
+                builtin: false,
+            }],
+            tools: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn preview_command_resolves_but_is_hidden_from_menus() {
+        let manifest = Manifest::parse(
+            r#"
+id = "docs"
+name = "Docs"
+kind = "declarative"
+
+[[commands]]
+id = "csv-preview"
+title = "CSV preview"
+preview = true
+output = "table"
+accepts = { extensions = ["csv"] }
+"#,
+        )
+        .unwrap();
+        let registry = registry_with(manifest);
+
+        assert!(registry.previewer_for("csv").is_some());
+        assert!(registry
+            .commands_for(&[(Some("csv".into()), false)])
+            .is_empty());
+        assert!(registry.declarative_commands().is_empty());
+    }
+
+    #[test]
+    fn thumbnail_command_does_not_mask_preview_command() {
+        let manifest = Manifest::parse(
+            r#"
+id = "docs"
+name = "Docs"
+kind = "declarative"
+
+[[commands]]
+id = "psd-thumb"
+title = "PSD thumb"
+thumbnail = true
+accepts = { extensions = ["psd"] }
+
+[[commands]]
+id = "psd-preview"
+title = "PSD preview"
+preview = true
+output = "image"
+accepts = { extensions = ["psd"] }
+"#,
+        )
+        .unwrap();
+        let registry = registry_with(manifest);
+
+        assert_eq!(
+            registry.previewer_for("psd").unwrap().command.id,
+            "psd-preview"
+        );
+    }
+
+    #[test]
+    fn tool_provider_satisfies_requires_without_menu_entry() {
+        let root = std::env::temp_dir().join(format!("atlas-tools-{}", uuid::Uuid::new_v4()));
+        let bin = root.join("tools").join("magick.exe");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, b"fake").unwrap();
+
+        let provider = Manifest::parse(
+            r#"
+id = "runtime-tools"
+name = "Runtime Tools"
+kind = "tool_provider"
+hidden = true
+
+[[tools]]
+name = "magick"
+path = "tools/magick.exe"
+"#,
+        )
+        .unwrap();
+        let previews = Manifest::parse(
+            r#"
+id = "docs"
+name = "Docs"
+kind = "builtin"
+
+[[commands]]
+id = "psd-preview"
+title = "PSD preview"
+preview = true
+requires = ["magick"]
+accepts = { extensions = ["psd"] }
+"#,
+        )
+        .unwrap();
+        let extensions = vec![
+            Extension {
+                manifest: provider,
+                dir: root.clone(),
+                enabled: true,
+                builtin: false,
+            },
+            Extension {
+                manifest: previews,
+                dir: PathBuf::new(),
+                enabled: true,
+                builtin: false,
+            },
+        ];
+        let registry = Registry {
+            tools: collect_tools(&extensions),
+            extensions,
+        };
+
+        let cmd = registry.previewer_for("psd").unwrap();
+        assert_eq!(cmd.tools.get("magick"), Some(&bin));
+        assert!(registry
+            .commands_for(&[(Some("psd".into()), false)])
+            .is_empty());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unsupported_tool_archive_is_not_auto_installable() {
+        let provider = Manifest::parse(
+            r#"
+id = "runtime-tools"
+name = "Runtime Tools"
+kind = "tool_provider"
+hidden = true
+
+[[tools]]
+name = "magick"
+path = "tools/magick.exe"
+download_url = "https://example.test/magick.rar"
+archive_format = "rar"
+"#,
+        )
+        .unwrap();
+        let previews = Manifest::parse(
+            r#"
+id = "docs"
+name = "Docs"
+kind = "builtin"
+
+[[commands]]
+id = "psd-preview"
+title = "PSD preview"
+preview = true
+requires = ["magick"]
+accepts = { extensions = ["psd"] }
+"#,
+        )
+        .unwrap();
+        let extensions = vec![
+            Extension {
+                manifest: provider,
+                dir: PathBuf::new(),
+                enabled: true,
+                builtin: false,
+            },
+            Extension {
+                manifest: previews,
+                dir: PathBuf::new(),
+                enabled: true,
+                builtin: false,
+            },
+        ];
+        let registry = Registry {
+            tools: HashMap::new(),
+            extensions,
+        };
+
+        assert!(registry.missing_preview_tool_install_for("psd").is_none());
+    }
 }

@@ -5,7 +5,10 @@ use anyhow::Result;
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use s3_client::{R2Client, RegistryExtension};
-use std::path::PathBuf;
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -27,6 +30,38 @@ enum Commands {
         #[arg(long, env = "R2_PUBLIC_URL")]
         public_url: String,
     },
+    /// Publish a Windows installer and update app/windows/latest.json
+    PublishApp {
+        /// The installer exe to upload
+        installer: PathBuf,
+        /// The app version in the installer
+        #[arg(long)]
+        version: String,
+        /// Release notes shown by the updater
+        #[arg(long, default_value = "Atlas update")]
+        notes: String,
+        /// The R2 bucket name
+        #[arg(long, env = "R2_BUCKET")]
+        bucket: String,
+        /// The public URL mapping for the bucket
+        #[arg(long, env = "R2_PUBLIC_URL")]
+        public_url: String,
+    },
+}
+
+#[derive(Serialize)]
+struct AppUpdateManifest {
+    version: String,
+    notes: String,
+    published_at: String,
+    windows: WindowsUpdate,
+}
+
+#[derive(Serialize)]
+struct WindowsUpdate {
+    url: String,
+    sha256: String,
+    size: u64,
 }
 
 #[tokio::main]
@@ -117,7 +152,77 @@ async fn main() -> Result<()> {
             // Clean up temp file
             let _ = std::fs::remove_file(temp_zip_path);
         }
+        Commands::PublishApp {
+            installer,
+            version,
+            notes,
+            bucket,
+            public_url,
+        } => {
+            let file_name = installer
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("AtlasSetup.exe");
+            let installer_key = format!("app/windows/versions/{file_name}");
+            let latest_key = "app/windows/latest.json";
+            let size = std::fs::metadata(installer)?.len();
+            let sha256 = sha256_file(installer)?;
+            let client = R2Client::new(bucket.clone(), public_url.clone()).await?;
+
+            println!("Uploading installer to R2: {installer_key}");
+            client
+                .upload_file(
+                    installer,
+                    &installer_key,
+                    "application/vnd.microsoft.portable-executable",
+                    "public, max-age=31536000, immutable",
+                )
+                .await?;
+
+            let manifest = AppUpdateManifest {
+                version: version.clone(),
+                notes: notes.clone(),
+                published_at: Utc::now().to_rfc3339(),
+                windows: WindowsUpdate {
+                    url: client.build_public_url(&installer_key),
+                    sha256,
+                    size,
+                },
+            };
+
+            println!("Updating {latest_key}");
+            client
+                .upload_bytes(
+                    serde_json::to_vec_pretty(&manifest)?,
+                    latest_key,
+                    "application/json",
+                    "no-cache",
+                )
+                .await?;
+
+            println!(
+                "Published Atlas {}: {}",
+                version,
+                client.build_public_url(latest_key)
+            );
+        }
     }
 
     Ok(())
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0; 64 * 1024];
+
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+
+    Ok(hex::encode(hasher.finalize()))
 }

@@ -20,6 +20,9 @@ pub enum ExtKind {
     Wasm,
     /// Implemented in-app (compiled in), e.g. the cloud extension.
     Builtin,
+    /// Hidden dependency package that contributes portable tools for commands.
+    #[serde(rename = "tool_provider")]
+    ToolProvider,
 }
 
 /// Optional sidecar process for `kind = "sidecar"`. Parsed now; the JSON-RPC
@@ -102,6 +105,25 @@ pub struct ExtCommand {
     /// video/3D/psd via ffmpeg/ImageMagick). Not shown in the context menu.
     #[serde(default)]
     pub thumbnail: bool,
+    /// When true, this command contributes an inspector preview for files it accepts.
+    /// Preview commands are background-only and are not shown in command menus.
+    #[serde(default)]
+    pub preview: bool,
+    /// Preview output format. Declarative previews write this to `{output}`; WASM
+    /// previews return the same JSON shape directly.
+    #[serde(default)]
+    pub output: PreviewOutput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PreviewOutput {
+    #[default]
+    Json,
+    Image,
+    Table,
+    Text,
+    Presentation,
 }
 
 /// A parsed `extension.toml`.
@@ -118,6 +140,10 @@ pub struct Manifest {
     pub description: String,
     #[serde(default)]
     pub kind: ExtKind,
+    #[serde(default)]
+    pub hidden: bool,
+    #[serde(default)]
+    pub tools: Vec<ToolSpec>,
     /// Consumed by the (later-phase) sidecar runner.
     #[serde(default)]
     #[allow(dead_code)]
@@ -128,6 +154,24 @@ pub struct Manifest {
     pub wasm_module: Option<String>,
     #[serde(default)]
     pub commands: Vec<ExtCommand>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolSpec {
+    pub name: String,
+    pub path: String,
+    #[serde(default)]
+    pub os: String,
+    #[serde(default)]
+    pub arch: String,
+    #[serde(default)]
+    pub download_url: String,
+    #[serde(default)]
+    pub archive_path: String,
+    #[serde(default)]
+    pub archive_format: String,
+    #[serde(default)]
+    pub signature_url: String,
 }
 
 impl Manifest {
@@ -171,4 +215,5 @@ pub struct CommandRef {
     #[allow(dead_code)]
     pub kind: ExtKind,
     pub command: ExtCommand,
+    pub tools: HashMap<String, PathBuf>,
 }

@@ -40,7 +40,12 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let input = crate::ui::text_input::single_line(window, cx, "Buscar tag…", "");
+        let input = crate::ui::text_input::single_line(
+            window,
+            cx,
+            rust_i18n::t!("search_tag").into_owned(),
+            "",
+        );
         self.tag_picker_sub = Some(cx.subscribe(
             &input,
             |_this, _input, ev: &gpui_component::input::InputEvent, cx| {
@@ -218,7 +223,7 @@ impl App {
 
         // "Crear tag «X»" row — only when query has no match.
         if !any_match && !query.is_empty() {
-            let label = format!("Crear tag «{}»", query);
+            let label = rust_i18n::t!("create_tag", name = query);
             let label_shared = SharedString::from(label.clone());
             let create_name = query.clone();
             let v = view.clone();

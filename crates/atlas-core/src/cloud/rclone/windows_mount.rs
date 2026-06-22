@@ -1,25 +1,32 @@
 //! Windows-specific cloud mount helpers.
 
-use std::path::Path;
-
-/// True if WinFsp kernel driver is installed (required for FUSE-style drive mounting via rclone).
-/// Checks the SCM service first (covers standalone WinFsp, SSHFS-Win bundled, Bitvise bundled, etc.),
-/// then falls back to known DLL paths for the standard MSI installer.
-pub fn is_winfsp_installed() -> bool {
-    // Service check: `sc query WinFsp` exits 0 when the service exists.
-    if let Ok(status) = std::process::Command::new("sc.exe")
-        .args(["query", "WinFsp"])
+/// True if the WinFsp kernel driver is ready for rclone mounts.
+pub fn ensure_winfsp_ready() -> bool {
+    if winfsp_service_running() {
+        return true;
+    }
+    let _ = std::process::Command::new("sc.exe")
+        .args(["start", "WinFsp"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
-    {
-        if status.success() {
-            return true;
-        }
+        .status();
+    if winfsp_service_running() {
+        return true;
     }
-    // Fallback: DLL presence for standard MSI layout.
-    Path::new(r"C:\Program Files (x86)\WinFsp\bin\winfsp-x64.dll").exists()
-        || Path::new(r"C:\Program Files\WinFsp\bin\winfsp-x64.dll").exists()
+    false
+}
+
+fn winfsp_service_running() -> bool {
+    let Ok(output) = std::process::Command::new("sc.exe")
+        .args(["query", "WinFsp"])
+        .output()
+    else {
+        return false;
+    };
+    output.status.success()
+        && String::from_utf8_lossy(&output.stdout)
+            .to_ascii_uppercase()
+            .contains("RUNNING")
 }
 
 /// Download and install WinFsp silently. Requires the process to be elevated

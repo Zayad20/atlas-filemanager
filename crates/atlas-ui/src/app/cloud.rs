@@ -294,12 +294,12 @@ impl App {
     pub(crate) fn cleanup_cloud_on_exit(&self) {
         use crate::cloud::RemoteStatus;
         for r in &self.state.cloud.remotes {
-            if let RemoteStatus::Mounted(path) = &r.status {
+            if let RemoteStatus::Mounted(_path) = &r.status {
                 // Windows: WinFsp FUSE mounts are cleaned up when the rclone daemon
                 // process is killed below — no extra unmount step needed.
                 #[cfg(not(windows))]
                 {
-                    let p = path.to_string_lossy();
+                    let p = _path.to_string_lossy();
                     // fusermount3 (fuse3) → fusermount (fuse2) → umount
                     let _ = std::process::Command::new("fusermount3")
                         .args(["-u", &p])

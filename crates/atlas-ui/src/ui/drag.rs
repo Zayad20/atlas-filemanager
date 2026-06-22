@@ -12,6 +12,7 @@ use gpui::{Entity, Window};
 use crate::app::App;
 #[cfg(windows)]
 use crate::ui::root::DragNoop;
+#[cfg(not(windows))]
 use crate::ui::root::DraggedFiles;
 
 /// The view entity gpui renders as the drag ghost. On Windows the OLE path owns
@@ -22,15 +23,28 @@ pub(crate) type DragView = DragNoop;
 #[cfg(not(windows))]
 pub(crate) type DragView = DraggedFiles;
 
+/// The drag *payload* gpui tracks for its native DnD. It must be [`DragView`] so
+/// that on Windows it's [`DragNoop`] — a type no `on_drop::<DraggedFiles>` handler
+/// matches. Otherwise gpui's synthetic mouse-up (injected after `DoDragDrop`)
+/// would fire a second, native drop and move the file even when OLE was cancelled.
+#[cfg(windows)]
+pub(crate) fn file_drag_value(_paths: Vec<PathBuf>) -> DragView {
+    DragNoop
+}
+#[cfg(not(windows))]
+pub(crate) fn file_drag_value(paths: Vec<PathBuf>) -> DragView {
+    DraggedFiles { paths }
+}
+
 /// Build the shared `on_drag` move-closure for a file row/cell. Drags the whole
 /// current selection (falling back to just `anchor` when nothing is selected),
 /// routing through the Windows OLE `DoDragDrop` path when present.
 ///
-/// Usage: `.on_drag(DraggedFiles { paths: vec![path.clone()] }, file_drag_handler(view.clone(), path.clone()))`.
+/// Usage: `.on_drag(file_drag_value(vec![path.clone()]), file_drag_handler(view.clone(), path.clone()))`.
 pub(crate) fn file_drag_handler(
     view: Entity<App>,
     anchor: PathBuf,
-) -> impl Fn(&DraggedFiles, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> Entity<DragView>
+) -> impl Fn(&DragView, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> Entity<DragView>
        + 'static {
     move |_d, _pos, _window, cx| {
         view.update(cx, |app, cx| {

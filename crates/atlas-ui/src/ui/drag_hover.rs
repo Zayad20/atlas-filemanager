@@ -13,7 +13,10 @@ use crate::state::layout_tree::TileId;
 use crate::state::location::Location;
 use crate::state::tag_cache::TagId;
 use gpui::prelude::*;
-use gpui::{canvas, Context, DispatchPhase, Entity, MouseMoveEvent, MouseUpEvent, Window};
+use gpui::{
+    canvas, div, AnyElement, Context, DispatchPhase, Entity, MouseMoveEvent, MouseUpEvent, Window,
+};
+use gpui_component::ActiveTheme;
 
 pub(crate) const NAV_HOVER_DELAY: Duration = Duration::from_millis(350);
 pub(crate) const FOLDER_HOVER_DELAY: Duration = Duration::from_millis(650);
@@ -32,6 +35,7 @@ pub(crate) enum DragHoverId {
 #[derive(Clone)]
 pub(crate) enum DragHoverCommand {
     NavigatePath(PathBuf),
+    NavigatePathIn(TileId, PathBuf),
     NavigateLocation(Location),
     NavigateBack(TileId),
     NavigateForward(TileId),
@@ -72,6 +76,17 @@ pub(crate) struct DragHoverState {
     next_scroll_at: Option<Instant>,
     pub(crate) blink_id: Option<DragHoverId>,
     pub(crate) blink_started_at: Option<Instant>,
+    pub(crate) blink_bounds: Option<gpui::Bounds<gpui::Pixels>>,
+    /// Per-pane (location, history, forward) captured when the drag began, so an
+    /// ESC-cancel (or drag-out without an in-Atlas drop) can undo any spring-load
+    /// navigation that fired while dragging.
+    nav_snapshot:
+        Option<std::collections::HashMap<TileId, (Location, Vec<Location>, Vec<Location>)>>,
+    /// Set once a real drop lands inside Atlas; suppresses the cancel-revert.
+    committed: bool,
+    /// Time of the last fired nav, used to drive the confirmation pulse glow.
+    pub(crate) confirm_pulse_at: Option<Instant>,
+    pub(crate) confirm_pulse_bounds: Option<gpui::Bounds<gpui::Pixels>>,
 }
 
 impl DragHoverState {
@@ -84,9 +99,10 @@ impl DragHoverState {
         self.fired_id = None;
         self.blink_id = None;
         self.blink_started_at = None;
+        self.blink_bounds = None;
     }
 
-    fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.active = false;
         self.cursor = None;
         self.active_id = None;
@@ -96,17 +112,92 @@ impl DragHoverState {
         self.next_scroll_at = None;
         self.blink_id = None;
         self.blink_started_at = None;
+        self.blink_bounds = None;
+        self.nav_snapshot = None;
+        self.committed = false;
+        self.confirm_pulse_at = None;
+        self.confirm_pulse_bounds = None;
     }
 }
 
 impl App {
     pub(crate) fn begin_drag_hover(&mut self) {
         self.drag_hover.active = true;
+        self.drag_hover.committed = false;
+        // Snapshot every pane's nav state so a cancel can undo spring-load nav.
+        use crate::state::layout_tree::Tile;
+        let snap: std::collections::HashMap<_, _> = self
+            .state
+            .pane_tree
+            .tiles
+            .iter()
+            .filter_map(|(id, tile)| match tile {
+                Tile::Pane(p) => Some((
+                    *id,
+                    (
+                        p.location.clone(),
+                        p.history.clone(),
+                        p.history_forward.clone(),
+                    ),
+                )),
+                _ => None,
+            })
+            .collect();
+        self.drag_hover.nav_snapshot = Some(snap);
+    }
+
+    /// Mark the drag as committed (a real drop landed inside Atlas), so the
+    /// cancel-revert is suppressed when the drag ends.
+    pub(crate) fn mark_drag_committed(&mut self) {
+        self.drag_hover.committed = true;
+    }
+
+    /// Undo any spring-load navigation that fired during the drag, restoring each
+    /// pane's location/history to the pre-drag snapshot. Marks affected panes
+    /// dirty so the next flush repaints them. No-op once committed.
+    fn revert_drag_nav(&mut self) {
+        if self.drag_hover.committed {
+            return;
+        }
+        let Some(snap) = self.drag_hover.nav_snapshot.take() else {
+            return;
+        };
+        use crate::state::layout_tree::Tile;
+        for (id, (loc, history, forward)) in snap {
+            if let Some(Tile::Pane(p)) = self.state.pane_tree.tiles.get_mut(id) {
+                if p.location == loc {
+                    continue; // never navigated; leave it (and its async listing) alone
+                }
+                p.location = loc;
+                p.history = history;
+                p.history_forward = forward;
+                self.dirty_panes.insert(id);
+                // Re-list the restored location so the view matches the route again.
+                let restore = self.state.pane_tree.tiles.get(id).and_then(|t| match t {
+                    Tile::Pane(p) => Some(p.location.clone()),
+                    _ => None,
+                });
+                if let Some(loc) = restore {
+                    if let Some(ts) = self.state.tab_states.get_mut(&id) {
+                        ts.begin_navigation();
+                    }
+                    self.spawn_list(id, loc);
+                }
+            }
+        }
     }
 
     pub(crate) fn register_drag_hover_target(&mut self, target: DragHoverTarget) {
         if self.drag_hover_maybe_active() {
-            self.pending_drag_hover_targets.push(target);
+            if let Some(existing) = self
+                .pending_drag_hover_targets
+                .iter_mut()
+                .find(|existing| existing.id == target.id)
+            {
+                *existing = target;
+            } else {
+                self.pending_drag_hover_targets.push(target);
+            }
         }
     }
 
@@ -129,12 +220,32 @@ impl App {
 
     #[cfg(windows)]
     pub(crate) fn drag_hover_external_left(&mut self) {
+        // OLE calls IDropTarget::DragLeave on ESC-cancel and when the drag leaves
+        // our window. A real drop calls Drop (→ mark_drag_committed) instead, so a
+        // DragLeave without a commit means the drag was abandoned → undo nav.
+        self.revert_drag_nav();
         self.drag_hover.clear();
     }
 
     pub(crate) fn tick_drag_hover(&mut self, cx: &mut Context<Self>) {
+        let dirty = self.tick_drag_hover_inner();
+        // During a Windows OLE drag the modal `DoDragDrop` loop starves gpui's
+        // async 60 Hz drain, so spawn_list results and scroll offsets are applied
+        // but never repainted. This canvas DOES run each frame (WM_PAINT is still
+        // serviced), so pump the drain + flush here to keep the view live: the
+        // spring-loaded folder shows its new contents and edge-scroll visibly moves.
+        if dirty || !self.dirty_panes.is_empty() {
+            self.drain_bg_results_state_only();
+            self.flush_dirty_panes(cx);
+        }
+    }
+
+    /// Drives one frame of hover navigation + edge-scroll. Returns `true` when a
+    /// navigation fired, a scroll happened, or the blink state changed — i.e. the
+    /// caller should repaint.
+    fn tick_drag_hover_inner(&mut self) -> bool {
         let Some(pos) = self.drag_hover.cursor else {
-            return;
+            return false;
         };
         let now = Instant::now();
         let hit = self
@@ -144,11 +255,11 @@ impl App {
             .find(|target| contains(target.bounds, pos))
             .cloned();
 
-        self.tick_edge_scroll(pos, now);
+        let scrolled = self.tick_edge_scroll(pos, now);
 
         let Some(target) = hit else {
             self.drag_hover.reset_target(None, now);
-            return;
+            return scrolled;
         };
         self.drag_hover.reset_target(Some(target.id.clone()), now);
         let delay = match target.kind {
@@ -157,15 +268,15 @@ impl App {
         };
         let entered = self.drag_hover.entered_at.unwrap_or(now);
         if now.duration_since(entered) < delay {
-            return;
+            return scrolled;
         }
         if target.kind == DragHoverKind::Folder
             && self.drag_hover.blink_id.as_ref() != Some(&target.id)
         {
             self.drag_hover.blink_id = Some(target.id.clone());
             self.drag_hover.blink_started_at = Some(now);
-            cx.notify();
-            return;
+            self.drag_hover.blink_bounds = Some(target.bounds);
+            return true;
         }
         if target.kind == DragHoverKind::Folder
             && self
@@ -173,7 +284,7 @@ impl App {
                 .blink_started_at
                 .is_some_and(|t| now.duration_since(t) < Duration::from_millis(170))
         {
-            return;
+            return scrolled;
         }
         if self
             .drag_hover
@@ -181,7 +292,7 @@ impl App {
             .as_ref()
             .is_some_and(|id| id == &target.id)
         {
-            return;
+            return scrolled;
         }
         if self
             .drag_hover
@@ -189,15 +300,66 @@ impl App {
             .as_ref()
             .is_some_and(|(id, at)| id == &target.id && now.duration_since(*at) < REPEAT_NAV_GUARD)
         {
-            return;
+            return scrolled;
         }
 
         self.execute_drag_hover_command(target.command);
         self.drag_hover.last_fire = Some((target.id.clone(), now));
         self.drag_hover.fired_id = Some(target.id.clone());
+        // Hand the dwell glow off to a short confirmation pulse on the same rect.
+        self.drag_hover.confirm_pulse_at = Some(now);
+        self.drag_hover.confirm_pulse_bounds = self.drag_hover.blink_bounds.take();
         self.drag_hover.blink_id = None;
         self.drag_hover.blink_started_at = None;
-        cx.notify();
+        true
+    }
+
+    /// Spring-load affordance: a rhythmically pulsing accent glow on the dwell
+    /// target, plus a short confirmation pop when the navigation fires. Driven by
+    /// elapsed time — the drag canvas re-renders every frame, so no `with_animation`.
+    pub(crate) fn render_drag_hover_blink(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use crate::ui::motion::ease_out_quart;
+        let accent = cx.theme().accent;
+        let now = Instant::now();
+
+        // Confirmation pulse takes priority: a bright ring that fades out fast.
+        if let (Some(at), Some(bounds)) = (
+            self.drag_hover.confirm_pulse_at,
+            self.drag_hover.confirm_pulse_bounds,
+        ) {
+            let t = now.duration_since(at).as_secs_f32() / 0.20;
+            if t <= 1.0 {
+                let e = ease_out_quart(t);
+                let mut fill = accent;
+                fill.a = 0.34 * (1.0 - e);
+                let mut ring = accent;
+                ring.a = 0.85 * (1.0 - e);
+                let mut glow = accent;
+                glow.a = 0.5 * (1.0 - e);
+                return Some(glow_rect(bounds, fill, ring, glow, 8.0 + 22.0 * e, 2.0));
+            }
+        }
+
+        let bounds = self.drag_hover.blink_bounds?;
+        let started = self.drag_hover.blink_started_at.unwrap_or(now);
+        let elapsed = now.duration_since(started).as_secs_f32();
+        let fade_in = ease_out_quart((elapsed / 0.18).clamp(0.0, 1.0));
+        // ~1.6 Hz pulse mapped to 0..1.
+        let pulse = 0.5 + 0.5 * (elapsed * std::f32::consts::TAU * 1.6).sin();
+        let mut fill = accent;
+        fill.a = (0.12 + 0.16 * pulse) * fade_in;
+        let mut ring = accent;
+        ring.a = (0.40 + 0.38 * pulse) * fade_in;
+        let mut glow = accent;
+        glow.a = (0.30 + 0.30 * pulse) * fade_in;
+        Some(glow_rect(
+            bounds,
+            fill,
+            ring,
+            glow,
+            10.0 + 12.0 * pulse,
+            1.5,
+        ))
     }
 
     pub(crate) fn drag_hover_drop_command_at(
@@ -286,101 +448,111 @@ impl App {
         }
     }
 
-    fn tick_edge_scroll(&mut self, pos: gpui::Point<gpui::Pixels>, now: Instant) {
+    /// Auto-scroll a pane (by row) or the sidebar (by pixel) when the drag cursor
+    /// sits within `EDGE_SCROLL_ZONE` of a top/bottom edge. Returns `true` when it
+    /// actually scrolled this frame so the caller repaints.
+    fn tick_edge_scroll(&mut self, pos: gpui::Point<gpui::Pixels>, now: Instant) -> bool {
         if self
             .drag_hover
             .next_scroll_at
             .is_some_and(|next| now < next)
         {
-            return;
+            return false;
         }
-        let Some((&pane, bounds)) = self
+        // Panes first (row-based). The sidebar (pixel-based) is the fallback so a
+        // pane that overlaps the sidebar bounds still wins.
+        if let Some((&pane, bounds)) = self
             .pane_view_bounds
             .iter()
             .find(|(_, bounds)| contains(**bounds, pos))
-        else {
-            return;
-        };
-        let y = f32::from(pos.y);
-        let top = f32::from(bounds.top());
-        let bottom = f32::from(bounds.bottom());
-        let edge = if y < top + EDGE_SCROLL_ZONE {
+        {
+            return self.tick_pane_edge_scroll(pane, *bounds, pos, now);
+        }
+        if let Some((bounds, handle)) = self.sidebar_scroll_region.clone() {
+            if contains(bounds, pos) {
+                return self.tick_pixel_edge_scroll(&handle, bounds, pos, now);
+            }
+        }
+        false
+    }
+
+    fn edge_at(pos_y: f32, top: f32, bottom: f32) -> Option<(bool, f32)> {
+        if pos_y < top + EDGE_SCROLL_ZONE {
             Some((
                 true,
-                ((top + EDGE_SCROLL_ZONE - y) / EDGE_SCROLL_ZONE).clamp(0.0, 1.0),
+                ((top + EDGE_SCROLL_ZONE - pos_y) / EDGE_SCROLL_ZONE).clamp(0.0, 1.0),
             ))
-        } else if y > bottom - EDGE_SCROLL_ZONE {
+        } else if pos_y > bottom - EDGE_SCROLL_ZONE {
             Some((
                 false,
-                ((y - (bottom - EDGE_SCROLL_ZONE)) / EDGE_SCROLL_ZONE).clamp(0.0, 1.0),
+                ((pos_y - (bottom - EDGE_SCROLL_ZONE)) / EDGE_SCROLL_ZONE).clamp(0.0, 1.0),
             ))
         } else {
             None
-        };
-        let Some((up, strength)) = edge else {
-            return;
-        };
-        let (cols, rows) = self.rubber_scroll_dims(pane);
-        if rows == 0 {
-            return;
         }
-        let current_row = self.visible_edge_row(pane, cols, up);
-        let Some(current_row) = current_row else {
-            return;
-        };
-        let step = if strength > 0.72 {
-            3
-        } else if strength > 0.42 {
-            2
-        } else {
-            1
-        };
-        let target = if up {
-            current_row.saturating_sub(step)
-        } else {
-            (current_row + step).min(rows.saturating_sub(1))
-        };
-        if target == current_row {
-            return;
-        }
-        let strategy = if up {
-            gpui::ScrollStrategy::Top
-        } else {
-            gpui::ScrollStrategy::Bottom
-        };
-        if self.scroll_grid_row_to(pane, target, strategy) {
-            self.drag_hover.next_scroll_at =
-                Some(now + Duration::from_millis(EDGE_SCROLL_MIN_MS.max(1)));
-            return;
-        }
-        if let Some(handle) = self.scroll_handles.get(&pane) {
-            handle.scroll_to_item_strict(target, strategy);
-        }
+    }
+
+    fn throttle_next_scroll(&mut self, now: Instant, strength: f32) {
         let ms = (EDGE_SCROLL_MAX_MS as f32
             - (EDGE_SCROLL_MAX_MS - EDGE_SCROLL_MIN_MS) as f32 * strength) as u64;
         self.drag_hover.next_scroll_at = Some(now + Duration::from_millis(ms.max(1)));
     }
 
-    fn visible_edge_row(&self, pane: TileId, cols: usize, top: bool) -> Option<usize> {
-        let rects = self.row_rects.get(&pane)?;
-        let ts = self.state.tab_states.get(&pane)?;
-        let mut row = if top { usize::MAX } else { 0 };
-        for (idx, _) in rects {
-            let Some(pos) = ts.visible.iter().position(|v| v == idx) else {
-                continue;
-            };
-            let r = pos / cols.max(1);
-            if top {
-                row = row.min(r);
-            } else {
-                row = row.max(r);
-            }
-        }
-        if top && row == usize::MAX {
-            None
+    /// Edge-scroll a pane. All views (grid/list/details) drive a `uniform_list`
+    /// whose underlying `base_handle` is a plain `ScrollHandle`, so we pixel-scroll
+    /// it directly — the same proven path as the sidebar. The earlier row-based
+    /// `scroll_to_item_strict` approach was flaky (deferred, sometimes a no-op).
+    fn tick_pane_edge_scroll(
+        &mut self,
+        pane: TileId,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        pos: gpui::Point<gpui::Pixels>,
+        now: Instant,
+    ) -> bool {
+        let Some(handle) = self.scroll_handles.get(&pane) else {
+            return false;
+        };
+        let base = handle.0.borrow().base_handle.clone();
+        if self.tick_pixel_edge_scroll(&base, bounds, pos, now) {
+            // Separate PaneSignal entity: the canvas repaints App, not the pane.
+            self.dirty_panes.insert(pane);
+            true
         } else {
-            Some(row)
+            false
         }
+    }
+
+    /// Pixel-based edge-scroll for a plain `ScrollHandle` (sidebar + pane base
+    /// handle). gpui's scroll offset y is negative going down, so down subtracts.
+    fn tick_pixel_edge_scroll(
+        &mut self,
+        handle: &gpui::ScrollHandle,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        pos: gpui::Point<gpui::Pixels>,
+        now: Instant,
+    ) -> bool {
+        let Some((up, strength)) = Self::edge_at(
+            f32::from(pos.y),
+            f32::from(bounds.top()),
+            f32::from(bounds.bottom()),
+        ) else {
+            return false;
+        };
+        let step = 18.0 + 42.0 * strength; // logical px per tick, scaled by closeness
+        let offset = handle.offset();
+        let max = f32::from(handle.max_offset().y); // positive magnitude; valid y is [-max, 0]
+        let cur = f32::from(offset.y); // <= 0
+        let next = if up {
+            (cur + step).min(0.0)
+        } else {
+            (cur - step).max(-max)
+        };
+        if (next - cur).abs() < 0.5 {
+            return false;
+        }
+        handle.set_offset(gpui::point(offset.x, gpui::px(next)));
+        self.throttle_next_scroll(now, strength);
+        true
     }
 
     fn execute_drag_hover_command(&mut self, command: DragHoverCommand) {
@@ -389,6 +561,7 @@ impl App {
                 let tile = self.state.focused_tile;
                 self.navigate(tile, path);
             }
+            DragHoverCommand::NavigatePathIn(tile, path) => self.navigate(tile, path),
             DragHoverCommand::NavigateLocation(loc) => {
                 let tile = self.state.focused_tile;
                 self.navigate_to(tile, loc, crate::app::nav::NavKind::Push);
@@ -413,6 +586,10 @@ pub(crate) fn drag_hover_recorder(
 ) -> impl Fn(gpui::Bounds<gpui::Pixels>, &mut Window, &mut gpui::App) + 'static {
     let view = view.clone();
     move |bounds, _window, cx| {
+        if !view.read(cx).drag_hover_maybe_active() {
+            return;
+        }
+        crate::perf::count("prepaint.drag_hover_target");
         let target = DragHoverTarget {
             id: id.clone(),
             bounds,
@@ -433,6 +610,10 @@ pub(crate) fn drag_hover_recorder_with_drop(
 ) -> impl Fn(gpui::Bounds<gpui::Pixels>, &mut Window, &mut gpui::App) + 'static {
     let view = view.clone();
     move |bounds, _window, cx| {
+        if !view.read(cx).drag_hover_maybe_active() {
+            return;
+        }
+        crate::perf::count("prepaint.drag_hover_drop_target");
         let target = DragHoverTarget {
             id: id.clone(),
             bounds,
@@ -441,6 +622,21 @@ pub(crate) fn drag_hover_recorder_with_drop(
             drop_command: Some(drop_command.clone()),
         };
         view.update(cx, |this, _| this.register_drag_hover_target(target));
+    }
+}
+
+/// `on_prepaint` recorder that publishes the sidebar's window-space bounds +
+/// scroll handle so the drag edge-scroll engine can pixel-scroll it. The sidebar
+/// is a separate entity, so it can't ride the per-pane row-based path.
+pub(crate) fn sidebar_scroll_recorder(
+    view: Entity<App>,
+    handle: gpui::ScrollHandle,
+) -> impl FnOnce(gpui::Bounds<gpui::Pixels>, &mut Window, &mut gpui::App) + 'static {
+    move |bounds, _window, cx| {
+        crate::perf::count("prepaint.sidebar_scroll");
+        view.update(cx, |this, _| {
+            this.sidebar_scroll_region = Some((bounds, handle.clone()));
+        });
     }
 }
 
@@ -463,16 +659,54 @@ pub(crate) fn drag_hover_layer(view: Entity<App>) -> impl gpui::IntoElement {
                 if phase != DispatchPhase::Bubble {
                     return;
                 }
+                // On Windows the drag ends through the OLE callbacks (DragLeave on
+                // cancel → revert, Drop → commit), and DoDragDrop injects a synthetic
+                // mouse-up afterwards. Clearing here would wipe the nav snapshot before
+                // the queued DragLeave is drained, so the cancel-revert would no-op.
+                #[cfg(not(windows))]
                 vu.update(cx, |this, _| this.drag_hover.clear());
+                #[cfg(windows)]
+                let _ = (&vu, cx);
             });
             if active {
                 v.update(cx, |this, cx| this.tick_drag_hover(cx));
+                crate::perf::event(|| "request_animation_frame drag_hover".to_string());
                 window.request_animation_frame();
             }
         },
     )
     .absolute()
     .inset_0()
+}
+
+/// Build one absolutely-positioned spring-load highlight: a soft fill, an accent
+/// ring, and an outer glow (box-shadow). `blur`/`border` are in logical pixels.
+fn glow_rect(
+    bounds: gpui::Bounds<gpui::Pixels>,
+    fill: gpui::Hsla,
+    ring: gpui::Hsla,
+    glow: gpui::Hsla,
+    blur: f32,
+    border: f32,
+) -> AnyElement {
+    div()
+        .absolute()
+        .left(bounds.left())
+        .top(bounds.top())
+        .w(bounds.size.width)
+        .h(bounds.size.height)
+        .rounded(gpui::px(6.0))
+        .bg(fill)
+        .border(gpui::px(border))
+        .border_color(ring)
+        .shadow(vec![gpui::BoxShadow {
+            color: glow,
+            offset: gpui::point(gpui::px(0.0), gpui::px(0.0)),
+            blur_radius: gpui::px(blur),
+            spread_radius: gpui::px(1.0),
+            inset: false,
+        }])
+        .into_any_element()
 }
 
 fn contains(bounds: gpui::Bounds<gpui::Pixels>, pos: gpui::Point<gpui::Pixels>) -> bool {

@@ -2,39 +2,65 @@
 #![allow(clippy::too_many_lines)] // reason: cohesive overlay kept whole
 
 use crate::app::App;
+use crate::ui::icons::{icon, AtlasIcon};
 use gpui::prelude::*;
-use gpui::{deferred, div, px, AnyElement, Context, MouseButton, SharedString};
+use gpui::{deferred, div, px, AnyElement, Context, MouseButton, SharedString, Window};
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::{h_flex, v_flex, ActiveTheme};
+
+const TOAST_MAX_W: f32 = 420.;
+const TOAST_SIDE_MARGIN: f32 = 24.;
+const TOAST_WRAP_COLS: usize = 58;
+const TOAST_MAX_BODY_H: f32 = 140.;
 
 impl App {
     /// Toasts para errores de operaciones de archivo (bottom-right, sin backdrop).
-    pub(crate) fn render_op_errors(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let (popover, fg, border, destructive) = {
+    pub(crate) fn render_op_errors(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (popover, fg, muted, border, destructive) = {
             let t = cx.theme();
-            (t.popover, t.popover_foreground, t.border, t.danger)
+            (
+                t.popover,
+                t.popover_foreground,
+                t.muted_foreground,
+                t.border,
+                t.danger,
+            )
         };
         let errors: Vec<String> = self.state.overlay.op_errors.iter().cloned().collect();
         let view = cx.entity();
+        let viewport_w = f32::from(window.bounds().size.width);
+        let toast_w = TOAST_MAX_W.min((viewport_w - TOAST_SIDE_MARGIN * 2.0).max(280.));
 
         let mut stack = v_flex().gap_2();
         for (i, msg) in errors.iter().enumerate() {
             let dismiss_view = view.clone();
             let idx = i;
-            // Split message on newlines into individual lines.
-            let lines: Vec<String> = msg.lines().map(|l| l.to_string()).collect();
-            let mut body = v_flex().gap(px(1.)).text_sm();
+            let lines = wrap_toast_message(msg);
+            let mut body_lines = v_flex().gap(px(2.));
             for line in lines {
-                body = body.child(line);
+                body_lines = body_lines.child(div().min_w_0().child(line));
             }
+            let body = div()
+                .flex_1()
+                .min_w_0()
+                .max_h(px(TOAST_MAX_BODY_H))
+                .overflow_y_scrollbar()
+                .text_sm()
+                .line_height(px(18.))
+                .child(body_lines);
             let card = h_flex()
                 .id(SharedString::from(format!("op-err-{i}")))
-                .gap_3()
+                .gap_2()
                 .items_start()
-                .w(px(360.))
+                .w(px(toast_w))
                 .bg(popover)
                 .text_color(fg)
                 .border_1()
-                .border_color(border)
+                .border_color(destructive.opacity(0.35))
                 .rounded_lg()
                 .shadow_lg()
                 .occlude()
@@ -42,22 +68,29 @@ impl App {
                 .child(
                     div()
                         .flex_shrink_0()
-                        .w(px(4.))
-                        .h_full()
+                        .mt(px(2.))
+                        .size(px(20.))
                         .rounded_full()
-                        .bg(destructive),
+                        .bg(destructive.opacity(0.12))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon(AtlasIcon::X, 10., destructive)),
                 )
-                .child(body.flex_1())
+                .child(body)
                 .child(
                     div()
                         .id(SharedString::from(format!("op-err-x-{i}")))
                         .flex_shrink_0()
-                        .text_sm()
-                        .text_color(fg)
-                        .opacity(0.5)
+                        .size(px(22.))
+                        .rounded(px(crate::ui::RADIUS))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(muted)
                         .cursor_pointer()
-                        .hover(|h| h.opacity(1.0))
-                        .child("✕")
+                        .hover(move |h| h.bg(border).text_color(fg))
+                        .child(icon(AtlasIcon::X, 12., muted))
                         .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
                             dismiss_view.update(cx, |this, cx| {
                                 // Remove by index (adjust for previously removed).
@@ -104,5 +137,68 @@ impl App {
             ),
         )
         .into_any_element()
+    }
+}
+
+fn wrap_toast_message(msg: &str) -> Vec<String> {
+    let mut out = Vec::new();
+
+    for raw_line in msg.lines() {
+        let mut line = String::new();
+
+        for word in raw_line.split_whitespace() {
+            for part in split_long_word(word, TOAST_WRAP_COLS) {
+                if !line.is_empty() && line.len() + part.len() + 1 > TOAST_WRAP_COLS {
+                    out.push(std::mem::take(&mut line));
+                }
+                if !line.is_empty() {
+                    line.push(' ');
+                }
+                line.push_str(part);
+            }
+        }
+
+        if !line.is_empty() {
+            out.push(line);
+        }
+    }
+
+    if out.is_empty() {
+        out.push(rust_i18n::t!("toast_op_failed").into_owned());
+    }
+
+    out
+}
+
+fn split_long_word(word: &str, max_cols: usize) -> Vec<&str> {
+    if word.len() <= max_cols {
+        return vec![word];
+    }
+
+    let mut parts = Vec::new();
+    let mut start = 0;
+    for (idx, _) in word.char_indices() {
+        if idx - start >= max_cols {
+            parts.push(&word[start..idx]);
+            start = idx;
+        }
+    }
+    if start < word.len() {
+        parts.push(&word[start..]);
+    }
+    parts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{wrap_toast_message, TOAST_WRAP_COLS};
+
+    #[test]
+    fn toast_wraps_long_error_words() {
+        let msg = "googledrive: rc mount/mount: failed-to-mount-FUSE-fs:abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";
+        let lines = wrap_toast_message(msg);
+
+        assert!(lines.len() > 1);
+        assert!(lines.iter().all(|line| line.len() <= TOAST_WRAP_COLS));
     }
 }

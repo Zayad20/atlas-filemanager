@@ -26,6 +26,8 @@ use crate::app::App;
 use crate::state::layout_tree::{Container, LinearDir, Tile, TileId};
 use crate::ui::pane_panel::FilePanel;
 
+const SIDEBAR_COLLAPSED_WIDTH: f32 = 56.0;
+
 impl App {
     /// Return the central `DockArea`, creating it (or rebuilding its center when the
     /// layout changed via an explicit op) as needed. Called from `render`.
@@ -38,6 +40,15 @@ impl App {
             if self.dock_revision != self.layout_revision {
                 self.rebuild_dock_center(window, cx);
                 self.dock_revision = self.layout_revision;
+            }
+            self.drain_dock_ops(&dock, window, cx);
+            // Coalesced, synchronous tree resync: one reconcile per render regardless of
+            // how many ops/LayoutChanged happened, in the SAME frame the dock mutated.
+            // Avoids the async double-render and container-id churn that made new tabs
+            // appear to "load twice" and disturbed focus/exit animations.
+            if self.reconcile_pending {
+                self.reconcile_pending = false;
+                self.reconcile_from_dock(window, cx);
             }
             dock
         } else {
@@ -78,7 +89,11 @@ impl App {
             window,
             cx,
         );
-        let sidebar_width = self.state.settings.sidebar_width;
+        let sidebar_width = if self.state.settings.sidebar_collapsed {
+            SIDEBAR_COLLAPSED_WIDTH
+        } else {
+            self.state.settings.sidebar_width
+        };
         dock.update(cx, |da, cx| {
             da.set_left_dock(left, Some(px(sidebar_width)), true, window, cx);
             // Hide the in-tab dock toggle button (the panel glyph in the tab bar).
@@ -86,9 +101,11 @@ impl App {
             da.set_toggle_button_visible(false, cx);
         });
 
-        cx.subscribe_in(&dock, window, |this, _dock, ev: &DockEvent, window, cx| {
+        cx.subscribe_in(&dock, window, |this, _dock, ev: &DockEvent, _window, cx| {
             if matches!(ev, DockEvent::LayoutChanged) {
-                this.reconcile_from_dock(window, cx);
+                // Defer to the coalesced reconcile in `ensure_dock` (next render) so an
+                // interactive drag and programmatic ops share one resync path.
+                this.reconcile_pending = true;
                 cx.notify();
             }
         })
@@ -194,6 +211,79 @@ impl App {
         }
     }
 
+    /// Apply queued incremental dock mutations (keyboard split/close). Each op
+    /// mutates the live dock in place and emits `LayoutChanged`, which drives
+    /// `reconcile_from_dock` to resync the tree — avoiding the full O(N)
+    /// `rebuild_dock_center`. No-op when the queue is empty (the common case).
+    fn drain_dock_ops(
+        &mut self,
+        dock: &Entity<DockArea>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_dock_ops.is_empty() {
+            return;
+        }
+        for op in std::mem::take(&mut self.pending_dock_ops) {
+            match op {
+                crate::app::DockOp::Split {
+                    source,
+                    new_pane,
+                    vertical,
+                } => {
+                    let panel: Arc<dyn PanelView> =
+                        Arc::new(self.get_or_make_file_panel(new_pane, cx));
+                    let placement = if vertical {
+                        gpui_component::Placement::Bottom
+                    } else {
+                        gpui_component::Placement::Right
+                    };
+                    if let Some(tab_panel) = self.find_tab_panel_for(dock, source, cx) {
+                        tab_panel.update(cx, |tp, cx| {
+                            tp.split_panel(panel, placement, None, window, cx);
+                        });
+                    }
+                }
+                crate::app::DockOp::AddTab { source, new_pane } => {
+                    if let Some(tab_panel) = self.find_tab_panel_for(dock, source, cx) {
+                        let panel: Arc<dyn PanelView> =
+                            Arc::new(self.get_or_make_file_panel(new_pane, cx));
+                        tab_panel.update(cx, |tp, cx| {
+                            tp.add_panel(panel, window, cx);
+                        });
+                    }
+                }
+                crate::app::DockOp::Remove(pane_id) => {
+                    // Remove via the LIVE TabPanel (not the stale `center` enum, which
+                    // drifts after incremental splits) — else close silently no-ops.
+                    if let Some(tab_panel) = self.find_tab_panel_for(dock, pane_id, cx) {
+                        if let Some(panel) = self.file_panel_cache.get(&pane_id).cloned() {
+                            let panel: Arc<dyn PanelView> = Arc::new(panel);
+                            tab_panel.update(cx, |tp, cx| {
+                                tp.remove_panel(panel, window, cx);
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        // Ops mutated the dock structure → resync the tree this same render.
+        self.reconcile_pending = true;
+    }
+
+    /// Locate the live `TabPanel` whose tabs contain the `FilePanel` for `pane_id`.
+    /// Used to anchor a programmatic split on the source pane.
+    fn find_tab_panel_for(
+        &self,
+        dock: &Entity<DockArea>,
+        pane_id: TileId,
+        cx: &Context<Self>,
+    ) -> Option<Entity<gpui_component::dock::TabPanel>> {
+        let target = self.file_panel_cache.get(&pane_id)?.clone();
+        let target: Arc<dyn PanelView> = Arc::new(target);
+        dock.read(cx).center_tab_panel_containing(&target, cx)
+    }
+
     /// Rebuild `pane_tree`'s container structure from the Dock's dumped layout,
     /// preserving pane leaves (and their `TabData`) by id. Triggered by interactive
     /// Dock changes (drag/reorder/split/close/select).
@@ -235,10 +325,12 @@ impl App {
 
         self.reconcile_tree_state();
 
-        // Prune cache entries for panes that no longer exist.
+        // Prune cache + signal entries for panes that no longer exist.
         let live: std::collections::HashSet<TileId> =
             self.state.all_pane_tile_ids().into_iter().collect();
         self.file_panel_cache.retain(|id, _| live.contains(id));
+        self.pane_signals.retain(|id, _| live.contains(id));
+        self.pane_items_appear.retain(|id, _| live.contains(id));
     }
 
     /// Recursively rebuild a `pane_tree` node from a dumped `PanelState`. Returns the

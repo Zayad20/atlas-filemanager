@@ -28,9 +28,13 @@ pub mod assets;
 /// Platform drag-and-drop: neutral types + Windows OLE implementation.
 pub(crate) mod dnd;
 pub(crate) mod icon_theme;
+pub(crate) mod perf;
 /// Windows shell context-menu integration (IContextMenu enumeration + invoke).
 #[cfg(target_os = "windows")]
 pub(crate) mod shell_menu;
+/// Windows Shell thumbnail cache access via IShellItemImageFactory.
+#[cfg(target_os = "windows")]
+pub(crate) mod shell_thumb;
 pub mod ui;
 
 use gpui::{
@@ -38,6 +42,7 @@ use gpui::{
     WindowBounds, WindowOptions,
 };
 use gpui_component::{Root, ThemeRegistry, TitleBar};
+use std::time::Instant;
 
 gpui::actions!(
     atlas,
@@ -148,21 +153,34 @@ pub struct SidebarResetSections;
 
 /// Launch the gpui application. The caller owns the tokio runtime and passes its
 /// handle in; gpui drives the UI on the calling (main) thread.
-pub fn run(handle: tokio::runtime::Handle) {
+pub fn run(handle: tokio::runtime::Handle, app_started: Instant) {
+    let run_started = Instant::now();
     let settings = crate::util::config::load_settings();
     let lang = settings
         .language
         .clone()
         .unwrap_or_else(|| "en".to_string());
     rust_i18n::set_locale(&lang);
+    tracing::info!(
+        total_ms = app_started.elapsed().as_millis(),
+        phase_ms = run_started.elapsed().as_millis(),
+        "startup: settings+locale"
+    );
 
     let application = gpui_platform::application().with_assets(crate::assets::AtlasAssets);
     application.run(move |cx: &mut GpuiApp| {
+        let gpui_started = Instant::now();
         gpui_component::init(cx);
+        tracing::info!(
+            total_ms = app_started.elapsed().as_millis(),
+            phase_ms = gpui_started.elapsed().as_millis(),
+            "startup: gpui init"
+        );
 
         // Register the bundled Atlas themes (Mac-minimal set) and watch the user
         // themes dir for custom `ThemeSet` JSON files. The active profile's theme is
         // applied on first render (see `App::apply_active_theme`).
+        let themes_started = Instant::now();
         let json = include_str!("../assets/themes/atlas-themes.json");
         match ThemeRegistry::global_mut(cx).load_themes_from_str(json) {
             Ok(()) => {
@@ -193,6 +211,11 @@ pub fn run(handle: tokio::runtime::Handle) {
         }) {
             tracing::error!(?err, "failed to watch themes dir");
         }
+        tracing::info!(
+            total_ms = app_started.elapsed().as_millis(),
+            phase_ms = themes_started.elapsed().as_millis(),
+            "startup: themes"
+        );
 
         cx.bind_keys([
             #[cfg(target_os = "macos")]
@@ -235,36 +258,43 @@ pub fn run(handle: tokio::runtime::Handle) {
             cx.quit();
         });
 
-        let acrylic_enabled = std::env::var("ATLAS_ACRYLIC").is_ok_and(|v| v != "0");
+        // Desktop glass via Windows 11 Mica Alt material (DWMWA_SYSTEMBACKDROP_TYPE =
+        // DWMSBT_TABBEDWINDOW, build 22621+). gpui_windows applies it in
+        // set_background_appearance. It only composites when the whole content tree is
+        // transparent: the active theme's `background` must have alpha 0 (Atlas Frost)
+        // and the root paints no opaque layer — then the blurred desktop wallpaper
+        // shows through the translucent floating panes.
         let window_options = WindowOptions {
             titlebar: Some(TitleBar::title_bar_options()),
             window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
             window_min_size: Some(size(px(900.), px(560.))),
-            // Real OS glass: gpui native `Blurred` = ACCENT_ENABLE_ACRYLICBLURBEHIND (the
-            // same path Zed uses on Windows). Unlike Mica/systembackdrop (which needs a
-            // DWM redirection surface and no-ops against gpui's NoRedirectionBitmap +
-            // DirectComposition window), this accent-policy acrylic DOES composite. It
-            // only shows when the whole content tree is transparent: the active theme's
-            // `background` must have alpha 0 (Atlas Frost) and the root paints no opaque
-            // layer — the pastel `glass_backdrop` is kept translucent so the blur shows.
-            window_background: if acrylic_enabled {
-                WindowBackgroundAppearance::Blurred
-            } else {
-                WindowBackgroundAppearance::Opaque
-            },
+            window_background: WindowBackgroundAppearance::MicaAltBackdrop,
             ..Default::default()
         };
 
+        let app_settings = settings.clone();
         cx.spawn(async move |cx| {
+            let window_started = Instant::now();
             if let Err(err) = cx.open_window(window_options, move |window, cx| {
+                tracing::info!(
+                    total_ms = app_started.elapsed().as_millis(),
+                    phase_ms = window_started.elapsed().as_millis(),
+                    "startup: window callback"
+                );
                 window.set_window_title("Atlas");
-                let view = cx.new(|cx| app::App::new(handle, window, cx));
+                let view =
+                    cx.new(|cx| app::App::new(handle, app_settings, app_started, window, cx));
                 // The top-level window view must be `Root` (mount point for
                 // gpui-component overlays, modals and notifications).
                 cx.new(|cx| Root::new(view, window, cx))
             }) {
                 tracing::error!(?err, "failed to open window");
             }
+            tracing::info!(
+                total_ms = app_started.elapsed().as_millis(),
+                phase_ms = window_started.elapsed().as_millis(),
+                "startup: open window"
+            );
         })
         .detach();
     });

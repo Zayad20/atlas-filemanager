@@ -54,6 +54,7 @@ pub(crate) enum AtlasIcon {
     ArrowsLeftRight,
     SplitHorizontal,
     SplitVertical,
+    SidebarSimple,
     Eye,
     PencilSimple,
     ArrowCounterClockwise,
@@ -126,6 +127,7 @@ impl AtlasIcon {
             Self::ArrowsLeftRight => "icons/ph/arrows-left-right.svg",
             Self::SplitHorizontal => "icons/ph/split-horizontal.svg",
             Self::SplitVertical => "icons/ph/split-vertical.svg",
+            Self::SidebarSimple => "icons/ph/sidebar-simple.svg",
             Self::Eye => "icons/ph/eye.svg",
             Self::PencilSimple => "icons/ph/pencil-simple.svg",
             Self::ArrowCounterClockwise => "icons/ph/arrow-counter-clockwise.svg",
@@ -175,6 +177,14 @@ pub(crate) fn icon(kind: AtlasIcon, size: f32, color: Hsla) -> AnyElement {
         .size(px(size))
         .flex_none()
         .text_color(color)
+        .into_any_element()
+}
+
+#[inline]
+pub(crate) fn atlas_logo(size: f32) -> AnyElement {
+    img("icons/atlas-logo.png")
+        .size(px(size))
+        .flex_none()
         .into_any_element()
 }
 

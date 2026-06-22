@@ -46,6 +46,20 @@ pub enum PreviewResult {
         width: usize,
         height: usize,
     },
+    Table {
+        headers: Vec<String>,
+        rows: Vec<Vec<String>>,
+        truncated: bool,
+    },
+    Document {
+        title: String,
+        blocks: Vec<String>,
+        truncated: bool,
+    },
+    Presentation {
+        slides: Vec<SlidePreview>,
+        truncated: bool,
+    },
     Audio {
         title: Option<String>,
         artist: Option<String>,
@@ -66,6 +80,12 @@ pub enum PreviewResult {
         size: u64,
     },
     Error(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct SlidePreview {
+    pub title: String,
+    pub body: Vec<String>,
 }
 
 /// One inline run inside a markdown block. Styling is neutral; the UI maps each to a

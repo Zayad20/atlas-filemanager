@@ -6,11 +6,18 @@
 
 use crate::app::App;
 use atlas_model::profiles::DEFAULT_THEME;
-use gpui::{App as GpuiApp, SharedString, Window};
+use gpui::{App as GpuiApp, SharedString, Window, WindowBackgroundAppearance};
 use gpui_component::scroll::ScrollbarShow;
 use gpui_component::{Theme, ThemeRegistry};
 
 impl App {
+    /// Suffix that marks a theme as the translucent "Glass" variant of a base
+    /// theme. Paired by name: `"Atlas Midnight"` ↔ `"Atlas Midnight Glass"`.
+    /// Used by [`App::apply_active_theme`] to swap in the glass config when the
+    /// Mica setting is on, while keeping the base name as the stored/selected
+    /// theme so the picker stays coherent.
+    const GLASS_SUFFIX: &'static str = " Glass";
+
     /// Record `name` as the active profile's theme, persist, and request that the
     /// next render apply it. Cheap and cx-free so it can run inside `process_actions`.
     pub(crate) fn set_theme(&mut self, name: String) {
@@ -48,7 +55,48 @@ impl App {
                 return;
             };
 
+        // Mica glass swap. When the global `mica` setting is on, transparently
+        // apply the Glass variant of the resolved theme — same palette, but with
+        // translucent backgrounds so the OS desktop material (Mica Alt) shows
+        // through. The *stored* theme name stays the base ("Atlas Midnight"), so
+        // the picker keeps showing what the user picked; only the applied config
+        // comes from the glass twin. Themes without a glass twin (e.g. a custom
+        // opaque theme, or "Atlas Frost" which is already glass) fall through to
+        // the base config unchanged.
+        let config = if self.state.settings.mica && !resolved_name.ends_with(Self::GLASS_SUFFIX) {
+            let glass_name = format!("{resolved_name}{}", Self::GLASS_SUFFIX);
+            registry
+                .themes()
+                .get(&SharedString::from(glass_name.as_str()))
+                .cloned()
+                .unwrap_or(config)
+        } else if !self.state.settings.mica && resolved_name.ends_with(Self::GLASS_SUFFIX) {
+            // Edge case: the stored theme *is* a glass variant (can happen if a
+            // future picker exposes them, or after a setting flip). With Mica off
+            // we want the opaque base, so peel the suffix off and look that up.
+            let base_name = &resolved_name[..resolved_name.len() - Self::GLASS_SUFFIX.len()];
+            registry
+                .themes()
+                .get(&SharedString::from(base_name))
+                .cloned()
+                .unwrap_or(config)
+        } else {
+            config
+        };
+
+        // Mirror the Mica setting onto the window's OS backdrop. MicaAlt is the
+        // Windows 11 "tabbed window" material (DWMSBT_TABBEDWINDOW); Opaque falls
+        // back to a flat background. Cheap to call every apply (no-op when
+        // unchanged at the platform level).
+        window.set_background_appearance(if self.state.settings.mica {
+            WindowBackgroundAppearance::MicaAltBackdrop
+        } else {
+            WindowBackgroundAppearance::Opaque
+        });
+
         // Persist the normalized name so the migration is one-time and sticky.
+        // NOTE: `resolved_name` is always the base theme — never the glass twin —
+        // so the swap above stays idempotent across reboots.
         if resolved_name != self.state.profiles.active().theme {
             self.state.profiles.active_mut().theme = resolved_name;
             self.save();

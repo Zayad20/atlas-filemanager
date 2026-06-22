@@ -119,6 +119,9 @@ impl Element for AnimatedVirtualGrid {
         } else {
             (self.item_count + self.cols - 1) / self.cols
         };
+        let _perf = crate::perf::span_detail("grid.request_layout", || {
+            format!("items={} rows={} cols={}", self.item_count, rows, self.cols)
+        });
         let pitch = f32::from(self.item_size.height) + f32::from(self.item_spacing.height);
         let total_height = if rows == 0 {
             gpui::px(0.0)
@@ -172,6 +175,16 @@ impl Element for AnimatedVirtualGrid {
         if end_idx > self.item_count {
             end_idx = self.item_count;
         }
+        crate::perf::count_by(
+            "grid.cells.prepaint_requested",
+            end_idx.saturating_sub(start_idx) as u64,
+        );
+        let _perf = crate::perf::span_detail("grid.prepaint", || {
+            format!(
+                "items={} cols={} visible={}..{}",
+                self.item_count, self.cols, start_idx, end_idx
+            )
+        });
 
         let mut old_bounds = HashMap::new();
         let mut old_animations = HashMap::new();
@@ -259,6 +272,14 @@ impl Element for AnimatedVirtualGrid {
         }
 
         if !new_animations.is_empty() {
+            crate::perf::event(|| {
+                format!(
+                    "grid.animations active={} visible={}..{}",
+                    new_animations.len(),
+                    start_idx,
+                    end_idx
+                )
+            });
             _window.request_animation_frame();
         }
 

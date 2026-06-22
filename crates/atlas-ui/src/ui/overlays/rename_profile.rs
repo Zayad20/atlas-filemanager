@@ -22,7 +22,16 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<InputState> {
-        let name = self.state.profiles.active().name.clone();
+        let idx = self
+            .renaming_profile_idx
+            .unwrap_or(self.state.profiles.active_idx);
+        let name = self
+            .state
+            .profiles
+            .profiles
+            .get(idx)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| self.state.profiles.active().name.clone());
         self.rename_profile_input
             .get_or_insert_with(|| crate::ui::text_input::single_line(window, cx, "", name))
             .clone()
@@ -42,12 +51,18 @@ impl App {
     fn close_rename_profile(&mut self) {
         self.state.overlay.renaming_profile = false;
         self.rename_profile_input = None;
+        self.renaming_profile_idx = None;
     }
 
     fn submit_rename_profile(&mut self, cx: &mut Context<Self>) {
         if let Some(input) = self.rename_profile_input.clone() {
             let value = input.read(cx).value().to_string();
-            self.process_actions(vec![Action::RenameActiveProfile(value)]);
+            let action = self
+                .renaming_profile_idx
+                .map_or(Action::RenameActiveProfile(value.clone()), |index| {
+                    Action::RenameProfile { index, name: value }
+                });
+            self.process_actions(vec![action]);
         }
         self.close_rename_profile();
     }

@@ -12,19 +12,31 @@ use crate::fs::list::list_dir;
 use crate::search::nucleo_pool::NucleoPool;
 use crate::state::app_state::{AppState, BgResult};
 use crate::state::tab::LoadState;
-use crate::util::config::{load_profiles, load_session, load_settings};
+use crate::util::config::{load_profiles, load_session};
 
 impl App {
-    pub fn new(rt: tokio::runtime::Handle, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        rt: tokio::runtime::Handle,
+        settings: crate::state::settings::Settings,
+        startup_started: std::time::Instant,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let app_new_started = std::time::Instant::now();
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
-        let settings = load_settings();
         let profiles = load_profiles();
+        tracing::info!(
+            total_ms = startup_started.elapsed().as_millis(),
+            phase_ms = app_new_started.elapsed().as_millis(),
+            "startup: profiles"
+        );
 
         let (tx, rx) = flume::unbounded();
         let (icon_tx, icon_rx) = flume::unbounded();
 
         // Restore previous session tree if available, else create fresh state
+        let session_started = std::time::Instant::now();
         let restored_tree = load_session();
         let (mut state, _initial_tile_id) = if let Some(tree) = restored_tree {
             let (s, id) = AppState::from_tree(tree, settings);
@@ -38,6 +50,11 @@ impl App {
             AppState::new(settings)
         };
         state.profiles = profiles;
+        tracing::info!(
+            total_ms = startup_started.elapsed().as_millis(),
+            phase_ms = session_started.elapsed().as_millis(),
+            "startup: session"
+        );
         // Profiles saved before the cloud feature lack the Network section, which
         // would hide configured remotes — backfill it.
         #[cfg(feature = "cloud")]
@@ -46,11 +63,12 @@ impl App {
         // Resolve the startup icon theme from the active profile's saved selection
         // (official per-profile store), falling back to VSCode auto-discovery.
         let icon_theme = {
+            let icon_started = std::time::Instant::now();
             let map = state
                 .profiles
                 .active()
                 .scoped::<crate::app::profiles::IconSelection>();
-            if map.is_empty() {
+            let theme = if map.is_empty() {
                 crate::icon_theme::find_vscode_theme()
             } else {
                 let paths = map
@@ -58,7 +76,13 @@ impl App {
                     .map(|(ext, path)| (ext, std::path::PathBuf::from(path)))
                     .collect();
                 crate::icon_theme::IconThemeIndex::from_mappings(paths)
-            }
+            };
+            tracing::info!(
+                total_ms = startup_started.elapsed().as_millis(),
+                phase_ms = icon_started.elapsed().as_millis(),
+                "startup: icon theme"
+            );
+            theme
         };
 
         // Spawn the SQLite tag-db worker. On a brand-new database it imports the tags
@@ -70,9 +94,15 @@ impl App {
             migration,
             tx.clone(),
         );
+        tracing::info!(
+            total_ms = startup_started.elapsed().as_millis(),
+            "startup: tag db spawned"
+        );
 
         // Trigger directory loads for all panes (focused first, rest on demand)
+        let list_started = std::time::Instant::now();
         let pane_ids = state.all_pane_tile_ids();
+        let pane_count = pane_ids.len();
         let show_hidden = state.settings.show_hidden;
         for tile_id in pane_ids {
             let (location, sort_col, sort_dir, folders_first) =
@@ -167,6 +197,26 @@ impl App {
                 }
             });
         }
+        tracing::info!(
+            total_ms = startup_started.elapsed().as_millis(),
+            phase_ms = list_started.elapsed().as_millis(),
+            panes = pane_count,
+            "startup: pane loads queued"
+        );
+
+        let update_tx = tx.clone();
+        rt.spawn(async move {
+            match atlas_core::update::check_for_update(env!("CARGO_PKG_VERSION")).await {
+                Ok(Some(update)) => {
+                    let _ = update_tx.send(BgResult::AppUpdateAvailable {
+                        version: update.version,
+                        url: update.windows.url,
+                    });
+                }
+                Ok(None) => {}
+                Err(err) => tracing::debug!(?err, "update check failed"),
+            }
+        });
 
         // ── Windows OLE drag-and-drop setup ────────────────────────────────
         // Extract the HWND from gpui's HasWindowHandle impl. Stored as isize
@@ -200,8 +250,25 @@ impl App {
             "media-thumbs",
             crate::app::ext::MEDIA_THUMBS_MANIFEST,
         );
+        let _ = crate::ext::install::ensure_bundled(
+            "document-previews",
+            crate::app::ext::DOCUMENT_PREVIEWS_MANIFEST,
+        );
+        let runtime_tools_src =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions/runtime-tools");
+        let _ = crate::ext::install::ensure_bundled_with_assets(
+            "runtime-tools",
+            crate::app::ext::RUNTIME_TOOLS_MANIFEST,
+            &runtime_tools_src,
+        );
         state.ext.enabled = crate::util::config::load_ext_enabled();
+        let ext_started = std::time::Instant::now();
         let ext_registry = crate::ext::Registry::load(&state.ext.enabled);
+        tracing::info!(
+            total_ms = startup_started.elapsed().as_millis(),
+            phase_ms = ext_started.elapsed().as_millis(),
+            "startup: extensions"
+        );
 
         // Spawn the cloud worker (rclone sidecar is started lazily on first use)
         // and restore previously-configured remotes for the sidebar.
@@ -234,6 +301,8 @@ impl App {
                     }
                     // Finalize a palette's exit animation once its fade-out has elapsed.
                     dirty |= app.tick_palette_close();
+                    // Finalize pane close-out animations: queue their dock removal.
+                    dirty |= app.tick_pane_close();
                     if dirty {
                         cx.notify();
                     }
@@ -245,8 +314,17 @@ impl App {
         })
         .detach();
 
+        // Restore per-profile Details column widths + order (falls back to defaults
+        // when the active profile has never customized them).
+        let details_prefs = state
+            .profiles
+            .active()
+            .scoped::<crate::app::profiles::DetailsColumns>();
+
         Self {
             state,
+            startup_started,
+            startup_first_render_logged: false,
             tx,
             rx,
             rt,
@@ -284,6 +362,7 @@ impl App {
             // FASE A: dock built lazily on first render from the restored pane_tree.
             dock: None,
             file_panel_cache: HashMap::new(),
+            sidebar_panel: None,
             focus_history: std::collections::VecDeque::new(),
             palette_host: None,
             palette_closing: None,
@@ -301,6 +380,8 @@ impl App {
             batch_pattern_input: None,
             batch_replacement_input: None,
             rename_profile_input: None,
+            create_tag_input: None,
+            renaming_profile_idx: None,
             rename_edit: None,
             content_results: Vec::new(),
             content_gen: 0,
@@ -330,18 +411,30 @@ impl App {
             native_thumb_inflight: 0,
             pane_animations: HashMap::new(),
             pane_signals: HashMap::new(),
+            dirty_panes: HashSet::new(),
+            sidebar_scroll_region: None,
+            atlas_launcher_profiles_anchor: gpui::Point::default(),
             pane_layout_bounds: HashMap::new(),
             pane_layout_animations: HashMap::new(),
             pane_layout_frame_pending: false,
+            dock_split_animations: HashMap::new(),
+            pending_dock_ops: Vec::new(),
+            pane_closing: HashMap::new(),
+            close_ghosts: Vec::new(),
+            reconcile_pending: false,
+            pane_items_appear: HashMap::new(),
             ext_manager_input: None,
             #[cfg(feature = "cloud")]
             cloud_add_inputs: None,
             #[cfg(feature = "cloud")]
             rename_remote_input: None,
             pending_select: None,
-            col_widths: crate::app::ColWidths::default(),
-            details_column_order: crate::app::DetailsColumn::DEFAULT_ORDER,
+            col_widths: details_prefs.widths,
+            details_column_order: details_prefs.order,
             col_resize: None,
+            col_dragging: None,
+            col_drag_x: 0.0,
+            details_reorder: None,
             type_filters: HashMap::new(),
             size_filters: HashMap::new(),
             type_filter_menu: None,
@@ -351,6 +444,11 @@ impl App {
             drag_hover: crate::ui::drag_hover::DragHoverState::default(),
             pending_drag_hover_targets: Vec::new(),
             pane_view_bounds: HashMap::new(),
+            dock_linear_bounds: HashMap::new(),
+            dock_resize: None,
+            sidebar_resize: None,
+            inspector_resize: None,
+            dirty_all_panes: false,
             command_shortcut_capture: None,
         }
     }

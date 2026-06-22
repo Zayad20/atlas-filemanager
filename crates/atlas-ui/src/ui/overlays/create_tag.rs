@@ -4,11 +4,45 @@
 use crate::app::App;
 use crate::input::action::Action;
 use gpui::prelude::*;
-use gpui::{div, px, AnyElement, Context, KeyDownEvent, MouseButton, SharedString};
+use gpui::{
+    div, px, AnyElement, Context, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton,
+    SharedString, Window,
+};
+use gpui_component::input::InputState;
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
 impl App {
-    pub(crate) fn render_create_tag(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn create_tag_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        let initial = self.state.profile_ui.new_tag_name.clone();
+        self.create_tag_input
+            .get_or_insert_with(|| {
+                crate::ui::text_input::single_line(
+                    window,
+                    cx,
+                    rust_i18n::t!("tag_name_placeholder").to_string(),
+                    initial,
+                )
+            })
+            .clone()
+    }
+
+    pub(crate) fn create_tag_focus(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> FocusHandle {
+        self.create_tag_input(window, cx).read(cx).focus_handle(cx)
+    }
+
+    pub(crate) fn render_create_tag(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let (popover, fg, muted, border, accent, accent_fg) = {
             let t = cx.theme();
             (
@@ -23,7 +57,9 @@ impl App {
         let view = cx.entity();
         let focus = self.overlay_focus(cx);
         let global = self.state.profile_ui.new_tag_global;
-        let name = self.state.profile_ui.new_tag_name.clone();
+        let editing = self.state.profile_ui.editing_tag.is_some();
+        let input = self.create_tag_input(window, cx);
+        let name = input.read(cx).value().to_string();
         let selected_color = self.state.profile_ui.new_tag_color;
         let can_create = !name.trim().is_empty();
         let title = if global {
@@ -31,7 +67,14 @@ impl App {
         } else {
             rust_i18n::t!("tag_title_profile").to_string()
         };
-        let scope = if global {
+        let title = if editing {
+            rust_i18n::t!("tag_rename_title").to_string()
+        } else {
+            title
+        };
+        let scope = if editing {
+            rust_i18n::t!("tag_rename_scope").to_string()
+        } else if global {
             rust_i18n::t!("tag_scope_global").to_string()
         } else {
             rust_i18n::t!("tag_scope_profile").to_string()
@@ -79,8 +122,8 @@ impl App {
             .p_4()
             .gap_3()
             .track_focus(&focus)
-            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _w, cx| {
-                this.handle_create_tag_key(ev);
+            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, _w, cx| {
+                this.handle_create_tag_key(ev, cx);
                 cx.notify();
             }))
             .child(
@@ -99,36 +142,21 @@ impl App {
                             .text_color(muted)
                             .child(rust_i18n::t!("tag_name").to_string()),
                     )
-                    .child(
-                        div()
-                            .id("create-tag-name")
-                            .w_full()
-                            .min_h(px(34.))
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(accent)
-                            .child(if name.is_empty() {
-                                div()
-                                    .text_color(muted)
-                                    .child(rust_i18n::t!("tag_name_placeholder").to_string())
-                            } else {
-                                div().child(name)
-                            }),
-                    ),
+                    .child(crate::ui::text_input::bordered(&input)),
             )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(rust_i18n::t!("tag_color").to_string()),
-                    )
-                    .child(h_flex().gap_2().children(color_buttons)),
-            )
+            .when(!editing, |panel| {
+                panel.child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(rust_i18n::t!("tag_color").to_string()),
+                        )
+                        .child(h_flex().gap_2().children(color_buttons)),
+                )
+            })
             .child(
                 h_flex()
                     .justify_end()
@@ -162,10 +190,14 @@ impl App {
                             .when(can_create, |s| s.bg(accent).text_color(accent_fg))
                             .when(!can_create, |s| s.text_color(muted))
                             .cursor_pointer()
-                            .child(rust_i18n::t!("tag_create").to_string())
+                            .child(if editing {
+                                rust_i18n::t!("tag_save").to_string()
+                            } else {
+                                rust_i18n::t!("tag_create").to_string()
+                            })
                             .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
                                 create_view.update(cx, |this, cx| {
-                                    this.submit_create_tag();
+                                    this.submit_create_tag(cx);
                                     cx.notify();
                                 });
                             }),
@@ -182,32 +214,37 @@ impl App {
         )
     }
 
-    fn handle_create_tag_key(&mut self, ev: &KeyDownEvent) {
+    fn handle_create_tag_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         match ev.keystroke.key.as_str() {
-            "escape" => self.process_actions(vec![Action::CloseCreateTagOverlay]),
-            "enter" => self.submit_create_tag(),
-            "backspace" => {
-                self.state.profile_ui.new_tag_name.pop();
+            "escape" => {
+                self.process_actions(vec![Action::CloseCreateTagOverlay]);
+                cx.stop_propagation();
             }
-            _ => {
-                if let Some(ch) = ev.keystroke.key_char.as_ref() {
-                    if !ch.is_empty()
-                        && !ev.keystroke.modifiers.control
-                        && !ev.keystroke.modifiers.platform
-                    {
-                        self.state.profile_ui.new_tag_name.push_str(ch);
-                    }
-                }
+            "enter" => {
+                self.submit_create_tag(cx);
+                cx.stop_propagation();
             }
+            _ => {}
         }
     }
 
-    fn submit_create_tag(&mut self) {
-        let name = self.state.profile_ui.new_tag_name.trim().to_string();
+    fn submit_create_tag(&mut self, cx: &mut Context<Self>) {
+        let name = self
+            .create_tag_input
+            .as_ref()
+            .map(|input| input.read(cx).value().trim().to_string())
+            .unwrap_or_else(|| self.state.profile_ui.new_tag_name.trim().to_string());
         if name.is_empty() {
             return;
         }
         let color = self.state.profile_ui.new_tag_color;
+        if let Some(tag) = self.state.profile_ui.editing_tag {
+            self.process_actions(vec![
+                Action::RenameTag { tag, name },
+                Action::CloseCreateTagOverlay,
+            ]);
+            return;
+        }
         let profile = if self.state.profile_ui.new_tag_global {
             None
         } else {

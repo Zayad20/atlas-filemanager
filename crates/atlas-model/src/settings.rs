@@ -26,7 +26,9 @@ pub enum InspectorPlacement {
 pub struct Workspace {
     pub show_hidden: bool,
     pub show_sidebar: bool,
+    pub sidebar_collapsed: bool,
     pub show_inspector: bool,
+    pub mica: bool,
     pub inspector_placement: InspectorPlacement,
     pub view_mode: ViewMode,
     pub sidebar_width: f32,
@@ -41,7 +43,9 @@ impl Default for Workspace {
         Self {
             show_hidden: false,
             show_sidebar: true,
+            sidebar_collapsed: false,
             show_inspector: false,
+            mica: true,
             inspector_placement: InspectorPlacement::Global,
             view_mode: ViewMode::Details,
             sidebar_width: 220.0,
@@ -58,6 +62,7 @@ impl Default for Workspace {
 pub struct Settings {
     pub show_hidden: bool,
     pub show_sidebar: bool,
+    pub sidebar_collapsed: bool,
     pub show_inspector: bool,
     pub inspector_placement: InspectorPlacement,
     pub view_mode: ViewMode,
@@ -72,6 +77,16 @@ pub struct Settings {
     /// final state immediately. Eliminates the per-frame repaint cost of running
     /// animations across multiple panes.
     pub disable_animations: bool,
+    /// Mouse-wheel scroll smoothness, 0.0 (instant, no easing) … 1.0 (long silky
+    /// glide). Maps to the gpui scroll handle's ease + per-notch boost. Global, like
+    /// `disable_animations`. Trackpad (pixel-precise) input is unaffected.
+    pub scroll_smoothness: f32,
+    /// When true, the window uses the OS desktop-glass material (Windows 11 Mica Alt
+    /// via `WindowBackgroundAppearance::MicaAltBackdrop`) and `apply_active_theme`
+    /// transparently swaps to the Glass variant of the active theme so the wallpaper
+    /// shows through translucent panels. When false, the window is opaque and the
+    /// base theme is applied as-is. Saved per profile through [`Workspace`].
+    pub mica: bool,
 }
 
 impl Settings {
@@ -80,7 +95,9 @@ impl Settings {
         Workspace {
             show_hidden: self.show_hidden,
             show_sidebar: self.show_sidebar,
+            sidebar_collapsed: self.sidebar_collapsed,
             show_inspector: self.show_inspector,
+            mica: self.mica,
             inspector_placement: self.inspector_placement.clone(),
             view_mode: self.view_mode.clone(),
             sidebar_width: self.sidebar_width,
@@ -92,11 +109,13 @@ impl Settings {
     }
 
     /// Overlay a profile's saved knobs onto the live settings. Truly global
-    /// fields (`language`, `recent_folders`) are left intact.
+    /// fields (`language`, `recent_folders`, `disable_animations`) are left intact.
     pub fn apply_workspace(&mut self, ws: &Workspace) {
         self.show_hidden = ws.show_hidden;
         self.show_sidebar = ws.show_sidebar;
+        self.sidebar_collapsed = ws.sidebar_collapsed;
         self.show_inspector = ws.show_inspector;
+        self.mica = ws.mica;
         self.inspector_placement = ws.inspector_placement.clone();
         self.view_mode = ws.view_mode.clone();
         self.sidebar_width = ws.sidebar_width;
@@ -112,6 +131,7 @@ impl Default for Settings {
         Self {
             show_hidden: false,
             show_sidebar: true,
+            sidebar_collapsed: false,
             show_inspector: false,
             inspector_placement: InspectorPlacement::Global,
             view_mode: ViewMode::Details,
@@ -123,6 +143,27 @@ impl Default for Settings {
             global_zoom: 1.0,
             language: None,
             disable_animations: false,
+            scroll_smoothness: 0.6,
+            mica: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+
+    #[test]
+    fn workspace_carries_mica() {
+        let mut settings = Settings {
+            mica: false,
+            ..Settings::default()
+        };
+        let ws = settings.workspace();
+
+        settings.mica = true;
+        settings.apply_workspace(&ws);
+
+        assert!(!settings.mica);
     }
 }

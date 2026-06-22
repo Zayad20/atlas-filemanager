@@ -32,19 +32,20 @@ impl SizeFilter {
         Self::Huge,
     ];
 
-    pub(crate) fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> String {
         match self {
-            Self::Folders => "Carpetas",
-            Self::Unknown => "Sin tamaño",
-            Self::Empty => "Vacíos",
-            Self::Tiny => "< 10 KB",
-            Self::Small => "10 KB - 1 MB",
-            Self::Medium => "1 MB - 100 MB",
-            Self::Large => "100 MB - 1 GB",
-            Self::Huge => "> 1 GB",
+            Self::Folders => rust_i18n::t!("size_folders").into_owned(),
+            Self::Unknown => rust_i18n::t!("size_unknown").into_owned(),
+            Self::Empty => rust_i18n::t!("size_empty").into_owned(),
+            Self::Tiny => "< 10 KB".to_string(),
+            Self::Small => "10 KB - 1 MB".to_string(),
+            Self::Medium => "1 MB - 100 MB".to_string(),
+            Self::Large => "100 MB - 1 GB".to_string(),
+            Self::Huge => "> 1 GB".to_string(),
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn matches(self, entry: &FileEntry) -> bool {
         if matches!(entry.kind, FileKind::Dir) {
             return self == Self::Folders;
@@ -68,6 +69,7 @@ pub(crate) struct SizeFilterMenuState {
 }
 
 impl App {
+    #[allow(dead_code)]
     pub(crate) fn open_size_filter_menu(
         &mut self,
         pane: TabId,
@@ -124,7 +126,7 @@ impl App {
         rows.push(
             size_filter_row(
                 SharedString::from("sf-all"),
-                "Todos los tamaños",
+                &rust_i18n::t!("all_sizes"),
                 all_checked,
                 fg,
                 muted,
@@ -155,7 +157,7 @@ impl App {
             rows.push(
                 size_filter_row(
                     SharedString::from(format!("sf-{:?}", bucket)),
-                    bucket.label(),
+                    &bucket.label(),
                     checked,
                     fg,
                     muted,

@@ -7,7 +7,9 @@ use crate::state::layout_tree::Tile;
 use crate::state::pane::TabId;
 use crate::state::settings::ViewMode;
 use gpui::prelude::*;
-use gpui::{canvas, Context, DispatchPhase, Entity, MouseMoveEvent, MouseUpEvent, Window};
+use gpui::{
+    canvas, Context, DispatchPhase, Entity, KeyDownEvent, MouseMoveEvent, MouseUpEvent, Window,
+};
 use gpui_component::WindowExt;
 
 impl App {
@@ -64,7 +66,10 @@ impl App {
                 visible.insert(*idx);
                 let (bl, br) = (f32::from(b.left()), f32::from(b.right()));
                 let (bt, bb) = (f32::from(b.top()), f32::from(b.bottom()));
-                if rl < br && bl < rr && rt < bb && bt < rb {
+                // Center-point: item is hit only when its midpoint falls inside the rect.
+                let cx_item = (bl + br) * 0.5;
+                let cy_item = (bt + bb) * 0.5;
+                if rl <= cx_item && cx_item <= rr && rt <= cy_item && cy_item <= rb {
                     hits.insert(*idx);
                 }
             }
@@ -132,9 +137,14 @@ impl App {
         const EDGE: f32 = 44.0;
         let y = f32::from(pos.y);
         let target = if y < top + EDGE {
-            top_row.saturating_sub(1)
+            // Deeper into the zone → more rows per tick (1 at boundary, 4 at edge).
+            let t = 1.0 - (y - top).clamp(0.0, EDGE) / EDGE;
+            let step = (1.0 + t * 3.0).round() as usize;
+            top_row.saturating_sub(step)
         } else if y > bottom - EDGE {
-            (bottom_row + 1).min(row_count.saturating_sub(1))
+            let t = 1.0 - (bottom - y).clamp(0.0, EDGE) / EDGE;
+            let step = (1.0 + t * 3.0).round() as usize;
+            (bottom_row + step).min(row_count.saturating_sub(1))
         } else {
             return;
         };
@@ -185,6 +195,65 @@ impl App {
         let row_top = row as f32 * row_pitch;
         let row_bottom = row_top + row_pitch;
         let content_h = row_count as f32 * row_pitch - GRID_GAP;
+        let max_scroll = (content_h - viewport_h).max(0.0);
+        let offset = base.offset();
+        let current_top = (-f32::from(offset.y)).max(0.0);
+        let target = match strategy {
+            gpui::ScrollStrategy::Top => row_top,
+            gpui::ScrollStrategy::Center => row_top - (viewport_h - row_pitch) * 0.5,
+            gpui::ScrollStrategy::Bottom => row_bottom - viewport_h,
+            gpui::ScrollStrategy::Nearest => {
+                if row_top < current_top {
+                    row_top
+                } else if row_bottom > current_top + viewport_h {
+                    row_bottom - viewport_h
+                } else {
+                    current_top
+                }
+            }
+        }
+        .clamp(0.0, max_scroll);
+
+        base.set_offset(gpui::point(offset.x, gpui::px(-target)));
+        true
+    }
+
+    pub(crate) fn scroll_details_row_to(
+        &mut self,
+        pane: TabId,
+        row: usize,
+        strategy: gpui::ScrollStrategy,
+    ) -> bool {
+        let Some(Tile::Pane(pane_data)) = self.state.pane_tree.tiles.get(pane) else {
+            return false;
+        };
+        if !matches!(pane_data.view_mode, ViewMode::Details) {
+            return false;
+        }
+        let Some(handle) = self.scroll_handles.get(&pane) else {
+            return false;
+        };
+
+        let row_pitch = crate::ui::views::details::DETAILS_ROW_H;
+        let row_count = self
+            .state
+            .tab_states
+            .get(&pane)
+            .map(|ts| ts.visible.len())
+            .unwrap_or(0);
+        if row_count == 0 {
+            return true;
+        }
+
+        let base = handle.0.borrow().base_handle.clone();
+        let viewport_h = f32::from(base.bounds().size.height);
+        if viewport_h <= 1.0 {
+            return false;
+        }
+
+        let row_top = row as f32 * row_pitch;
+        let row_bottom = row_top + row_pitch;
+        let content_h = row_count as f32 * row_pitch;
         let max_scroll = (content_h - viewport_h).max(0.0);
         let offset = base.offset();
         let current_top = (-f32::from(offset.y)).max(0.0);
@@ -267,6 +336,15 @@ impl App {
         self.rename_edit = None;
     }
 
+    /// Cancel an in-flight rubber drag, restoring the pre-drag selection.
+    pub(crate) fn cancel_rubber(&mut self) {
+        if let Some(r) = self.rubber.take() {
+            if let Some(ts) = self.state.tab_states.get_mut(&r.pane) {
+                ts.selection.selected = r.base;
+            }
+        }
+    }
+
     /// FASE C: start a rubber-band drag in `pane` at `pos` (window coords), capturing
     /// the current selection as the additive base. Shared by the pane's empty area and
     /// the Details "dead zone" column so the gesture begins the same way from either.
@@ -276,6 +354,17 @@ impl App {
         pos: gpui::Point<gpui::Pixels>,
         additive: bool,
     ) {
+        // Context menu open: mousedown belongs to the menu, not rubber.
+        if self.ctx_menu.is_some() {
+            return;
+        }
+        // Miller has per-column selection — rubber band doesn't map onto it.
+        if self
+            .tab_data_for(pane)
+            .is_some_and(|td| matches!(td.view_mode, ViewMode::Miller))
+        {
+            return;
+        }
         // Clicking the empty list area dismisses a filter that has no text yet
         // (the "click outside to leave the field" affordance); a filter with a
         // query stays applied so the click can refine the selection instead.
@@ -483,6 +572,28 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
         |_, _, _| {},
         move |_, (), window, cx| {
             let has_rubber = v.read(cx).rubber.is_some();
+            let rubber_started = v.read(cx).rubber.as_ref().is_some_and(|r| r.started);
+
+            // ── Crosshair cursor while drag is active ────────────────────────
+            if rubber_started {
+                window.set_window_cursor_style(gpui::CursorStyle::Crosshair);
+            }
+
+            // ── Escape cancels the drag, restoring the pre-drag selection ────
+            let ve = v.clone();
+            window.on_key_event::<KeyDownEvent>(move |ev, phase, _win, cx| {
+                if phase != DispatchPhase::Bubble {
+                    return;
+                }
+                if ev.keystroke.key == "escape" {
+                    ve.update(cx, |this, cx| {
+                        if this.rubber.is_some() {
+                            this.cancel_rubber();
+                            cx.notify();
+                        }
+                    });
+                }
+            });
 
             // ── Global move ──────────────────────────────────────────────────
             let vm = v.clone();
@@ -492,14 +603,70 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                 }
                 let pos = ev.position;
                 vm.update(cx, |this, cx| {
+                    if let Some(resize) = this.sidebar_resize.as_ref() {
+                        let dx = f32::from(pos.x) - resize.start_x;
+                        this.state.settings.sidebar_width =
+                            (resize.start_width + dx).clamp(180.0, 420.0);
+                        cx.notify();
+                        return;
+                    }
+
+                    if let Some(resize) = this.inspector_resize.as_ref() {
+                        let dx = resize.start_x - f32::from(pos.x);
+                        this.state.settings.inspector_width =
+                            (resize.start_width + dx).clamp(180.0, 520.0);
+                        cx.notify();
+                        return;
+                    }
+
+                    if let Some(resize) = this.dock_resize.as_ref() {
+                        let delta = match resize.dir {
+                            crate::state::layout_tree::LinearDir::Horizontal => {
+                                f32::from(pos.x) - resize.start_pos
+                            }
+                            crate::state::layout_tree::LinearDir::Vertical => {
+                                f32::from(pos.y) - resize.start_pos
+                            }
+                        };
+                        if resize.span_px > 1.0 {
+                            let mut shares = resize.start_shares.clone();
+                            let left = resize.divider;
+                            let right = left + 1;
+                            if right < shares.len() {
+                                let total_share = shares[left] + shares[right];
+                                let share_delta = delta / resize.span_px
+                                    * shares.iter().copied().sum::<f32>().max(1.0);
+                                let min_share = 0.1;
+                                if total_share <= min_share * 2.0 {
+                                    shares[left] = total_share / 2.0;
+                                } else {
+                                    shares[left] = (resize.start_shares[left] + share_delta)
+                                        .clamp(min_share, total_share - min_share);
+                                }
+                                shares[right] = (total_share - shares[left]).max(0.0);
+                                if let Some(crate::state::layout_tree::Tile::Container(
+                                    crate::state::layout_tree::Container::Linear(linear),
+                                )) = this.state.pane_tree.tiles.get_mut(resize.container)
+                                {
+                                    linear.shares = shares;
+                                }
+                                cx.notify();
+                            }
+                        }
+                        return;
+                    }
+
                     // Column resize takes priority over rubber-band selection.
-                    if let Some((col, start_x, start_width)) = this
+                    if let Some((col, pane, start_x, start_width)) = this
                         .col_resize
                         .as_ref()
-                        .map(|cr| (cr.col, cr.start_x, cr.start_width))
+                        .map(|cr| (cr.col, cr.pane, cr.start_x, cr.start_width))
                     {
-                        let dx = start_x - f32::from(pos.x);
+                        // Left-anchored columns with the handle on the RIGHT edge:
+                        // dragging right widens the column (Explorer-style).
+                        let dx = f32::from(pos.x) - start_x;
                         let min_w = match col {
+                            "name" => 120.0,
                             "size" => 46.0,
                             "modified" => 92.0,
                             "type" => 56.0,
@@ -507,12 +674,15 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                         };
                         let new_w = (start_width + dx).max(min_w);
                         match col {
+                            "name" => this.col_widths.name = new_w,
                             "size" => this.col_widths.size = new_w,
                             "modified" => this.col_widths.modified = new_w,
                             "type" => this.col_widths.type_w = new_w,
                             _ => {}
                         }
-                        cx.notify();
+                        // Scoped re-render: only the dragged pane repaints per move —
+                        // NOT App + sidebar + every other pane (that cascade is the lag).
+                        this.notify_pane(pane, cx);
                         return;
                     }
 
@@ -546,9 +716,36 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                 }
                 let pos = ev.position;
                 vu.update(cx, |this, cx| {
-                    // End column resize.
-                    if this.col_resize.take().is_some() {
+                    if this.sidebar_resize.take().is_some() {
+                        crate::util::config::save_settings(&this.state.settings);
                         cx.notify();
+                        return;
+                    }
+
+                    if this.inspector_resize.take().is_some() {
+                        crate::util::config::save_settings(&this.state.settings);
+                        cx.notify();
+                        return;
+                    }
+
+                    // End column resize — persist the new widths and let every pane
+                    // (other Details views) catch up to the final widths.
+                    if this.dock_resize.take().is_some() {
+                        cx.notify();
+                        return;
+                    }
+
+                    if this.col_resize.take().is_some() {
+                        this.persist_details_columns();
+                        this.notify_all_panes(cx);
+                        return;
+                    }
+
+                    // End a column drag-reorder (fallback when the drop didn't land on
+                    // the header — e.g. released over the rows or outside).
+                    if this.col_dragging.is_some() {
+                        this.finish_details_reorder();
+                        this.notify_all_panes(cx);
                         return;
                     }
 
@@ -577,6 +774,7 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
 
             // Keep repainting while rubber is active (continuous autoscroll at edges).
             if has_rubber {
+                crate::perf::event(|| "request_animation_frame rubber".to_string());
                 window.request_animation_frame();
             }
         },

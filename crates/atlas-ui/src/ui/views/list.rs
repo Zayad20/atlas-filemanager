@@ -5,6 +5,11 @@ use crate::app::App;
 use crate::input::action::Action;
 use crate::state::file_entry::{FileEntry, FileKind};
 use crate::state::pane::TabId;
+use crate::ui::drag_hover::{
+    drag_hover_recorder_with_drop, DragHoverCommand, DragHoverDropCommand, DragHoverId,
+    DragHoverKind,
+};
+use crate::ui::glass::backdrop_tint;
 use crate::ui::icons::file_type_icon;
 use crate::ui::root::{ctrl_scroll, rect_recorder, zone_recorder, DraggedFiles};
 use gpui::prelude::*;
@@ -25,6 +30,7 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        crate::perf::count("render.view.list");
         let view = cx.entity();
         let (fg, accent, accent_fg, hover, muted, header_bg) = {
             let t = cx.theme();
@@ -34,7 +40,7 @@ impl App {
                 t.accent_foreground,
                 t.list_active,
                 t.muted_foreground,
-                t.secondary,
+                backdrop_tint(t.secondary, 0.18),
             )
         };
         let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, header_bg);
@@ -46,12 +52,29 @@ impl App {
         #[allow(clippy::items_after_statements)] // local constant kept next to its use
         const CELL_W: f32 = 220.0;
         let cell_stride = CELL_W + 6.0;
-        let avail = (f32::from(window.viewport_size().width) - 217.0).max(cell_stride);
+        // Use the real pane width captured by on_prepaint (set below), not a viewport
+        // estimate — otherwise an open preview pane / split makes `cols` too large and
+        // the rightmost column overflows and clips. Fall back to viewport on frame 1.
+        let pane_w = self
+            .state
+            .tab_states
+            .get(&pane_id)
+            .map(|ts| ts.last_pane_width)
+            .filter(|&w| w > 1.0)
+            .unwrap_or_else(|| (f32::from(window.viewport_size().width) - 217.0).max(0.0));
+        // px_2 = 8px padding each side on the row; subtract before fitting cells.
+        let avail = (pane_w - 16.0).max(cell_stride);
         let cols = ((avail / cell_stride).floor() as usize).max(1);
         let row_count = count.div_ceil(cols);
+        let _perf = crate::perf::span_detail("list.render", || {
+            format!(
+                "pane={} count={count} rows={row_count} cols={cols} pane_w={pane_w:.1}",
+                pane_id.0
+            )
+        });
 
         let inner = if count == 0 {
-            let msg = self.empty_pane_message(pane_id, "Carpeta vacía");
+            let msg = self.empty_pane_message(pane_id, rust_i18n::t!("empty_folder").into_owned());
             v_flex()
                 .size_full()
                 .items_center()
@@ -66,6 +89,12 @@ impl App {
                 SharedString::from(format!("listc-{}", pane_id.0)),
                 row_count,
                 move |range, _window, cx| {
+                    let start = range.start;
+                    let end = range.end;
+                    crate::perf::count_by("list.rows.requested", end.saturating_sub(start) as u64);
+                    let _perf = crate::perf::span_detail("list.rows.build", || {
+                        format!("pane={} range={start}..{end} cols={cols}", pane_id.0)
+                    });
                     let app = list_view.read(cx);
                     let Some(ts) = app.state.tab_states.get(&pane_id) else {
                         return Vec::new();
@@ -85,6 +114,9 @@ impl App {
                                 let selected = ts.selection.selected.contains(&entry_idx);
                                 let icon_tex =
                                     app.icon_tex_for_entry(&entry.kind, entry.extension.as_deref());
+                                let flashing = matches!(entry.kind, FileKind::Dir)
+                                    && app.drag_hover.blink_id.as_ref()
+                                        == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
                                 cells.push(render_cell_compact(
                                     entry,
                                     entry_idx,
@@ -94,11 +126,13 @@ impl App {
                                     accent,
                                     accent_fg,
                                     hover,
+                                    flashing,
                                     record_rects,
                                     icon_tex,
                                 ));
                             }
-                            h_flex().w_full().gap(px(6.)).px_2().children(cells)
+                            let row_el = h_flex().w_full().gap(px(6.)).px_2().children(cells);
+                            row_el.into_any_element()
                         })
                         .collect::<Vec<_>>()
                 },
@@ -112,6 +146,7 @@ impl App {
         let focus_view = view.clone();
         let rubber_view = view.clone();
         let zone_view = view.clone();
+        let prepaint_view = view.clone();
         let scroll_view = view;
         v_flex()
             .id(SharedString::from(format!("pane-{}", pane_id.0)))
@@ -135,13 +170,8 @@ impl App {
                 move |d, _window, cx| {
                     let paths = d.paths.clone();
                     v.update(cx, |this, cx| {
-                        if let Some(dest) = this
-                            .tab_data_for(pane_id)
-                            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
-                        {
-                            this.process_actions(vec![Action::Move { paths, dest }]);
-                            cx.notify();
-                        }
+                        this.drop_files_on_pane(pane_id, paths, false);
+                        cx.notify();
                     });
                 }
             })
@@ -150,13 +180,8 @@ impl App {
                 move |paths, _window, cx| {
                     let paths = paths.paths().to_vec();
                     v.update(cx, |this, cx| {
-                        if let Some(dest) = this
-                            .tab_data_for(pane_id)
-                            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
-                        {
-                            this.process_actions(vec![Action::CopyTo { paths, dest }]);
-                            cx.notify();
-                        }
+                        this.drop_files_on_pane(pane_id, paths, true);
+                        cx.notify();
                     });
                 }
             })
@@ -168,6 +193,28 @@ impl App {
                 });
             })
             .on_scroll_wheel(move |ev, _window, cx| ctrl_scroll(ev, pane_id, &scroll_view, cx))
+            .on_prepaint({
+                let v = prepaint_view.clone();
+                move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {
+                    crate::perf::count("prepaint.list_pane");
+                    let new_w = f32::from(bounds.size.width);
+                    v.update(cx, |this, cx| {
+                        if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
+                            if (ts.last_pane_width - new_w).abs() > 0.5 {
+                                let old_w = ts.last_pane_width;
+                                crate::perf::event(|| {
+                                    format!(
+                                        "list.width pane={} old={old_w:.1} new={new_w:.1}",
+                                        pane_id.0
+                                    )
+                                });
+                                ts.last_pane_width = new_w;
+                                this.notify_pane(pane_id, cx);
+                            }
+                        }
+                    });
+                }
+            })
             // FASE F: register this pane's window-space rect each frame for OLE drop routing.
             .when(cfg!(windows), |el| {
                 el.on_prepaint(zone_recorder(pane_id, &zone_view))
@@ -198,6 +245,7 @@ fn render_cell_compact(
     accent: Hsla,
     accent_fg: Hsla,
     hover: Hsla,
+    flashing: bool,
     record_rects: bool,
     icon_tex: Option<Arc<RenderImage>>,
 ) -> AnyElement {
@@ -219,6 +267,7 @@ fn render_cell_compact(
         .rounded_sm()
         .cursor_pointer()
         .when(selected, |s| s.bg(accent).text_color(accent_fg))
+        .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
         .when(!selected, |s| s.hover(|h| h.bg(hover)))
         .child(
             div().w(px(16.)).flex_none().child(match icon_tex {
@@ -288,29 +337,44 @@ fn render_cell_compact(
                 cx.stop_propagation();
             })
             .on_drag(
-                DraggedFiles {
-                    paths: vec![entry.path.clone()],
-                },
+                crate::ui::drag::file_drag_value(vec![entry.path.clone()]),
                 crate::ui::drag::file_drag_handler(view.clone(), entry.path.clone()),
             )
         })
         .when(matches!(entry.kind, FileKind::Dir), |s| {
-            let dest_move = entry.path.clone();
-            let dest_copy = entry.path.clone();
+            let dest = entry.path.clone();
+            let hover_id = DragHoverId::Folder(pane_id, dest.clone());
+            let dest_internal = dest.clone();
+            let dest_external = dest.clone();
             let mv = view.clone();
             let cpv = view.clone();
             s.drag_over::<DraggedFiles>(|s, _, _, _| s.opacity(0.6))
+                .on_prepaint(drag_hover_recorder_with_drop(
+                    hover_id,
+                    DragHoverKind::Folder,
+                    DragHoverCommand::NavigatePathIn(pane_id, dest.clone()),
+                    DragHoverDropCommand::TransferTo(dest.clone()),
+                    view,
+                ))
                 .on_drop::<DraggedFiles>(move |d, _window, cx| {
-                    let (paths, dest) = (d.paths.clone(), dest_move.clone());
+                    let paths = d.paths.clone();
                     mv.update(cx, |this, cx| {
-                        this.process_actions(vec![Action::Move { paths, dest }]);
+                        this.execute_drag_hover_drop_command(
+                            DragHoverDropCommand::TransferTo(dest_internal.clone()),
+                            paths,
+                            true,
+                        );
                         cx.notify();
                     });
                 })
                 .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
-                    let (paths, dest) = (paths.paths().to_vec(), dest_copy.clone());
+                    let paths = paths.paths().to_vec();
                     cpv.update(cx, |this, cx| {
-                        this.process_actions(vec![Action::CopyTo { paths, dest }]);
+                        this.execute_drag_hover_drop_command(
+                            DragHoverDropCommand::TransferTo(dest_external.clone()),
+                            paths,
+                            false,
+                        );
                         cx.notify();
                     });
                 })

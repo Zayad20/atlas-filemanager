@@ -62,6 +62,25 @@ This adds **"Open with Atlas"** to the context menu of folders and folder
 backgrounds, and registers Atlas in the **"Open with"** application picker so file
 types can be associated with it.
 
+### Installer prototype
+
+Install [Inno Setup](https://jrsoftware.org/isinfo.php), then build the installer:
+
+```powershell
+.\scripts\build-windows-installer.ps1 -Version 0.1.0
+```
+
+The script builds `target\installer\AtlasSetup-0.1.0.exe`, with optional tasks for
+desktop shortcut, `atlas` in Terminal, Explorer integration, and launch-after-install.
+Publish it to the configured R2 bucket:
+
+```powershell
+.\scripts\publish-windows-installer.ps1 -Version 0.1.0 -Notes "First public build"
+```
+
+That uploads the installer to `app/windows/versions/` and writes
+`app/windows/latest.json`. The in-app updater only needs to read that tiny manifest.
+
 ## Icons
 
 Drop platform icon files into `packaging/icons/` (`atlas.icns` for macOS,

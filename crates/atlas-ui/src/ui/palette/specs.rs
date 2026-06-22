@@ -1023,10 +1023,21 @@ impl App {
         // Dynamically register every enabled non-builtin, non-thumbnailer command
         // with prefix `ext.<ext_id>.<cmd_id>` so they appear in the palette.
         for extension in self.ext_registry.extensions.iter().filter(|e| e.enabled) {
-            if extension.manifest.kind == crate::state::ext_model::ExtKind::Builtin {
+            if extension.manifest.hidden
+                || matches!(
+                    extension.manifest.kind,
+                    crate::state::ext_model::ExtKind::Builtin
+                        | crate::state::ext_model::ExtKind::ToolProvider
+                )
+            {
                 continue;
             }
-            for cmd in extension.manifest.commands.iter().filter(|c| !c.thumbnail) {
+            for cmd in extension
+                .manifest
+                .commands
+                .iter()
+                .filter(|c| !c.thumbnail && !c.preview)
+            {
                 ext.push(CommandDef::new(
                     &format!("ext.{}.{}", extension.manifest.id, cmd.id),
                     cmd.title.clone(),

@@ -16,6 +16,14 @@ pub const FILE_TOOLS_MANIFEST: &str =
 pub const MEDIA_THUMBS_MANIFEST: &str =
     include_str!("../../../../extensions/media-thumbs/extension.toml");
 
+/// Bundled document-preview extension (inspector previews for document formats).
+pub const DOCUMENT_PREVIEWS_MANIFEST: &str =
+    include_str!("../../../../extensions/document-previews/extension.toml");
+
+/// Hidden shared tool-provider extension (portable binaries by OS/arch).
+pub const RUNTIME_TOOLS_MANIFEST: &str =
+    include_str!("../../../../extensions/runtime-tools/extension.toml");
+
 /// UI-level extension actions.
 #[derive(Debug, Clone)]
 pub enum ExtAction {

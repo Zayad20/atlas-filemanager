@@ -44,6 +44,14 @@ macro_rules! liquid_glass_filetype_icons {
     };
 }
 
+fn app_icon(path: &str) -> Option<&'static [u8]> {
+    match path {
+        "icons/atlas-logo.png" => Some(include_bytes!("../assets/icons/atlas-logo.png")),
+        "icons/atlas-app-icon.png" => Some(include_bytes!("../assets/icons/atlas-app-icon.png")),
+        _ => None,
+    }
+}
+
 phosphor_icons!(
     "house",
     "monitor",
@@ -84,6 +92,7 @@ phosphor_icons!(
     "arrows-left-right",
     "split-horizontal",
     "split-vertical",
+    "sidebar-simple",
     "eye",
     "pencil-simple",
     "arrow-counter-clockwise",
@@ -118,6 +127,9 @@ liquid_glass_filetype_icons!(
 impl AssetSource for AtlasAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         if let Some(bytes) = phosphor(path) {
+            return Ok(Some(Cow::Borrowed(bytes)));
+        }
+        if let Some(bytes) = app_icon(path) {
             return Ok(Some(Cow::Borrowed(bytes)));
         }
         if let Some(bytes) = liquid_glass_filetype(path) {

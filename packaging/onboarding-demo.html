@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Atlas onboarding demo</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      background: #101114;
+      color: #f6f1e8;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        linear-gradient(120deg, rgba(79, 141, 255, .24), transparent 38%),
+        linear-gradient(220deg, rgba(244, 173, 83, .18), transparent 32%),
+        #101114;
+    }
+    main {
+      width: min(760px, calc(100vw - 32px));
+      display: grid;
+      gap: 20px;
+    }
+    .panel {
+      border: 1px solid rgba(255, 255, 255, .12);
+      background: rgba(18, 19, 23, .84);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, .36);
+      border-radius: 8px;
+      padding: 28px;
+      backdrop-filter: blur(18px);
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(32px, 6vw, 58px);
+      line-height: .96;
+      letter-spacing: 0;
+    }
+    p {
+      margin: 0;
+      color: #c9c2b8;
+      font-size: 16px;
+      line-height: 1.5;
+    }
+    .choices {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 22px;
+    }
+    label {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid rgba(255, 255, 255, .12);
+      background: rgba(255, 255, 255, .05);
+      border-radius: 8px;
+      padding: 14px;
+      min-height: 48px;
+    }
+    input {
+      accent-color: #78a8ff;
+    }
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 14px 18px;
+      background: #f6f1e8;
+      color: #101114;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .progress {
+      display: none;
+      gap: 12px;
+    }
+    .progress.is-on {
+      display: grid;
+    }
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #d8d1c8;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #78a8ff;
+      box-shadow: 0 0 24px #78a8ff;
+    }
+    @media (max-width: 620px) {
+      .choices {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="panel">
+      <h1>Make Atlas yours.</h1>
+      <p>Pick the parts you want. Atlas will set them up and keep the rest out of the way.</p>
+      <div class="choices">
+        <label><input type="checkbox" checked> Enable terminal command</label>
+        <label><input type="checkbox" checked> Explorer integration</label>
+        <label><input type="checkbox" checked> Install starter extensions</label>
+        <label><input type="checkbox"> Start with compact layout</label>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:22px">
+        <button id="go">Personalize experience</button>
+      </div>
+    </section>
+    <section class="panel progress" id="progress" aria-live="polite">
+      <p>Personalizing experience...</p>
+      <div class="step"><span class="dot"></span><span>CLI configured</span></div>
+      <div class="step"><span class="dot"></span><span>Explorer actions ready</span></div>
+      <div class="step"><span class="dot"></span><span>Extensions prepared</span></div>
+      <div class="step"><span class="dot"></span><span>Atlas is ready</span></div>
+    </section>
+  </main>
+  <script>
+    document.getElementById('go').addEventListener('click', () => {
+      document.getElementById('progress').classList.add('is-on');
+    });
+  </script>
+</body>
+</html>

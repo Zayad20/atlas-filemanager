@@ -8,6 +8,7 @@ pub mod ext;
 pub mod fs;
 pub mod search;
 pub mod space_lens;
+pub mod update;
 pub mod util;
 
 #[cfg(feature = "cloud")]

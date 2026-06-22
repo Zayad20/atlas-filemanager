@@ -38,6 +38,14 @@ pub fn glass_shadows_enabled() -> bool {
     std::env::var("ATLAS_SHADOWS").is_ok_and(|v| v != "0")
 }
 
+pub fn backdrop_tint(color: Hsla, alpha: f32) -> Hsla {
+    if color.a >= 1.0 {
+        color.opacity(alpha)
+    } else {
+        color
+    }
+}
+
 /// Bright rim light (Figma stroke: white `0.4 → 0.2`). One flat value here.
 pub fn glass_border() -> Hsla {
     hsla(0., 0., 1., 0.40)

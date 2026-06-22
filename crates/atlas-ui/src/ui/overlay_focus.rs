@@ -144,6 +144,9 @@ impl App {
         if self.state.overlay.renaming_profile {
             return Some(self.rename_profile_focus(window, cx));
         }
+        if self.state.profile_ui.creating_tag {
+            return Some(self.create_tag_focus(window, cx));
+        }
         #[cfg(feature = "cloud")]
         if self.state.cloud.show_add_dialog {
             return Some(self.cloud_add_focus(window, cx));
@@ -153,10 +156,7 @@ impl App {
             return Some(self.rename_remote_focus(window, cx));
         }
         // Text-less modals: a neutral handle so Esc/buttons work but no input steals.
-        if self.state.overlay.show_settings
-            || self.state.overlay.transfer_conflict.is_some()
-            || self.state.profile_ui.creating_tag
-        {
+        if self.state.overlay.show_settings || self.state.overlay.transfer_conflict.is_some() {
             return Some(self.overlay_focus(cx));
         }
         // Inline (in-row) rename owns the keyboard while active.

@@ -416,10 +416,94 @@ impl App {
                 s.disable_animations,
                 "set-disable-anim",
                 |app| {
-                    app.state.settings.disable_animations = !app.state.settings.disable_animations
+                    app.state.settings.disable_animations = !app.state.settings.disable_animations;
                 },
                 view.clone(),
             ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_sm()
+                            .child(rust_i18n::t!("settings_scroll_smoothness").to_string()),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(
+                                div()
+                                    .cursor_pointer()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(surface)
+                                    .text_color(fg)
+                                    .child("-")
+                                    .on_mouse_down(MouseButton::Left, {
+                                        let view = view.clone();
+                                        move |_ev, _w, cx| {
+                                            view.update(cx, |app, cx| {
+                                                set_scroll_smoothness(app, -0.1);
+                                                cx.notify();
+                                            });
+                                        }
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(surface)
+                                    .text_color(fg)
+                                    .child(format!("{:.0}%", s.scroll_smoothness * 100.0)),
+                            )
+                            .child(
+                                div()
+                                    .cursor_pointer()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(surface)
+                                    .text_color(fg)
+                                    .child("+")
+                                    .on_mouse_down(MouseButton::Left, {
+                                        let view = view.clone();
+                                        move |_ev, _w, cx| {
+                                            view.update(cx, |app, cx| {
+                                                set_scroll_smoothness(app, 0.1);
+                                                cx.notify();
+                                            });
+                                        }
+                                    }),
+                            ),
+                    ),
+            )
+            .child(toggle(
+                &rust_i18n::t!("settings_mica"),
+                s.mica,
+                "set-mica",
+                |app| {
+                    app.state.settings.mica = !app.state.settings.mica;
+                    app.state.profiles.active_mut().workspace = app.state.settings.workspace();
+                    // Re-apply so the glass swap + window backdrop flip happen this frame
+                    // (root.rs consumes `theme_dirty` before reading colors).
+                    app.theme_dirty = true;
+                    crate::util::config::save_profiles(&app.state.profiles);
+                    crate::util::config::save_settings(&app.state.settings);
+                },
+                view.clone(),
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(rust_i18n::t!("settings_mica_desc").to_string()),
+            )
             .child(div().text_xs().text_color(muted).child(
                 rust_i18n::t!("settings_inspector_placement", placement = placement).to_string(),
             ))
@@ -615,4 +699,11 @@ impl App {
     }
 
     // ── batch rename ─────────────────────────────────────────────────────────
+}
+
+/// Adjust the global scroll-smoothness setting by `delta` (clamped 0..1) and persist.
+fn set_scroll_smoothness(app: &mut App, delta: f32) {
+    app.state.settings.scroll_smoothness =
+        (app.state.settings.scroll_smoothness + delta).clamp(0.0, 1.0);
+    crate::util::config::save_settings(&app.state.settings);
 }

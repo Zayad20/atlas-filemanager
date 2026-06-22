@@ -4,7 +4,7 @@ pub const RADIUS: f32 = 6.0;
 pub const SIDE_PANEL_VERTICAL_INSET: f32 = 8.0;
 
 pub mod chrome;
-pub mod dock_glue;
+pub mod dock;
 pub mod drag;
 pub mod drag_hover;
 pub mod glass;

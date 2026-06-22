@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use gpui::{AppContext as _, Entity, FocusHandle, ScrollStrategy, UniformListScrollHandle};
+use gpui::{
+    AppContext as _, Entity, FocusHandle, ScrollStrategy, SharedString, UniformListScrollHandle,
+};
 use gpui_component::input::InputState;
 
 use crate::search::nucleo_pool::NucleoPool;
@@ -30,6 +32,8 @@ pub mod theme;
 
 pub struct App {
     pub(crate) state: AppState,
+    pub(crate) startup_started: Instant,
+    pub(crate) startup_first_render_logged: bool,
     pub(crate) tx: flume::Sender<BgResult>,
     pub(crate) rx: flume::Receiver<BgResult>,
     pub(crate) rt: tokio::runtime::Handle,
@@ -129,6 +133,7 @@ pub struct App {
     /// `rebuild_dock_center` calls keeps gpui animation state alive on existing panes
     /// so they don't flash when a new split or close restructures the layout.
     pub(crate) file_panel_cache: HashMap<TileId, Entity<crate::ui::pane_panel::FilePanel>>,
+    pub(crate) sidebar_panel: Option<Entity<crate::ui::sidebar::SidebarPanel>>,
     /// MRU focus history: pane TileIds in the order they last held focus.
     /// `find_focus_after_close` pops entries until it finds a live pane,
     /// giving VS-Code-style "go to previously used pane" on Ctrl+W.
@@ -158,6 +163,26 @@ pub struct App {
     pub(crate) pane_layout_bounds: HashMap<TileId, gpui::Bounds<gpui::Pixels>>,
     pub(crate) pane_layout_animations: HashMap<TileId, PaneLayoutAnimation>,
     pub(crate) pane_layout_frame_pending: bool,
+    pub(crate) dock_split_animations: HashMap<TileId, DockSplitAnimation>,
+    /// Incremental dock mutations queued by keyboard split/close actions and drained
+    /// in `render` (which has `Window`/`Context`, unlike `process_actions`). Driving
+    /// the live dock + reconcile this way avoids the O(N) `rebuild_dock_center` churn
+    /// that recreated every `TabPanel`/`StackPanel` on each op.
+    pub(crate) pending_dock_ops: Vec<DockOp>,
+    /// Panes mid close-out animation: kept mounted (and in the dock) until the exit
+    /// animation elapses, then a `DockOp::Remove` is queued. Mirrors `palette_closing`.
+    pub(crate) pane_closing: HashMap<TileId, Instant>,
+    /// Visual-only panes that were already removed from layout but are fading out.
+    pub(crate) close_ghosts: Vec<CloseGhost>,
+    /// Set when the dock's structure changed (programmatic op or interactive drag) and
+    /// `pane_tree` needs to be resynced. Drained once per render in `ensure_dock`, so
+    /// many `LayoutChanged` events coalesce into a single synchronous reconcile (no
+    /// async double-render / container-id churn when creating or splitting panes).
+    pub(crate) reconcile_pending: bool,
+    /// When a pane's fresh listing last appeared (tab create / navigation). Views
+    /// stagger-animate item rows in only while within `ITEM_APPEAR_WINDOW` of this,
+    /// so scrolling later never re-triggers the appear. Set alongside `appear_seq`.
+    pub(crate) pane_items_appear: HashMap<TileId, Instant>,
     // FASE C: rubber-band (select box) drag state, UI-side. `row_rects` holds the
     // window-space rect of each *visible* item, rebuilt every frame via on_prepaint;
     // the active drag intersects its rectangle against them to drive the selection.
@@ -181,6 +206,9 @@ pub struct App {
     pub(crate) batch_replacement_input: Option<Entity<InputState>>,
     /// Native input backing the rename-active-profile dialog.
     pub(crate) rename_profile_input: Option<Entity<InputState>>,
+    /// Native input backing create/rename tag.
+    pub(crate) create_tag_input: Option<Entity<InputState>>,
+    pub(crate) renaming_profile_idx: Option<usize>,
     pub(crate) ext_manager_input: Option<Entity<InputState>>,
     /// Inputs for the add-remote dialog; created on open, cleared on close.
     #[cfg(feature = "cloud")]
@@ -243,6 +271,14 @@ pub struct App {
     pub(crate) details_column_order: [DetailsColumn; 3],
     /// Active column-resize drag state (cleared on mouse-up).
     pub(crate) col_resize: Option<ColResizeState>,
+    /// Column currently being drag-reordered (for the floating header + source gap).
+    /// Cleared on drop / mouse-up.
+    pub(crate) col_dragging: Option<DetailsColumn>,
+    /// Header-local x of the cursor during a column drag (drives the floating box).
+    pub(crate) col_drag_x: f32,
+    /// Slide animation that interpolates each column from its pre-swap slot to its
+    /// new one, so reordered headers/rows glide instead of snapping.
+    pub(crate) details_reorder: Option<DetailsReorderAnim>,
     /// Per-pane active type-category filters for the Details view.
     /// Empty set = no filter. Values are `file_type_label()` strings.
     pub(crate) type_filters: HashMap<TileId, HashSet<String>>,
@@ -266,6 +302,20 @@ pub struct App {
     pub(crate) pending_drag_hover_targets: Vec<crate::ui::drag_hover::DragHoverTarget>,
     /// Window-space bounds of each pane view, used for edge-scroll + tag-drop detection.
     pub(crate) pane_view_bounds: HashMap<TileId, gpui::Bounds<gpui::Pixels>>,
+    pub(crate) dock_linear_bounds: HashMap<TileId, gpui::Bounds<gpui::Pixels>>,
+    pub(crate) dock_resize: Option<DockResizeState>,
+    pub(crate) sidebar_resize: Option<SidebarResizeState>,
+    pub(crate) inspector_resize: Option<InspectorResizeState>,
+    /// Sidebar pixel-scroll region registered each frame for drag edge-scroll.
+    /// The sidebar is a separate entity (not a pane), so it can't use the
+    /// row-based pane edge-scroll; this drives `ScrollHandle` by pixels instead.
+    pub(crate) sidebar_scroll_region: Option<(gpui::Bounds<gpui::Pixels>, gpui::ScrollHandle)>,
+    pub(crate) atlas_launcher_profiles_anchor: gpui::Point<gpui::Pixels>,
+    /// Panes whose `location` changed via `navigate_to` but whose `PaneSignal`
+    /// has not been notified yet. Flushed by `flush_dirty_panes` from any path
+    /// that holds a `Context` after navigating (drops, drag-hover tick).
+    pub(crate) dirty_panes: std::collections::HashSet<TileId>,
+    pub(crate) dirty_all_panes: bool,
     // ── Command shortcut capture ──────────────────────────────────────────
     /// Non-None while the user is recording a new keyboard shortcut for a palette command.
     pub(crate) command_shortcut_capture: Option<String>,
@@ -282,6 +332,33 @@ pub(crate) enum PaneAnimationKind {
     SplitVertical,
 }
 
+/// A deferred mutation of the live dock, applied in `render`. `Split` adds a new
+/// pane next to `source`; `Remove` drops a pane. Both let `reconcile_from_dock`
+/// resync `pane_tree` afterwards (same path as interactive drag/close).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DockOp {
+    Split {
+        source: TileId,
+        new_pane: TileId,
+        vertical: bool,
+    },
+    /// Add `new_pane` as a tab into the `TabPanel` that holds `source` (a live pane).
+    AddTab {
+        source: TileId,
+        new_pane: TileId,
+    },
+    Remove(TileId),
+}
+
+#[derive(Clone)]
+pub(crate) struct CloseGhost {
+    pub(crate) pane_id: TileId,
+    pub(crate) title: SharedString,
+    pub(crate) bounds: gpui::Bounds<gpui::Pixels>,
+    pub(crate) dir: (f32, f32),
+    pub(crate) started: Instant,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PaneAnimation {
     pub(crate) kind: PaneAnimationKind,
@@ -289,7 +366,7 @@ pub(crate) struct PaneAnimation {
 }
 
 impl PaneAnimation {
-    const TTL: Duration = Duration::from_millis(280);
+    const TTL: Duration = Duration::from_millis(crate::ui::motion::PANE_MS);
 
     pub(crate) fn new(kind: PaneAnimationKind) -> Self {
         Self {
@@ -342,21 +419,124 @@ impl PaneLayoutAnimation {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct DockSplitAnimation {
+    pub(crate) from: Vec<f32>,
+    pub(crate) to: Vec<f32>,
+    pub(crate) started: Instant,
+}
+
+impl DockSplitAnimation {
+    pub(crate) const DURATION: Duration = Duration::from_millis(260);
+
+    pub(crate) fn new(to: Vec<f32>, inserted_ix: usize) -> Self {
+        if to.is_empty() {
+            return Self {
+                from: Vec::new(),
+                to,
+                started: Instant::now(),
+            };
+        }
+        let mut from = to.clone();
+        from.remove(inserted_ix.min(from.len().saturating_sub(1)));
+        Self::opening(from, to, inserted_ix)
+    }
+
+    pub(crate) fn opening(mut from: Vec<f32>, to: Vec<f32>, inserted_ix: usize) -> Self {
+        if from.len() + 1 == to.len() && inserted_ix <= from.len() {
+            let start = 0.01;
+            let delta = to
+                .get(inserted_ix)
+                .map(|share| (share - start).max(0.0))
+                .unwrap_or(0.0);
+            from.insert(inserted_ix, start);
+            if let Some((ix, _)) = from
+                .iter()
+                .enumerate()
+                .filter(|(ix, _)| *ix != inserted_ix)
+                .max_by(|(_, a), (_, b)| a.total_cmp(b))
+            {
+                from[ix] += delta;
+            }
+        } else {
+            from = to.clone();
+        }
+        Self {
+            from,
+            to,
+            started: Instant::now(),
+        }
+    }
+
+    pub(crate) fn closing(from: Vec<f32>, closing_ix: usize) -> Self {
+        let mut to = from.clone();
+        if closing_ix < to.len() {
+            let end = 0.01;
+            let delta = (to[closing_ix] - end).max(0.0);
+            to[closing_ix] = end;
+            if let Some((ix, _)) = to
+                .iter()
+                .enumerate()
+                .filter(|(ix, _)| *ix != closing_ix)
+                .max_by(|(_, a), (_, b)| a.total_cmp(b))
+            {
+                to[ix] += delta;
+            }
+        }
+        Self {
+            from,
+            to,
+            started: Instant::now(),
+        }
+    }
+
+    pub(crate) fn shares(&self) -> Vec<f32> {
+        let t = (self.started.elapsed().as_secs_f32() / Self::DURATION.as_secs_f32()).min(1.0);
+        let eased = split_spring(t * Self::DURATION.as_secs_f32());
+        self.from
+            .iter()
+            .zip(&self.to)
+            .map(|(from, to)| from + (to - from) * eased)
+            .collect()
+    }
+
+    pub(crate) fn done(&self) -> bool {
+        self.started.elapsed() >= Self::DURATION
+    }
+}
+
+fn split_spring(t: f32) -> f32 {
+    let omega: f32 = 22.0;
+    let zeta: f32 = 0.68;
+    let wd = omega * (1.0 - zeta * zeta).sqrt();
+    let e = (-zeta * omega * t).exp();
+    1.0 - e * ((wd * t).cos() + (zeta * omega / wd) * (wd * t).sin())
+}
+
 /// Widths of the fixed-width columns in the Details view (Name is flex_1, not stored).
 /// Serialized into ProfilePrefs via `DetailsColumns: ProfileScoped`.
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ColWidths {
+    /// Name column width (icon + text). Resizable like the rest; Explorer-style
+    /// left-anchored layout, so this is a real fixed width, not flex.
+    #[serde(default = "default_name_width")]
+    pub(crate) name: f32,
     pub(crate) size: f32,
     pub(crate) modified: f32,
     pub(crate) type_w: f32,
 }
 
+fn default_name_width() -> f32 {
+    300.
+}
+
 impl Default for ColWidths {
     fn default() -> Self {
         Self {
-            size: 65.,
-            modified: 115.,
-            type_w: 75.,
+            name: default_name_width(),
+            size: 90.,
+            modified: 150.,
+            type_w: 110.,
         }
     }
 }
@@ -380,10 +560,80 @@ impl DetailsColumn {
     }
 }
 
+/// Column-reorder slide: snapshots the order *before* a live swap so the header
+/// and rows can interpolate each column's x from its old slot to its new one.
+/// Mirrors the `PaneLayoutAnimation` time model (`Instant` + eased `progress`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DetailsReorderAnim {
+    pub(crate) from_order: [DetailsColumn; 3],
+    pub(crate) started: Instant,
+}
+
+impl DetailsReorderAnim {
+    const TTL: Duration = Duration::from_millis(crate::ui::motion::MICRO_MS);
+
+    pub(crate) fn new(from_order: [DetailsColumn; 3]) -> Self {
+        Self {
+            from_order,
+            started: Instant::now(),
+        }
+    }
+
+    pub(crate) fn is_alive(self) -> bool {
+        self.started.elapsed() < Self::TTL
+    }
+
+    /// Eased 0→1 progress; 1.0 once expired.
+    pub(crate) fn progress(self) -> f32 {
+        let elapsed = self.started.elapsed().as_secs_f32();
+        let total = Self::TTL.as_secs_f32().max(f32::EPSILON);
+        crate::ui::motion::ease_out_quart((elapsed / total).min(1.0))
+    }
+}
+
+/// Per-profile Details column preferences: widths + visual order. Persisted as a
+/// single `ProfileScoped` blob so widths and order travel together.
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DetailsColumnPrefs {
+    pub(crate) widths: ColWidths,
+    pub(crate) order: [DetailsColumn; 3],
+}
+
+impl Default for DetailsColumnPrefs {
+    fn default() -> Self {
+        Self {
+            widths: ColWidths::default(),
+            order: DetailsColumn::DEFAULT_ORDER,
+        }
+    }
+}
+
 /// Active column-resize drag state for the Details header.
 pub(crate) struct ColResizeState {
     /// Which column: "size", "modified", or "type".
     pub(crate) col: &'static str,
+    /// Pane the resize started on — only this pane is re-rendered live (scoped
+    /// `notify_pane`); other Details panes catch up on mouse-up.
+    pub(crate) pane: TileId,
+    pub(crate) start_x: f32,
+    pub(crate) start_width: f32,
+}
+
+pub(crate) struct DockResizeState {
+    pub(crate) container: TileId,
+    pub(crate) divider: usize,
+    pub(crate) dir: crate::state::layout_tree::LinearDir,
+    pub(crate) start_pos: f32,
+    pub(crate) span_px: f32,
+    pub(crate) start_shares: Vec<f32>,
+}
+
+pub(crate) struct SidebarResizeState {
+    pub(crate) start_x: f32,
+    pub(crate) start_width: f32,
+}
+
+pub(crate) struct InspectorResizeState {
     pub(crate) start_x: f32,
     pub(crate) start_width: f32,
 }
@@ -475,6 +725,26 @@ const DRAIN_INTERVAL: Duration = Duration::from_millis(100);
 // How long a palette's exit animation runs before its view is torn down. Must be ≥
 // `palette::PALETTE_CLOSE_MS` so the fade-out completes (it reaches opacity 0 first).
 const PALETTE_CLOSE_FINALIZE: Duration = Duration::from_millis(150);
+// How long a pane's close-out animation runs before it's removed from the dock.
+pub(crate) const PANE_CLOSE_FINALIZE: Duration = Duration::from_millis(crate::ui::motion::PANE_MS);
+
+/// Map the user's scroll-smoothness setting (0 = instant … 1 = silky) to the gpui
+/// scroll handle's (ease, boost). `ease` is the fraction of remaining distance closed
+/// per frame (lower = longer glide); `boost` is per-notch travel.
+pub(crate) fn scroll_smooth_params(smoothness: f32) -> (f32, f32) {
+    let s = smoothness.clamp(0.0, 1.0);
+    if s <= 0.0 {
+        return (0.0, 1.0); // off → instant (ease 0 disables smoothing in gpui)
+    }
+    // s=0.01→ease~0.46 (snappy), s=1→ease 0.12 (silky); boost 1.0→3.0.
+    let ease = 0.46_f32 - 0.34 * s;
+    let boost = 1.0_f32 + 2.0 * s;
+    (ease, boost)
+}
+// Window after a fresh listing appears during which item rows stagger-animate in.
+// Must comfortably exceed the longest staggered row animation; past it, scrolling
+// never re-triggers the appear.
+pub(crate) const ITEM_APPEAR_WINDOW: Duration = Duration::from_millis(150);
 
 pub struct PendingPreview {
     pub(crate) tab: TileId,
@@ -488,6 +758,8 @@ impl App {
     /// Notify only the signal entity for `pane_id`. The `PaneContentView` for that
     /// pane observes this signal, so only it re-renders — not every other pane.
     pub(crate) fn notify_pane(&self, pane_id: TileId, cx: &mut gpui::Context<Self>) {
+        let _perf = crate::perf::span_detail("notify_pane", || format!("pane={}", pane_id.0));
+        crate::perf::event(|| format!("notify_pane pane={}", pane_id.0));
         if let Some(signal) = self.pane_signals.get(&pane_id) {
             signal.update(cx, |_, cx| cx.notify());
         }
@@ -496,9 +768,43 @@ impl App {
     /// Notify all pane signals at once — used for global changes (settings, theme,
     /// icon cache updates) that affect every pane simultaneously.
     pub(crate) fn notify_all_panes(&self, cx: &mut gpui::Context<Self>) {
+        let _perf = crate::perf::span_detail("notify_all_panes", || {
+            format!("signals={}", self.pane_signals.len())
+        });
+        crate::perf::event(|| format!("notify_all_panes signals={}", self.pane_signals.len()));
         for signal in self.pane_signals.values() {
             signal.update(cx, |_, cx| cx.notify());
         }
+    }
+
+    /// Repaint panes navigated via `navigate_to` (which has no `cx`). `navigate_to`
+    /// updates `pane.location` (chrome/breadcrumb show the new route) and marks the
+    /// tile in `dirty_panes`; this flushes those into `notify_pane` so the file view
+    /// re-renders in lockstep with the route. Also notifies App (chrome + sidebar
+    /// via its `observe`). Call from any path holding a `Context` after navigating.
+    pub(crate) fn flush_dirty_panes(&mut self, cx: &mut gpui::Context<Self>) {
+        let _perf = crate::perf::span_detail("flush_dirty_panes", || {
+            format!(
+                "dirty={} dirty_all={}",
+                self.dirty_panes.len(),
+                self.dirty_all_panes
+            )
+        });
+        if self.dirty_all_panes {
+            self.dirty_all_panes = false;
+            self.notify_all_panes(cx);
+            cx.notify();
+            return;
+        }
+        if self.dirty_panes.is_empty() {
+            cx.notify();
+            return;
+        }
+        let dirty: Vec<TileId> = self.dirty_panes.drain().collect();
+        for id in dirty {
+            self.notify_pane(id, cx);
+        }
+        cx.notify();
     }
 
     /// Return (creating lazily) the signal entity for a pane. `PaneContentView`
@@ -517,6 +823,55 @@ impl App {
     /// Remove the signal entity when a pane is closed (no-op if already gone).
     pub(crate) fn drop_pane_signal(&mut self, pane_id: TileId) {
         self.pane_signals.remove(&pane_id);
+    }
+
+    /// Seam direction a closing pane should slide toward, or `None` if it isn't
+    /// closing. The pane retreats into the split seam (toward its surviving sibling)
+    /// while fading; once removed, the neighbor expands to fill via FLIP. The fade
+    /// itself is a self-driving `with_animation` tween in `FilePanel`.
+    pub(crate) fn pane_closing_for(&self, pane_id: TileId) -> Option<(f32, f32)> {
+        self.pane_closing
+            .contains_key(&pane_id)
+            .then(|| self.pane_seam_dir(pane_id))
+    }
+
+    /// Unit-ish direction (dx, dy) toward the split seam for `pane_id`: the axis of
+    /// the parent Linear container and the sign toward the adjacent sibling.
+    fn pane_seam_dir(&self, pane_id: TileId) -> (f32, f32) {
+        use crate::state::layout_tree::{Container, LinearDir, Tile};
+        // The pane lives in a Tabs container; the split axis is on its parent Linear.
+        let tabs_id = self.state.find_tabs_container(pane_id).unwrap_or(pane_id);
+        let Some(parent_id) = self.state.find_parent_of(tabs_id) else {
+            return (0.0, 0.0);
+        };
+        let Some(Tile::Container(Container::Linear(lin))) =
+            self.state.pane_tree.tiles.get(parent_id)
+        else {
+            return (0.0, 0.0);
+        };
+        let Some(pos) = lin.children.iter().position(|&c| c == tabs_id) else {
+            return (0.0, 0.0);
+        };
+        // Slide toward the seam shared with the neighbor: if not first child the
+        // neighbor is before us (negative), else after us (positive).
+        let sign = if pos > 0 { -1.0 } else { 1.0 };
+        match lin.dir {
+            LinearDir::Horizontal => (sign, 0.0),
+            LinearDir::Vertical => (0.0, sign),
+        }
+    }
+
+    /// If `pane_id` is within its item-appear window, return the `appear_seq` to key
+    /// the row animation on (changes per fresh listing, so it plays once). `None`
+    /// once the window elapses, so scrolling never re-triggers the cascade.
+    pub(crate) fn pane_item_appear_seq(&self, pane_id: TileId) -> Option<u64> {
+        if self.state.settings.disable_animations {
+            return None;
+        }
+        let started = self.pane_items_appear.get(&pane_id)?;
+        (started.elapsed() < ITEM_APPEAR_WINDOW)
+            .then(|| self.state.tab_states.get(&pane_id).map(|ts| ts.appear_seq))
+            .flatten()
     }
 
     pub(crate) fn pane_animation_for(&self, pane_id: TileId) -> Option<PaneAnimation> {
@@ -543,6 +898,11 @@ impl App {
             .retain(|_, animation| animation.is_alive());
     }
 
+    /// Live column-reorder slide, if still running.
+    pub(crate) fn details_reorder_anim(&self) -> Option<DetailsReorderAnim> {
+        self.details_reorder.filter(|a| a.is_alive())
+    }
+
     pub(crate) fn begin_pane_layout_frame(&mut self) {
         self.pane_layout_frame_pending = false;
     }
@@ -560,6 +920,14 @@ impl App {
         pane_id: TileId,
         bounds: gpui::Bounds<gpui::Pixels>,
     ) -> bool {
+        if self.dock_resize.is_some()
+            || self.sidebar_resize.is_some()
+            || self.inspector_resize.is_some()
+        {
+            self.pane_layout_bounds.insert(pane_id, bounds);
+            return false;
+        }
+
         if self
             .pane_animations
             .get(&pane_id)
@@ -571,6 +939,7 @@ impl App {
                 .copied()
                 .is_some_and(PaneLayoutAnimation::is_alive)
         {
+            self.pane_layout_bounds.insert(pane_id, bounds);
             return false;
         }
 
@@ -584,6 +953,7 @@ impl App {
                 }
 
                 if !pane_bounds_moved(old, bounds)
+                    || pane_bounds_resized(old, bounds)
                     || self.pane_layout_animations.len() >= Self::MAX_PANE_LAYOUT_ANIMATIONS
                 {
                     return false;
@@ -671,6 +1041,7 @@ impl App {
             .tab_data_for(pane_id)
             .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
         {
+            crate::perf::count("dnd.pending_zone_push");
             self.pending_pane_zones.push(crate::dnd::DropZone {
                 x: f32::from(bounds.origin.x),
                 y: f32::from(bounds.origin.y),
@@ -718,7 +1089,12 @@ impl App {
 
     /// Get-or-create the virtualized-list scroll handle for a pane.
     pub(crate) fn scroll_handle_for(&mut self, tile: TileId) -> UniformListScrollHandle {
-        self.scroll_handles.entry(tile).or_default().clone()
+        let handle = self.scroll_handles.entry(tile).or_default().clone();
+        // Apply the user's wheel-smoothness setting to the underlying scroll handle so
+        // every file view scrolls with the same feel. Cheap; runs per render.
+        let (ease, boost) = scroll_smooth_params(self.state.settings.scroll_smoothness);
+        handle.0.borrow().base_handle.set_smooth(ease, boost);
+        handle
     }
 
     /// Move the keyboard cursor within the focused tab's visible list. `target`
@@ -770,6 +1146,9 @@ impl App {
             .unwrap_or((false, 1));
         if is_grid && self.scroll_grid_row_to(tile, next_pos / cols.max(1), ScrollStrategy::Center)
         {
+            return;
+        }
+        if self.scroll_details_row_to(tile, next_pos, ScrollStrategy::Center) {
             return;
         }
         if let Some(handle) = self.scroll_handles.get(&tile) {
@@ -870,6 +1249,13 @@ fn pane_bounds_moved(old: gpui::Bounds<gpui::Pixels>, new: gpui::Bounds<gpui::Pi
     let dx = (f32::from(old.origin.x) - f32::from(new.origin.x)).abs();
     let dy = (f32::from(old.origin.y) - f32::from(new.origin.y)).abs();
     dx > MIN_MOVE_DELTA || dy > MIN_MOVE_DELTA
+}
+
+fn pane_bounds_resized(old: gpui::Bounds<gpui::Pixels>, new: gpui::Bounds<gpui::Pixels>) -> bool {
+    const MIN_SIZE_DELTA: f32 = 1.25;
+    let dw = (f32::from(old.size.width) - f32::from(new.size.width)).abs();
+    let dh = (f32::from(old.size.height) - f32::from(new.size.height)).abs();
+    dw > MIN_SIZE_DELTA || dh > MIN_SIZE_DELTA
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

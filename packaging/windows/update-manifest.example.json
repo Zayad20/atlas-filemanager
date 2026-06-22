@@ -1,0 +1,10 @@
+{
+  "version": "0.1.0",
+  "notes": "First public installer build.",
+  "published_at": "2026-06-19T00:00:00Z",
+  "windows": {
+    "url": "https://cdn.example.com/app/windows/versions/AtlasSetup-0.1.0.exe",
+    "sha256": "replace-with-release-sha256",
+    "size": 0
+  }
+}

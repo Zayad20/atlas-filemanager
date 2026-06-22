@@ -293,6 +293,9 @@ impl App {
         let view = cx.entity();
         let focus = self.overlay_focus(cx);
         let kind = spec.kind;
+        let (smooth_ease, smooth_boost) =
+            crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
+        self.palette_scroll.set_smooth(smooth_ease, smooth_boost);
         let close_action = kind.close_action();
         let closing = matches!(self.palette_closing, Some((k, _)) if k == kind);
 

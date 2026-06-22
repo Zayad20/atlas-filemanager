@@ -12,6 +12,7 @@ use crate::app::App;
 use crate::state::app_state::BgResult;
 use crate::ui::inspector::rgba_to_render_image;
 use gpui::RenderImage;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -82,7 +83,12 @@ impl App {
     /// command template). Idempotent and throttled: skips if already known or if the
     /// external-process cap is reached (re-issued next frame). On completion it reports
     /// via the same `BgResult::GridThumbnailReady` path as native decodes.
-    pub(crate) fn request_ext_thumbnail(&mut self, path: PathBuf, run_tmpl: String) {
+    pub(crate) fn request_ext_thumbnail(
+        &mut self,
+        path: PathBuf,
+        run_tmpl: String,
+        tools: HashMap<String, PathBuf>,
+    ) {
         if self.thumb_textures.contains_key(&path)
             || self.ext_thumb_inflight.len() >= MAX_EXT_THUMB_INFLIGHT
         {
@@ -95,7 +101,48 @@ impl App {
         self.rt.spawn(async move {
             let report = path.clone();
             let result = tokio::task::spawn_blocking(move || {
-                crate::ext::runner::run_thumbnail(&path, &run_tmpl, THUMB_MAX_EDGE)
+                crate::ext::runner::run_thumbnail(&path, &run_tmpl, &tools, THUMB_MAX_EDGE)
+            })
+            .await
+            .ok()
+            .flatten();
+            let bg = match result {
+                Some((rgba, width, height)) => BgResult::GridThumbnailReady {
+                    path: report,
+                    rgba,
+                    width,
+                    height,
+                },
+                None => BgResult::GridThumbnailReady {
+                    path: report,
+                    rgba: Vec::new(),
+                    width: 0,
+                    height: 0,
+                },
+            };
+            let _ = tx.send(bg);
+        });
+    }
+
+    /// Request a thumbnail produced by the Windows Shell thumbnail cache
+    /// (`IShellItemImageFactory`).  Covers videos, RAW photos, HEIC, PDF, etc. — any
+    /// format that has a registered Windows thumbnail provider.  Shares the extension
+    /// inflight cap so we never exceed `MAX_EXT_THUMB_INFLIGHT` concurrent COM calls.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn request_shell_thumbnail(&mut self, path: PathBuf) {
+        if self.thumb_textures.contains_key(&path)
+            || self.ext_thumb_inflight.len() >= MAX_EXT_THUMB_INFLIGHT
+        {
+            return;
+        }
+        self.thumb_textures
+            .insert(path.clone(), ThumbState::Loading);
+        self.ext_thumb_inflight.insert(path.clone());
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let report = path.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                crate::shell_thumb::shell_thumbnail(&path, THUMB_MAX_EDGE)
             })
             .await
             .ok()

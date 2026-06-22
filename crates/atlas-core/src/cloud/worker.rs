@@ -462,14 +462,14 @@ impl Worker {
         #[cfg(windows)]
         {
             use crate::cloud::rclone::windows_mount;
-            if !windows_mount::is_winfsp_installed() {
+            if !windows_mount::ensure_winfsp_ready() {
                 let _ = self.bg_tx.send(BgResult::RemoteStatusChanged {
-                    id,
+                    id: id.clone(),
                     status: RemoteStatus::BrowseFallback(
-                        "WinFsp not installed — install WinFsp to enable drive mounting"
-                            .to_string(),
+                        "Installing WinFsp to enable drive mounting".to_string(),
                     ),
                 });
+                self.install_winfsp(Some(id)).await;
                 return;
             }
         }
@@ -480,7 +480,24 @@ impl Worker {
         self.rt.spawn(async move {
             let status = match provider.mount(&id, &mount_point).await {
                 Ok(()) => RemoteStatus::Mounted(mount_point),
-                Err(e) => RemoteStatus::Error(e.to_string()),
+                Err(e) => {
+                    let error = e.to_string();
+                    #[cfg(windows)]
+                    {
+                        if is_windows_fuse_mount_error(&error) {
+                            RemoteStatus::BrowseFallback(
+                                "WinFsp missing or not working — reinstall WinFsp to enable drive mounting"
+                                    .to_string(),
+                            )
+                        } else {
+                            RemoteStatus::Error(error)
+                        }
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        RemoteStatus::Error(error)
+                    }
+                }
             };
             let _ = bg.send(BgResult::RemoteStatusChanged { id, status });
         });
@@ -766,5 +783,28 @@ fn remote_to_file_entry(e: RemoteEntry) -> FileEntry {
         _is_symlink: false,
         archive_root: None,
         recycle_info: None,
+    }
+}
+
+#[cfg(windows)]
+fn is_windows_fuse_mount_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("fuse")
+        || lower.contains("winfsp")
+        || lower.contains("cgofuse")
+        || lower.contains("failed to mount")
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_fuse_mount_errors_are_dependency_errors() {
+        assert!(is_windows_fuse_mount_error(
+            "rc mount/mount: failed to mount FUSE fs: mount stopped before calling Init"
+        ));
+        assert!(is_windows_fuse_mount_error("WinFsp is not installed"));
+        assert!(!is_windows_fuse_mount_error("oauth token expired"));
     }
 }

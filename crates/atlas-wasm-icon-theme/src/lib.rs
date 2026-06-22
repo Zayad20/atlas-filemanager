@@ -13,6 +13,16 @@ struct CommandExecute {
     host_dir: String,
 }
 
+fn payload_theme_id(payload: &str) -> Option<String> {
+    let payload = payload.trim();
+    if payload.is_empty() || payload.starts_with('{') || payload.starts_with('[') {
+        return None;
+    }
+    payload
+        .contains('/')
+        .then(|| payload.trim_matches('"').to_string())
+}
+
 // Vinculamos la función del Host definida en el manager de Rust
 #[extism_pdk::host_fn]
 extern "ExtismHost" {
@@ -31,7 +41,9 @@ pub fn execute_command(input: String) -> FnResult<String> {
             return Ok(format!("Tema actualizado a: {}", user_choice));
         }
         "icon-manager.download-theme" => {
-            let ext_id = if query.payload.is_empty() {
+            let ext_id = if let Some(ext_id) = payload_theme_id(&query.payload) {
+                ext_id
+            } else {
                 let options = vec![
                     "PKief/material-icon-theme",
                     "BeardedBear/beardedicons",
@@ -45,8 +57,6 @@ pub fn execute_command(input: String) -> FnResult<String> {
                     return Ok("Cancelado por el usuario".to_string());
                 }
                 choice
-            } else {
-                query.payload.clone()
             };
 
             // 1. Llamar a la API de Open VSX
@@ -227,5 +237,23 @@ pub fn execute_command(input: String) -> FnResult<String> {
             return Ok(mappings.to_string());
         }
         _ => return Ok("Comando desconocido".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::payload_theme_id;
+
+    #[test]
+    fn ignores_runner_paths_payload() {
+        assert_eq!(payload_theme_id(r#"{"paths":[]}"#), None);
+    }
+
+    #[test]
+    fn keeps_explicit_theme_id() {
+        assert_eq!(
+            payload_theme_id("PKief/material-icon-theme"),
+            Some("PKief/material-icon-theme".to_string())
+        );
     }
 }

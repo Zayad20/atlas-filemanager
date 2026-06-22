@@ -278,9 +278,12 @@ pub struct ProfileUiState {
     pub new_bookmark_name: String,
     pub adding_tag: bool,
     pub creating_tag: bool,
+    pub editing_tag: Option<crate::tag_cache::TagId>,
     pub new_tag_global: bool,
     pub new_tag_name: String,
     pub new_tag_color: [u8; 3],
+    pub confirming_delete_profile: Option<usize>,
+    pub atlas_launcher_profiles_open: bool,
 }
 
 pub const PRESET_COLORS: &[[u8; 3]] = &[

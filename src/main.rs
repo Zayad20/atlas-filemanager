@@ -3,6 +3,7 @@
 //! [`atlas_ui::run`].
 
 fn main() {
+    let app_started = std::time::Instant::now();
     use tracing_subscriber::prelude::*;
     tracing_subscriber::registry()
         .with(
@@ -33,5 +34,5 @@ fn main() {
         }
     });
 
-    atlas_ui::run(handle);
+    atlas_ui::run(handle, app_started);
 }

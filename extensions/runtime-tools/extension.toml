@@ -1,0 +1,90 @@
+id = "runtime-tools"
+name = "Atlas Runtime Tools"
+version = "0.1.0"
+author = "Atlas Team"
+description = "Portable shared binaries used by extensions"
+kind = "tool_provider"
+hidden = true
+
+[[tools]]
+name = "magick"
+os = "windows"
+arch = "x86_64"
+path = "tools/windows-x64/imagemagick/magick.exe"
+download_url = "https://imagemagick.org/archive/binaries/ImageMagick-7.1.2-26-portable-Q16-HDRI-x64.7z"
+signature_url = "https://imagemagick.org/archive/binaries/ImageMagick-7.1.2-26-portable-Q16-HDRI-x64.7z.asc"
+archive_format = "7z"
+archive_path = "magick.exe"
+
+[[tools]]
+name = "magick"
+os = "windows"
+arch = "aarch64"
+path = "tools/windows-arm64/imagemagick/magick.exe"
+download_url = "https://imagemagick.org/archive/binaries/ImageMagick-7.1.2-26-portable-Q16-HDRI-arm64.7z"
+signature_url = "https://imagemagick.org/archive/binaries/ImageMagick-7.1.2-26-portable-Q16-HDRI-arm64.7z.asc"
+archive_format = "7z"
+archive_path = "magick.exe"
+
+[[tools]]
+name = "ffmpeg"
+os = "windows"
+arch = "x86_64"
+path = "tools/windows-x64/ffmpeg/ffmpeg.exe"
+download_url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip"
+archive_format = "zip"
+archive_path = "bin/ffmpeg.exe"
+
+[[tools]]
+name = "ffmpeg"
+os = "windows"
+arch = "aarch64"
+path = "tools/windows-arm64/ffmpeg/ffmpeg.exe"
+download_url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-winarm64-lgpl.zip"
+archive_format = "zip"
+archive_path = "bin/ffmpeg.exe"
+
+[[tools]]
+name = "gs"
+os = "windows"
+arch = "x86_64"
+path = "tools/windows-x64/ghostscript/bin/gswin64c.exe"
+
+[[tools]]
+name = "gs"
+os = "windows"
+arch = "aarch64"
+path = "tools/windows-arm64/ghostscript/bin/gswin64c.exe"
+
+[[tools]]
+name = "pdftoppm"
+os = "windows"
+arch = "x86_64"
+path = "tools/windows-x64/poppler/bin/pdftoppm.exe"
+download_url = "https://github.com/oschwartz10612/poppler-windows/releases/latest/download/Release-26.02.0-0.zip"
+archive_format = "zip"
+archive_path = "Library/bin/pdftoppm.exe"
+
+[[tools]]
+name = "pdftoppm"
+os = "windows"
+arch = "aarch64"
+path = "tools/windows-arm64/poppler/bin/pdftoppm.exe"
+
+[[tools]]
+name = "pdfium"
+os = "windows"
+arch = "x86_64"
+path = "tools/windows-x64/pdfium/bin/pdfium.dll"
+download_url = "https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-win-x64.tgz"
+archive_format = "tgz"
+archive_path = "bin/pdfium.dll"
+
+[[tools]]
+name = "pdfium"
+os = "windows"
+arch = "aarch64"
+path = "tools/windows-arm64/pdfium/bin/pdfium.dll"
+download_url = "https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-win-arm64.tgz"
+archive_format = "tgz"
+archive_path = "bin/pdfium.dll"

@@ -41,6 +41,27 @@ impl App {
         false
     }
 
+    /// Remove panes whose close-out animation has elapsed.
+    pub(crate) fn tick_pane_close(&mut self) -> bool {
+        if self.pane_closing.is_empty() {
+            return false;
+        }
+        let done: Vec<TileId> = self
+            .pane_closing
+            .iter()
+            .filter(|(_, started)| started.elapsed() >= crate::app::PANE_CLOSE_FINALIZE)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &done {
+            self.pane_closing.remove(id);
+        }
+        if !done.is_empty() {
+            crate::perf::event(|| format!("pane_close.finalize done={}", done.len()));
+            self.remove_panes_from_tree(&done);
+        }
+        !done.is_empty()
+    }
+
     /// Apply every queued background result to state. Returns `true` if at least
     /// one result was processed (i.e. a repaint is warranted).
     /// Drain the Windows OLE drop-target action queue and route payloads to
@@ -80,28 +101,42 @@ impl App {
                     self.toast_error(msg);
                     continue;
                 }
-                DndEvent::DragOver { .. } | DndEvent::DragLeave => continue,
+                DndEvent::DragOver { x, y } => {
+                    had = true;
+                    self.drag_hover_set_cursor(gpui::point(gpui::px(x), gpui::px(y)));
+                    continue;
+                }
+                DndEvent::DragLeave => {
+                    had = true;
+                    self.drag_hover_external_left();
+                    continue;
+                }
             };
-            // Resolve destination: use the App's focused dir as fallback.
+            // A real drop landed inside Atlas: it's a deliberate release, not an
+            // ESC-cancel, so keep any spring-load nav and tear the engine down here
+            // (the synthetic mouse-up no longer clears it on Windows).
+            self.mark_drag_committed();
+            self.drag_hover.clear();
+            if let Some(command) = self.drag_hover_drop_command_at(p.x, p.y) {
+                had = true;
+                self.execute_drag_hover_drop_command(command, p.paths, p.from_self);
+                continue;
+            }
             let dest = if p.x >= 0.0 && p.y >= 0.0 {
-                // Drop target already computed a zone-based dest inside the COM vtable;
-                // we trust it. If it is empty, fall back to focused tab dir.
                 if p.paths.is_empty() {
                     continue;
                 }
-                // Re-check zones: the payload carries the logical drop position.
-                let dest = self.dnd.as_ref().and_then(|d| {
+                // Zone-based dest computed from the drop position. A drop over empty
+                // space (no zone, no drag-hover target) is a no-op — never fall back
+                // to the active pane dir, which silently transferred to the wrong place.
+                self.dnd.as_ref().and_then(|d| {
                     d.zones
                         .lock()
                         .ok()
                         .and_then(|z| z.hit(p.x, p.y).map(|z| z.dest.clone()))
-                });
-                dest.or_else(|| {
-                    self.state
-                        .active_tab_data()
-                        .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
                 })
             } else {
+                // Synthetic position (no real cursor): fall back to the active dir.
                 self.state
                     .active_tab_data()
                     .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
@@ -137,9 +172,12 @@ impl App {
     /// render cycle (e.g., the 60 Hz async drain loop). During render use
     /// `drain_bg_results_state_only` to avoid re-entering gpui's entity lease.
     pub(crate) fn drain_bg_results(&mut self, cx: &mut gpui::Context<Self>) -> bool {
+        let _perf = crate::perf::span("bg.drain");
         // Drain icon channel first.
         let icon_results: Vec<_> = self.icon_rx.try_iter().collect();
-        let mut changed = !icon_results.is_empty();
+        let icon_len = icon_results.len();
+        let icon_changed = !icon_results.is_empty();
+        let mut changed = icon_changed;
         for (key, result) in icon_results {
             let state = match result {
                 Some(tex) => crate::icon_theme::IconState::Ready(tex),
@@ -149,20 +187,38 @@ impl App {
         }
 
         let results: Vec<BgResult> = self.rx.try_iter().collect();
+        let results_len = results.len();
         let info = self.process_bg_results(results);
         changed |= info.changed;
+        let notify_all = self.dirty_all_panes || info.notify_all;
+        let notify_panes_len = info.notify_panes.len();
+        crate::perf::event(|| {
+            format!(
+                "bg.drain icons={icon_len} results={results_len} changed={changed} notify_all={notify_all} notify_panes={notify_panes_len} dirty={}",
+                self.dirty_panes.len()
+            )
+        });
 
         // Apply pane notifications now that state mutation is done.
-        if changed || info.notify_all || !info.notify_panes.is_empty() {
-            if changed || info.notify_all {
-                self.notify_all_panes(cx);
-            } else {
-                let mut seen = std::collections::HashSet::new();
-                for id in info.notify_panes {
-                    if seen.insert(id) {
-                        self.notify_pane(id, cx);
-                    }
+        if notify_all {
+            self.dirty_all_panes = false;
+            self.dirty_panes.clear();
+            self.notify_all_panes(cx);
+        } else if !info.notify_panes.is_empty() {
+            let mut seen = std::collections::HashSet::new();
+            for id in info.notify_panes {
+                if seen.insert(id) {
+                    self.notify_pane(id, cx);
                 }
+            }
+        }
+        // Flush any pane navigated this cycle whose listing isn't back yet, so the
+        // route and the file view never drift apart (the normal-use path; the
+        // drag-hover tick handles the modal-loop case where this drain is starved).
+        if !self.dirty_panes.is_empty() {
+            let dirty: Vec<TileId> = self.dirty_panes.drain().collect();
+            for id in dirty {
+                self.notify_pane(id, cx);
             }
         }
         changed
@@ -172,8 +228,11 @@ impl App {
     /// `signal.update`. Safe to call inside `App::render` because it never
     /// re-enters gpui's entity lease machinery.
     pub(crate) fn drain_bg_results_state_only(&mut self) -> bool {
+        let _perf = crate::perf::span("bg.drain_state_only");
         let icon_results: Vec<_> = self.icon_rx.try_iter().collect();
-        let mut changed = !icon_results.is_empty();
+        let icon_len = icon_results.len();
+        let icon_changed = !icon_results.is_empty();
+        let mut changed = icon_changed;
         for (key, result) in icon_results {
             let state = match result {
                 Some(tex) => crate::icon_theme::IconState::Ready(tex),
@@ -182,8 +241,18 @@ impl App {
             self.icon_cache.insert(key, state);
         }
         let results: Vec<BgResult> = self.rx.try_iter().collect();
+        let results_len = results.len();
         let info = self.process_bg_results(results);
         changed |= info.changed;
+        let notify_panes_len = info.notify_panes.len();
+        crate::perf::event(|| {
+            format!(
+                "bg.drain_state_only icons={icon_len} results={results_len} changed={changed} notify_all={} notify_panes={notify_panes_len}",
+                info.notify_all
+            )
+        });
+        self.dirty_all_panes |= info.notify_all;
+        self.dirty_panes.extend(info.notify_panes);
         changed
     }
 
@@ -207,6 +276,7 @@ impl App {
                     } else {
                         vec![]
                     };
+                    let mut armed_appear = false;
                     if let Some(ts) = self.state.tab_states.get_mut(&tab) {
                         // Ignore stale results from a superseded navigation
                         if op_id == ts.last_nav_op_id {
@@ -228,6 +298,12 @@ impl App {
                                 .map(|e| e.path.clone());
                             ts.set_entries(entries);
                             ts.load_state = LoadState::Loaded;
+                            // Fresh navigation/create load → arm the item appear anim.
+                            if ts.pending_appear {
+                                ts.appear_seq = ts.appear_seq.wrapping_add(1);
+                                ts.pending_appear = false;
+                                armed_appear = true;
+                            }
                             ts.selection.selected = ts
                                 .entries
                                 .iter()
@@ -242,6 +318,10 @@ impl App {
                         }
                     }
                     // Borrow of tab_states released — safe to request icons.
+                    if armed_appear {
+                        self.pane_items_appear
+                            .insert(tab, std::time::Instant::now());
+                    }
                     for key in icon_keys {
                         self.request_icon(key);
                     }
@@ -571,6 +651,33 @@ impl App {
                 BgResult::GridThumbnailSkipped { path } => {
                     self.apply_thumb_skipped(path);
                     info.notify_all = true;
+                }
+                BgResult::ExtToolInstalled {
+                    tool,
+                    tab,
+                    path,
+                    result,
+                } => match result {
+                    Ok(()) => {
+                        self.reload_ext_registry();
+                        self.state.preview.paths.remove(&tab);
+                        self.load_preview_gpui(tab, path);
+                        info.notify_panes.push(tab);
+                    }
+                    Err(error) => {
+                        self.state.preview.results.insert(
+                            tab,
+                            crate::state::preview_cache::PreviewResult::Error(format!(
+                                "Could not install {}: {}",
+                                crate::ui::inspector::tool_label(&tool),
+                                error
+                            )),
+                        );
+                        info.notify_panes.push(tab);
+                    }
+                },
+                BgResult::AppUpdateAvailable { version, url } => {
+                    self.toast_info(format!("Atlas {version} is available: {url}"));
                 }
                 BgResult::ExtRegistryFetched(_)
                 | BgResult::ExtRemoteInstalled { .. }

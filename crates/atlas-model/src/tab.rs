@@ -138,6 +138,9 @@ pub struct TabState {
     /// Width of the pane as of the last rendered frame, used to detect active
     /// resize and suppress layout thrashing in the grid view.
     pub last_pane_width: f32,
+    /// Height of the pane as of the last rendered frame, used by canvas-backed
+    /// views to avoid shaping rows outside the visible viewport.
+    pub last_pane_height: f32,
     /// Bumped whenever `entries` is replaced; used to invalidate `visible` cache.
     /// Mutate `entries` only through [`TabState::set_entries`]/[`TabState::begin_navigation`]
     /// so this stays in sync.
@@ -155,6 +158,13 @@ pub struct TabState {
     /// `entries`, rebuilt only when `entries_version` advances.
     pub type_labels_cache: Vec<String>,
     type_labels_version: u64,
+    /// Bumped once each time a *fresh* listing (tab create / navigation) finishes
+    /// loading — NOT on incremental fs-watch refreshes. Views key their item
+    /// appear animation on this so rows fade/slide in only when content is new.
+    pub appear_seq: u64,
+    /// Set by create/navigate paths; consumed on the next completed load to bump
+    /// `appear_seq`. Keeps watch refreshes from re-triggering the appear animation.
+    pub pending_appear: bool,
 }
 
 impl Default for TabState {
@@ -172,6 +182,7 @@ impl Default for TabState {
             search: SearchInPlaceState::default(),
             miller: MillerState::default(),
             last_pane_width: 0.0,
+            last_pane_height: 0.0,
             entries_version: 0,
             visible: Arc::new(Vec::new()),
             visible_filter: String::new(),
@@ -182,6 +193,8 @@ impl Default for TabState {
             counts: VisibleCounts::default(),
             type_labels_cache: Vec::new(),
             type_labels_version: u64::MAX, // force rebuild on first call
+            appear_seq: 0,
+            pending_appear: false,
         }
     }
 }
@@ -211,6 +224,9 @@ impl TabState {
     }
 
     pub fn begin_navigation(&mut self) {
+        // A real navigation (not a watch refresh) — the next completed load should
+        // play the item appear animation.
+        self.pending_appear = true;
         self.entries.clear();
         self.entries_version = self.entries_version.wrapping_add(1);
         self.visible_valid = false;

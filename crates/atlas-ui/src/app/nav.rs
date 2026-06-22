@@ -80,6 +80,12 @@ impl App {
         // ── 5. Focused tile + listing ────────────────────────────────────────
         self.state.focused_tile = tab_id;
         self.spawn_list(tab_id, loc);
+        // No `cx` here: mark the pane dirty so `flush_dirty_panes` (called from
+        // drop handlers / the drag-hover tick) repaints the file view in lockstep
+        // with the route. Without this the chrome shows the new path but the pane
+        // (a separate PaneSignal entity) keeps the old listing until the async
+        // BgResult arrives — the "route changes but view doesn't" desync.
+        self.dirty_panes.insert(tab_id);
     }
 
     // ── Thin public wrappers ──────────────────────────────────────────────────

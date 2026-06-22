@@ -134,6 +134,7 @@ pub enum Action {
     CloseOverlays,
     ToggleInspector,
     ToggleSidebar,
+    ToggleSidebarCollapsed,
     OpenBatchRename,
     OpenSettings,
     OpenExtManager,
@@ -148,9 +149,18 @@ pub enum Action {
     CreateProfile(String),
     /// Rename the active profile.
     RenameActiveProfile(String),
+    /// Rename a specific profile.
+    RenameProfile {
+        index: usize,
+        name: String,
+    },
     /// Open the rename-active-profile dialog (seeded with the current name).
     OpenRenameProfile,
+    /// Open the rename dialog for a specific profile.
+    OpenRenameProfileAt(usize),
+    DuplicateProfile(usize),
     DeleteActiveProfile,
+    DeleteProfile(usize),
     ToggleSidebarSection(usize),
     MoveSidebarSectionUp(usize),
     MoveSidebarSectionDown(usize),
@@ -171,7 +181,17 @@ pub enum Action {
         color: [u8; 3],
         profile: Option<String>,
     },
+    RenameTag {
+        tag: TagId,
+        name: String,
+    },
     OpenCreateTagOverlay {
+        global: bool,
+    },
+    OpenRenameTagOverlay {
+        tag: TagId,
+        name: String,
+        color: [u8; 3],
         global: bool,
     },
     CloseCreateTagOverlay,

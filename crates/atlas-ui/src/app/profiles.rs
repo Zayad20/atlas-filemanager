@@ -147,6 +147,18 @@ impl App {
         self.switch_profile(new_idx);
     }
 
+    pub(crate) fn duplicate_profile(&mut self, idx: usize) {
+        let Some(source) = self.state.profiles.profiles.get(idx).cloned() else {
+            return;
+        };
+        let mut profile = source;
+        profile.name = self.unique_profile_copy_name(&profile.name);
+        self.state.profiles.profiles.push(profile);
+        let new_idx = self.state.profiles.profiles.len() - 1;
+        self.state.profile_ui.confirming_delete_profile = None;
+        self.switch_profile(new_idx);
+    }
+
     /// Build a fresh profile name like "Perfil 2" that doesn't collide with an
     /// existing one.
     fn unique_profile_name(&self) -> String {
@@ -163,41 +175,109 @@ impl App {
             .unwrap_or_else(|| rust_i18n::t!("profile_default_name", n = 1).to_string())
     }
 
+    fn unique_profile_copy_name(&self, base: &str) -> String {
+        let taken: std::collections::HashSet<&str> = self
+            .state
+            .profiles
+            .profiles
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        let first = rust_i18n::t!("profile_copy_name", name = base).to_string();
+        if !taken.contains(first.as_str()) {
+            return first;
+        }
+        (2..)
+            .map(|n| rust_i18n::t!("profile_copy_name_numbered", name = base, n = n).to_string())
+            .find(|name| !taken.contains(name.as_str()))
+            .unwrap_or_else(|| rust_i18n::t!("profile_copy_name", name = base).to_string())
+    }
+
     /// Rename the active profile. Empty/whitespace names are ignored.
     pub(crate) fn rename_active_profile(&mut self, name: impl Into<String>) {
+        let idx = self.state.profiles.active_idx;
+        self.rename_profile(idx, name);
+    }
+
+    pub(crate) fn rename_profile(&mut self, idx: usize, name: impl Into<String>) {
         let name = name.into();
         let trimmed = name.trim();
         if trimmed.is_empty() {
             return;
         }
-        self.state.profiles.active_mut().name = trimmed.to_string();
+        let Some(profile) = self.state.profiles.profiles.get_mut(idx) else {
+            return;
+        };
+        profile.name = trimmed.to_string();
         crate::util::config::save_profiles(&self.state.profiles);
     }
 
     pub(crate) fn delete_active_profile(&mut self) {
+        let idx = self.state.profiles.active_idx;
+        self.delete_profile(idx);
+    }
+
+    pub(crate) fn delete_profile(&mut self, del_idx: usize) {
         if self.state.profiles.profiles.len() <= 1 {
             return;
         }
-        let del_idx = self.state.profiles.active_idx;
+        if del_idx >= self.state.profiles.profiles.len() {
+            return;
+        }
+
+        let was_active = del_idx == self.state.profiles.active_idx;
+        if was_active {
+            let target = if del_idx == 0 { 1 } else { del_idx - 1 };
+            self.switch_profile(target);
+        }
+
         self.state.profiles.profiles.remove(del_idx);
-        let new_idx = if del_idx >= self.state.profiles.profiles.len() {
-            self.state.profiles.profiles.len() - 1
+        if del_idx < self.state.profiles.active_idx {
+            self.state.profiles.active_idx -= 1;
+        } else if self.state.profiles.active_idx >= self.state.profiles.profiles.len() {
+            self.state.profiles.active_idx = self.state.profiles.profiles.len() - 1;
+        }
+        if self.renaming_profile_idx.is_some_and(|idx| idx == del_idx) {
+            self.renaming_profile_idx = None;
+            self.rename_profile_input = None;
+            self.state.overlay.renaming_profile = false;
+        } else if let Some(idx) = self.renaming_profile_idx.as_mut() {
+            if del_idx < *idx {
+                *idx -= 1;
+            }
+        }
+        self.state.profile_ui.confirming_delete_profile = None;
+        crate::util::config::save_profiles(&self.state.profiles);
+        if was_active {
+            crate::util::config::save_settings(&self.state.settings);
         } else {
-            del_idx
-        };
-        // active_idx must differ from new_idx to trigger a real switch,
-        // so temporarily place it out of range before calling switch_profile.
-        self.state.profiles.active_idx = usize::MAX;
-        self.switch_profile(new_idx);
+            self.layout_revision += 1;
+        }
     }
 }
 
-/// Per-profile Details-view column widths.
+/// Per-profile Details-view column preferences (widths + visual order).
 /// Blueprint: same pattern as `IconSelection`.
 pub(crate) struct DetailsColumns;
 impl crate::state::profiles::ProfileScoped for DetailsColumns {
     const KEY: &'static str = "details_columns";
-    type State = crate::app::ColWidths;
+    type State = crate::app::DetailsColumnPrefs;
+}
+
+impl App {
+    /// Snapshot the live column widths + order into the active profile and persist.
+    /// Called on resize/reorder release (discrete events — no debounce needed).
+    pub(crate) fn persist_details_columns(&mut self) {
+        let prefs = crate::app::DetailsColumnPrefs {
+            widths: self.col_widths,
+            order: self.details_column_order,
+        };
+        self.state
+            .profiles
+            .active_mut()
+            .set_scoped::<DetailsColumns>(&prefs);
+        crate::util::config::save_profiles(&self.state.profiles);
+    }
 }
 
 /// Official per-profile icon-theme selection: the `extension → SVG-path` mappings

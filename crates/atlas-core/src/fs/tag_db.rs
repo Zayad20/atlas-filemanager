@@ -25,6 +25,10 @@ pub enum TagDbCmd {
         color: [u8; 3],
         profile: Option<String>,
     },
+    RenameTag {
+        tag: TagId,
+        name: String,
+    },
     DeleteTag(TagId),
     // --- associations (fire-and-forget) ---
     AssignTag {
@@ -150,6 +154,13 @@ fn handle(
         }
         TagDbCmd::DeleteTag(id) => {
             conn.execute("DELETE FROM tags WHERE id = ?1", [id.0])?;
+            send_defs(conn, bg_tx)?;
+        }
+        TagDbCmd::RenameTag { tag, name } => {
+            conn.execute(
+                "UPDATE OR IGNORE tags SET name = ?1 WHERE id = ?2",
+                params![name, tag.0],
+            )?;
             send_defs(conn, bg_tx)?;
         }
         TagDbCmd::AssignTag { tag, paths } => {

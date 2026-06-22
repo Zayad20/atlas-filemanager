@@ -10,7 +10,7 @@
 //! DockArea drives invalidation. Avoid observing every `App` repaint here: doing so
 //! invalidates every file panel on each app notify and makes window movement stutter.
 
-use crate::app::{App as AtlasApp, PaneAnimation, PaneLayoutAnimation, PaneSignal};
+use crate::app::{App as AtlasApp, PaneAnimation, PaneSignal};
 use crate::input::action::Action;
 use crate::state::pane::TabId;
 use crate::ui::icons::{icon, AtlasIcon};
@@ -19,22 +19,14 @@ use crate::ui::tooltips::shortcut_tooltip;
 use crate::util::display::display_name;
 use gpui::prelude::*;
 use gpui::{
-    div, point, px, AnimationExt, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    IntoElement, MouseButton, Render, SharedString, WeakEntity, Window,
+    div, point, px, AnimationExt, AnyView, App, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, IntoElement, MouseButton, Render, SharedString, StyleRefinement, WeakEntity, Window,
 };
 use gpui_component::dock::{Panel, PanelEvent, PanelInfo, PanelState};
-use gpui_component::{h_flex, ActiveTheme as _, ElementExt};
+use gpui_component::{h_flex, ActiveTheme as _, ElementExt as _, StyledExt as _};
 
 fn animation_key(prefix: &str, pane_id: TabId, animation: PaneAnimation) -> SharedString {
     motion::keyed(prefix, pane_id.0, (animation.kind, animation.started))
-}
-
-fn layout_animation_key(
-    prefix: &str,
-    pane_id: TabId,
-    animation: PaneLayoutAnimation,
-) -> SharedString {
-    motion::keyed(prefix, pane_id.0, animation.started)
 }
 
 pub struct FilePanel {
@@ -53,6 +45,9 @@ pub struct PaneContentView {
 
 impl Render for PaneContentView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf::count("render.pane_content");
+        let _perf =
+            crate::perf::span_detail("pane.content.render", || format!("pane={}", self.pane_id.0));
         if let Some(app) = self.app.upgrade() {
             app.update(cx, |app, cx| app.render_pane(self.pane_id, window, cx))
         } else {
@@ -180,15 +175,17 @@ impl Panel for FilePanel {
             );
 
         if let Some(animation) = animation {
+            let settle_secs = motion::PANE_SPRING.settle().as_secs_f32();
             title
                 .with_animation(
                     animation_key("file-tab-title-intro", pane_id, animation),
-                    motion::animation(motion::TAB_MS),
+                    motion::linear_anim(motion::PANE_SPRING.settle()),
                     move |this, t| {
-                        let inset = 7.0 * (1.0 - t);
-                        this.opacity(t)
+                        let s = motion::PANE_SPRING.value(t * settle_secs);
+                        let inset = 8.0 * (1.0 - s);
+                        this.opacity(s.clamp(0.0, 1.0))
                             .ml(px(inset))
-                            .bg(accent.opacity(0.12 * (1.0 - t)))
+                            .bg(accent.opacity(0.12 * (1.0 - s).clamp(0.0, 1.0)))
                     },
                 )
                 .into_any_element()
@@ -254,82 +251,75 @@ impl Panel for FilePanel {
 impl Render for FilePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pane_id = self.pane_id;
+        crate::perf::count("render.file_panel");
+        let _perf = crate::perf::span_detail("file_panel.render", || format!("pane={}", pane_id.0));
         match self.app.upgrade() {
             Some(app) => {
-                let (animation, layout_animation, animations_enabled) = {
+                let (animation, closing, animations_enabled) = {
                     let app = app.read(cx);
                     (
                         app.pane_animation_for(pane_id),
-                        app.pane_layout_animation_for(pane_id),
+                        app.pane_closing_for(pane_id),
                         !app.state.settings.disable_animations,
                     )
                 };
                 // Suppress animation when the setting is off — the pane renders at its
                 // final state immediately, saving all per-frame repaint cost.
                 let animation = animation.filter(|_| animations_enabled);
-                let layout_animation = layout_animation.filter(|_| animations_enabled);
-                let accent = cx.theme().accent;
-                let glow = animation.map(|animation| {
-                    div()
-                        .absolute()
-                        .top(px(0.))
-                        .right(px(0.))
-                        .bottom(px(0.))
-                        .left(px(0.))
-                        .rounded(px(crate::ui::RADIUS + 2.0))
-                        .bg(accent.opacity(0.08))
-                        .with_animation(
-                            animation_key("file-pane-glow", pane_id, animation),
-                            motion::animation(motion::GLOW_MS),
-                            move |this, t| motion::glow(this, t, accent),
-                        )
-                });
-                let bounds_app = app.clone();
-                let panel = div()
-                    .size_full()
-                    .relative()
-                    .child(self.content.clone())
-                    .children(glow)
-                    .on_prepaint(move |bounds, window, cx| {
-                        bounds_app.update(cx, |app, cx| {
-                            if app.record_pane_layout_bounds(pane_id, bounds)
-                                && app.request_pane_layout_frame()
-                            {
-                                window.request_animation_frame();
-                                cx.notify();
-                            }
-                        });
-                    });
+                let closing = closing.filter(|_| animations_enabled);
+                let content = AnyView::from(self.content.clone())
+                    .cached(StyleRefinement::default().v_flex().size_full());
+                let bounds_app = self.app.clone();
+                let panel = div().size_full().relative().child(content).on_prepaint(
+                    move |bounds, _window, cx| {
+                        if let Some(app) = bounds_app.upgrade() {
+                            app.update(cx, |app, _cx| {
+                                if app.state.tab_states.contains_key(&pane_id) {
+                                    app.pane_layout_bounds.insert(pane_id, bounds);
+                                }
+                            });
+                        }
+                    },
+                );
 
-                if let Some(layout_animation) = layout_animation {
+                if let Some((dx, dy)) = closing {
+                    // Close-out: accelerate away into the seam (ease-in) while fading —
+                    // the physical counterpart of the spring intro. Self-driving tween
+                    // over PANE_CLOSE_FINALIZE; the finalize tick removes the pane when
+                    // it ends, then the neighbor expands (FLIP). Stable key = plays once.
+                    let dist = 14.0;
                     panel
                         .with_animation(
-                            layout_animation_key("file-pane-layout", pane_id, layout_animation),
-                            motion::animation(motion::PANE_MS),
+                            SharedString::from(format!("file-pane-close-{}", pane_id.0)),
+                            motion::animation(crate::app::PANE_CLOSE_FINALIZE.as_millis() as u64),
                             move |this, t| {
-                                let (x, y) = layout_animation.offset_at(t);
-                                this.paint_offset(point(px(x), px(y)))
+                                let a = t * t; // ease-in: starts slow, falls away fast
+                                this.opacity(1.0 - a * 0.85)
+                                    .paint_offset(point(px(dx * dist * a), px(dy * dist * a)))
                             },
                         )
                         .into_any_element()
                 } else if let Some(animation) = animation {
+                    // Spring intro: pane glides in from the entrance direction with
+                    // momentum and a soft overshoot, settling exactly as the (linear)
+                    // timeline ends. The spring curve lives in the closure, not the
+                    // easing, so it can overshoot past 1.0 without tripping gpui's assert.
+                    let settle_secs = motion::PANE_SPRING.settle().as_secs_f32();
                     panel
                         .with_animation(
                             animation_key("file-pane-motion", pane_id, animation),
-                            motion::animation(motion::PANE_MS),
+                            motion::linear_anim(motion::PANE_SPRING.settle()),
                             move |this, t| {
-                                let inv = 1.0 - t;
-                                let mut x = 0.0;
+                                let s = motion::PANE_SPRING.value(t * settle_secs);
+                                let inv = 1.0 - s; // overshoots slightly negative
                                 let mut y = 0.0;
-                                match animation.kind {
-                                    crate::app::PaneAnimationKind::NewTab => y = 8.0 * inv,
-                                    crate::app::PaneAnimationKind::SplitHorizontal => {
-                                        x = 22.0 * inv
-                                    }
-                                    crate::app::PaneAnimationKind::SplitVertical => y = 22.0 * inv,
+                                if matches!(animation.kind, crate::app::PaneAnimationKind::NewTab) {
+                                    y = 10.0 * inv;
                                 }
-                                this.opacity(0.82 + 0.18 * t)
-                                    .paint_offset(point(px(x), px(y)))
+                                // Opacity ramps ahead of position so content is readable
+                                // while the pane is still settling.
+                                this.opacity((0.35 + 0.9 * s).clamp(0.0, 1.0))
+                                    .paint_offset(point(px(0.), px(y)))
                             },
                         )
                         .into_any_element()

@@ -1,25 +1,25 @@
 #![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
-use crate::app::{App, PaneAnimation, PaneAnimationKind};
+use crate::app::{App, CloseGhost, DockSplitAnimation, PaneAnimation, PaneAnimationKind};
 use crate::state::layout_tree::{Container, LinearDir, Tile, TileId};
 use crate::state::location::Location;
 use crate::state::pane::TabData;
 use crate::state::settings::ViewMode;
 use crate::state::tab::{LoadState, TabState};
 use crate::state::tag_cache::TagId;
+use crate::util::display::display_name;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::Instant;
 
 impl App {
-    fn invalidate_dock_layout(&mut self) {
-        self.dock = None;
-        self.dock_revision = 0;
-    }
-
     /// Reconcile the app's side-tables with `pane_tree` after `egui_tiles` may have
     /// mutated the tree itself (tab drag-to-split moves and prunes tiles during
     /// `Tree::ui`). Drops state for panes that no longer exist and guarantees
     /// `focused_tile` points at a live pane.
     pub(crate) fn reconcile_tree_state(&mut self) {
+        let _perf = crate::perf::span_detail("pane_tree.reconcile", || {
+            format!("tiles={}", self.state.pane_tree.tiles.iter().count())
+        });
         let live: HashSet<TileId> = self.state.all_pane_tile_ids().into_iter().collect();
 
         // Tiles that had per-pane state but were pruned away by egui_tiles.
@@ -77,19 +77,13 @@ impl App {
     pub(crate) fn split_pane(&mut self, tabs_container_id: TileId, vertical: bool) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
 
-        // Inherit location + view settings from the source pane
-        let source_pane_id = self
-            .state
-            .pane_tree
-            .tiles
-            .get(tabs_container_id)
-            .and_then(|tile| {
-                if let Tile::Container(Container::Tabs(tabs)) = tile {
-                    tabs.active
-                } else {
-                    None
-                }
-            });
+        // Resolve the source to a concrete Pane leaf (Tabs -> active child,
+        // Pane -> itself) to inherit settings from and to anchor the dock split.
+        let source_pane_id = match self.state.pane_tree.tiles.get(tabs_container_id) {
+            Some(Tile::Container(Container::Tabs(tabs))) => tabs.active,
+            Some(Tile::Pane(_)) => Some(tabs_container_id),
+            _ => None,
+        };
 
         let (start_path, view_mode, thumbnail_size, preview_enabled) = source_pane_id
             .and_then(|pane_id| self.state.pane_tree.tiles.get(pane_id))
@@ -141,58 +135,13 @@ impl App {
                 if let Some(target) = self.state.tab_states.get_mut(&new_pane_id) {
                     target.set_entries(entries);
                     target.load_state = LoadState::Loaded;
+                    // Synchronous load (cloned from source) → arm appear anim now.
+                    target.appear_seq = target.appear_seq.wrapping_add(1);
                     true
                 } else {
                     false
                 }
             });
-        let new_tabs_id = self
-            .state
-            .pane_tree
-            .tiles
-            .insert_tab_tile(vec![new_pane_id]);
-
-        let split_dir = if vertical {
-            LinearDir::Vertical
-        } else {
-            LinearDir::Horizontal
-        };
-
-        let inserted_in_parent = self.state.pane_tree.insert_linear_sibling_after(
-            tabs_container_id,
-            new_tabs_id,
-            split_dir,
-        );
-
-        if !inserted_in_parent {
-            let split_id = if vertical {
-                self.state
-                    .pane_tree
-                    .tiles
-                    .insert_vertical_tile(vec![tabs_container_id, new_tabs_id])
-            } else {
-                self.state
-                    .pane_tree
-                    .tiles
-                    .insert_horizontal_tile(vec![tabs_container_id, new_tabs_id])
-            };
-
-            // Replace tabs_container_id with split_id everywhere it appears.
-            if self.state.pane_tree.root == Some(tabs_container_id) {
-                self.state.pane_tree.root = Some(split_id);
-            } else if let Some(parent_id) = self.state.find_parent_of(tabs_container_id) {
-                if let Some(Tile::Container(c)) = self.state.pane_tree.tiles.get_mut(parent_id) {
-                    let children: &mut Vec<TileId> = match c {
-                        Container::Linear(l) => &mut l.children,
-                        Container::Tabs(t) => &mut t.children,
-                    };
-                    if let Some(slot) = children.iter_mut().find(|id| **id == tabs_container_id) {
-                        *slot = split_id;
-                    }
-                }
-            }
-        }
-
         self.push_focus_history();
         self.state.focused_tile = new_pane_id;
         if !self.state.settings.disable_animations {
@@ -205,34 +154,196 @@ impl App {
                 }),
             );
         }
+
+        let split_source = source_pane_id.unwrap_or(new_pane_id);
+        self.insert_split_tile(split_source, new_pane_id, vertical);
+
         if cloned_loaded_snapshot {
-            self.state.focused_tile = new_pane_id;
+            if !self.state.settings.disable_animations {
+                self.pane_items_appear.insert(new_pane_id, Instant::now());
+            }
         } else {
             self.navigate(new_pane_id, start_path);
         }
-        self.layout_revision += 1;
     }
 
     pub(crate) fn close_pane(&mut self, tabs_container_id: TileId) {
-        let focus_after = self.find_focus_after_close(tabs_container_id);
+        let _perf = crate::perf::span_detail("close_pane", || {
+            format!(
+                "target={} open={} pending={}",
+                tabs_container_id.0,
+                self.open_pane_count(),
+                self.pane_closing.len()
+            )
+        });
+        let panes: Vec<TileId> = match self.state.pane_tree.tiles.get(tabs_container_id) {
+            Some(Tile::Container(Container::Tabs(t))) => t.children.clone(),
+            Some(Tile::Pane(_)) => vec![tabs_container_id],
+            _ => return,
+        };
+        // Drop panes already animating out so a held shortcut can't re-queue them.
+        let panes: Vec<TileId> = panes
+            .into_iter()
+            .filter(|p| !self.pane_closing.contains_key(p))
+            .collect();
+        if panes.is_empty() {
+            return;
+        }
+        // Never close every still-open pane — keep at least one.
+        let open_count = self.open_pane_count();
+        if open_count <= panes.len() {
+            return;
+        }
 
-        if let Some(Tile::Container(Container::Tabs(tabs))) =
-            self.state.pane_tree.tiles.get(tabs_container_id).cloned()
-        {
-            for child_id in tabs.children {
-                self.file_panel_cache.remove(&child_id);
-                self.state.tab_states.remove(&child_id);
-                self.state.pane_tree.tiles.remove(child_id);
-                self.pane_signals.remove(&child_id);
+        // Move focus to a survivor (live and not itself closing) before these animate
+        // out, so the UI never lands on a dead/closing pane (the "lost focus" bug).
+        if self.focus_needs_reassign(&panes) {
+            if let Some(focus_id) = self.focus_after_closing(&panes) {
+                self.state.focused_tile = focus_id;
             }
         }
-        self.state.pane_tree.tiles.remove(tabs_container_id);
 
-        if let Some(focus_id) = focus_after {
-            self.state.focused_tile = focus_id;
+        self.queue_pane_close(&panes);
+    }
+
+    /// Count panes that are open and not already animating closed.
+    fn open_pane_count(&self) -> usize {
+        self.state
+            .all_pane_tile_ids()
+            .into_iter()
+            .filter(|p| !self.pane_closing.contains_key(p))
+            .count()
+    }
+
+    /// True when the current focus is on a pane that's about to close (in `closing`)
+    /// or already closing, so it must be moved to a survivor.
+    fn focus_needs_reassign(&self, closing: &[TileId]) -> bool {
+        let f = self.state.focused_tile;
+        closing.contains(&f) || self.pane_closing.contains_key(&f)
+    }
+
+    /// Pick a pane to focus once `closing` is gone: a live pane that is neither in
+    /// `closing` nor already animating out. Prefers MRU order, then any survivor.
+    fn focus_after_closing(&self, closing: &[TileId]) -> Option<TileId> {
+        let unavailable: HashSet<TileId> = closing
+            .iter()
+            .copied()
+            .chain(self.pane_closing.keys().copied())
+            .collect();
+        let live: HashSet<TileId> = self
+            .state
+            .all_pane_tile_ids()
+            .into_iter()
+            .filter(|p| !unavailable.contains(p))
+            .collect();
+        if live.is_empty() {
+            return None;
         }
+        // VS-Code-style: most-recently-used survivor first.
+        for id in self.focus_history.iter().rev() {
+            if live.contains(id) {
+                return Some(*id);
+            }
+        }
+        self.state
+            .all_pane_tile_ids()
+            .into_iter()
+            .find(|p| live.contains(p))
+    }
 
-        self.layout_revision += 1;
+    /// Defer the actual tree removal of `panes` while close animation plays.
+    fn queue_pane_close(&mut self, panes: &[TileId]) {
+        let _perf = crate::perf::span_detail("pane_close.queue", || {
+            format!("new={} pending={}", panes.len(), self.pane_closing.len())
+        });
+        let pending_before = self.pane_closing.len();
+        if self.state.settings.disable_animations {
+            let mut remove: Vec<TileId> = self.pane_closing.keys().copied().collect();
+            self.pane_closing.clear();
+            remove.extend_from_slice(panes);
+            crate::perf::event(|| {
+                format!(
+                    "pane_close.batch remove={} pending_before={pending_before}",
+                    remove.len()
+                )
+            });
+            self.remove_panes_from_tree(&remove);
+        } else {
+            crate::perf::event(|| {
+                format!(
+                    "pane_close.ghost new={} pending_before={pending_before}",
+                    panes.len()
+                )
+            });
+            for &id in panes {
+                self.start_pane_split_close(id);
+                self.pane_closing.entry(id).or_insert_with(Instant::now);
+                self.start_pane_close_ghost(id);
+            }
+        }
+    }
+
+    fn split_shares_now(&self, linear_id: TileId, final_shares: &[f32]) -> Vec<f32> {
+        self.dock_split_animations
+            .get(&linear_id)
+            .filter(|anim| anim.to.len() == final_shares.len() && !anim.done())
+            .map(DockSplitAnimation::shares)
+            .unwrap_or_else(|| final_shares.to_vec())
+    }
+
+    fn start_pane_split_close(&mut self, pane_id: TileId) {
+        let Some(tabs_id) = self.state.find_tabs_container(pane_id) else {
+            return;
+        };
+        let Some(parent_id) = self.state.find_parent_of(tabs_id) else {
+            return;
+        };
+        let Some(Tile::Container(Container::Linear(linear))) =
+            self.state.pane_tree.tiles.get(parent_id)
+        else {
+            return;
+        };
+        let old_len = linear.children.len();
+        if old_len <= 1 {
+            return;
+        }
+        let mut base = linear.shares.clone();
+        if base.len() != old_len {
+            base = vec![1.0; old_len];
+        }
+        let Some(pos) = linear.children.iter().position(|child| *child == tabs_id) else {
+            return;
+        };
+        let from = self.split_shares_now(parent_id, &base);
+        let anim = DockSplitAnimation::closing(from, pos);
+        if let Some(Tile::Container(Container::Linear(linear))) =
+            self.state.pane_tree.tiles.get_mut(parent_id)
+        {
+            linear.shares = anim.to.clone();
+        }
+        self.dock_split_animations.insert(parent_id, anim);
+    }
+
+    fn start_pane_close_ghost(&mut self, pane_id: TileId) {
+        let Some(bounds) = self
+            .pane_layout_bounds
+            .get(&pane_id)
+            .or_else(|| self.pane_view_bounds.get(&pane_id))
+            .copied()
+        else {
+            return;
+        };
+        let title = self
+            .tab_data_for(pane_id)
+            .map(|tab| display_name(&tab.location.display_path()))
+            .unwrap_or_else(|| rust_i18n::t!("fallback_tab_title").to_string());
+        self.close_ghosts.push(CloseGhost {
+            pane_id,
+            title: title.into(),
+            bounds,
+            dir: self.pane_seam_dir(pane_id),
+            started: Instant::now(),
+        });
     }
 
     /// Push the current `focused_tile` onto the MRU history before an intentional
@@ -342,8 +453,8 @@ impl App {
             self.pane_animations
                 .insert(new_tile_id, PaneAnimation::new(PaneAnimationKind::NewTab));
         }
-        self.activate_tab(new_tile_id);
-        self.layout_revision += 1;
+        self.push_focus_history();
+        self.state.focused_tile = new_tile_id;
         Some(new_tile_id)
     }
 
@@ -432,44 +543,371 @@ impl App {
             .pane_tree
             .make_active(|tile_id, _| tile_id == tab_id);
         self.state.focused_tile = tab_id;
-        self.layout_revision += 1;
     }
 
     pub(crate) fn close_tab(&mut self, tab_id: TileId) {
-        // Never close the very last pane — keep at least one
-        if self.state.all_pane_tile_ids().len() <= 1 {
+        let _perf = crate::perf::span_detail("close_tab", || {
+            format!(
+                "tab={} open={} pending={}",
+                tab_id.0,
+                self.open_pane_count(),
+                self.pane_closing.len()
+            )
+        });
+        // Already animating out — a held Ctrl+W must not re-queue it.
+        if self.pane_closing.contains_key(&tab_id) {
+            return;
+        }
+        // Keep at least one open (non-closing) pane.
+        if self.open_pane_count() <= 1 {
             return;
         }
 
-        self.state.tab_states.remove(&tab_id);
-        self.state.clear_preview(tab_id);
+        // Hand focus to a live survivor before this tab animates away, so focus never
+        // lands on a closing/dead pane (fixes lost focus on held Ctrl+W and the need
+        // to re-click a pane afterwards).
+        if self.focus_needs_reassign(&[tab_id]) {
+            if let Some(next) = self.focus_after_closing(&[tab_id]) {
+                self.state.focused_tile = next;
+            }
+        }
 
-        // Find the Tabs container and remove this tile from it
-        let container_id = self.state.find_tabs_container(tab_id);
-        if let Some(cid) = container_id {
-            if let Some(Tile::Container(Container::Tabs(tabs))) =
-                self.state.pane_tree.tiles.get_mut(cid)
+        self.queue_pane_close(&[tab_id]);
+    }
+
+    fn insert_split_tile(&mut self, source_pane: TileId, new_pane: TileId, vertical: bool) {
+        let dir = if vertical {
+            LinearDir::Vertical
+        } else {
+            LinearDir::Horizontal
+        };
+        let source_tabs = self
+            .state
+            .find_tabs_container(source_pane)
+            .unwrap_or_else(|| self.wrap_pane_in_tabs(source_pane).unwrap_or(source_pane));
+        let new_tabs = self.state.pane_tree.tiles.insert_tab_tile(vec![new_pane]);
+
+        if let Some(parent_id) = self.state.find_parent_of(source_tabs) {
+            let from = self
+                .state
+                .pane_tree
+                .tiles
+                .get(parent_id)
+                .and_then(|tile| match tile {
+                    Tile::Container(Container::Linear(linear)) if linear.dir == dir => {
+                        let old_len = linear.children.len();
+                        let shares = if linear.shares.len() == old_len {
+                            linear.shares.clone()
+                        } else {
+                            vec![1.0; old_len]
+                        };
+                        Some(self.split_shares_now(parent_id, &shares))
+                    }
+                    _ => None,
+                });
+            if let Some(Tile::Container(Container::Linear(linear))) =
+                self.state.pane_tree.tiles.get_mut(parent_id)
             {
-                tabs.children.retain(|&id| id != tab_id);
-                if tabs.active == Some(tab_id) {
+                if linear.dir == dir {
+                    if let Some(pos) = linear.children.iter().position(|id| *id == source_tabs) {
+                        let old_len = linear.children.len();
+                        if linear.shares.len() != old_len {
+                            linear.shares = vec![1.0; old_len];
+                        }
+                        let sum: f32 = linear.shares.iter().copied().filter(|v| *v > 0.0).sum();
+                        let new_share = if old_len == 0 || sum <= f32::EPSILON {
+                            1.0
+                        } else {
+                            sum / old_len as f32
+                        };
+                        let insert_at = pos + 1;
+                        linear.children.insert(insert_at, new_tabs);
+                        linear.shares.insert(insert_at, new_share);
+                        let anim = match from {
+                            Some(from) => {
+                                DockSplitAnimation::opening(from, linear.shares.clone(), insert_at)
+                            }
+                            None => DockSplitAnimation::new(linear.shares.clone(), insert_at),
+                        };
+                        self.dock_split_animations.insert(parent_id, anim);
+                        return;
+                    }
+                }
+            }
+        }
+
+        let linear = match dir {
+            LinearDir::Horizontal => self
+                .state
+                .pane_tree
+                .tiles
+                .insert_horizontal_tile(vec![source_tabs, new_tabs]),
+            LinearDir::Vertical => self
+                .state
+                .pane_tree
+                .tiles
+                .insert_vertical_tile(vec![source_tabs, new_tabs]),
+        };
+        if self.state.pane_tree.root == Some(source_tabs) {
+            self.state.pane_tree.root = Some(linear);
+            self.dock_split_animations
+                .insert(linear, DockSplitAnimation::new(vec![1.0, 1.0], 1));
+            return;
+        }
+        if let Some(parent_id) = self.state.find_parent_of(source_tabs) {
+            if let Some(Tile::Container(container)) = self.state.pane_tree.tiles.get_mut(parent_id)
+            {
+                match container {
+                    Container::Linear(l) => {
+                        if let Some(slot) = l.children.iter_mut().find(|id| **id == source_tabs) {
+                            *slot = linear;
+                        }
+                    }
+                    Container::Tabs(t) => {
+                        if let Some(slot) = t.children.iter_mut().find(|id| **id == source_tabs) {
+                            *slot = linear;
+                        }
+                    }
+                }
+            }
+        }
+        self.dock_split_animations
+            .insert(linear, DockSplitAnimation::new(vec![1.0, 1.0], 1));
+    }
+
+    pub(crate) fn remove_pane_from_tree(&mut self, pane_id: TileId) {
+        self.remove_pane_from_tree_without_reconcile(pane_id);
+        self.reconcile_tree_state();
+    }
+
+    pub(crate) fn remove_panes_from_tree(&mut self, panes: &[TileId]) {
+        let _perf = crate::perf::span_detail("pane_tree.remove_many", || {
+            format!(
+                "panes={} tiles_before={}",
+                panes.len(),
+                self.state.pane_tree.tiles.iter().count()
+            )
+        });
+        let mut seen = HashSet::new();
+        let mut removed = false;
+        for &pane_id in panes {
+            if seen.insert(pane_id) && self.state.pane_tree.tiles.get(pane_id).is_some() {
+                self.remove_pane_from_tree_without_reconcile(pane_id);
+                removed = true;
+            }
+        }
+        if removed {
+            self.reconcile_tree_state();
+        }
+    }
+
+    fn remove_pane_from_tree_without_reconcile(&mut self, pane_id: TileId) {
+        let _perf =
+            crate::perf::span_detail("pane_tree.remove_one", || format!("pane={}", pane_id.0));
+        let tabs_id = self.state.find_tabs_container(pane_id);
+        if let Some(tabs_id) = tabs_id {
+            if let Some(Tile::Container(Container::Tabs(tabs))) =
+                self.state.pane_tree.tiles.get_mut(tabs_id)
+            {
+                tabs.children.retain(|id| *id != pane_id);
+                if tabs.active == Some(pane_id) {
                     tabs.active = tabs.children.last().copied();
                 }
-                if let Some(new_active) = tabs.active {
-                    self.state.focused_tile = new_active;
+            }
+            let empty_tabs = matches!(
+                self.state.pane_tree.tiles.get(tabs_id),
+                Some(Tile::Container(Container::Tabs(tabs))) if tabs.children.is_empty()
+            );
+            if empty_tabs {
+                self.remove_container_from_parent(tabs_id);
+                self.state.pane_tree.tiles.remove(tabs_id);
+            }
+        }
+
+        self.state.pane_tree.tiles.remove(pane_id);
+        self.state.tab_states.remove(&pane_id);
+        self.watchers.remove(&pane_id);
+        self.state.clear_preview(pane_id);
+        self.drop_pane_signal(pane_id);
+        self.file_panel_cache.remove(&pane_id);
+        self.pane_items_appear.remove(&pane_id);
+        self.pane_animations.remove(&pane_id);
+        self.pane_layout_bounds.remove(&pane_id);
+        self.pane_layout_animations.remove(&pane_id);
+    }
+
+    fn remove_container_from_parent(&mut self, id: TileId) {
+        if self.state.pane_tree.root == Some(id) {
+            self.state.pane_tree.root = self.state.all_pane_tile_ids().first().copied();
+            return;
+        }
+        let Some(parent_id) = self.state.find_parent_of(id) else {
+            return;
+        };
+        if let Some(Tile::Container(container)) = self.state.pane_tree.tiles.get_mut(parent_id) {
+            match container {
+                Container::Linear(l) => {
+                    if let Some(pos) = l.children.iter().position(|child| *child == id) {
+                        l.children.remove(pos);
+                        if pos < l.shares.len() {
+                            l.shares.remove(pos);
+                        }
+                    }
+                }
+                Container::Tabs(t) => {
+                    t.children.retain(|child| *child != id);
+                    if t.active == Some(id) {
+                        t.active = t.children.first().copied();
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn move_tab_before(&mut self, dragged: TileId, target: TileId) {
+        if dragged == target {
+            return;
+        }
+        let Some(target_tabs) = self.state.find_tabs_container(target) else {
+            return;
+        };
+        self.detach_tab_for_move(dragged);
+        if let Some(Tile::Container(Container::Tabs(tabs))) =
+            self.state.pane_tree.tiles.get_mut(target_tabs)
+        {
+            tabs.children.retain(|id| *id != dragged);
+            let pos = tabs
+                .children
+                .iter()
+                .position(|id| *id == target)
+                .unwrap_or(tabs.children.len());
+            tabs.children.insert(pos, dragged);
+            tabs.active = Some(dragged);
+        }
+        self.push_focus_history();
+        self.state.focused_tile = dragged;
+        self.cleanup_empty_tabs();
+    }
+
+    pub(crate) fn split_existing_tab(
+        &mut self,
+        target: TileId,
+        dragged: TileId,
+        vertical: bool,
+        before: bool,
+    ) {
+        if dragged == target {
+            return;
+        }
+        let Some(target_tabs) = self.state.find_tabs_container(target) else {
+            return;
+        };
+        self.detach_tab_for_move(dragged);
+        let new_tabs = self.state.pane_tree.tiles.insert_tab_tile(vec![dragged]);
+        self.insert_split_container(target_tabs, new_tabs, vertical, before);
+        self.push_focus_history();
+        self.state.focused_tile = dragged;
+        self.cleanup_empty_tabs();
+    }
+
+    fn detach_tab_for_move(&mut self, pane_id: TileId) {
+        let Some(source_tabs) = self.state.find_tabs_container(pane_id) else {
+            return;
+        };
+        if let Some(Tile::Container(Container::Tabs(tabs))) =
+            self.state.pane_tree.tiles.get_mut(source_tabs)
+        {
+            tabs.children.retain(|id| *id != pane_id);
+            if tabs.active == Some(pane_id) {
+                tabs.active = tabs.children.last().copied();
+            }
+        }
+    }
+
+    fn insert_split_container(
+        &mut self,
+        target_tabs: TileId,
+        new_tabs: TileId,
+        vertical: bool,
+        before: bool,
+    ) {
+        let dir = if vertical {
+            LinearDir::Vertical
+        } else {
+            LinearDir::Horizontal
+        };
+        if let Some(parent_id) = self.state.find_parent_of(target_tabs) {
+            if let Some(Tile::Container(Container::Linear(linear))) =
+                self.state.pane_tree.tiles.get_mut(parent_id)
+            {
+                if linear.dir == dir {
+                    if let Some(pos) = linear.children.iter().position(|id| *id == target_tabs) {
+                        let insert_at = if before { pos } else { pos + 1 };
+                        let old_len = linear.children.len();
+                        if linear.shares.len() != old_len {
+                            linear.shares = vec![1.0; old_len];
+                        }
+                        let sum: f32 = linear.shares.iter().copied().filter(|v| *v > 0.0).sum();
+                        let new_share = if old_len == 0 || sum <= f32::EPSILON {
+                            1.0
+                        } else {
+                            sum / old_len as f32
+                        };
+                        linear.children.insert(insert_at, new_tabs);
+                        linear.shares.insert(insert_at, new_share);
+                        return;
+                    }
                 }
             }
         }
 
-        self.file_panel_cache.remove(&tab_id);
-        self.state.pane_tree.tiles.remove(tab_id);
-        self.pane_signals.remove(&tab_id);
-
-        // Always guarantee focused_tile points to a live pane
-        if !self.state.tab_states.contains_key(&self.state.focused_tile) {
-            if let Some(first) = self.state.all_pane_tile_ids().first().copied() {
-                self.state.focused_tile = first;
+        let children = if before {
+            vec![new_tabs, target_tabs]
+        } else {
+            vec![target_tabs, new_tabs]
+        };
+        let linear = match dir {
+            LinearDir::Horizontal => self.state.pane_tree.tiles.insert_horizontal_tile(children),
+            LinearDir::Vertical => self.state.pane_tree.tiles.insert_vertical_tile(children),
+        };
+        if self.state.pane_tree.root == Some(target_tabs) {
+            self.state.pane_tree.root = Some(linear);
+            return;
+        }
+        if let Some(parent_id) = self.state.find_parent_of(target_tabs) {
+            if let Some(Tile::Container(container)) = self.state.pane_tree.tiles.get_mut(parent_id)
+            {
+                match container {
+                    Container::Linear(l) => {
+                        if let Some(slot) = l.children.iter_mut().find(|id| **id == target_tabs) {
+                            *slot = linear;
+                        }
+                    }
+                    Container::Tabs(t) => {
+                        if let Some(slot) = t.children.iter_mut().find(|id| **id == target_tabs) {
+                            *slot = linear;
+                        }
+                    }
+                }
             }
         }
-        self.layout_revision += 1;
+    }
+
+    fn cleanup_empty_tabs(&mut self) {
+        let empty: Vec<TileId> = self
+            .state
+            .pane_tree
+            .tiles
+            .iter()
+            .filter_map(|(id, tile)| {
+                matches!(tile, Tile::Container(Container::Tabs(tabs)) if tabs.children.is_empty())
+                    .then_some(*id)
+            })
+            .collect();
+        for id in empty {
+            self.remove_container_from_parent(id);
+            self.state.pane_tree.tiles.remove(id);
+        }
+        self.reconcile_tree_state();
     }
 }

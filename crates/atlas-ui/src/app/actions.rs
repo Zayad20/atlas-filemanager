@@ -7,6 +7,19 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 impl App {
+    pub(crate) fn open_location_finder_or_editor(&mut self) {
+        let tile = self.state.focused_tile;
+        let dir = self
+            .tab_data_for(tile)
+            .and_then(|td| td.location.fs_dir().map(|p| p.to_path_buf()));
+        if let Some(dir) = dir {
+            self.goto_prefill = Some(format!("{}{}", dir.display(), std::path::MAIN_SEPARATOR));
+            self.process_actions(vec![Action::OpenGotoBar]);
+        } else {
+            self.process_actions(vec![Action::EditLocation(tile)]);
+        }
+    }
+
     pub(crate) fn process_actions(&mut self, actions: Vec<Action>) {
         for action in actions {
             match action {
@@ -65,6 +78,11 @@ impl App {
                 }
                 Action::ToggleSidebar => {
                     self.state.settings.show_sidebar = !self.state.settings.show_sidebar;
+                }
+                Action::ToggleSidebarCollapsed => {
+                    self.state.settings.sidebar_collapsed = !self.state.settings.sidebar_collapsed;
+                    self.sidebar_width_dirty = true;
+                    crate::util::config::save_settings(&self.state.settings);
                 }
                 Action::OpenSettings => {
                     self.state.overlay.show_settings = true;
@@ -685,12 +703,22 @@ impl App {
                 Action::SwitchProfile(idx) => self.switch_profile(idx),
                 Action::CreateProfile(name) => self.create_profile(name),
                 Action::RenameActiveProfile(name) => self.rename_active_profile(name),
+                Action::RenameProfile { index, name } => self.rename_profile(index, name),
                 Action::OpenRenameProfile => {
                     // Re-seed the input with the current name on next render.
                     self.rename_profile_input = None;
+                    self.renaming_profile_idx = None;
                     self.state.overlay.renaming_profile = true;
                 }
+                Action::OpenRenameProfileAt(index) => {
+                    self.rename_profile_input = None;
+                    self.renaming_profile_idx = Some(index);
+                    self.state.profile_ui.confirming_delete_profile = None;
+                    self.state.overlay.renaming_profile = true;
+                }
+                Action::DuplicateProfile(index) => self.duplicate_profile(index),
                 Action::DeleteActiveProfile => self.delete_active_profile(),
+                Action::DeleteProfile(index) => self.delete_profile(index),
                 Action::ToggleSidebarSection(i) => {
                     if let Some(section) =
                         self.state.profiles.active_mut().sidebar_sections.get_mut(i)
@@ -751,17 +779,41 @@ impl App {
                         profile,
                     });
                 }
+                Action::RenameTag { tag, name } => {
+                    if let Some(def) = self.state.tag_cache.defs.iter_mut().find(|d| d.id == tag) {
+                        def.name = name.clone();
+                    }
+                    let _ = self
+                        .tag_db_tx
+                        .send(crate::fs::tag_db::TagDbCmd::RenameTag { tag, name });
+                }
                 Action::OpenCreateTagOverlay { global } => {
                     self.state.profile_ui.creating_tag = true;
                     self.state.profile_ui.adding_tag = true;
+                    self.state.profile_ui.editing_tag = None;
                     self.state.profile_ui.new_tag_global = global;
                     self.state.profile_ui.new_tag_name.clear();
                     self.state.profile_ui.new_tag_color = crate::state::profiles::PRESET_COLORS[0];
                 }
+                Action::OpenRenameTagOverlay {
+                    tag,
+                    name,
+                    color,
+                    global,
+                } => {
+                    self.state.profile_ui.creating_tag = true;
+                    self.state.profile_ui.adding_tag = true;
+                    self.state.profile_ui.editing_tag = Some(tag);
+                    self.state.profile_ui.new_tag_global = global;
+                    self.state.profile_ui.new_tag_name = name;
+                    self.state.profile_ui.new_tag_color = color;
+                }
                 Action::CloseCreateTagOverlay => {
                     self.state.profile_ui.creating_tag = false;
                     self.state.profile_ui.adding_tag = false;
+                    self.state.profile_ui.editing_tag = None;
                     self.state.profile_ui.new_tag_name.clear();
+                    self.create_tag_input = None;
                 }
                 Action::DeleteTag(tag) => {
                     self.state.tag_cache.defs.retain(|d| d.id != tag);

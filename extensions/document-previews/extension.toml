@@ -1,0 +1,43 @@
+id = "document-previews"
+name = "Document Previews"
+version = "0.1.0"
+author = "Atlas Team"
+description = "Inspector previews for PDF, CSV/TSV, Excel, Word, PowerPoint and PSD placeholders"
+kind = "builtin"
+
+[[commands]]
+id = "pdf-preview"
+title = "PDF preview"
+preview = true
+output = "image"
+requires = ["pdftoppm"]
+accepts = { extensions = ["pdf"] }
+
+[[commands]]
+id = "table-preview"
+title = "CSV / spreadsheet preview"
+preview = true
+output = "table"
+accepts = { extensions = ["csv", "tsv", "xls", "xlsx", "ods"] }
+
+[[commands]]
+id = "word-preview"
+title = "Word preview"
+preview = true
+output = "text"
+accepts = { extensions = ["docx"] }
+
+[[commands]]
+id = "powerpoint-preview"
+title = "PowerPoint preview"
+preview = true
+output = "presentation"
+accepts = { extensions = ["pptx"] }
+
+[[commands]]
+id = "psd-preview"
+title = "PSD preview"
+preview = true
+output = "image"
+requires = ["magick"]
+accepts = { extensions = ["psd", "psb"] }

@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use atlas_model::app_state::BgResult;
 use extism::{Function, Manifest, Plugin, Val, ValType, Wasm};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Deserialize)]
@@ -21,16 +22,23 @@ pub struct WasmPluginManager {
     plugin_bytes: Vec<u8>,
     data_dir: PathBuf,
     bg_tx: flume::Sender<BgResult>,
+    tools: HashMap<String, PathBuf>,
 }
 
 impl WasmPluginManager {
-    pub fn new(wasm_bytes: Vec<u8>, data_dir: PathBuf, bg_tx: flume::Sender<BgResult>) -> Self {
+    pub fn new(
+        wasm_bytes: Vec<u8>,
+        data_dir: PathBuf,
+        bg_tx: flume::Sender<BgResult>,
+        tools: HashMap<String, PathBuf>,
+    ) -> Self {
         #[allow(clippy::disallowed_methods)] // reason: callers run this inside spawn_blocking
         std::fs::create_dir_all(&data_dir).ok();
         Self {
             plugin_bytes: wasm_bytes,
             data_dir,
             bg_tx,
+            tools,
         }
     }
 
@@ -49,6 +57,7 @@ impl WasmPluginManager {
         )]));
 
         let bg_tx_clone = self.bg_tx.clone();
+        let tools = self.tools.clone();
 
         let show_quick_pick = Function::new(
             "host_show_quick_pick",
@@ -99,9 +108,10 @@ impl WasmPluginManager {
                     .context("host_run_command: invalid request JSON")?;
 
                 #[allow(clippy::disallowed_methods)] // reason: already inside spawn_blocking
-                let output = std::process::Command::new(&req.cmd)
-                    .args(&req.args)
-                    .output();
+                let program = tools
+                    .get(&req.cmd)
+                    .map_or_else(|| PathBuf::from(&req.cmd), PathBuf::clone);
+                let output = std::process::Command::new(program).args(&req.args).output();
 
                 let resp = match output {
                     Ok(out) => RunResponse {
@@ -151,6 +161,13 @@ impl WasmPluginManager {
 
         Ok(res_json)
     }
+
+    pub fn execute_preview(&self, payload_json: &str) -> Result<String> {
+        let mut plugin = self.create_plugin()?;
+        plugin
+            .call::<&str, String>("execute_preview", payload_json)
+            .context("Error ejecutando preview WASM")
+    }
 }
 
 #[cfg(test)]
@@ -164,7 +181,12 @@ mod tests {
             .join("atlas\\extensions\\icon-manager\\plugin.wasm");
         let bytes = std::fs::read(&path).unwrap();
         let (tx, rx) = flume::unbounded();
-        let manager = WasmPluginManager::new(bytes, path.parent().unwrap().to_path_buf(), tx);
+        let manager = WasmPluginManager::new(
+            bytes,
+            path.parent().unwrap().to_path_buf(),
+            tx,
+            HashMap::new(),
+        );
 
         std::thread::spawn(move || {
             if let Ok(BgResult::ExtShowQuickPick { items, reply_tx }) = rx.recv() {

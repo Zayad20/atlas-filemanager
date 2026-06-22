@@ -1,0 +1,20 @@
+[build]
+# sccache is installed on this Windows machine. It caches Rust compile outputs
+# across clean builds, branch switches, and dependency rebuilds.
+rustc-wrapper = "sccache"
+
+[target.x86_64-pc-windows-msvc]
+# rust-lld ships with the Rust toolchain and is much faster than link.exe for
+# large debug builds. It does not change which code is compiled into the binary.
+linker = "rust-lld.exe"
+
+[alias]
+# Daily loop: fastest compile, smallest feature surface.
+devfast = "run --profile dev-fast --no-default-features"
+# Same fast profile, but with the default app features enabled.
+devfull = "run --profile dev-fast"
+# Fast run with opt-in UI perf logs compiled in.
+devperf = "run --profile dev-fast --features perf-log"
+# Explicit release aliases so final builds stay optimized and intentional.
+rel = "build --release"
+rellean = "build --release --no-default-features"

@@ -7,6 +7,11 @@ use crate::input::action::Action;
 use crate::state::file_entry::{FileEntry, FileKind};
 use crate::state::pane::TabId;
 use crate::state::tab::LoadState;
+use crate::ui::drag_hover::{
+    drag_hover_recorder_with_drop, DragHoverCommand, DragHoverDropCommand, DragHoverId,
+    DragHoverKind,
+};
+use crate::ui::glass::backdrop_tint;
 use crate::ui::icons::{file_type_icon, icon, AtlasIcon};
 use crate::ui::root::{ctrl_scroll, zone_recorder, DraggedFiles};
 use crate::util::display::display_name;
@@ -29,6 +34,8 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        crate::perf::count("render.view.miller");
+        let _perf = crate::perf::span_detail("miller.render", || format!("pane={}", pane_id.0));
         // Lazily seed the first column from the pane path on entry.
         let need_init = self
             .state
@@ -52,7 +59,7 @@ impl App {
                 t.accent_foreground,
                 t.list_active,
                 t.muted_foreground,
-                t.secondary,
+                backdrop_tint(t.secondary, 0.18),
             )
         };
         let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, header_bg);
@@ -66,9 +73,9 @@ impl App {
                 let body: AnyElement = if col.entries.is_empty() {
                     let msg = match col.load_state {
                         LoadState::Loading if should_suppress_loading(&col.location) => None,
-                        LoadState::Loading => Some("Cargando…"),
-                        LoadState::Error(_) => Some("Error"),
-                        _ => Some("Vacío"),
+                        LoadState::Loading => Some(rust_i18n::t!("miller_loading")),
+                        LoadState::Error(_) => Some(rust_i18n::t!("miller_error")),
+                        _ => Some(rust_i18n::t!("miller_empty")),
                     };
                     v_flex()
                         .flex_1()
@@ -84,6 +91,15 @@ impl App {
                         SharedString::from(format!("mcol-{}-{}", pane_id.0, ci)),
                         count,
                         move |range, _window, cx| {
+                            let start = range.start;
+                            let end = range.end;
+                            crate::perf::count_by(
+                                "miller.rows.requested",
+                                end.saturating_sub(start) as u64,
+                            );
+                            let _perf = crate::perf::span_detail("miller.rows.build", || {
+                                format!("pane={} col={ci} range={start}..{end}", pane_id.0)
+                            });
                             let app = list_view.read(cx);
                             let Some(col) = app
                                 .state
@@ -101,10 +117,17 @@ impl App {
                                         &entry.kind,
                                         entry.extension.as_deref(),
                                     );
-                                    Some(render_miller_row(
+                                    let flashing = matches!(entry.kind, FileKind::Dir)
+                                        && app.drag_hover.blink_id.as_ref()
+                                            == Some(&DragHoverId::Folder(
+                                                pane_id,
+                                                entry.path.clone(),
+                                            ));
+                                    let row = render_miller_row(
                                         entry, ci, i, selected, pane_id, &list_view, accent,
-                                        accent_fg, hover, icon_tex,
-                                    ))
+                                        accent_fg, hover, flashing, icon_tex,
+                                    );
+                                    Some(row.into_any_element())
                                 })
                                 .collect::<Vec<_>>()
                         },
@@ -158,13 +181,8 @@ impl App {
                 move |d, _window, cx| {
                     let paths = d.paths.clone();
                     v.update(cx, |this, cx| {
-                        if let Some(dest) = this
-                            .tab_data_for(pane_id)
-                            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
-                        {
-                            this.process_actions(vec![Action::Move { paths, dest }]);
-                            cx.notify();
-                        }
+                        this.drop_files_on_pane(pane_id, paths, false);
+                        cx.notify();
                     });
                 }
             })
@@ -173,13 +191,8 @@ impl App {
                 move |paths, _window, cx| {
                     let paths = paths.paths().to_vec();
                     v.update(cx, |this, cx| {
-                        if let Some(dest) = this
-                            .tab_data_for(pane_id)
-                            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
-                        {
-                            this.process_actions(vec![Action::CopyTo { paths, dest }]);
-                            cx.notify();
-                        }
+                        this.drop_files_on_pane(pane_id, paths, true);
+                        cx.notify();
                     });
                 }
             })
@@ -228,6 +241,7 @@ fn render_miller_row(
     accent: Hsla,
     accent_fg: Hsla,
     hover: Hsla,
+    flashing: bool,
     icon_tex: Option<Arc<RenderImage>>,
 ) -> AnyElement {
     let is_dir = matches!(entry.kind, FileKind::Dir);
@@ -241,8 +255,9 @@ fn render_miller_row(
         div().w(px(12.)).flex_none().into_any_element()
     };
     let name = entry.name.clone();
+    let dest = entry.path.clone();
     let v = view.clone();
-    h_flex()
+    let mut row = h_flex()
         .id(SharedString::from(format!(
             "mrow-{}-{}-{}",
             pane_id.0, column, idx
@@ -254,6 +269,7 @@ fn render_miller_row(
         .items_center()
         .cursor_pointer()
         .when(selected, |s| s.bg(accent).text_color(accent_fg))
+        .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
         .when(!selected, |s| s.hover(|h| h.bg(hover)))
         .child(
             div().w(px(16.)).flex_none().child(match icon_tex {
@@ -285,6 +301,44 @@ fn render_miller_row(
                 }
                 cx.notify();
             });
-        })
-        .into_any_element()
+        });
+    if is_dir {
+        let hover_id = DragHoverId::Folder(pane_id, dest.clone());
+        let dest_internal = dest.clone();
+        let dest_external = dest.clone();
+        let mv = view.clone();
+        let cpv = view.clone();
+        row = row
+            .drag_over::<DraggedFiles>(|s, _, _, _| s.opacity(0.6))
+            .on_prepaint(drag_hover_recorder_with_drop(
+                hover_id,
+                DragHoverKind::Folder,
+                DragHoverCommand::NavigatePathIn(pane_id, dest.clone()),
+                DragHoverDropCommand::TransferTo(dest.clone()),
+                view,
+            ))
+            .on_drop::<DraggedFiles>(move |d, _window, cx| {
+                let paths = d.paths.clone();
+                mv.update(cx, |this, cx| {
+                    this.execute_drag_hover_drop_command(
+                        DragHoverDropCommand::TransferTo(dest_internal.clone()),
+                        paths,
+                        true,
+                    );
+                    cx.notify();
+                });
+            })
+            .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
+                let paths = paths.paths().to_vec();
+                cpv.update(cx, |this, cx| {
+                    this.execute_drag_hover_drop_command(
+                        DragHoverDropCommand::TransferTo(dest_external.clone()),
+                        paths,
+                        false,
+                    );
+                    cx.notify();
+                });
+            });
+    }
+    row.into_any_element()
 }

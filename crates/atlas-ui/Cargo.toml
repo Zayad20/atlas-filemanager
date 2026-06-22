@@ -9,6 +9,10 @@ edition = "2021"
 cloud = ["atlas-core/cloud", "atlas-model/cloud"]
 # RAR archive navigation. Forwards to the core crate where `rar_backend` lives.
 rar = ["atlas-core/rar"]
+# 7z archive navigation and runtime tool extraction (ImageMagick portable).
+sevenz = ["atlas-core/sevenz"]
+# Compile perf logging only when diagnosing UI stalls.
+perf-log = []
 
 [dependencies]
 atlas-core.workspace = true

@@ -149,6 +149,17 @@ pub enum BgResult {
     },
     /// A local extension (zip/folder) finished installing on the background thread.
     ExtLocalInstalled(Result<String, String>),
+    /// A runtime tool finished installing; retry the preview that needed it.
+    ExtToolInstalled {
+        tool: String,
+        tab: TabId,
+        path: PathBuf,
+        result: Result<(), String>,
+    },
+    AppUpdateAvailable {
+        version: String,
+        url: String,
+    },
     /// A WASM extension requested the fuzzy panel. The background worker blocks on `reply_tx`.
     ExtShowQuickPick {
         items: Vec<String>,

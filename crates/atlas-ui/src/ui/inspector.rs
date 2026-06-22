@@ -35,6 +35,7 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, RenderImage, ScrollDelta, ScrollWheelEvent, Window,
 };
 use gpui_component::input::InputEvent;
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::{h_flex, v_flex, ActiveTheme, Sizable as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -216,7 +217,7 @@ impl App {
         global || per_tab
     }
 
-    fn load_preview_gpui(&mut self, tab: TileId, path: PathBuf) {
+    pub(crate) fn load_preview_gpui(&mut self, tab: TileId, path: PathBuf) {
         if self.state.preview.paths.get(&tab).map(PathBuf::as_path) == Some(path.as_path()) {
             return;
         }
@@ -233,9 +234,58 @@ impl App {
         self.state.preview.multi.remove(&tab);
         self.preview_textures.remove(&tab);
         let tx = self.tx.clone();
-        self.rt.spawn(async move {
-            crate::fs::preview::load_preview(tab, path, tx).await;
-        });
+        let previewer = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(|ext| self.ext_registry.previewer_for(ext));
+        if let Some(cmd) = previewer {
+            crate::ext::runner::run_preview(&self.rt, tx, cmd, tab, path);
+        } else if let Some((extension, missing)) = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(|ext| self.ext_registry.missing_preview_tools_for(ext))
+        {
+            let installing = if let Some(request) = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .and_then(|ext| self.ext_registry.missing_preview_tool_install_for(ext))
+            {
+                let tx2 = tx.clone();
+                let retry_path = path.clone();
+                let tool = request.tool.name.clone();
+                self.rt.spawn(async move {
+                    let result =
+                        crate::ext::marketplace::install_tool(request.provider_dir, request.tool)
+                            .await
+                            .map(|_| ())
+                            .map_err(|e| e.to_string());
+                    let _ = tx2.send(crate::state::app_state::BgResult::ExtToolInstalled {
+                        tool,
+                        tab,
+                        path: retry_path,
+                        result,
+                    });
+                });
+                true
+            } else {
+                false
+            };
+            let tools = missing
+                .iter()
+                .map(|name| tool_label(name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let result = PreviewResult::Error(if installing {
+                format!("Installing {tools} for {extension}...")
+            } else {
+                format!("{extension} needs {tools}. Update Atlas Runtime Tools.")
+            });
+            let _ = tx.send(crate::state::app_state::BgResult::PreviewReady { tab, path, result });
+        } else {
+            self.rt.spawn(async move {
+                crate::fs::preview::load_preview(tab, path, tx).await;
+            });
+        }
     }
 
     fn load_archive_preview_gpui(&mut self, tab: TileId, archive: PathBuf, inner: PathBuf) {
@@ -436,9 +486,10 @@ impl App {
         let mut col = v_flex()
             .w(px(width))
             .h_full()
-            .bg(bg)
+            .bg(bg.opacity(0.9))
             .text_color(fg)
-            .border_l_1()
+            .rounded(px(crate::ui::glass::GLASS_RADIUS))
+            .border_1()
             .border_color(border)
             .p_2()
             .gap_2();
@@ -546,6 +597,9 @@ impl App {
             Some(PreviewResult::Markdown { .. }) => PreviewKind::Markdown,
             Some(PreviewResult::Image { .. }) => PreviewKind::Image,
             Some(PreviewResult::Pdf { .. }) => PreviewKind::Pdf,
+            Some(PreviewResult::Table { .. }) => PreviewKind::Table,
+            Some(PreviewResult::Document { .. }) => PreviewKind::Document,
+            Some(PreviewResult::Presentation { .. }) => PreviewKind::Presentation,
             _ => return div().into_any_element(),
         };
 
@@ -577,9 +631,13 @@ impl App {
         if is_code {
             // ── Save button ─────────────────────────────────────────────────
             let v_save = view.clone();
-            let save_label = if dirty { "Guardar *" } else { "Guardar" };
+            let save_label = if dirty {
+                rust_i18n::t!("save_dirty").into_owned()
+            } else {
+                rust_i18n::t!("save").into_owned()
+            };
             bar = bar.child(
-                toolbar_text_button("tb-save", save_label, !dirty || !editing, fg, muted)
+                toolbar_text_button("tb-save", &save_label, !dirty || !editing, fg, muted)
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         v_save.update(cx, |this, _cx| {
                             this.process_actions(vec![Action::SavePreviewFile]);
@@ -589,17 +647,20 @@ impl App {
 
             // ── Toggle edit mode ────────────────────────────────────────────
             let v_edit = view.clone();
-            let edit_label = if editing { "Vista" } else { "Editar" };
+            let edit_label = if editing {
+                rust_i18n::t!("view_mode").into_owned()
+            } else {
+                rust_i18n::t!("edit_mode").into_owned()
+            };
             let edit_color = if editing { fg } else { muted };
-            bar =
-                bar.child(
-                    toolbar_text_button("tb-edit", edit_label, false, edit_color, muted)
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            v_edit.update(cx, |this, _cx| {
-                                this.process_actions(vec![Action::TogglePreviewEditMode]);
-                            });
-                        }),
-                );
+            bar = bar.child(
+                toolbar_text_button("tb-edit", &edit_label, false, edit_color, muted)
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        v_edit.update(cx, |this, _cx| {
+                            this.process_actions(vec![Action::TogglePreviewEditMode]);
+                        });
+                    }),
+            );
 
             // ── Toggle line numbers ─────────────────────────────────────────
             let v_ln = view.clone();
@@ -608,7 +669,7 @@ impl App {
                 toolbar_icon_button(
                     "tb-ln",
                     gpui_component::IconName::Menu,
-                    "Líneas",
+                    &rust_i18n::t!("toggle_lines").into_owned(),
                     false,
                     ln_color,
                     muted,
@@ -646,7 +707,7 @@ impl App {
                 toolbar_icon_button(
                     "tb-fit",
                     gpui_component::IconName::Minimize,
-                    "Ajustar",
+                    &rust_i18n::t!("fit_to_screen").into_owned(),
                     false,
                     fg,
                     muted,
@@ -861,6 +922,9 @@ impl App {
             Some(PreviewResult::Markdown { .. }) => PreviewKind::Markdown,
             Some(PreviewResult::Image { .. }) => PreviewKind::Image,
             Some(PreviewResult::Pdf { .. }) => PreviewKind::Pdf,
+            Some(PreviewResult::Table { .. }) => PreviewKind::Table,
+            Some(PreviewResult::Document { .. }) => PreviewKind::Document,
+            Some(PreviewResult::Presentation { .. }) => PreviewKind::Presentation,
             Some(PreviewResult::Audio { .. }) => PreviewKind::Audio,
             Some(PreviewResult::Dir { .. }) => PreviewKind::Dir,
             Some(PreviewResult::Binary { .. }) => PreviewKind::Binary,
@@ -881,6 +945,9 @@ impl App {
             PreviewKind::Image | PreviewKind::Pdf => {
                 self.render_image_preview(muted, box_w, box_h, cx)
             }
+            PreviewKind::Table => self.render_table_preview(muted, cx),
+            PreviewKind::Document => self.render_document_preview(muted),
+            PreviewKind::Presentation => self.render_presentation_preview(muted),
             PreviewKind::Audio => self.render_audio_preview(muted),
             PreviewKind::Dir => self.render_dir_preview(muted, cx),
             PreviewKind::Binary => {
@@ -902,13 +969,23 @@ impl App {
                     Some(PreviewResult::Error(e)) => e.clone(),
                     _ => String::new(),
                 };
-                div()
+                let lines = wrap_preview_error(&msg);
+                v_flex()
                     .flex_1()
-                    .flex()
+                    .min_w(px(0.))
+                    .p_2()
+                    .gap_1()
                     .text_color(danger)
                     .items_center()
                     .justify_center()
-                    .child(msg)
+                    .children(lines.into_iter().map(|line| {
+                        div()
+                            .w_full()
+                            .min_w(px(0.))
+                            .text_center()
+                            .child(line)
+                            .into_any_element()
+                    }))
                     .into_any_element()
             }
         }
@@ -1197,6 +1274,200 @@ impl App {
         col.into_any_element()
     }
 
+    fn render_table_preview(&mut self, muted: Hsla, cx: &mut Context<Self>) -> AnyElement {
+        let tab = self.state.focused_tile;
+        let Some(PreviewResult::Table {
+            headers,
+            rows,
+            truncated,
+        }) = self.state.preview.results.get(&tab)
+        else {
+            return div().into_any_element();
+        };
+        let (border, stripe, header_bg, fg) = {
+            let t = cx.theme();
+            (t.border, t.list_even, t.secondary, t.foreground)
+        };
+        let cols = headers
+            .len()
+            .max(rows.iter().map(Vec::len).max().unwrap_or(0))
+            .min(50);
+        let mut table = v_flex().min_w(px((cols as f32).max(1.0) * 120.0)).text_xs();
+        if !headers.is_empty() {
+            let mut row = h_flex().h(px(28.)).bg(header_bg).text_color(muted);
+            for cell in headers.iter().take(cols) {
+                row = row.child(div().w(px(120.)).px_2().truncate().child(cell.clone()));
+            }
+            table = table.child(row);
+        }
+        for (i, cells) in rows.iter().take(200).enumerate() {
+            let mut row = h_flex()
+                .h(px(26.))
+                .text_color(fg)
+                .border_t_1()
+                .border_color(border.opacity(0.35))
+                .when(i % 2 == 1, |s| s.bg(stripe));
+            for col in 0..cols {
+                row = row.child(
+                    div()
+                        .w(px(120.))
+                        .px_2()
+                        .truncate()
+                        .child(cells.get(col).cloned().unwrap_or_default()),
+                );
+            }
+            table = table.child(row);
+        }
+        let mut wrap = v_flex().flex_1().min_h(px(0.)).gap_2();
+        if *truncated {
+            wrap = wrap.child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(rust_i18n::t!("preview_truncated")),
+            );
+        }
+        wrap.child(
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .overflow_x_scrollbar()
+                .border_1()
+                .border_color(border)
+                .child(div().h_full().overflow_y_scrollbar().child(table)),
+        )
+        .into_any_element()
+    }
+
+    fn render_document_preview(&mut self, muted: Hsla) -> AnyElement {
+        let tab = self.state.focused_tile;
+        let Some(PreviewResult::Document {
+            title,
+            blocks,
+            truncated,
+        }) = self.state.preview.results.get(&tab)
+        else {
+            return div().into_any_element();
+        };
+        let mut page = v_flex()
+            .gap_3()
+            .p_4()
+            .w_full()
+            .max_w(px(560.))
+            .min_w(px(0.))
+            .min_h(px(720.))
+            .bg(gpui::white())
+            .text_color(gpui::black())
+            .rounded(px(3.))
+            .border_1()
+            .border_color(muted.opacity(0.25))
+            .text_sm();
+        if !title.is_empty() {
+            page = page.child(
+                div()
+                    .w_full()
+                    .min_w(px(0.))
+                    .text_lg()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(title.clone()),
+            );
+        }
+        for (i, block) in blocks.iter().take(200).enumerate() {
+            let is_heading =
+                i == 0 && title.is_empty() || block.len() < 80 && !block.ends_with('.');
+            page = page.child(
+                div()
+                    .w_full()
+                    .min_w(px(0.))
+                    .when(is_heading, |s| {
+                        s.font_weight(gpui::FontWeight::SEMIBOLD).text_lg()
+                    })
+                    .child(block.clone()),
+            );
+        }
+        if *truncated {
+            page = page.child(div().text_xs().text_color(muted).child("Preview truncado"));
+        }
+        div()
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_y_scrollbar()
+            .child(v_flex().w_full().items_center().p_3().child(page))
+            .into_any_element()
+    }
+
+    fn render_presentation_preview(&mut self, muted: Hsla) -> AnyElement {
+        let tab = self.state.focused_tile;
+        let Some(PreviewResult::Presentation { slides, truncated }) =
+            self.state.preview.results.get(&tab)
+        else {
+            return div().into_any_element();
+        };
+        let mut col = v_flex()
+            .flex_1()
+            .min_h(px(0.))
+            .gap_3()
+            .overflow_y_scrollbar()
+            .items_center()
+            .p_2()
+            .text_sm();
+        for (i, slide) in slides.iter().enumerate() {
+            let title = if slide.title.is_empty() {
+                format!("Slide {}", i + 1)
+            } else {
+                slide.title.clone()
+            };
+            let mut card = v_flex()
+                .gap_2()
+                .w_full()
+                .max_w(px(520.))
+                .min_w(px(0.))
+                .min_h(px(220.))
+                .p_4()
+                .bg(gpui::white())
+                .text_color(gpui::black())
+                .rounded(px(4.))
+                .border_1()
+                .border_color(muted.opacity(0.25));
+            card = card.child(
+                div()
+                    .w_full()
+                    .min_w(px(0.))
+                    .text_color(muted)
+                    .text_xs()
+                    .child(format!("Slide {}", i + 1)),
+            );
+            card = card.child(
+                div()
+                    .w_full()
+                    .min_w(px(0.))
+                    .text_lg()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(title),
+            );
+            for line in &slide.body {
+                card = card.child(
+                    h_flex()
+                        .w_full()
+                        .min_w(px(0.))
+                        .gap_2()
+                        .child("•")
+                        .child(div().min_w(px(0.)).child(line.clone())),
+                );
+            }
+            col = col.child(card);
+        }
+        if *truncated {
+            col = col.child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(rust_i18n::t!("preview_truncated")),
+            );
+        }
+        col.into_any_element()
+    }
+
     /// Audio: cover art (or a placeholder) plus title/artist/album/duration/bitrate.
     fn render_audio_preview(&mut self, muted: Hsla) -> AnyElement {
         let tab = self.state.focused_tile;
@@ -1246,7 +1517,7 @@ impl App {
         meta = meta.child(
             div()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(title.unwrap_or_else(|| "(sin título)".into())),
+                .child(title.unwrap_or_else(|| rust_i18n::t!("untitled").into())),
         );
         if let Some(artist) = artist {
             meta = meta.child(div().text_sm().text_color(muted).child(artist));
@@ -1336,9 +1607,7 @@ impl App {
                         }
                     })
                     .on_drag(
-                        DraggedFiles {
-                            paths: vec![path.clone()],
-                        },
+                        crate::ui::drag::file_drag_value(vec![path.clone()]),
                         crate::ui::drag::file_drag_handler(view.clone(), path.clone()),
                     )
                     .when(is_dir, {
@@ -1492,16 +1761,63 @@ impl App {
     }
 }
 
+pub(crate) fn tool_label(name: &str) -> String {
+    match name {
+        "magick" => "ImageMagick".into(),
+        "pdftoppm" => "PDF renderer".into(),
+        "ffmpeg" => "FFmpeg".into(),
+        "gs" => "Ghostscript".into(),
+        other => other.to_string(),
+    }
+}
+
 enum PreviewKind {
     Loading,
     Text,
     Markdown,
     Image,
     Pdf,
+    Table,
+    Document,
+    Presentation,
     Audio,
     Dir,
     Binary,
     Error,
+}
+
+fn wrap_preview_error(msg: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in msg.split_whitespace() {
+        if !line.is_empty() && line.len() + word.len() + 1 > 52 {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        lines.push("Preview unavailable".to_string());
+    }
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrap_preview_error;
+
+    #[test]
+    fn preview_errors_wrap_to_short_lines() {
+        let lines =
+            wrap_preview_error("PSD preview unavailable. Install a PSD decoder preview extension.");
+        assert!(lines.len() > 1);
+        assert!(lines.iter().all(|line| line.len() <= 52));
+    }
 }
 
 /// Compact toolbar button with an icon + text label.

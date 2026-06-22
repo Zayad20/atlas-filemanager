@@ -13,16 +13,15 @@ use crate::input::action::Action;
 use crate::state::pane::TabId;
 use crate::state::settings::ViewMode;
 use crate::ui::drag_hover::drag_hover_layer;
-use crate::ui::glass::glass_chrome_fill;
+use crate::ui::glass::{backdrop_tint, glass_chrome_fill};
 use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::interactions::rubber_layer;
 use crate::util::display::format_size;
 use gpui::prelude::*;
 use gpui::{
-    div, hsla, px, Context, Entity, MouseButton, NavigationDirection, SharedString, Window,
-    WindowControlArea,
+    div, hsla, point, px, AnimationExt, AnyElement, Context, Entity, MouseButton, MouseDownEvent,
+    NavigationDirection, SharedString, Window, WindowControlArea,
 };
-use gpui_component::dock::DockPlacement;
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 use std::path::PathBuf;
 
@@ -66,6 +65,73 @@ impl Render for DragNoop {
     }
 }
 
+impl App {
+    fn render_close_ghosts(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        self.close_ghosts
+            .retain(|ghost| ghost.started.elapsed() < crate::app::PANE_CLOSE_FINALIZE);
+        let panel_bg = backdrop_tint(cx.theme().secondary, 0.24);
+        let tab_bar_bg = backdrop_tint(cx.theme().tab_bar, 0.16);
+        let active_bg = backdrop_tint(cx.theme().tab_active, 0.22);
+        let active_fg = cx.theme().tab_active_foreground;
+        let border = cx.theme().border.opacity(0.55);
+        let radius = cx.theme().radius_lg;
+        self.close_ghosts
+            .iter()
+            .map(|ghost| {
+                let (dx, dy) = ghost.dir;
+                div()
+                    .absolute()
+                    .left(ghost.bounds.left())
+                    .top(ghost.bounds.top())
+                    .w(ghost.bounds.size.width)
+                    .h(ghost.bounds.size.height)
+                    .overflow_hidden()
+                    .rounded(radius)
+                    .border_1()
+                    .border_color(border)
+                    .bg(panel_bg)
+                    .child(
+                        v_flex()
+                            .size_full()
+                            .child(
+                                h_flex()
+                                    .h(px(32.))
+                                    .items_center()
+                                    .px_2()
+                                    .bg(tab_bar_bg)
+                                    .child(
+                                        div()
+                                            .max_w(px(180.))
+                                            .min_w(px(0.))
+                                            .px_2()
+                                            .py_1()
+                                            .rounded(px(7.))
+                                            .bg(active_bg)
+                                            .text_color(active_fg)
+                                            .text_xs()
+                                            .truncate()
+                                            .child(ghost.title.clone()),
+                                    ),
+                            )
+                            .child(div().flex_1().min_h(px(0.))),
+                    )
+                    .with_animation(
+                        SharedString::from(format!("close-ghost-{}", ghost.pane_id.0)),
+                        crate::ui::motion::animation(
+                            crate::app::PANE_CLOSE_FINALIZE.as_millis() as u64
+                        ),
+                        move |this, t| {
+                            let dist = 14.0;
+                            this.opacity(1.0 - 0.65 * t)
+                                .paint_offset(point(px(dx * dist * t), px(dy * dist * t)))
+                        },
+                    )
+                    .into_any_element()
+            })
+            .collect()
+    }
+}
+
 /// FASE C: record a visible item's window-space rect for rubber-band hit-testing.
 /// Returns an `on_prepaint` closure to spread onto the item element. The per-pane
 /// `row_rects` vec is cleared at the start of each view's render.
@@ -76,18 +142,21 @@ pub(crate) fn rect_recorder(
 ) -> impl Fn(gpui::Bounds<gpui::Pixels>, &mut Window, &mut gpui::App) + 'static {
     let view = view.clone();
     move |bounds, _window, cx| {
+        crate::perf::count("prepaint.row_rect");
         view.update(cx, |this, _| {
             this.row_rects.entry(pane).or_default().push((idx, bounds));
         });
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn pane_bounds_recorder(
     pane: TabId,
     view: &Entity<App>,
 ) -> impl Fn(gpui::Bounds<gpui::Pixels>, &mut Window, &mut gpui::App) + 'static {
     let view = view.clone();
     move |bounds, _window, cx| {
+        crate::perf::count("prepaint.pane_bounds");
         view.update(cx, |this, _| {
             this.pane_view_bounds.insert(pane, bounds);
         });
@@ -107,6 +176,7 @@ pub(crate) fn zone_recorder(
 ) -> impl Fn(gpui::Bounds<gpui::Pixels>, &mut Window, &mut gpui::App) + 'static {
     let view = view.clone();
     move |bounds, _window, cx| {
+        crate::perf::count("prepaint.zone");
         view.update(cx, |this, _cx| {
             this.push_pane_zone(pane_id, bounds);
         });
@@ -115,22 +185,101 @@ pub(crate) fn zone_recorder(
 
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let frame = crate::perf::next_frame();
+        crate::perf::count("render.app");
+        crate::perf::frame_summary(frame, || {
+            let mut panes = 0;
+            let mut tabs = 0;
+            let mut linear = 0;
+            let mut tab_children = 0;
+            let mut linear_children = 0;
+            for (_, tile) in self.state.pane_tree.tiles.iter() {
+                match tile {
+                    crate::state::layout_tree::Tile::Pane(_) => panes += 1,
+                    crate::state::layout_tree::Tile::Container(
+                        crate::state::layout_tree::Container::Tabs(t),
+                    ) => {
+                        tabs += 1;
+                        tab_children += t.children.len();
+                    }
+                    crate::state::layout_tree::Tile::Container(
+                        crate::state::layout_tree::Container::Linear(l),
+                    ) => {
+                        linear += 1;
+                        linear_children += l.children.len();
+                    }
+                }
+            }
+            format!(
+                "panes={panes} tabs={tabs} linear={linear} tab_children={tab_children} linear_children={linear_children} panels={} signals={} row_rect_panes={} row_rects={} pane_bounds={} dock_bounds={} pending_zones={} dirty={} dirty_all={} closing={}",
+                self.file_panel_cache.len(),
+                self.pane_signals.len(),
+                self.row_rects.len(),
+                self.row_rects.values().map(Vec::len).sum::<usize>(),
+                self.pane_view_bounds.len(),
+                self.dock_linear_bounds.len(),
+                self.pending_pane_zones.len(),
+                self.dirty_panes.len(),
+                self.dirty_all_panes,
+                self.pane_closing.len()
+            )
+        });
+        let _perf = crate::perf::span_detail("app.render", || {
+            format!(
+                "frame={frame} tiles={} panels={} dirty={} dirty_all={} closing={}",
+                self.state.pane_tree.tiles.iter().count(),
+                self.file_panel_cache.len(),
+                self.dirty_panes.len(),
+                self.dirty_all_panes,
+                self.pane_closing.len()
+            )
+        });
+        if !self.startup_first_render_logged {
+            self.startup_first_render_logged = true;
+            tracing::info!(
+                total_ms = self.startup_started.elapsed().as_millis(),
+                "startup: first render"
+            );
+        }
         // Drain any results that arrived between the 60Hz background loop and this
         // render frame.  The startup loop already calls cx.notify() when dirty; the
         // drain here handles the narrow window where results arrive mid-frame.
         // We do NOT call cx.notify() again — that would schedule a redundant render
         // cycle on top of the one that is already executing right now.
-        self.drain_bg_results_state_only();
+        {
+            let _perf = crate::perf::span("app.render.drain_bg_state");
+            self.drain_bg_results_state_only();
+        }
         // FASE C: reset per-frame item rects; each visible row/cell re-records via
         // on_prepaint while painting this frame (used for rubber-band hit-testing).
         self.row_rects.clear();
         self.pane_view_bounds.clear();
-        self.pending_drag_hover_targets.clear();
+        self.dock_linear_bounds.clear();
+        if !self.drag_hover_maybe_active() {
+            self.pending_drag_hover_targets.clear();
+        }
         self.begin_pane_layout_frame();
         self.prune_pane_animations();
         self.prune_pane_layout_animations();
-        if !self.pane_animations.is_empty() || !self.pane_layout_animations.is_empty() {
-            window.request_animation_frame();
+        // Note: no App-level `request_animation_frame` here. Each animating `FilePanel`
+        // self-drives its own frames via `with_animation`, so the whole App tree no
+        // longer re-renders every animation frame (was the stutter source under many
+        // panes). FLIP starts re-trigger a frame from the pane's `on_prepaint`.
+        // Kick closing panes: the active panel view is `.cached()`, so a closing
+        // `FilePanel` won't re-render (and thus won't start its exit `with_animation`)
+        // on an App notify alone. Notify its entity directly; `with_animation` then
+        // self-drives the rest. Cheap: only runs while a pane is mid-close.
+        if !self.pane_closing.is_empty() {
+            let _perf = crate::perf::span_detail("pane_close.notify", || {
+                format!("closing={}", self.pane_closing.len())
+            });
+            crate::perf::count_by("pane_close.notify_count", self.pane_closing.len() as u64);
+            let closing: Vec<_> = self.pane_closing.keys().copied().collect();
+            for id in closing {
+                if let Some(panel) = self.file_panel_cache.get(&id) {
+                    panel.update(cx, |_, cx| cx.notify());
+                }
+            }
         }
         // FASE F (Windows): publish last frame's pane drop-zones to the OLE drop
         // target, then clear the vec so this frame re-populates it via on_prepaint.
@@ -149,22 +298,15 @@ impl Render for App {
         }
         // (Rename-profile is now a normal overlay layer rendered by `render_overlays`
         // + focused via the overlay-focus arbiter; no render-time dialog open.)
-        // Apply the active profile's sidebar width to the left dock (needs the dock
-        // entity + window, which `switch_profile` lacks). One-shot per change.
-        if self.sidebar_width_dirty {
-            self.sidebar_width_dirty = false;
-            let width = self.state.settings.sidebar_width;
-            if let Some(left) = self
-                .dock
-                .as_ref()
-                .and_then(|d| d.read(cx).left_dock().cloned())
-            {
-                left.update(cx, |dock, cx| dock.set_size(px(width), window, cx));
-            }
-        }
-        let (fg, muted, status_border) = {
+        self.sidebar_width_dirty = false;
+        let (fg, muted, status_border, root_bg) = {
             let t = cx.theme();
-            (t.foreground, t.muted_foreground, t.border)
+            let bg = if self.state.settings.mica {
+                gpui::transparent_black()
+            } else {
+                t.background
+            };
+            (t.foreground, t.muted_foreground, t.border, bg)
         };
         // Most recent background operation, rendered as a floating overlay pill
         // bar with a cancel button. `active_ops` updates via OpProgress events.
@@ -207,32 +349,112 @@ impl Render for App {
                 (*id, text, op.cancel.clone())
             });
 
-        // Diagnostic fast path: bypass the gpui-component Dock/FilePanel bridge to
-        // isolate whether window-move lag comes from the dock layer or from pane UI.
-        let center_content = if std::env::var("ATLAS_BYPASS_DOCK").is_ok_and(|v| v != "0") {
-            self.render_pane(self.state.focused_tile, window, cx)
-        } else {
-            // FASE A: the central tabs/splits are a gpui-component DockArea built from
-            // `pane_tree` (tab drag/reorder + drag-to-split come from the Dock).
-            self.ensure_dock(window, cx).into_any_element()
+        let center_content = {
+            let _perf = crate::perf::span("app.render.center_dock");
+            self.render_custom_dock(window, cx)
         };
+        let sidebar = self.state.settings.show_sidebar.then(|| {
+            let width = if self.state.settings.sidebar_collapsed {
+                56.0
+            } else {
+                self.state.settings.sidebar_width
+            };
+            let panel = if let Some(panel) = &self.sidebar_panel {
+                panel.clone()
+            } else {
+                let app = cx.entity();
+                let profile_names: Vec<String> = self
+                    .state
+                    .profiles
+                    .profiles
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect();
+                let active_profile = self.state.profiles.active_idx;
+                let panel = cx.new(|cx| {
+                    crate::ui::sidebar::SidebarPanel::new(
+                        app,
+                        profile_names,
+                        active_profile,
+                        window,
+                        cx,
+                    )
+                });
+                self.sidebar_panel = Some(panel.clone());
+                panel
+            };
+            let panel_bg = backdrop_tint(cx.theme().secondary, 0.18);
+            div()
+                .w(px(width))
+                .h_full()
+                .flex_none()
+                .overflow_hidden()
+                .rounded(cx.theme().radius_lg)
+                .bg(panel_bg)
+                .child(panel)
+                .into_any_element()
+        });
+        let sidebar_resizer = (self.state.settings.show_sidebar
+            && !self.state.settings.sidebar_collapsed)
+            .then(|| {
+                div()
+                    .w(px(3.))
+                    .h_full()
+                    .flex_none()
+                    .cursor_col_resize()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                            this.sidebar_resize = Some(crate::app::SidebarResizeState {
+                                start_x: f32::from(ev.position.x),
+                                start_width: this.state.settings.sidebar_width,
+                            });
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .into_any_element()
+            });
 
         // FASE5: inspector panel (right of body) + overlay layers (above root).
         let inspector = if self.preview_visible_for_focused() {
+            crate::perf::count("render.inspector");
             Some(
                 div()
                     .h_full()
-                    .py(px(crate::ui::SIDE_PANEL_VERTICAL_INSET))
                     .child(self.render_inspector(window, cx))
                     .into_any_element(),
             )
         } else {
             None
         };
-        let overlays = self.render_overlays(window, cx);
+        let inspector_resizer = self.preview_visible_for_focused().then(|| {
+            div()
+                .w(px(3.))
+                .h_full()
+                .flex_none()
+                .cursor_col_resize()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                        this.inspector_resize = Some(crate::app::InspectorResizeState {
+                            start_x: f32::from(ev.position.x),
+                            start_width: this.state.settings.inspector_width,
+                        });
+                        cx.stop_propagation();
+                    }),
+                )
+                .into_any_element()
+        });
+        let overlays = {
+            crate::perf::count("render.overlays");
+            let _perf = crate::perf::span("app.render.overlays");
+            self.render_overlays(window, cx)
+        };
         let marquee = self.render_rubber_marquee(cx);
-        let search_pill =
-            (!self.state.overlay.show_goto_bar).then(|| self.render_floating_search_pill(cx));
+        let close_ghosts = self.render_close_ghosts(cx);
+        // floating search pill hidden for now (per request). Re-enable by
+        // restoring `(!self.state.overlay.show_goto_bar).then(...)`.
+        let search_pill: Option<gpui::AnyElement> = None;
 
         // While a modal owns the keyboard (an overlay or inline rename), drop the
         // "Atlas" key context so its nav/open shortcuts don't resolve and fire on the
@@ -252,9 +474,8 @@ impl Render for App {
 
         v_flex()
             .size_full()
-            // Opaque themes paint their real window background. Transparent themes
-            // like Atlas Frost still allow acrylic through when ATLAS_ACRYLIC=1.
-            .bg(cx.theme().background)
+            // Keep theme tint, but let the system backdrop breathe through.
+            .bg(root_bg)
             .relative()
             .text_color(fg)
             .text_sm()
@@ -416,9 +637,8 @@ impl Render for App {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::ToggleSidebar, window, cx| {
-                if let Some(dock) = this.dock.clone() {
-                    dock.update(cx, |da, cx| da.toggle_dock(DockPlacement::Left, window, cx));
-                }
+                let _ = window;
+                this.process_actions(vec![Action::ToggleSidebar]);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::ToggleHidden, _w, cx| {
@@ -469,20 +689,7 @@ impl Render for App {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::EditLocation, _w, cx| {
-                // Ctrl+L: open the fuzzy goto pre-filled with the pane's absolute
-                // path (copy it, or Tab into subfolders). Non-filesystem
-                // locations fall back to the inline path editor.
-                let t = this.state.focused_tile;
-                let dir = this
-                    .tab_data_for(t)
-                    .and_then(|td| td.location.fs_dir().map(|p| p.to_path_buf()));
-                if let Some(dir) = dir {
-                    this.goto_prefill =
-                        Some(format!("{}{}", dir.display(), std::path::MAIN_SEPARATOR));
-                    this.process_actions(vec![Action::OpenGotoBar]);
-                } else {
-                    this.process_actions(vec![Action::EditLocation(t)]);
-                }
+                this.open_location_finder_or_editor();
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::NavBack, _w, cx| {
@@ -594,48 +801,46 @@ impl Render for App {
                     }
                 }),
             )
-            // Custom title bar: ultra-thin draggable strip + grouped phosphor controls.
-            // Sits flush to the top edge; controls cluster right with 2px outer padding.
+            // Custom title bar: reserve the same vertical space the old Dock shell
+            // expected, so panes don't run under the window controls.
             .child({
                 let icon_dim = cx.theme().muted_foreground;
                 let is_max = window.is_maximized();
                 h_flex()
                     .id("titlebar")
                     .w_full()
-                    .h(px(28.))
+                    .h(px(10.))
                     .items_center()
                     .px(px(4.))
                     .window_control_area(WindowControlArea::Drag)
                     .child(div().flex_1())
-                    // Grouped cluster: 3 controls in a tight h_flex, 2px gap
                     .child(
                         h_flex()
                             .gap(px(1.))
                             .items_center()
-                            .py(px(4.))
                             // Minimize
                             .child(
                                 div()
                                     .id("wc-min")
                                     .flex_none()
-                                    .w(px(30.))
-                                    .h(px(20.))
-                                    .rounded(px(5.))
+                                    .w(px(24.))
+                                    .h(px(10.))
+                                    .rounded(px(3.))
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .hover(|s| s.bg(hsla(0., 0., 0.5, 0.10)))
                                     .window_control_area(WindowControlArea::Min)
-                                    .child(icon(AtlasIcon::Minus, 10.0, icon_dim)),
+                                    .child(icon(AtlasIcon::Minus, 7.0, icon_dim)),
                             )
                             // Maximize / Restore
                             .child(
                                 div()
                                     .id("wc-max")
                                     .flex_none()
-                                    .w(px(30.))
-                                    .h(px(20.))
-                                    .rounded(px(5.))
+                                    .w(px(24.))
+                                    .h(px(10.))
+                                    .rounded(px(3.))
                                     .flex()
                                     .items_center()
                                     .justify_center()
@@ -647,7 +852,7 @@ impl Render for App {
                                         } else {
                                             AtlasIcon::Square
                                         },
-                                        10.0,
+                                        7.0,
                                         icon_dim,
                                     )),
                             )
@@ -656,15 +861,15 @@ impl Render for App {
                                 div()
                                     .id("wc-close")
                                     .flex_none()
-                                    .w(px(30.))
-                                    .h(px(20.))
-                                    .rounded(px(5.))
+                                    .w(px(24.))
+                                    .h(px(10.))
+                                    .rounded(px(3.))
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .hover(|s| s.bg(hsla(0., 0.65, 0.42, 0.75)))
                                     .window_control_area(WindowControlArea::Close)
-                                    .child(icon(AtlasIcon::X, 10.0, icon_dim)),
+                                    .child(icon(AtlasIcon::X, 7.0, icon_dim)),
                             ),
                     )
             })
@@ -674,10 +879,14 @@ impl Render for App {
                     .min_h(px(0.))
                     .p_2()
                     .gap_2()
+                    .children(sidebar)
+                    .children(sidebar_resizer)
                     .child(div().flex_1().h_full().min_w(px(0.)).child(center_content))
+                    .children(inspector_resizer)
                     // FASE5: inspector panel as the third child of the central row.
                     .children(inspector),
             )
+            .children(close_ghosts)
             // FASE5: overlay layers (goto bar, palette, settings, paste conflict, …).
             .children(overlays)
             // FASE C: the rubber-band selection rectangle, painted over the panes.
@@ -685,6 +894,7 @@ impl Render for App {
             // FASE C: global rubber-band motor (invisible canvas, registers window-wide
             // mouse move/up listeners that fire even outside the pane hitbox).
             .child(rubber_layer(cx.entity()))
+            .children(self.render_drag_hover_blink(cx))
             .child(drag_hover_layer(cx.entity()))
             // Floating glass search pill (Figma "Window/Search Global"), bottom-center.
             .children(search_pill)

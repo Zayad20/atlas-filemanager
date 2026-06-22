@@ -131,9 +131,9 @@ impl App {
         let v_all = view.clone();
         rows.push(
             type_filter_row(
-                SharedString::from("tf-todos"),
+                SharedString::from("tf-all"),
                 None,
-                "Todos los tipos",
+                &rust_i18n::t!("all_types"),
                 all_checked,
                 fg,
                 muted,
@@ -167,27 +167,37 @@ impl App {
             let lc = label.clone();
 
             // Derive kind + representative ext for the icon.
-            let (kind, ext_opt): (FileKind, Option<String>) = if label == "Carpeta" {
-                (FileKind::Dir, None)
-            } else if label == "Enlace" {
-                (FileKind::Symlink, None)
-            } else if label.starts_with('.') {
-                (FileKind::File, Some(label[1..].to_string()))
-            } else {
-                let ext = match label.as_str() {
-                    "Imagen" => Some("png"),
-                    "Audio" => Some("mp3"),
-                    "Vídeo" => Some("mp4"),
-                    "Código" => Some("rs"),
-                    "Comprimido" => Some("zip"),
-                    "Documento" => Some("pdf"),
-                    "Hoja" => Some("xlsx"),
-                    "Presentación" => Some("pptx"),
-                    "Aplicación" => Some("exe"),
-                    _ => None,
+            let (kind, ext_opt): (FileKind, Option<String>) =
+                if label == rust_i18n::t!("file_kind_folder") {
+                    (FileKind::Dir, None)
+                } else if label == rust_i18n::t!("file_kind_symlink") {
+                    (FileKind::Symlink, None)
+                } else if label.starts_with('.') {
+                    (FileKind::File, Some(label[1..].to_string()))
+                } else {
+                    let ext = if label == rust_i18n::t!("file_kind_image") {
+                        Some("png")
+                    } else if label == rust_i18n::t!("file_kind_audio") {
+                        Some("mp3")
+                    } else if label == rust_i18n::t!("file_kind_video") {
+                        Some("mp4")
+                    } else if label == rust_i18n::t!("file_kind_code") {
+                        Some("rs")
+                    } else if label == rust_i18n::t!("file_kind_archive") {
+                        Some("zip")
+                    } else if label == rust_i18n::t!("file_kind_document") {
+                        Some("pdf")
+                    } else if label == rust_i18n::t!("file_kind_spreadsheet") {
+                        Some("xlsx")
+                    } else if label == rust_i18n::t!("file_kind_presentation") {
+                        Some("pptx")
+                    } else if label == rust_i18n::t!("file_kind_application") {
+                        Some("exe")
+                    } else {
+                        None
+                    };
+                    (FileKind::File, ext.map(|s| s.to_string()))
                 };
-                (FileKind::File, ext.map(|s| s.to_string()))
-            };
 
             let icon_el = Some(file_type_icon(&kind, ext_opt.as_deref(), 14.));
 

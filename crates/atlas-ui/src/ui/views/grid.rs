@@ -5,6 +5,11 @@ use crate::app::App;
 use crate::input::action::Action;
 use crate::state::file_entry::{FileEntry, FileKind};
 use crate::state::pane::TabId;
+use crate::ui::drag_hover::{
+    drag_hover_recorder_with_drop, DragHoverCommand, DragHoverDropCommand, DragHoverId,
+    DragHoverKind,
+};
+use crate::ui::glass::backdrop_tint;
 use crate::ui::icons::file_type_icon;
 use crate::ui::root::{ctrl_scroll, rect_recorder, DraggedFiles};
 use crate::ui::views::virtual_grid::AnimatedVirtualGrid;
@@ -27,6 +32,7 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        crate::perf::count("render.view.grid");
         let view = cx.entity();
         let (fg, accent, accent_fg, hover, muted, header_bg) = {
             let t = cx.theme();
@@ -36,7 +42,7 @@ impl App {
                 t.accent_foreground,
                 t.list_active,
                 t.muted_foreground,
-                t.secondary,
+                backdrop_tint(t.secondary, 0.18),
             )
         };
         let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, header_bg);
@@ -64,6 +70,12 @@ impl App {
         let inner_avail = (pane_w - 2.0 * GRID_PAD).max(thumb);
         // n*(thumb+GAP) - GAP = inner_avail  →  n = ⌊(inner_avail + GAP) / (thumb + GAP)⌋
         let cols = (((inner_avail + GRID_GAP) / (thumb + GRID_GAP)).floor() as usize).max(1);
+        let _perf = crate::perf::span_detail("grid.render", || {
+            format!(
+                "pane={} count={count} cols={cols} thumb={thumb:.1} pane_w={pane_w:.1}",
+                pane_id.0
+            )
+        });
 
         // Hoist scroll handle so the outer relative wrapper can host the scrollbar
         // (vertical_scrollbar must NOT be inside overflow_y_scroll — it scrolls away).
@@ -71,7 +83,7 @@ impl App {
         let base_scroll = scroll.0.borrow().base_handle.clone();
 
         let inner = if count == 0 {
-            let msg = self.empty_pane_message(pane_id, "Carpeta vacía");
+            let msg = self.empty_pane_message(pane_id, rust_i18n::t!("empty_folder").into_owned());
             v_flex()
                 .size_full()
                 .items_center()
@@ -153,7 +165,10 @@ impl App {
                         let icon_tex =
                             app.icon_tex_for_entry(&entry.kind, entry.extension.as_deref());
                         let record_rects = app.rubber.as_ref().is_some_and(|r| r.pane == pane_id);
-                        render_cell(
+                        let flashing = matches!(entry.kind, FileKind::Dir)
+                            && app.drag_hover.blink_id.as_ref()
+                                == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
+                        let cell = render_cell(
                             entry,
                             entry_idx,
                             selected,
@@ -166,8 +181,10 @@ impl App {
                             accent,
                             accent_fg,
                             hover,
+                            flashing,
                             record_rects,
-                        )
+                        );
+                        cell
                     },
                 ))
                 .into_any_element()
@@ -200,13 +217,8 @@ impl App {
                 move |d, _window, cx| {
                     let paths = d.paths.clone();
                     v.update(cx, |this, cx| {
-                        if let Some(dest) = this
-                            .tab_data_for(pane_id)
-                            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
-                        {
-                            this.process_actions(vec![Action::Move { paths, dest }]);
-                            cx.notify();
-                        }
+                        this.drop_files_on_pane(pane_id, paths, false);
+                        cx.notify();
                     });
                 }
             })
@@ -215,13 +227,8 @@ impl App {
                 move |paths, _window, cx| {
                     let paths = paths.paths().to_vec();
                     v.update(cx, |this, cx| {
-                        if let Some(dest) = this
-                            .tab_data_for(pane_id)
-                            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
-                        {
-                            this.process_actions(vec![Action::CopyTo { paths, dest }]);
-                            cx.notify();
-                        }
+                        this.drop_files_on_pane(pane_id, paths, true);
+                        cx.notify();
                     });
                 }
             })
@@ -237,10 +244,18 @@ impl App {
             // column calculation uses the actual container size (handles preview
             // panel open/close and splitter drags, not just window resize).
             .on_prepaint(move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {
+                crate::perf::count("prepaint.grid_pane");
                 let new_w = f32::from(bounds.size.width);
                 prepaint_view.update(cx, |this, cx| {
                     if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
                         if (ts.last_pane_width - new_w).abs() > 0.5 {
+                            let old_w = ts.last_pane_width;
+                            crate::perf::event(|| {
+                                format!(
+                                    "grid.width pane={} old={old_w:.1} new={new_w:.1}",
+                                    pane_id.0
+                                )
+                            });
                             ts.last_pane_width = new_w;
                             cx.notify();
                         }
@@ -264,12 +279,18 @@ impl App {
     }
 
     fn prepare_grid_visible(&mut self, pane_id: TabId, range: Range<usize>) {
-        let (to_request, to_request_ext, all_visible) = {
+        let (to_request, to_request_ext, to_request_shell, all_visible) = {
             let Some(ts) = self.state.tab_states.get(&pane_id) else {
                 return;
             };
             let mut imgs = Vec::new();
-            let mut exts: Vec<(std::path::PathBuf, String)> = Vec::new();
+            let mut exts: Vec<(
+                std::path::PathBuf,
+                String,
+                std::collections::HashMap<String, std::path::PathBuf>,
+            )> = Vec::new();
+            // Windows: non-native-image files routed through IShellItemImageFactory.
+            let mut shell_paths: Vec<std::path::PathBuf> = Vec::new();
             let mut all_visible = Vec::new();
             for vi in range {
                 let Some(&entry_idx) = ts.visible.get(vi) else {
@@ -279,16 +300,34 @@ impl App {
                     continue;
                 };
                 let thumbable = is_thumbnailable(entry);
-                let ext_cmd = if !thumbable && entry.kind == FileKind::File {
+                let not_thumbable_file = !thumbable && entry.kind == FileKind::File;
+
+                // On Windows all non-native-image files use the Shell thumbnail cache
+                // (IShellItemImageFactory) — covers video, RAW, HEIC, PDF, etc. with
+                // zero processes spawned and persistent cross-session caching.
+                // On other platforms keep the existing extension thumbnailer (ffmpeg).
+                #[cfg(target_os = "windows")]
+                let use_shell = not_thumbable_file;
+                #[cfg(not(target_os = "windows"))]
+                let use_shell = false;
+
+                #[cfg(not(target_os = "windows"))]
+                let ext_cmd = if not_thumbable_file {
                     entry.extension.as_deref().and_then(|ext| {
                         self.ext_registry
                             .thumbnailer_for(ext)
-                            .map(|cmd| cmd.command.run.clone())
+                            .map(|cmd| (cmd.command.run.clone(), cmd.tools))
                     })
                 } else {
                     None
                 };
-                if thumbable || ext_cmd.is_some() {
+                #[cfg(target_os = "windows")]
+                let ext_cmd: Option<(
+                    String,
+                    std::collections::HashMap<String, std::path::PathBuf>,
+                )> = None;
+
+                if thumbable || use_shell || ext_cmd.is_some() {
                     all_visible.push(entry.path.clone());
                 }
                 if self.thumb_textures.contains_key(&entry.path) {
@@ -296,11 +335,13 @@ impl App {
                 }
                 if thumbable {
                     imgs.push(entry.path.clone());
-                } else if let Some(run) = ext_cmd {
-                    exts.push((entry.path.clone(), run));
+                } else if use_shell {
+                    shell_paths.push(entry.path.clone());
+                } else if let Some((run, tools)) = ext_cmd {
+                    exts.push((entry.path.clone(), run, tools));
                 }
             }
-            (imgs, exts, all_visible)
+            (imgs, exts, shell_paths, all_visible)
         };
 
         {
@@ -311,9 +352,16 @@ impl App {
         for path in to_request {
             self.request_thumbnail(path);
         }
-        for (path, run) in to_request_ext {
-            self.request_ext_thumbnail(path, run);
+        for (path, run, tools) in to_request_ext {
+            self.request_ext_thumbnail(path, run, tools);
         }
+        #[cfg(target_os = "windows")]
+        for path in to_request_shell {
+            self.request_shell_thumbnail(path);
+        }
+        // On non-Windows to_request_shell is always empty; drop it to avoid unused warning.
+        #[cfg(not(target_os = "windows"))]
+        drop(to_request_shell);
     }
 }
 
@@ -347,6 +395,7 @@ fn render_cell(
     accent: Hsla,
     accent_fg: Hsla,
     hover: Hsla,
+    flashing: bool,
     record_rects: bool,
 ) -> AnyElement {
     let name = entry.name.clone();
@@ -366,6 +415,7 @@ fn render_cell(
         .rounded_md()
         .cursor_pointer()
         .when(selected, |s| s.bg(accent).text_color(accent_fg))
+        .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
         .when(!selected, |s| s.hover(|h| h.bg(hover)))
         .child({
             let area = div()
@@ -460,29 +510,44 @@ fn render_cell(
                 cx.stop_propagation();
             })
             .on_drag(
-                DraggedFiles {
-                    paths: vec![entry.path.clone()],
-                },
+                crate::ui::drag::file_drag_value(vec![entry.path.clone()]),
                 crate::ui::drag::file_drag_handler(view.clone(), entry.path.clone()),
             )
         })
         .when(matches!(entry.kind, FileKind::Dir), |s| {
-            let dest_move = entry.path.clone();
-            let dest_copy = entry.path.clone();
+            let dest = entry.path.clone();
+            let hover_id = DragHoverId::Folder(pane_id, dest.clone());
+            let dest_internal = dest.clone();
+            let dest_external = dest.clone();
             let mv = view.clone();
             let cpv = view.clone();
             s.drag_over::<DraggedFiles>(|s, _, _, _| s.opacity(0.6))
+                .on_prepaint(drag_hover_recorder_with_drop(
+                    hover_id,
+                    DragHoverKind::Folder,
+                    DragHoverCommand::NavigatePathIn(pane_id, dest.clone()),
+                    DragHoverDropCommand::TransferTo(dest.clone()),
+                    view,
+                ))
                 .on_drop::<DraggedFiles>(move |d, _window, cx| {
-                    let (paths, dest) = (d.paths.clone(), dest_move.clone());
+                    let paths = d.paths.clone();
                     mv.update(cx, |this, cx| {
-                        this.process_actions(vec![Action::Move { paths, dest }]);
+                        this.execute_drag_hover_drop_command(
+                            DragHoverDropCommand::TransferTo(dest_internal.clone()),
+                            paths,
+                            true,
+                        );
                         cx.notify();
                     });
                 })
                 .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
-                    let (paths, dest) = (paths.paths().to_vec(), dest_copy.clone());
+                    let paths = paths.paths().to_vec();
                     cpv.update(cx, |this, cx| {
-                        this.process_actions(vec![Action::CopyTo { paths, dest }]);
+                        this.execute_drag_hover_drop_command(
+                            DragHoverDropCommand::TransferTo(dest_external.clone()),
+                            paths,
+                            false,
+                        );
                         cx.notify();
                     });
                 })

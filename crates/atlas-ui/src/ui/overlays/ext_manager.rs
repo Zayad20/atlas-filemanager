@@ -93,6 +93,10 @@ impl App {
                 .extensions
                 .iter()
                 .filter(|e| {
+                    !e.manifest.hidden
+                        && e.manifest.kind != crate::state::ext_model::ExtKind::ToolProvider
+                })
+                .filter(|e| {
                     query_lower.is_empty()
                         || e.manifest.name.to_lowercase().contains(&query_lower)
                         || e.manifest.description.to_lowercase().contains(&query_lower)
@@ -410,7 +414,10 @@ impl App {
                                                             div()
                                                                 .text_xs()
                                                                 .text_color(muted)
-                                                                .child(format!("by {author}")),
+                                                                .child(rust_i18n::t!(
+                                                                    "ext_author_by",
+                                                                    author = author
+                                                                )),
                                                         )
                                                     }),
                                             )

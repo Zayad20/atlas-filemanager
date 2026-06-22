@@ -23,6 +23,7 @@ static THEME_SET: std::sync::LazyLock<ThemeSet> = std::sync::LazyLock::new(Theme
 const MAX_TEXT_BYTES: usize = 256 * 1024; // 256 KB
 const MAX_IMAGE_PREVIEW_EDGE: u32 = 1600;
 const MAX_MULTI_THUMBNAIL_EDGE: u32 = 384;
+const MAX_PDF_PREVIEW_EDGE: &str = "1024";
 
 pub async fn load_preview(tab: TabId, path: PathBuf, tx: flume::Sender<BgResult>) {
     let ext = path
@@ -40,7 +41,7 @@ pub async fn load_preview(tab: TabId, path: PathBuf, tx: flume::Sender<BgResult>
             .unwrap_or_else(|e| PreviewResult::Error(e.to_string()))
     } else if ext == "pdf" {
         let p = path.clone();
-        tokio::task::spawn_blocking(move || preview_pdf(&p))
+        tokio::task::spawn_blocking(move || preview_pdf_public(&p))
             .await
             .unwrap_or_else(|e| PreviewResult::Error(e.to_string()))
     } else if is_audio_ext(&ext) {
@@ -436,18 +437,26 @@ async fn preview_text(path: &Path, ext: &str) -> PreviewResult {
     }
 }
 
-fn preview_pdf(path: &Path) -> PreviewResult {
+pub fn preview_pdf_public(path: &Path) -> PreviewResult {
+    preview_pdf(path, Path::new("pdftoppm"))
+}
+
+pub fn preview_pdf_with_pdftoppm(path: &Path, pdftoppm: &Path) -> PreviewResult {
+    preview_pdf(path, pdftoppm)
+}
+
+fn preview_pdf(path: &Path, pdftoppm: &Path) -> PreviewResult {
     let output_prefix =
         std::env::temp_dir().join(format!("atlas-pdf-preview-{}", uuid::Uuid::new_v4()));
     let png_path = output_prefix.with_extension("png");
-    let output = match Command::new("pdftoppm")
+    let output = match Command::new(pdftoppm)
         .args([
             "-f",
             "1",
             "-l",
             "1",
             "-scale-to",
-            "1600",
+            MAX_PDF_PREVIEW_EDGE,
             "-png",
             "-singlefile",
         ])
@@ -457,9 +466,7 @@ fn preview_pdf(path: &Path) -> PreviewResult {
     {
         Ok(output) => output,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return PreviewResult::Error(
-                "PDF preview requires pdftoppm (install poppler-utils)".to_string(),
-            );
+            return PreviewResult::Error("PDF preview unavailable: pdftoppm not found".to_string());
         }
         Err(e) => return PreviewResult::Error(format!("Could not start pdftoppm: {e}")),
     };

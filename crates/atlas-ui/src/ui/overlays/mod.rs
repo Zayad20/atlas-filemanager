@@ -63,7 +63,7 @@ impl App {
             layers.push(self.render_transfer_conflict(cx));
         }
         if self.state.profile_ui.creating_tag {
-            layers.push(self.render_create_tag(cx));
+            layers.push(self.render_create_tag(window, cx));
         }
         if self.state.batch_rename.is_some() {
             layers.push(self.render_batch_rename(window, cx));
@@ -80,7 +80,7 @@ impl App {
             layers.push(self.render_rename_remote(window, cx));
         }
         if !self.state.overlay.op_errors.is_empty() {
-            layers.push(self.render_op_errors(cx));
+            layers.push(self.render_op_errors(window, cx));
         }
         // Details type-filter overlay. Painted below the right-click menu.
         if self.type_filter_menu.is_some() {

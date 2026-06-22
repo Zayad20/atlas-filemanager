@@ -6,7 +6,10 @@ use crate::input::action::Action;
 use crate::state::location::Location;
 use crate::state::pane::TabId;
 use crate::state::settings::ViewMode;
-use crate::ui::drag_hover::{drag_hover_recorder, DragHoverCommand, DragHoverId, DragHoverKind};
+use crate::ui::drag_hover::{
+    drag_hover_recorder, drag_hover_recorder_with_drop, DragHoverCommand, DragHoverDropCommand,
+    DragHoverId, DragHoverKind,
+};
 use crate::ui::glass::{glass_border, glass_fill, glass_shadows_enabled};
 use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::search_shell::search_icon;
@@ -23,6 +26,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 impl App {
+    #[allow(dead_code)]
     pub(crate) fn render_floating_search_pill(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         div()
@@ -50,7 +54,7 @@ impl App {
                     .hover(|s| s.bg(glass_fill().opacity(0.68)))
                     .active(|s| s.bg(glass_fill().opacity(0.78)))
                     .child(search_icon(muted))
-                    .child("Buscar")
+                    .child(rust_i18n::t!("search"))
                     .on_click(cx.listener(|this, _ev, _window, cx| {
                         this.process_actions(vec![Action::OpenGotoBar]);
                         cx.notify();
@@ -73,9 +77,22 @@ impl App {
         if w < 2.0 && h < 2.0 {
             return None;
         }
-        let accent = cx.theme().accent;
+        let t = cx.theme();
+        let accent = t.accent;
+        let accent_fg = t.accent_foreground;
         let mut fill = accent;
         fill.a = 0.15;
+        let count = if r.started {
+            self.state
+                .tab_states
+                .get(&r.pane)
+                .map(|ts| ts.selection.selected.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let mut badge_bg = accent;
+        badge_bg.a = 0.85;
         Some(
             deferred(
                 div()
@@ -87,7 +104,21 @@ impl App {
                     .bg(fill)
                     .border_1()
                     .border_color(accent)
-                    .rounded_sm(),
+                    .rounded_sm()
+                    .when(count > 0 && w >= 28.0 && h >= 14.0, |s| {
+                        s.child(
+                            div()
+                                .absolute()
+                                .bottom(px(2.0))
+                                .right(px(2.0))
+                                .px_1()
+                                .rounded_sm()
+                                .bg(badge_bg)
+                                .text_xs()
+                                .text_color(accent_fg)
+                                .child(count.to_string()),
+                        )
+                    }),
             )
             .into_any_element(),
         )
@@ -131,10 +162,6 @@ impl App {
                 .as_ref()
                 .map(|p| breadcrumb(view, pane_id, p, fg, muted).into_any_element())
         };
-        let menu_view = view.clone();
-        let menu_recent = recent_locations.clone();
-        let menu_up = up_location.clone();
-        let menu_bookmark = bookmark_target.clone();
         h_flex()
             .w_full()
             .h(px(36.))
@@ -201,16 +228,6 @@ impl App {
                     .bg(border.opacity(0.65)),
             )
             .children(crumbs)
-            .context_menu(move |menu, _window, _cx| {
-                nav_context_menu(
-                    menu,
-                    pane_id,
-                    menu_view.clone(),
-                    menu_recent.clone(),
-                    menu_up.clone(),
-                    menu_bookmark.clone(),
-                )
-            })
             .into_any_element()
     }
 
@@ -295,7 +312,14 @@ impl App {
         let input = self
             .search_inputs
             .entry(pane_id)
-            .or_insert_with(|| crate::ui::text_input::single_line(window, cx, "Filtrar…", initial))
+            .or_insert_with(|| {
+                crate::ui::text_input::single_line(
+                    window,
+                    cx,
+                    rust_i18n::t!("filter_placeholder").into_owned(),
+                    initial,
+                )
+            })
             .clone();
 
         let value = input.read(cx).value().to_string();
@@ -481,8 +505,10 @@ impl App {
                             if recursive { accent_fg } else { muted },
                         ))
                         .tooltip(|window, cx| {
-                            gpui_component::tooltip::Tooltip::new("Buscar en subcarpetas")
-                                .build(window, cx)
+                            gpui_component::tooltip::Tooltip::new(
+                                rust_i18n::t!("search_subfolders").into_owned(),
+                            )
+                            .build(window, cx)
                         })
                         .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
                             toggle_view.update(cx, |this, cx| {
@@ -600,34 +626,40 @@ impl App {
         .dropdown_menu_with_anchor(
             gpui::Anchor::BottomRight,
             move |menu, _window, _cx| {
-                let row = |glyph: AtlasIcon, label: &'static str| {
+                let row = |glyph: AtlasIcon, label: String| {
                     move |_: &mut Window, _: &mut gpui::App| {
                         h_flex()
                             .gap_2()
                             .items_center()
                             .child(gpui_component::Icon::empty().path(glyph.path()).small())
-                            .child(label)
+                            .child(label.clone())
                     }
                 };
                 menu.menu_element_with_check(
                     vm == ViewMode::Details,
                     Box::new(crate::ViewModeDetails),
-                    row(AtlasIcon::Details, "Detalles"),
+                    row(
+                        AtlasIcon::Details,
+                        rust_i18n::t!("view_details").into_owned(),
+                    ),
                 )
                 .menu_element_with_check(
                     vm == ViewMode::Grid,
                     Box::new(crate::ViewModeGrid),
-                    row(AtlasIcon::Grid, "Cuadrícula"),
+                    row(AtlasIcon::Grid, rust_i18n::t!("view_grid").into_owned()),
                 )
                 .menu_element_with_check(
                     vm == ViewMode::List,
                     Box::new(crate::ViewModeList),
-                    row(AtlasIcon::List, "Lista"),
+                    row(AtlasIcon::List, rust_i18n::t!("view_list").into_owned()),
                 )
                 .menu_element_with_check(
                     vm == ViewMode::Miller,
                     Box::new(crate::ViewModeMiller),
-                    row(AtlasIcon::Columns, "Columnas"),
+                    row(
+                        AtlasIcon::Columns,
+                        rust_i18n::t!("view_columns").into_owned(),
+                    ),
                 )
             },
         );
@@ -660,7 +692,12 @@ impl App {
                 AtlasIcon::Folder,
                 show_folders,
                 fg,
-                format!("Carpetas {}/{}", counts.folders_shown, counts.folders_total),
+                rust_i18n::t!(
+                    "folders_count",
+                    shown = counts.folders_shown,
+                    total = counts.folders_total
+                )
+                .into_owned(),
                 Action::ToggleShowFolders(pane_id),
                 view.clone(),
             ))
@@ -669,7 +706,12 @@ impl App {
                 AtlasIcon::File,
                 show_files,
                 fg,
-                format!("Archivos {}/{}", counts.files_shown, counts.files_total),
+                rust_i18n::t!(
+                    "files_count",
+                    shown = counts.files_shown,
+                    total = counts.files_total
+                )
+                .into_owned(),
                 Action::ToggleShowFiles(pane_id),
                 view.clone(),
             ))
@@ -678,7 +720,7 @@ impl App {
                 AtlasIcon::SortAscending,
                 folders_first,
                 accent,
-                "Carpetas primero".to_string(),
+                rust_i18n::t!("folders_first").into_owned(),
                 Action::ToggleFoldersFirst(pane_id),
                 view.clone(),
             ))
@@ -738,7 +780,7 @@ fn nav_button(
         .when(enabled, |s| {
             s.on_prepaint(drag_hover_recorder(
                 hover_id,
-                DragHoverKind::Nav,
+                DragHoverKind::Folder,
                 hover_command,
                 &view,
             ))
@@ -842,9 +884,9 @@ fn nav_context_menu(
     bookmark: Option<BookmarkTarget>,
 ) -> PopupMenu {
     if recent.is_empty() {
-        menu = menu.label("Sin historial reciente");
+        menu = menu.label(rust_i18n::t!("no_recent_history"));
     } else {
-        menu = menu.label("Últimos lugares");
+        menu = menu.label(rust_i18n::t!("recent_places"));
         for location in recent.into_iter().take(6) {
             let label = location_label(&location);
             let icon_name = location_icon(&location);
@@ -869,7 +911,7 @@ fn nav_context_menu(
     let up_view = view.clone();
     let up_disabled = up_location.is_none();
     menu = menu.separator().item(
-        PopupMenuItem::new("Subir un nivel")
+        PopupMenuItem::new(rust_i18n::t!("go_up"))
             .icon(Icon::empty().path(AtlasIcon::ArrowUp.path()))
             .disabled(up_disabled)
             .on_click(move |_ev, _window, cx| {
@@ -887,9 +929,9 @@ fn nav_context_menu(
 
     let bookmark_disabled = bookmark.as_ref().map_or(true, |b| b.exists);
     let bookmark_label = if bookmark.as_ref().is_some_and(|b| b.exists) {
-        "Ya está en marcadores"
+        rust_i18n::t!("already_bookmarked")
     } else {
-        "Agregar a marcadores"
+        rust_i18n::t!("add_bookmark")
     };
     menu.separator().item(
         PopupMenuItem::new(bookmark_label)
@@ -946,12 +988,25 @@ fn breadcrumb(
     fg: Hsla,
     muted: Hsla,
 ) -> impl IntoElement {
+    let row_view = view.clone();
     let mut row = h_flex()
         .flex_1()
         .min_w(px(0.))
         .gap(px(5.))
         .items_center()
-        .overflow_x_scrollbar();
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+            row_view.update(cx, |this, cx| {
+                this.state.focused_tile = tile;
+                this.open_location_finder_or_editor();
+                cx.notify();
+            });
+        })
+        // Plain clip (not overflow_x_scrollbar): the Scrollable wrapper adds its own
+        // relative+size_full box that anchored each crumb's on_prepaint canvas to the
+        // wrong rect, so drag-hover targets captured a region offset below the crumb.
+        // Crumbs already truncate via max_w + text_ellipsis.
+        .overflow_hidden();
     let mut cumulative = std::path::PathBuf::new();
     for (i, comp) in path.components().enumerate() {
         cumulative.push(comp.as_os_str());
@@ -960,12 +1015,22 @@ fn breadcrumb(
         if i > 0 {
             row = row.child(div().text_color(muted).child("›"));
         }
-        let target = cumulative.clone();
         let v = view.clone();
+        let target = cumulative.clone();
+        let drop_target = target.clone();
+        let drop_target_external = target.clone();
+        let down_v = view.clone();
+        let drop_v = view.clone();
+        let drop_v_external = view.clone();
+        let hover_id = DragHoverId::Folder(tile, target.clone());
         row = row.child(
             div()
                 .id(SharedString::from(format!("crumb-{}-{}", tile.0, i)))
                 .flex_none()
+                // `relative` so the on_prepaint canvas anchors to this crumb. Without
+                // it the canvas anchors to the `overflow_x_scrollbar` wrapper and the
+                // drag-hover target captures a region offset below the crumb.
+                .relative()
                 .max_w(px(220.))
                 .px_2()
                 .py(px(3.))
@@ -977,10 +1042,52 @@ fn breadcrumb(
                 .whitespace_nowrap()
                 .child(SharedString::from(label))
                 .hover(|s| s.bg(glass_fill().opacity(0.62)))
+                .on_prepaint(drag_hover_recorder_with_drop(
+                    hover_id,
+                    DragHoverKind::Folder,
+                    DragHoverCommand::Process(Action::NavigateLocation {
+                        tab: tile,
+                        location: Location::Directory(target.clone()),
+                    }),
+                    DragHoverDropCommand::TransferTo(target.clone()),
+                    view,
+                ))
+                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                    down_v.update(cx, |this, _| {
+                        this.state.focused_tile = tile;
+                    });
+                    cx.stop_propagation();
+                })
+                .on_drop::<crate::ui::root::DraggedFiles>(move |d, _window, cx| {
+                    let paths = d.paths.clone();
+                    drop_v.update(cx, |this, cx| {
+                        this.execute_drag_hover_drop_command(
+                            DragHoverDropCommand::TransferTo(drop_target.clone()),
+                            paths,
+                            true,
+                        );
+                        cx.notify();
+                    });
+                })
+                .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
+                    let paths = paths.paths().to_vec();
+                    drop_v_external.update(cx, |this, cx| {
+                        this.execute_drag_hover_drop_command(
+                            DragHoverDropCommand::TransferTo(drop_target_external.clone()),
+                            paths,
+                            false,
+                        );
+                        cx.notify();
+                    });
+                })
                 .on_click(move |_ev, _window, cx| {
                     let target = target.clone();
                     v.update(cx, |this, cx| {
-                        this.navigate(tile, target);
+                        this.state.focused_tile = tile;
+                        this.process_actions(vec![Action::NavigateLocation {
+                            tab: tile,
+                            location: Location::Directory(target),
+                        }]);
                         cx.notify();
                     });
                 }),
@@ -999,11 +1106,20 @@ fn archive_breadcrumb(
     fg: Hsla,
     muted: Hsla,
 ) -> impl IntoElement {
+    let row_view = view.clone();
     let mut row = h_flex()
         .flex_1()
         .min_w(px(0.))
         .gap(px(5.))
         .items_center()
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+            row_view.update(cx, |this, cx| {
+                this.state.focused_tile = tile;
+                this.open_location_finder_or_editor();
+                cx.notify();
+            });
+        })
         .overflow_x_scrollbar();
     let mut sep = false;
 
@@ -1017,7 +1133,6 @@ fn archive_breadcrumb(
             row = row.child(div().text_color(muted).child("›"));
         }
         sep = true;
-        let target = cumulative.clone();
         let v = view.clone();
         row = row.child(
             div()
@@ -1035,9 +1150,9 @@ fn archive_breadcrumb(
                 .child(SharedString::from(label))
                 .hover(|s| s.bg(glass_fill().opacity(0.62)))
                 .on_click(move |_ev, _window, cx| {
-                    let target = target.clone();
                     v.update(cx, |this, cx| {
-                        this.navigate(tile, target);
+                        this.state.focused_tile = tile;
+                        this.open_location_finder_or_editor();
                         cx.notify();
                     });
                 }),
@@ -1045,14 +1160,11 @@ fn archive_breadcrumb(
     }
 
     // Inner path components within the archive.
-    let archive_clone = archive.to_path_buf();
     let mut inner_so_far = std::path::PathBuf::new();
     for (j, comp) in inner.components().enumerate() {
         inner_so_far.push(comp.as_os_str());
         let raw = comp.as_os_str().to_string_lossy().into_owned();
         row = row.child(div().text_color(muted).child("›"));
-        let target_archive = archive_clone.clone();
-        let target_inner = inner_so_far.clone();
         let v = view.clone();
         row = row.child(
             div()
@@ -1070,10 +1182,9 @@ fn archive_breadcrumb(
                 .child(SharedString::from(raw))
                 .hover(|s| s.bg(glass_fill().opacity(0.62)))
                 .on_click(move |_ev, _window, cx| {
-                    let arc = target_archive.clone();
-                    let inn = target_inner.clone();
                     v.update(cx, |this, cx| {
-                        this.navigate_into_archive(tile, arc, inn);
+                        this.state.focused_tile = tile;
+                        this.open_location_finder_or_editor();
                         cx.notify();
                     });
                 }),

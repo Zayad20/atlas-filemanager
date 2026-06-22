@@ -203,25 +203,25 @@ impl App {
                     .gap_2()
                     .text_xs()
                     .child(mode_button(
-                        "Find",
+                        &rust_i18n::t!("batch_mode_find"),
                         RenameMode::Find,
                         mode == RenameMode::Find,
                         view.clone(),
                     ))
                     .child(mode_button(
-                        "Prefix",
+                        &rust_i18n::t!("batch_mode_prefix"),
                         RenameMode::Prefix,
                         mode == RenameMode::Prefix,
                         view.clone(),
                     ))
                     .child(mode_button(
-                        "Suffix",
+                        &rust_i18n::t!("batch_mode_suffix"),
                         RenameMode::Suffix,
                         mode == RenameMode::Suffix,
                         view.clone(),
                     ))
                     .child(mode_button(
-                        "Number",
+                        &rust_i18n::t!("batch_mode_number"),
                         RenameMode::Number,
                         mode == RenameMode::Number,
                         view.clone(),
