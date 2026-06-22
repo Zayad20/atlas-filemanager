@@ -132,7 +132,8 @@ impl App {
                         .filter(|animation| {
                             matches!(
                                 animation.kind,
-                                PaneAnimationKind::SplitHorizontal | PaneAnimationKind::SplitVertical
+                                PaneAnimationKind::SplitHorizontal
+                                    | PaneAnimationKind::SplitVertical
                             )
                         })
                         .map(SplitMotion::Opening)
@@ -205,7 +206,16 @@ impl App {
         }
         window.request_animation_frame();
         cx.notify();
-        anim.shares()
+        let shares = anim.shares();
+        if anim.closing {
+            eprintln!(
+                "[atlas close] split_frame parent={} elapsed_ms={} shares={:?}",
+                id.0,
+                anim.started.elapsed().as_millis(),
+                shares
+            );
+        }
+        shares
     }
 
     fn render_tabs_like(

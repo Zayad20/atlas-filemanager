@@ -52,6 +52,22 @@ impl App {
             .filter(|(_, started)| started.elapsed() >= crate::app::PANE_CLOSE_FINALIZE)
             .map(|(id, _)| *id)
             .collect();
+        if !done.is_empty() {
+            let ages = done
+                .iter()
+                .filter_map(|id| {
+                    self.pane_closing
+                        .get(id)
+                        .map(|started| started.elapsed().as_millis())
+                })
+                .collect::<Vec<_>>();
+            eprintln!(
+                "[atlas close] finalize_ready done={} ages_ms={:?} pending_before={}",
+                done.len(),
+                ages,
+                self.pane_closing.len()
+            );
+        }
         for id in &done {
             self.pane_closing.remove(id);
         }

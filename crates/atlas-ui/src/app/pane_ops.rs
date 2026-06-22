@@ -260,6 +260,11 @@ impl App {
             let mut remove: Vec<TileId> = self.pane_closing.keys().copied().collect();
             self.pane_closing.clear();
             remove.extend_from_slice(panes);
+            eprintln!(
+                "[atlas close] batch remove={} pending_before={} animations=false",
+                remove.len(),
+                pending_before
+            );
             crate::perf::event(|| {
                 format!(
                     "pane_close.batch remove={} pending_before={pending_before}",
@@ -268,9 +273,15 @@ impl App {
             });
             self.remove_panes_from_tree(&remove);
         } else {
+            eprintln!(
+                "[atlas close] defer new={} pending_before={} open_panes={}",
+                panes.len(),
+                pending_before,
+                self.open_pane_count()
+            );
             crate::perf::event(|| {
                 format!(
-                    "pane_close.ghost new={} pending_before={pending_before}",
+                    "pane_close.defer new={} pending_before={pending_before}",
                     panes.len()
                 )
             });
@@ -314,6 +325,16 @@ impl App {
         };
         let from = self.split_shares_now(parent_id, &base);
         let anim = DockSplitAnimation::closing(from, pos);
+        eprintln!(
+            "[atlas close] split_start pane={} tabs={} parent={} siblings={} pos={} from={:?} to={:?}",
+            pane_id.0,
+            tabs_id.0,
+            parent_id.0,
+            old_len,
+            pos,
+            anim.from,
+            anim.to
+        );
         if let Some(Tile::Container(Container::Linear(linear))) =
             self.state.pane_tree.tiles.get_mut(parent_id)
         {
@@ -657,12 +678,16 @@ impl App {
     }
 
     pub(crate) fn remove_panes_from_tree(&mut self, panes: &[TileId]) {
+        let tiles_before = self.state.pane_tree.tiles.iter().count();
+        eprintln!(
+            "[atlas close] remove_many panes={} tiles_before={} panels_before={} signals_before={}",
+            panes.len(),
+            tiles_before,
+            self.file_panel_cache.len(),
+            self.pane_signals.len()
+        );
         let _perf = crate::perf::span_detail("pane_tree.remove_many", || {
-            format!(
-                "panes={} tiles_before={}",
-                panes.len(),
-                self.state.pane_tree.tiles.iter().count()
-            )
+            format!("panes={} tiles_before={}", panes.len(), tiles_before)
         });
         let mut seen = HashSet::new();
         let mut removed = false;
@@ -675,6 +700,13 @@ impl App {
         if removed {
             self.reconcile_tree_state();
         }
+        eprintln!(
+            "[atlas close] remove_many_done removed={} tiles_after={} panels_after={} signals_after={}",
+            removed,
+            self.state.pane_tree.tiles.iter().count(),
+            self.file_panel_cache.len(),
+            self.pane_signals.len()
+        );
     }
 
     fn remove_pane_from_tree_without_reconcile(&mut self, pane_id: TileId) {
