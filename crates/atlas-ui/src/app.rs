@@ -726,7 +726,7 @@ const DRAIN_INTERVAL: Duration = Duration::from_millis(100);
 // `palette::PALETTE_CLOSE_MS` so the fade-out completes (it reaches opacity 0 first).
 const PALETTE_CLOSE_FINALIZE: Duration = Duration::from_millis(150);
 // How long a pane's close-out animation runs before it's removed from the dock.
-pub(crate) const PANE_CLOSE_FINALIZE: Duration = Duration::from_millis(crate::ui::motion::PANE_MS);
+pub(crate) const PANE_CLOSE_FINALIZE: Duration = DockSplitAnimation::DURATION;
 
 /// Map the user's scroll-smoothness setting (0 = instant … 1 = silky) to the gpui
 /// scroll handle's (ease, boost). `ease` is the fraction of remaining distance closed

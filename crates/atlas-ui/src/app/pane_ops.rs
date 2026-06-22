@@ -278,7 +278,6 @@ impl App {
             for &id in panes {
                 self.start_pane_split_close(id);
                 self.pane_closing.entry(id).or_insert_with(Instant::now);
-                self.start_pane_close_ghost(id);
             }
         }
     }
