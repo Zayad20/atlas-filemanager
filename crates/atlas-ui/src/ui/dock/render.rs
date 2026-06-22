@@ -207,11 +207,12 @@ impl App {
         window.request_animation_frame();
         cx.notify();
         let shares = anim.shares();
-        if anim.closing {
+        let elapsed_ms = anim.started.elapsed().as_millis();
+        if anim.closing && (elapsed_ms < 20 || elapsed_ms % 80 < 18) {
             eprintln!(
                 "[atlas close] split_frame parent={} elapsed_ms={} shares={:?}",
                 id.0,
-                anim.started.elapsed().as_millis(),
+                elapsed_ms,
                 shares
             );
         }

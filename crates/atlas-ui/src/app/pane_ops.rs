@@ -255,7 +255,7 @@ impl App {
         let _perf = crate::perf::span_detail("pane_close.queue", || {
             format!("new={} pending={}", panes.len(), self.pane_closing.len())
         });
-        let pending_before = self.pane_closing.len();
+        let mut pending_before = self.pane_closing.len();
         if self.state.settings.disable_animations {
             let mut remove: Vec<TileId> = self.pane_closing.keys().copied().collect();
             self.pane_closing.clear();
@@ -273,6 +273,18 @@ impl App {
             });
             self.remove_panes_from_tree(&remove);
         } else {
+            if pending_before > 0 {
+                let pending: Vec<TileId> = self.pane_closing.keys().copied().collect();
+                self.pane_closing.clear();
+                self.dock_split_animations.clear();
+                eprintln!(
+                    "[atlas close] compact_pending pending={} before_new={}",
+                    pending.len(),
+                    panes.len()
+                );
+                self.remove_panes_from_tree(&pending);
+                pending_before = 0;
+            }
             eprintln!(
                 "[atlas close] defer new={} pending_before={} open_panes={}",
                 panes.len(),
