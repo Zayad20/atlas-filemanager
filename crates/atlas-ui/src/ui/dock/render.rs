@@ -295,8 +295,24 @@ impl App {
                 .filter(|animation| matches!(animation.kind, PaneAnimationKind::NewTab));
             let activate_app = app.clone();
             let close_app = app.clone();
+            let tab_glow = animation.map(|animation| {
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(2.))
+                    .rounded(px(2.))
+                    .bg(accent)
+                    .with_animation(
+                        crate::ui::motion::keyed("custom-tab-glow", pane_id.0, animation.started),
+                        crate::ui::motion::animation(crate::ui::motion::PANEL_MS),
+                        move |this, t| this.opacity((1.0 - t).clamp(0.0, 1.0)),
+                    )
+            });
             let tab = h_flex()
                 .id(SharedString::from(format!("custom-tab-{}", pane_id.0)))
+                .relative()
                 .max_w(px(220.))
                 .min_w(px(56.))
                 .h(px(26.))
@@ -361,15 +377,15 @@ impl App {
                             });
                             cx.stop_propagation();
                         }),
-                );
+                )
+                .children(tab_glow);
             let tab = if let Some(animation) = animation {
                 tab.with_animation(
                     crate::ui::motion::keyed("custom-tab-intro", pane_id.0, animation.started),
-                    crate::ui::motion::animation(crate::ui::motion::TAB_MS),
+                    crate::ui::motion::animation(crate::ui::motion::PANEL_MS),
                     move |this, t| {
-                        this.opacity(0.35 + 0.65 * t)
+                        this.opacity(0.20 + 0.80 * t)
                             .paint_offset(gpui::point(px(0.), px(3.0 * (1.0 - t))))
-                            .bg(accent.opacity(0.18 * (1.0 - t)))
                     },
                 )
                 .into_any_element()

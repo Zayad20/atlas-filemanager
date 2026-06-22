@@ -283,8 +283,8 @@ impl Render for FilePanel {
                     panel
                         .with_animation(
                             animation_key("file-pane-motion", pane_id, animation),
-                            motion::animation(motion::TAB_MS),
-                            |this, t| this.opacity(0.55 + 0.45 * t),
+                            motion::animation(motion::PANEL_MS),
+                            |this, t| this.opacity(0.30 + 0.70 * t),
                         )
                         .into_any_element()
                 } else {
