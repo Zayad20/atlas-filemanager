@@ -125,10 +125,7 @@ impl App {
                 .children
                 .iter()
                 .find_map(|child| self.split_intro_for_tile(*child)),
-            Tile::Container(Container::Linear(linear)) => linear
-                .children
-                .iter()
-                .find_map(|child| self.split_intro_for_tile(*child)),
+            Tile::Container(Container::Linear(_)) => None,
         }
     }
 
