@@ -572,6 +572,26 @@ impl App {
             return;
         }
 
+        if let Some(tabs_id) = self.state.find_tabs_container(tab_id) {
+            let tab_count = match self.state.pane_tree.tiles.get(tabs_id) {
+                Some(Tile::Container(Container::Tabs(tabs))) => tabs.children.len(),
+                _ => 0,
+            };
+            if tab_count > 1 {
+                if self.focus_needs_reassign(&[tab_id]) {
+                    if let Some(next) = self.focus_after_closing(&[tab_id]) {
+                        self.state.focused_tile = next;
+                    }
+                }
+                eprintln!(
+                    "[atlas close] close_inner_tab tab={} tabs={} count={}",
+                    tab_id.0, tabs_id.0, tab_count
+                );
+                self.remove_panes_from_tree(&[tab_id]);
+                return;
+            }
+        }
+
         // Hand focus to a live survivor before this tab animates away, so focus never
         // lands on a closing/dead pane (fixes lost focus on held Ctrl+W and the need
         // to re-click a pane afterwards).

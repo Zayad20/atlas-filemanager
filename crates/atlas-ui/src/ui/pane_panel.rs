@@ -285,26 +285,13 @@ impl Render for FilePanel {
                 );
 
                 if let Some(animation) = animation {
-                    // Spring intro: pane glides in from the entrance direction with
-                    // momentum and a soft overshoot, settling exactly as the (linear)
-                    // timeline ends. The spring curve lives in the closure, not the
-                    // easing, so it can overshoot past 1.0 without tripping gpui's assert.
-                    let settle_secs = motion::PANE_SPRING.settle().as_secs_f32();
                     panel
                         .with_animation(
                             animation_key("file-pane-motion", pane_id, animation),
-                            motion::linear_anim(motion::PANE_SPRING.settle()),
+                            motion::animation(motion::TAB_MS),
                             move |this, t| {
-                                let s = motion::PANE_SPRING.value(t * settle_secs);
-                                let inv = 1.0 - s; // overshoots slightly negative
-                                let mut y = 0.0;
-                                if matches!(animation.kind, crate::app::PaneAnimationKind::NewTab) {
-                                    y = 10.0 * inv;
-                                }
-                                // Opacity ramps ahead of position so content is readable
-                                // while the pane is still settling.
-                                this.opacity((0.35 + 0.9 * s).clamp(0.0, 1.0))
-                                    .paint_offset(point(px(0.), px(y)))
+                                this.opacity(0.45 + 0.55 * t)
+                                    .paint_offset(point(px(0.), px(4.0 * (1.0 - t))))
                             },
                         )
                         .into_any_element()
