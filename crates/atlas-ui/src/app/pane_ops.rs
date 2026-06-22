@@ -1,12 +1,11 @@
 #![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
-use crate::app::{App, CloseGhost, DockSplitAnimation, PaneAnimation, PaneAnimationKind};
+use crate::app::{App, DockSplitAnimation, PaneAnimation, PaneAnimationKind};
 use crate::state::layout_tree::{Container, LinearDir, Tile, TileId};
 use crate::state::location::Location;
 use crate::state::pane::TabData;
 use crate::state::settings::ViewMode;
 use crate::state::tab::{LoadState, TabState};
 use crate::state::tag_cache::TagId;
-use crate::util::display::display_name;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -321,28 +320,6 @@ impl App {
             linear.shares = anim.to.clone();
         }
         self.dock_split_animations.insert(parent_id, anim);
-    }
-
-    fn start_pane_close_ghost(&mut self, pane_id: TileId) {
-        let Some(bounds) = self
-            .pane_layout_bounds
-            .get(&pane_id)
-            .or_else(|| self.pane_view_bounds.get(&pane_id))
-            .copied()
-        else {
-            return;
-        };
-        let title = self
-            .tab_data_for(pane_id)
-            .map(|tab| display_name(&tab.location.display_path()))
-            .unwrap_or_else(|| rust_i18n::t!("fallback_tab_title").to_string());
-        self.close_ghosts.push(CloseGhost {
-            pane_id,
-            title: title.into(),
-            bounds,
-            dir: self.pane_seam_dir(pane_id),
-            started: Instant::now(),
-        });
     }
 
     /// Push the current `focused_tile` onto the MRU history before an intentional

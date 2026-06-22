@@ -4,9 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use gpui::{
-    AppContext as _, Entity, FocusHandle, ScrollStrategy, SharedString, UniformListScrollHandle,
-};
+use gpui::{AppContext as _, Entity, FocusHandle, ScrollStrategy, UniformListScrollHandle};
 use gpui_component::input::InputState;
 
 use crate::search::nucleo_pool::NucleoPool;
@@ -172,8 +170,6 @@ pub struct App {
     /// Panes mid close-out animation: kept mounted (and in the dock) until the exit
     /// animation elapses, then a `DockOp::Remove` is queued. Mirrors `palette_closing`.
     pub(crate) pane_closing: HashMap<TileId, Instant>,
-    /// Visual-only panes that were already removed from layout but are fading out.
-    pub(crate) close_ghosts: Vec<CloseGhost>,
     /// Set when the dock's structure changed (programmatic op or interactive drag) and
     /// `pane_tree` needs to be resynced. Drained once per render in `ensure_dock`, so
     /// many `LayoutChanged` events coalesce into a single synchronous reconcile (no
@@ -348,15 +344,6 @@ pub(crate) enum DockOp {
         new_pane: TileId,
     },
     Remove(TileId),
-}
-
-#[derive(Clone)]
-pub(crate) struct CloseGhost {
-    pub(crate) pane_id: TileId,
-    pub(crate) title: SharedString,
-    pub(crate) bounds: gpui::Bounds<gpui::Pixels>,
-    pub(crate) dir: (f32, f32),
-    pub(crate) started: Instant,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -823,42 +810,6 @@ impl App {
     /// Remove the signal entity when a pane is closed (no-op if already gone).
     pub(crate) fn drop_pane_signal(&mut self, pane_id: TileId) {
         self.pane_signals.remove(&pane_id);
-    }
-
-    /// Seam direction a closing pane should slide toward, or `None` if it isn't
-    /// closing. The pane retreats into the split seam (toward its surviving sibling)
-    /// while fading; once removed, the neighbor expands to fill via FLIP. The fade
-    /// itself is a self-driving `with_animation` tween in `FilePanel`.
-    pub(crate) fn pane_closing_for(&self, pane_id: TileId) -> Option<(f32, f32)> {
-        self.pane_closing
-            .contains_key(&pane_id)
-            .then(|| self.pane_seam_dir(pane_id))
-    }
-
-    /// Unit-ish direction (dx, dy) toward the split seam for `pane_id`: the axis of
-    /// the parent Linear container and the sign toward the adjacent sibling.
-    fn pane_seam_dir(&self, pane_id: TileId) -> (f32, f32) {
-        use crate::state::layout_tree::{Container, LinearDir, Tile};
-        // The pane lives in a Tabs container; the split axis is on its parent Linear.
-        let tabs_id = self.state.find_tabs_container(pane_id).unwrap_or(pane_id);
-        let Some(parent_id) = self.state.find_parent_of(tabs_id) else {
-            return (0.0, 0.0);
-        };
-        let Some(Tile::Container(Container::Linear(lin))) =
-            self.state.pane_tree.tiles.get(parent_id)
-        else {
-            return (0.0, 0.0);
-        };
-        let Some(pos) = lin.children.iter().position(|&c| c == tabs_id) else {
-            return (0.0, 0.0);
-        };
-        // Slide toward the seam shared with the neighbor: if not first child the
-        // neighbor is before us (negative), else after us (positive).
-        let sign = if pos > 0 { -1.0 } else { 1.0 };
-        match lin.dir {
-            LinearDir::Horizontal => (sign, 0.0),
-            LinearDir::Vertical => (0.0, sign),
-        }
     }
 
     /// If `pane_id` is within its item-appear window, return the `appear_seq` to key

@@ -255,11 +255,10 @@ impl Render for FilePanel {
         let _perf = crate::perf::span_detail("file_panel.render", || format!("pane={}", pane_id.0));
         match self.app.upgrade() {
             Some(app) => {
-                let (animation, closing, animations_enabled) = {
+                let (animation, animations_enabled) = {
                     let app = app.read(cx);
                     (
                         app.pane_animation_for(pane_id),
-                        app.pane_closing_for(pane_id),
                         !app.state.settings.disable_animations,
                     )
                 };
@@ -270,7 +269,6 @@ impl Render for FilePanel {
                     .filter(|animation| {
                         matches!(animation.kind, crate::app::PaneAnimationKind::NewTab)
                     });
-                let closing = closing.filter(|_| animations_enabled);
                 let content = AnyView::from(self.content.clone())
                     .cached(StyleRefinement::default().v_flex().size_full());
                 let bounds_app = self.app.clone();
@@ -286,24 +284,7 @@ impl Render for FilePanel {
                     },
                 );
 
-                if let Some((dx, dy)) = closing {
-                    // Close-out: accelerate away into the seam (ease-in) while fading —
-                    // the physical counterpart of the spring intro. Self-driving tween
-                    // over PANE_CLOSE_FINALIZE; the finalize tick removes the pane when
-                    // it ends, then the neighbor expands (FLIP). Stable key = plays once.
-                    let dist = 14.0;
-                    panel
-                        .with_animation(
-                            SharedString::from(format!("file-pane-close-{}", pane_id.0)),
-                            motion::animation(crate::app::PANE_CLOSE_FINALIZE.as_millis() as u64),
-                            move |this, t| {
-                                let a = t * t; // ease-in: starts slow, falls away fast
-                                this.opacity(1.0 - a * 0.85)
-                                    .paint_offset(point(px(dx * dist * a), px(dy * dist * a)))
-                            },
-                        )
-                        .into_any_element()
-                } else if let Some(animation) = animation {
+                if let Some(animation) = animation {
                     // Spring intro: pane glides in from the entrance direction with
                     // momentum and a soft overshoot, settling exactly as the (linear)
                     // timeline ends. The spring curve lives in the closure, not the

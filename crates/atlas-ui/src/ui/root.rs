@@ -19,8 +19,8 @@ use crate::ui::interactions::rubber_layer;
 use crate::util::display::format_size;
 use gpui::prelude::*;
 use gpui::{
-    div, hsla, point, px, AnimationExt, AnyElement, Context, Entity, MouseButton, MouseDownEvent,
-    NavigationDirection, SharedString, Window, WindowControlArea,
+    div, hsla, px, Context, Entity, MouseButton, MouseDownEvent, NavigationDirection,
+    SharedString, Window, WindowControlArea,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 use std::path::PathBuf;
@@ -62,73 +62,6 @@ pub(crate) struct DragNoop;
 impl Render for DragNoop {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
-    }
-}
-
-impl App {
-    fn render_close_ghosts(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        self.close_ghosts
-            .retain(|ghost| ghost.started.elapsed() < crate::app::PANE_CLOSE_FINALIZE);
-        let panel_bg = backdrop_tint(cx.theme().secondary, 0.24);
-        let tab_bar_bg = backdrop_tint(cx.theme().tab_bar, 0.16);
-        let active_bg = backdrop_tint(cx.theme().tab_active, 0.22);
-        let active_fg = cx.theme().tab_active_foreground;
-        let border = cx.theme().border.opacity(0.55);
-        let radius = cx.theme().radius_lg;
-        self.close_ghosts
-            .iter()
-            .map(|ghost| {
-                let (dx, dy) = ghost.dir;
-                div()
-                    .absolute()
-                    .left(ghost.bounds.left())
-                    .top(ghost.bounds.top())
-                    .w(ghost.bounds.size.width)
-                    .h(ghost.bounds.size.height)
-                    .overflow_hidden()
-                    .rounded(radius)
-                    .border_1()
-                    .border_color(border)
-                    .bg(panel_bg)
-                    .child(
-                        v_flex()
-                            .size_full()
-                            .child(
-                                h_flex()
-                                    .h(px(32.))
-                                    .items_center()
-                                    .px_2()
-                                    .bg(tab_bar_bg)
-                                    .child(
-                                        div()
-                                            .max_w(px(180.))
-                                            .min_w(px(0.))
-                                            .px_2()
-                                            .py_1()
-                                            .rounded(px(7.))
-                                            .bg(active_bg)
-                                            .text_color(active_fg)
-                                            .text_xs()
-                                            .truncate()
-                                            .child(ghost.title.clone()),
-                                    ),
-                            )
-                            .child(div().flex_1().min_h(px(0.))),
-                    )
-                    .with_animation(
-                        SharedString::from(format!("close-ghost-{}", ghost.pane_id.0)),
-                        crate::ui::motion::animation(
-                            crate::app::PANE_CLOSE_FINALIZE.as_millis() as u64
-                        ),
-                        move |this, t| {
-                            let dist = 14.0;
-                            this.opacity(1.0 - 0.65 * t)
-                                .paint_offset(point(px(dx * dist * t), px(dy * dist * t)))
-                        },
-                    )
-                    .into_any_element()
-            })
-            .collect()
     }
 }
 
@@ -451,7 +384,6 @@ impl Render for App {
             self.render_overlays(window, cx)
         };
         let marquee = self.render_rubber_marquee(cx);
-        let close_ghosts = self.render_close_ghosts(cx);
         // floating search pill hidden for now (per request). Re-enable by
         // restoring `(!self.state.overlay.show_goto_bar).then(...)`.
         let search_pill: Option<gpui::AnyElement> = None;
@@ -886,7 +818,6 @@ impl Render for App {
                     // FASE5: inspector panel as the third child of the central row.
                     .children(inspector),
             )
-            .children(close_ghosts)
             // FASE5: overlay layers (goto bar, palette, settings, paste conflict, …).
             .children(overlays)
             // FASE C: the rubber-band selection rectangle, painted over the panes.

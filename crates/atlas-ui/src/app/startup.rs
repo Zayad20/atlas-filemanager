@@ -420,7 +420,6 @@ impl App {
             dock_split_animations: HashMap::new(),
             pending_dock_ops: Vec::new(),
             pane_closing: HashMap::new(),
-            close_ghosts: Vec::new(),
             reconcile_pending: false,
             pane_items_appear: HashMap::new(),
             ext_manager_input: None,

@@ -13,6 +13,13 @@ use crate::ui::glass::backdrop_tint;
 use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::pane_panel::FilePanel;
 use crate::util::display::display_name;
+use std::time::Instant;
+
+#[derive(Clone, Copy, Debug)]
+enum SplitMotion {
+    Opening(PaneAnimation),
+    Closing(Instant),
+}
 
 impl App {
     pub(crate) fn render_custom_dock(
@@ -56,7 +63,7 @@ impl App {
                 let mut children = Vec::new();
                 for child in &linear.children {
                     if let Some(el) = self.render_tree(*child, window, cx) {
-                        children.push((*child, el, self.split_intro_for_tile(*child)));
+                        children.push((*child, el, self.split_motion_for_tile(*child)));
                     }
                 }
                 if children.is_empty() {
@@ -113,18 +120,27 @@ impl App {
         }
     }
 
-    fn split_intro_for_tile(&self, id: TileId) -> Option<PaneAnimation> {
+    fn split_motion_for_tile(&self, id: TileId) -> Option<SplitMotion> {
         match self.state.pane_tree.tiles.get(id)? {
-            Tile::Pane(_) => self.pane_animation_for(id).filter(|animation| {
-                matches!(
-                    animation.kind,
-                    PaneAnimationKind::SplitHorizontal | PaneAnimationKind::SplitVertical
-                )
-            }),
+            Tile::Pane(_) => self
+                .pane_closing
+                .get(&id)
+                .copied()
+                .map(SplitMotion::Closing)
+                .or_else(|| {
+                    self.pane_animation_for(id)
+                        .filter(|animation| {
+                            matches!(
+                                animation.kind,
+                                PaneAnimationKind::SplitHorizontal | PaneAnimationKind::SplitVertical
+                            )
+                        })
+                        .map(SplitMotion::Opening)
+                }),
             Tile::Container(Container::Tabs(tabs)) => tabs
                 .children
                 .iter()
-                .find_map(|child| self.split_intro_for_tile(*child)),
+                .find_map(|child| self.split_motion_for_tile(*child)),
             Tile::Container(Container::Linear(_)) => None,
         }
     }
@@ -133,7 +149,7 @@ impl App {
         &self,
         id: TileId,
         child: AnyElement,
-        intro: Option<PaneAnimation>,
+        motion: Option<SplitMotion>,
     ) -> AnyElement {
         let inner = div()
             .size_full()
@@ -141,20 +157,28 @@ impl App {
             .min_h(px(0.))
             .overflow_hidden()
             .child(child);
-        let Some(intro) = intro else {
+        let Some(motion) = motion else {
             return inner.into_any_element();
         };
         let settle_secs = crate::ui::motion::PANE_SPRING.settle().as_secs_f32();
+        let key = match motion {
+            SplitMotion::Opening(animation) => ("open", animation.started),
+            SplitMotion::Closing(started) => ("close", started),
+        };
         inner
             .with_animation(
-                crate::ui::motion::keyed("dock-split-pop", id.0, (intro.kind, intro.started)),
+                crate::ui::motion::keyed("dock-split-pop", id.0, key),
                 crate::ui::motion::linear_anim(crate::ui::motion::PANE_SPRING.settle()),
                 move |this, t| {
                     let s = crate::ui::motion::PANE_SPRING.value(t * settle_secs);
-                    let inv = (1.0 - s).max(0.0);
-                    this.opacity((0.25 + 0.9 * s).clamp(0.0, 1.0))
-                        .p(px(42.0 * inv))
-                        .scale((0.48 + 0.52 * s).clamp(0.48, 1.10))
+                    let visible = match motion {
+                        SplitMotion::Opening(_) => s,
+                        SplitMotion::Closing(_) => 1.0 - s,
+                    };
+                    let hidden = (1.0 - visible).clamp(0.0, 1.0);
+                    this.opacity((0.25 + 0.9 * visible).clamp(0.0, 1.0))
+                        .p(px(42.0 * hidden))
+                        .scale((0.48 + 0.52 * visible).clamp(0.48, 1.10))
                 },
             )
             .into_any_element()
