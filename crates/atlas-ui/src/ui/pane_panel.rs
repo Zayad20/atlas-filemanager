@@ -313,17 +313,17 @@ impl Render for FilePanel {
                                 let s = motion::PANE_SPRING.value(t * settle_secs);
                                 let inv = 1.0 - s; // overshoots slightly negative
                                 let mut y = 0.0;
-                                let mut inset = 0.0;
+                                let mut scale = 1.0;
                                 if matches!(animation.kind, crate::app::PaneAnimationKind::NewTab) {
                                     y = 10.0 * inv;
                                 } else {
-                                    inset = (10.0 * inv).max(0.0);
+                                    scale = (0.92 + 0.08 * s).clamp(0.92, 1.04);
                                 }
                                 // Opacity ramps ahead of position so content is readable
                                 // while the pane is still settling.
                                 this.opacity((0.35 + 0.9 * s).clamp(0.0, 1.0))
                                     .paint_offset(point(px(0.), px(y)))
-                                    .p(px(inset))
+                                    .scale(scale)
                             },
                         )
                         .into_any_element()
