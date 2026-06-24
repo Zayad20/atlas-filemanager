@@ -12,6 +12,21 @@ use std::borrow::Cow;
 /// `gpui-component` asset bundle so its built-in `IconName` set keeps working.
 pub struct AtlasAssets;
 
+pub fn bundled_fonts() -> Vec<Cow<'static, [u8]>> {
+    vec![
+        Cow::Borrowed(include_bytes!("../assets/fonts/geist/Geist-Variable.ttf")),
+        Cow::Borrowed(include_bytes!(
+            "../assets/fonts/geist/Geist-Italic-wght.ttf"
+        )),
+        Cow::Borrowed(include_bytes!(
+            "../assets/fonts/geist/GeistMono-Variable.ttf"
+        )),
+        Cow::Borrowed(include_bytes!(
+            "../assets/fonts/geist/GeistMono-Italic-wght.ttf"
+        )),
+    ]
+}
+
 macro_rules! phosphor_icons {
     ($($name:literal),* $(,)?) => {
         /// Resolve an `icons/ph/<name>.svg` path to its embedded bytes.
@@ -108,6 +123,7 @@ phosphor_icons!(
     "arrow-right",
     "arrow-up",
     "arrow-down",
+    "tray-arrow-down",
 );
 
 liquid_glass_filetype_icons!(

@@ -1,6 +1,6 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, AnimationExt, AnyElement, Context, Entity, Focusable, MouseButton, SharedString,
+    div, px, AnimationExt, AnyElement, Context, Entity, Focusable, Hsla, MouseButton, SharedString,
     Window,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme as _, ElementExt as _};
@@ -9,8 +9,8 @@ use crate::app::{App, PaneAnimation, PaneAnimationKind};
 use crate::input::action::Action;
 use crate::state::layout_tree::{Container, LinearDir, Tile, TileId};
 use crate::ui::dock::drag::{edge_zone, tab_drag_entity, TabDrag};
-use crate::ui::glass::backdrop_tint;
-use crate::ui::icons::{icon, AtlasIcon};
+use crate::ui::glass::{backdrop_tint, GlassExt};
+use crate::ui::icons::{icon, windows_icon, AtlasIcon};
 use crate::ui::pane_panel::FilePanel;
 use crate::util::display::display_name;
 use std::time::Instant;
@@ -252,19 +252,28 @@ impl App {
         } else {
             content
         };
-        let panel_bg = backdrop_tint(cx.theme().secondary, 0.24);
-        v_flex()
+        let panel_bg = if self.state.settings.mica {
+            backdrop_tint(cx.theme().secondary, 0.06)
+        } else {
+            backdrop_tint(cx.theme().secondary, 0.24)
+        };
+        let active_theme = self.state.profiles.active().theme.as_str();
+        let figma_glass = active_theme == "Atlas Figma Glass";
+        let panel = v_flex()
             .size_full()
             .min_w(px(0.))
             .min_h(px(0.))
             .overflow_hidden()
-            .rounded(cx.theme().radius_lg)
-            .bg(panel_bg)
-            .border_1()
-            .border_color(cx.theme().border.opacity(0.55))
+            .when(figma_glass, |s| s.glass_surface(panel_bg))
+            .when(!figma_glass, |s| {
+                s.rounded(cx.theme().radius_lg)
+                    .bg(panel_bg)
+                    .border_1()
+                    .border_color(cx.theme().border.opacity(0.55))
+            })
             .child(self.render_tab_strip(children, active, window, cx))
-            .child(div().flex_1().min_h(px(0.)).min_w(px(0.)).child(content))
-            .into_any_element()
+            .child(div().flex_1().min_h(px(0.)).min_w(px(0.)).child(content));
+        panel.into_any_element()
     }
 
     fn render_tab_strip(
@@ -277,20 +286,36 @@ impl App {
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
         let accent = cx.theme().accent;
-        let tab_bar_bg = backdrop_tint(cx.theme().tab_bar, 0.16);
-        let active_bg = backdrop_tint(cx.theme().tab_active, 0.22);
+        let tab_bar_bg = if self.state.settings.mica {
+            backdrop_tint(cx.theme().tab_bar, 0.06)
+        } else {
+            backdrop_tint(cx.theme().tab_bar, 0.16)
+        };
+        let active_bg = if self.state.settings.mica {
+            backdrop_tint(cx.theme().tab_active, 0.12)
+        } else {
+            backdrop_tint(cx.theme().tab_active, 0.22)
+        };
         let active_fg = cx.theme().tab_active_foreground;
         let tab_fg = cx.theme().tab_foreground;
+        let windows_theme = self.state.profiles.active().theme == "Atlas Windows";
+        let strip_h = if windows_theme { 46.0 } else { 34.0 };
+        let tab_h = if windows_theme { 38.0 } else { 26.0 };
+        let tab_min_w = if windows_theme { 118.0 } else { 56.0 };
+        let tab_max_w = if windows_theme { 210.0 } else { 220.0 };
+        let tab_gap = if windows_theme { 8.0 } else { 6.0 };
+        let close_size = if windows_theme { 22.0 } else { 18.0 };
+        let close_icon = if windows_theme { 11.0 } else { 10.0 };
         let app = cx.entity();
         let mut strip = h_flex()
-            .h(px(34.))
+            .h(px(strip_h))
             .min_w(px(0.))
             .items_center()
             .gap(px(4.))
             .px_2()
             .bg(tab_bar_bg)
             .border_b_1()
-            .border_color(border.opacity(0.7));
+            .border_color(border.opacity(0.42));
 
         for pane_id in children {
             let label = self
@@ -331,12 +356,12 @@ impl App {
             let tab = h_flex()
                 .id(SharedString::from(format!("custom-tab-{}", pane_id.0)))
                 .relative()
-                .max_w(px(220.))
-                .min_w(px(56.))
-                .h(px(26.))
+                .max_w(px(tab_max_w))
+                .min_w(px(tab_min_w))
+                .h(px(tab_h))
                 .items_center()
-                .gap(px(6.))
-                .px_2()
+                .gap(px(tab_gap))
+                .px_3()
                 .rounded(cx.theme().radius)
                 .cursor_pointer()
                 .bg(if is_active {
@@ -375,19 +400,20 @@ impl App {
                         .flex_1()
                         .min_w(px(0.))
                         .truncate()
-                        .text_xs()
+                        .when(!windows_theme, |s| s.text_xs())
+                        .when(windows_theme, |s| s.text_sm())
                         .child(SharedString::from(label)),
                 )
                 .child(
                     div()
-                        .size(px(18.))
+                        .size(px(close_size))
                         .rounded(px(5.))
                         .flex()
                         .items_center()
                         .justify_center()
                         .text_color(muted)
                         .hover(|s| s.bg(border.opacity(0.5)))
-                        .child(icon(AtlasIcon::X, 10.0, muted))
+                        .child(theme_icon(AtlasIcon::X, close_icon, muted, windows_theme))
                         .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
                             close_app.update(cx, |this, cx| {
                                 this.process_actions(vec![Action::CloseTab(pane_id)]);
@@ -423,14 +449,19 @@ impl App {
             strip = strip.child(
                 div()
                     .id(SharedString::from(format!("custom-tab-new-{}", anchor.0)))
-                    .size(px(24.))
+                    .size(px(if windows_theme { 32.0 } else { 24.0 }))
                     .rounded(px(6.))
                     .flex()
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
                     .hover(|s| s.bg(border.opacity(0.35)))
-                    .child(icon(AtlasIcon::Plus, 13.0, muted))
+                    .child(theme_icon(
+                        AtlasIcon::Plus,
+                        if windows_theme { 15.0 } else { 13.0 },
+                        muted,
+                        windows_theme,
+                    ))
                     .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
                         new_app.update(cx, |this, cx| {
                             this.process_actions(vec![Action::NewTab(anchor)]);
@@ -535,5 +566,13 @@ impl App {
         if let Some(panel) = self.file_panel_cache.get(&self.state.focused_tile) {
             window.focus(&panel.read(cx).focus_handle(cx), cx);
         }
+    }
+}
+
+fn theme_icon(kind: AtlasIcon, size: f32, color: Hsla, windows_theme: bool) -> AnyElement {
+    if windows_theme {
+        windows_icon(kind, size, color)
+    } else {
+        icon(kind, size, color)
     }
 }

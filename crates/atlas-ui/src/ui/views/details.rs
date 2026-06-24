@@ -10,9 +10,12 @@ use crate::ui::drag_hover::{
     drag_hover_recorder_with_drop, DragHoverCommand, DragHoverDropCommand, DragHoverId,
     DragHoverKind,
 };
+use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::backdrop_tint;
-use crate::ui::icons::{file_type_icon, icon, AtlasIcon};
-use crate::ui::root::{ctrl_scroll, rect_recorder, zone_recorder, DraggedFiles};
+use crate::ui::icons::{icon, AtlasIcon};
+use crate::ui::root::{
+    ctrl_scroll, pane_bounds_recorder, rect_recorder, zone_recorder, DraggedFiles,
+};
 use crate::util::display::{format_date, format_size};
 use gpui::prelude::*;
 use gpui::{
@@ -194,6 +197,11 @@ impl App {
             let fv = filtered_visible.clone();
             let row_layout = Arc::clone(&layout);
             if !rename_active {
+                let viewport_h = f32::from(base_scroll.bounds().size.height);
+                let scroll_y = (-f32::from(base_scroll.offset().y)).max(0.0);
+                prime_details_file_icons(self, pane_id, &filtered_visible, scroll_y, viewport_h);
+                let fallback_icons =
+                    details_fallback_icons(self, pane_id, &filtered_visible, scroll_y, viewport_h);
                 details_pane_canvas(
                     pane_id,
                     count,
@@ -201,6 +209,7 @@ impl App {
                     fv,
                     row_layout,
                     base_scroll,
+                    fallback_icons,
                     accent,
                     accent_fg,
                     hover,
@@ -232,8 +241,7 @@ impl App {
                                 let Some(ts) = app.state.tab_states.get(&pane_id) else {
                                     return Vec::new();
                                 };
-                                let record_rects =
-                                    app.rubber.as_ref().is_some_and(|r| r.pane == pane_id);
+                                let record_rects = true;
                                 range
                                     .filter_map(|i| {
                                         let entry_idx = *fv.get(i)?;
@@ -244,10 +252,13 @@ impl App {
                                             .as_ref()
                                             .filter(|e| e.pane == pane_id && e.idx == entry_idx)
                                             .map(|e| e.input.clone());
-                                        let icon_tex = app.icon_tex_for_entry(
-                                            &entry.kind,
-                                            entry.extension.as_deref(),
-                                        );
+                                        let icon_tex = app
+                                            .file_icon_for_entry(
+                                                &entry.path,
+                                                &entry.kind,
+                                                entry.extension.as_deref(),
+                                            )
+                                            .texture();
                                         let flashing = matches!(entry.kind, FileKind::Dir)
                                             && app.drag_hover.blink_id.as_ref()
                                                 == Some(&DragHoverId::Folder(
@@ -295,6 +306,7 @@ impl App {
         let rubber_view = view.clone();
         let zone_view = view.clone();
         let prepaint_view = view.clone();
+        let bounds_view = view.clone();
         let scroll_view = view;
         v_flex()
             .id(SharedString::from(format!("pane-{}", pane_id.0)))
@@ -370,6 +382,7 @@ impl App {
                     .flex_1()
                     .min_h(px(0.))
                     .relative()
+                    .on_prepaint(pane_bounds_recorder(pane_id, &bounds_view))
                     .child(inner)
                     .child(filter_pill)
                     .child(controls_pill),
@@ -912,11 +925,71 @@ struct DetailsPanePaintRow {
     odd: bool,
     selected: bool,
     flashing: bool,
-    kind: FileKind,
     icon_tex: Option<std::sync::Arc<gpui::RenderImage>>,
     name_s: Option<ShapedLine>,
     ellipsis_s: Option<ShapedLine>,
     columns: Vec<DetailsPaintColumn>,
+}
+
+struct DetailsFallbackIcon {
+    y: f32,
+    icon: FileIcon,
+}
+
+fn prime_details_file_icons(
+    app: &mut App,
+    pane_id: TabId,
+    visible: &[usize],
+    scroll_y: f32,
+    viewport_h: f32,
+) {
+    let files = {
+        let Some(ts) = app.state.tab_states.get(&pane_id) else {
+            return;
+        };
+        let start = (scroll_y / DETAILS_ROW_H).floor().max(0.0) as usize;
+        let end = ((scroll_y + viewport_h) / DETAILS_ROW_H).ceil() as usize + 1;
+        let end = end.min(visible.len());
+        (start..end)
+            .filter_map(|i| {
+                let entry = ts.entries.get(*visible.get(i)?)?;
+                Some(crate::ui::file_icons::FileIconRef {
+                    path: entry.path.clone(),
+                    kind: entry.kind.clone(),
+                    extension: entry.extension.clone(),
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    for file in &files {
+        app.maybe_request_file_icon(file);
+    }
+}
+
+fn details_fallback_icons(
+    app: &App,
+    pane_id: TabId,
+    visible: &[usize],
+    scroll_y: f32,
+    viewport_h: f32,
+) -> Vec<DetailsFallbackIcon> {
+    let Some(ts) = app.state.tab_states.get(&pane_id) else {
+        return Vec::new();
+    };
+    let start = (scroll_y / DETAILS_ROW_H).floor().max(0.0) as usize;
+    let end = ((scroll_y + viewport_h) / DETAILS_ROW_H).ceil() as usize + 1;
+    let end = end.min(visible.len());
+    (start..end)
+        .filter_map(|i| {
+            let entry = ts.entries.get(*visible.get(i)?)?;
+            let icon =
+                app.file_icon_for_entry(&entry.path, &entry.kind, entry.extension.as_deref());
+            icon.texture().is_none().then(|| DetailsFallbackIcon {
+                y: i as f32 * DETAILS_ROW_H,
+                icon,
+            })
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -927,6 +1000,7 @@ fn details_pane_canvas(
     visible: Arc<Vec<usize>>,
     layout: Arc<DetailsRowLayout>,
     base_scroll: gpui::ScrollHandle,
+    fallback_icons: Vec<DetailsFallbackIcon>,
     accent: Hsla,
     accent_fg: Hsla,
     _hover: Hsla,
@@ -941,6 +1015,7 @@ fn details_pane_canvas(
     let paint_visible = Arc::clone(&visible);
     let paint_layout = Arc::clone(&layout);
     let paint_scroll = base_scroll.clone();
+    let viewport_scroll = base_scroll.clone();
     let font_p = font.clone();
 
     let pane_canvas = canvas(
@@ -953,9 +1028,9 @@ fn details_pane_canvas(
                 return DetailsPaneCanvasState { rows: Vec::new() };
             };
             let row_w = f32::from(bounds.size.width);
-            let pane_viewport_h = ts.last_pane_height.max(0.0);
-            let viewport_h = if pane_viewport_h > 1.0 {
-                pane_viewport_h
+            let scroll_viewport_h = f32::from(viewport_scroll.bounds().size.height);
+            let viewport_h = if scroll_viewport_h > 1.0 {
+                scroll_viewport_h
             } else {
                 f32::from(bounds.size.height).min(DETAILS_ROW_H * 40.0)
             };
@@ -980,8 +1055,13 @@ fn details_pane_canvas(
                         odd: i % 2 == 1,
                         selected: ts.selection.selected.contains(&entry_idx),
                         flashing,
-                        kind: entry.kind.clone(),
-                        icon_tex: app.icon_tex_for_entry(&entry.kind, entry.extension.as_deref()),
+                        icon_tex: app
+                            .file_icon_for_entry(
+                                &entry.path,
+                                &entry.kind,
+                                entry.extension.as_deref(),
+                            )
+                            .texture(),
                         name_s: None,
                         ellipsis_s: None,
                         columns: Vec::new(),
@@ -1067,8 +1147,9 @@ fn details_pane_canvas(
                     odd: i % 2 == 1,
                     selected,
                     flashing,
-                    kind: entry.kind.clone(),
-                    icon_tex: app.icon_tex_for_entry(&entry.kind, entry.extension.as_deref()),
+                    icon_tex: app
+                        .file_icon_for_entry(&entry.path, &entry.kind, entry.extension.as_deref())
+                        .texture(),
                     name_s: Some(name_s),
                     ellipsis_s,
                     columns,
@@ -1109,35 +1190,6 @@ fn details_pane_canvas(
                         0,
                         false,
                     );
-                } else {
-                    let icon_x = f32::from(row_bounds.origin.x) + ROW_PAD_X;
-                    let icon_y =
-                        f32::from(row_bounds.origin.y) + (DETAILS_ROW_H - ROW_ICON_SIZE) * 0.5;
-                    let icon_color = if row.selected { accent_fg } else { muted }.opacity(0.52);
-                    if matches!(row.kind, FileKind::Dir) {
-                        window.paint_quad(fill(
-                            Bounds {
-                                origin: point(px(icon_x + 2.0), px(icon_y + 3.0)),
-                                size: size(px(7.0), px(3.0)),
-                            },
-                            icon_color,
-                        ));
-                        window.paint_quad(fill(
-                            Bounds {
-                                origin: point(px(icon_x + 1.0), px(icon_y + 6.0)),
-                                size: size(px(14.0), px(8.0)),
-                            },
-                            icon_color,
-                        ));
-                    } else {
-                        window.paint_quad(fill(
-                            Bounds {
-                                origin: point(px(icon_x + 3.0), px(icon_y + 2.0)),
-                                size: size(px(10.0), px(12.0)),
-                            },
-                            icon_color,
-                        ));
-                    }
                 }
 
                 let name_x = row_bounds.origin.x + px(ROW_NAME_X);
@@ -1240,6 +1292,7 @@ fn details_pane_canvas(
     let record_view = view.clone();
     let record_visible = Arc::clone(&visible);
     let record_scroll = base_scroll.clone();
+    let clamp_scroll = base_scroll.clone();
 
     div()
         .id(SharedString::from(format!(
@@ -1255,14 +1308,65 @@ fn details_pane_canvas(
                 .relative()
                 .w_full()
                 .h(px(total_h.max(DETAILS_ROW_H)))
-                .child(pane_canvas),
+                .child(pane_canvas)
+                .children(fallback_icons.into_iter().map(|icon| {
+                    div()
+                        .absolute()
+                        .left(px(ROW_PAD_X))
+                        .top(px(icon.y + (DETAILS_ROW_H - ROW_ICON_SIZE) * 0.5))
+                        .w(px(ROW_ICON_SIZE))
+                        .h(px(ROW_ICON_SIZE))
+                        .child(icon.icon.element(ROW_ICON_SIZE, muted))
+                })),
         )
         .vertical_scrollbar(&base_scroll)
-        .on_mouse_down(MouseButton::Left, move |ev, _window, cx| {
-            if down_row_at(ev.position).is_some() {
-                cx.stop_propagation();
+        .on_mouse_down(MouseButton::Left, {
+            let rv = view.clone();
+            move |ev, _window, cx| {
+                if let Some(entry_idx) = down_row_at(ev.position) {
+                    let is_selected = rv.read(cx).state.tab_states.get(&pane_id).is_some_and(|ts| ts.selection.selected.contains(&entry_idx));
+                    if is_selected {
+                        cx.stop_propagation();
+                    } else {
+                        let (pos, additive) = (ev.position, ev.modifiers.control || ev.modifiers.platform);
+                        rv.update(cx, |this, cx| {
+                            this.begin_rubber(pane_id, pos, additive);
+                            cx.notify();
+                        });
+                        cx.stop_propagation();
+                    }
+                }
             }
         })
+        .on_drag(
+            crate::ui::drag::file_drag_value(vec![]),
+            {
+                let v = view.clone();
+                let drag_row_at = click_row_at.clone();
+                move |_d, pos, window, cx| {
+                    let Some(entry_idx) = drag_row_at(pos) else {
+                        return cx.new(|_| crate::ui::drag::file_drag_value(vec![]));
+                    };
+                    
+                    let is_selected = v.read(cx).state.tab_states.get(&pane_id).is_some_and(|ts| ts.selection.selected.contains(&entry_idx));
+                    
+                    if is_selected {
+                        let path = v.read(cx).state.tab_states.get(&pane_id).and_then(|ts| ts.entries.get(entry_idx)).map(|e| e.path.clone()).unwrap_or_default();
+                        
+                        let handler = crate::ui::drag::file_drag_handler_for_item(
+                            v.clone(),
+                            pane_id,
+                            entry_idx,
+                            path,
+                        );
+                        let payload = crate::ui::drag::file_drag_value(vec![]); 
+                        handler(&payload, pos, window, cx)
+                    } else {
+                        cx.new(|_| crate::ui::drag::file_drag_value(vec![]))
+                    }
+                }
+            }
+        )
         .on_click(move |ev, _window, cx| {
             let Some(entry_idx) = click_row_at(ev.position()) else {
                 return;
@@ -1292,22 +1396,22 @@ fn details_pane_canvas(
             };
             let pos = ev.position;
             drag_view.update(cx, |this, cx| {
-                this.process_actions(vec![Action::Select {
-                    tile: pane_id,
-                    idx: entry_idx,
-                    shift: false,
-                    ctrl: false,
-                }]);
-                let paths = this.selected_paths();
+                let paths = this.select_context_menu_paths(pane_id, entry_idx);
                 this.open_ctx_menu(paths, pos, window, cx);
                 cx.notify();
             });
         })
         .on_prepaint(move |bounds, _window, cx| {
-            record_view.update(cx, |this, _cx| {
-                if !this.rubber.as_ref().is_some_and(|r| r.pane == pane_id) {
-                    return;
+            let viewport_h = f32::from(bounds.size.height);
+            if viewport_h > 1.0 {
+                let max_scroll = (total_h - viewport_h).max(0.0);
+                let scroll_y = (-f32::from(clamp_scroll.offset().y)).max(0.0);
+                if scroll_y > max_scroll {
+                    let offset = clamp_scroll.offset();
+                    clamp_scroll.set_offset(point(offset.x, px(-max_scroll)));
                 }
+            }
+            record_view.update(cx, |this, _cx| {
                 let scroll_top = (-f32::from(record_scroll.offset().y)).max(0.0);
                 let start = (scroll_top / DETAILS_ROW_H).floor().max(0.0) as usize;
                 let end = ((scroll_top + f32::from(bounds.size.height)) / DETAILS_ROW_H).ceil()
@@ -1633,8 +1737,10 @@ fn canvas_row(
 
     let v = view.clone();
     let entry_path = entry.path.clone();
-    let icon_kind = entry.kind.clone();
-    let icon_ext = entry.extension.clone();
+    let fallback_icon = FileIcon::Builtin {
+        kind: entry.kind.clone(),
+        extension: entry.extension.clone(),
+    };
     let has_tex = icon_tex.is_some();
     let row_id = SharedString::from(format!("row-{}-{}", pane_id.0, entry_idx));
 
@@ -1662,11 +1768,7 @@ fn canvas_row(
                     .top(px((row_h - ROW_ICON_SIZE) * 0.5))
                     .w(px(ROW_ICON_SIZE))
                     .h(px(ROW_ICON_SIZE))
-                    .child(file_type_icon(
-                        &icon_kind,
-                        icon_ext.as_deref(),
-                        ROW_ICON_SIZE,
-                    )),
+                    .child(fallback_icon.clone().element(ROW_ICON_SIZE, muted)),
             )
         });
 
@@ -1699,13 +1801,7 @@ fn canvas_row(
             move |ev, window, cx| {
                 let pos = ev.position;
                 v.update(cx, |this, cx| {
-                    this.process_actions(vec![Action::Select {
-                        tile: pane_id,
-                        idx: entry_idx,
-                        shift: false,
-                        ctrl: false,
-                    }]);
-                    let paths = this.selected_paths();
+                    let paths = this.select_context_menu_paths(pane_id, entry_idx);
                     this.open_ctx_menu(paths, pos, window, cx);
                     cx.notify();
                 });
@@ -1728,7 +1824,12 @@ fn canvas_row(
             })
             .on_drag(
                 crate::ui::drag::file_drag_value(vec![entry_path.clone()]),
-                crate::ui::drag::file_drag_handler(v.clone(), entry_path.clone()),
+                crate::ui::drag::file_drag_handler_for_item(
+                    v.clone(),
+                    pane_id,
+                    entry_idx,
+                    entry_path.clone(),
+                ),
             )
         })
         .when(is_dir, |s| {
@@ -1845,7 +1946,11 @@ fn render_row(
                     .h(px(16.))
                     .flex_none()
                     .into_any_element(),
-                None => file_type_icon(&entry.kind, entry.extension.as_deref(), 16.0),
+                None => FileIcon::Builtin {
+                    kind: entry.kind.clone(),
+                    extension: entry.extension.clone(),
+                }
+                .element(16.0, muted),
             }),
         )
         // Name
@@ -1908,15 +2013,7 @@ fn render_row(
             move |ev, window, cx| {
                 let pos = ev.position;
                 rv.update(cx, |this, cx| {
-                    this.process_actions(vec![Action::Select {
-                        tile: pane_id,
-                        idx: entry_idx,
-                        shift: false,
-                        ctrl: false,
-                    }]);
-                    // Right-click opens the Atlas–style menu on the (now
-                    // selected) item; native shell items stream in afterwards.
-                    let paths = this.selected_paths();
+                    let paths = this.select_context_menu_paths(pane_id, entry_idx);
                     this.open_ctx_menu(paths, pos, window, cx);
                     cx.notify();
                 });
@@ -1939,7 +2036,12 @@ fn render_row(
             })
             .on_drag(
                 crate::ui::drag::file_drag_value(vec![entry.path.clone()]),
-                crate::ui::drag::file_drag_handler(view.clone(), entry.path.clone()),
+                crate::ui::drag::file_drag_handler_for_item(
+                    view.clone(),
+                    pane_id,
+                    entry_idx,
+                    entry.path.clone(),
+                ),
             )
         })
         .when(matches!(entry.kind, FileKind::Dir), |s| {

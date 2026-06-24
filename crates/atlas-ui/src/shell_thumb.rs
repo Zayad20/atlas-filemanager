@@ -58,6 +58,16 @@ fn ensure_com_init() {
 /// The caller falls back to the file-type glyph on `None`, matching the
 /// existing behavior for unknown formats.
 pub fn shell_thumbnail(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, usize)> {
+    shell_image(path, max_edge, SIIGBF_THUMBNAILONLY)
+}
+
+/// Extract the best Shell image for a folder: thumbnail when Windows has one,
+/// otherwise the Shell icon (known-folder/custom folder icon).
+pub fn shell_thumbnail_or_icon(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, usize)> {
+    shell_image(path, max_edge, 0)
+}
+
+fn shell_image(path: &Path, max_edge: u32, flags: i32) -> Option<(Vec<u8>, usize, usize)> {
     ensure_com_init();
 
     // Encode path as null-terminated UTF-16 for the Shell API.
@@ -78,7 +88,7 @@ pub fn shell_thumbnail(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, us
             cx: max_edge as i32,
             cy: max_edge as i32,
         };
-        let flags = windows::Win32::UI::Shell::SIIGBF(SIIGBF_THUMBNAILONLY);
+        let flags = windows::Win32::UI::Shell::SIIGBF(flags);
         let hbitmap = factory.GetImage(size, flags).ok()?;
 
         // --- HBITMAP → RGBA pixels ---
@@ -135,12 +145,14 @@ pub fn shell_thumbnail(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, us
             return None;
         }
 
-        // Windows DIBs with BI_RGB store pixels as BGRA (4th byte undefined/0).
-        // Swap B↔R → RGBA and force alpha=255 (thumbnails are always opaque; the
-        // 4th byte from BI_RGB bitmaps is unreliable).
+        // Windows DIBs with BI_RGB store pixels as BGRA. Thumbnails usually have
+        // an empty alpha channel; icons often have real transparency.
+        let has_alpha = pixels.chunks_exact(4).any(|chunk| chunk[3] != 0);
         for chunk in pixels.chunks_exact_mut(4) {
             chunk.swap(0, 2); // B↔R
-            chunk[3] = 255;
+            if !has_alpha {
+                chunk[3] = 255;
+            }
         }
 
         Some((pixels, w, h))

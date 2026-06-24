@@ -644,6 +644,14 @@ impl App {
         let group_name = SharedString::from(format!("{}-row-{i}", spec.id));
         let icon_color = if selected { accent_fg } else { muted };
         let desc_color = if selected { accent_fg } else { muted };
+        if let Some(file_icon) = &item.file_icon {
+            self.maybe_request_file_icon(file_icon);
+        }
+        let icon_el = item
+            .file_icon
+            .as_ref()
+            .map(|file_icon| self.file_icon(file_icon).element(16.0, icon_color))
+            .or_else(|| item.icon.map(|ic| icon(ic, 16.0, icon_color)));
         // Matched characters: accent on normal rows, bold-bright on selected.
         let title_el = highlighted_title(
             item,
@@ -774,7 +782,7 @@ impl App {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .children(item.icon.map(|ic| icon(ic, 16.0, icon_color)))
+                    .children(icon_el)
                     .child(text_col)
                     .children(buttons)
                     .children(badges),

@@ -171,6 +171,9 @@ pub fn run(handle: tokio::runtime::Handle, app_started: Instant) {
     application.run(move |cx: &mut GpuiApp| {
         let gpui_started = Instant::now();
         gpui_component::init(cx);
+        if let Err(err) = cx.text_system().add_fonts(crate::assets::bundled_fonts()) {
+            tracing::warn!(?err, "failed to load bundled Geist fonts");
+        }
         tracing::info!(
             total_ms = app_started.elapsed().as_millis(),
             phase_ms = gpui_started.elapsed().as_millis(),

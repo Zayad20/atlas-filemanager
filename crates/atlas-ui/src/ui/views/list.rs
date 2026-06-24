@@ -9,16 +9,16 @@ use crate::ui::drag_hover::{
     drag_hover_recorder_with_drop, DragHoverCommand, DragHoverDropCommand, DragHoverId,
     DragHoverKind,
 };
+use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::backdrop_tint;
-use crate::ui::icons::file_type_icon;
-use crate::ui::root::{ctrl_scroll, rect_recorder, zone_recorder, DraggedFiles};
+use crate::ui::root::{
+    ctrl_scroll, pane_bounds_recorder, rect_recorder, zone_recorder, DraggedFiles,
+};
 use gpui::prelude::*;
 use gpui::{
-    div, img, px, uniform_list, AnyElement, Context, Entity, Hsla, MouseButton, RenderImage,
-    SharedString, Window,
+    div, px, uniform_list, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt};
-use std::sync::Arc;
 
 impl App {
     /// Compact List view: small `icon + name` cells flowing row-major into as many
@@ -95,46 +95,67 @@ impl App {
                     let _perf = crate::perf::span_detail("list.rows.build", || {
                         format!("pane={} range={start}..{end} cols={cols}", pane_id.0)
                     });
-                    let app = list_view.read(cx);
-                    let Some(ts) = app.state.tab_states.get(&pane_id) else {
-                        return Vec::new();
-                    };
-                    let record_rects = app.rubber.as_ref().is_some_and(|r| r.pane == pane_id);
-                    range
-                        .map(|row| {
-                            let mut cells: Vec<AnyElement> = Vec::with_capacity(cols);
-                            for c in 0..cols {
-                                let vi = row * cols + c;
-                                let Some(&entry_idx) = ts.visible.get(vi) else {
-                                    break;
-                                };
-                                let Some(entry) = ts.entries.get(entry_idx) else {
-                                    continue;
-                                };
-                                let selected = ts.selection.selected.contains(&entry_idx);
-                                let icon_tex =
-                                    app.icon_tex_for_entry(&entry.kind, entry.extension.as_deref());
-                                let flashing = matches!(entry.kind, FileKind::Dir)
-                                    && app.drag_hover.blink_id.as_ref()
-                                        == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
-                                cells.push(render_cell_compact(
-                                    entry,
-                                    entry_idx,
-                                    selected,
-                                    pane_id,
-                                    &list_view,
-                                    accent,
-                                    accent_fg,
-                                    hover,
-                                    flashing,
-                                    record_rects,
-                                    icon_tex,
-                                ));
-                            }
-                            let row_el = h_flex().w_full().gap(px(6.)).px_2().children(cells);
-                            row_el.into_any_element()
-                        })
-                        .collect::<Vec<_>>()
+                    let record_rects = true;
+                    list_view.update(cx, |app, _cx| {
+                        let rows_data = {
+                            let Some(ts) = app.state.tab_states.get(&pane_id) else {
+                                return Vec::new();
+                            };
+                            range
+                                .map(|row| {
+                                    let mut cells = Vec::with_capacity(cols);
+                                    for c in 0..cols {
+                                        let vi = row * cols + c;
+                                        let Some(&entry_idx) = ts.visible.get(vi) else {
+                                            break;
+                                        };
+                                        let Some(entry) = ts.entries.get(entry_idx) else {
+                                            continue;
+                                        };
+                                        let selected = ts.selection.selected.contains(&entry_idx);
+                                        cells.push((entry_idx, entry.clone(), selected));
+                                    }
+                                    cells
+                                })
+                                .collect::<Vec<_>>()
+                        };
+                        rows_data
+                            .into_iter()
+                            .map(|row_entries| {
+                                let mut cells: Vec<AnyElement> = Vec::with_capacity(cols);
+                                for (entry_idx, entry, selected) in row_entries {
+                                    let file_ref = crate::ui::file_icons::FileIconRef {
+                                        path: entry.path.clone(),
+                                        kind: entry.kind.clone(),
+                                        extension: entry.extension.clone(),
+                                    };
+                                    app.maybe_request_file_icon(&file_ref);
+                                    let file_icon = app.file_icon(&file_ref);
+                                    let flashing = matches!(entry.kind, FileKind::Dir)
+                                        && app.drag_hover.blink_id.as_ref()
+                                            == Some(&DragHoverId::Folder(
+                                                pane_id,
+                                                entry.path.clone(),
+                                            ));
+                                    cells.push(render_cell_compact(
+                                        &entry,
+                                        entry_idx,
+                                        selected,
+                                        pane_id,
+                                        &list_view,
+                                        accent,
+                                        accent_fg,
+                                        hover,
+                                        flashing,
+                                        record_rects,
+                                        file_icon,
+                                    ));
+                                }
+                                let row_el = h_flex().w_full().gap(px(6.)).px_2().children(cells);
+                                row_el.into_any_element()
+                            })
+                            .collect::<Vec<_>>()
+                    })
                 },
             )
             .track_scroll(&scroll)
@@ -147,6 +168,7 @@ impl App {
         let rubber_view = view.clone();
         let zone_view = view.clone();
         let prepaint_view = view.clone();
+        let bounds_view = view.clone();
         let scroll_view = view;
         v_flex()
             .id(SharedString::from(format!("pane-{}", pane_id.0)))
@@ -225,6 +247,7 @@ impl App {
                     .flex_1()
                     .min_h(px(0.))
                     .relative()
+                    .on_prepaint(pane_bounds_recorder(pane_id, &bounds_view))
                     .child(inner)
                     .child(filter_pill)
                     .child(controls_pill),
@@ -247,7 +270,7 @@ fn render_cell_compact(
     hover: Hsla,
     flashing: bool,
     record_rects: bool,
-    icon_tex: Option<Arc<RenderImage>>,
+    file_icon: FileIcon,
 ) -> AnyElement {
     let name = entry.name.clone();
     let v = view.clone();
@@ -270,14 +293,10 @@ fn render_cell_compact(
         .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
         .when(!selected, |s| s.hover(|h| h.bg(hover)))
         .child(
-            div().w(px(16.)).flex_none().child(match icon_tex {
-                Some(tex) => img(tex)
-                    .w(px(14.))
-                    .h(px(14.))
-                    .flex_none()
-                    .into_any_element(),
-                None => file_type_icon(&entry.kind, entry.extension.as_deref(), 14.0),
-            }),
+            div()
+                .w(px(16.))
+                .flex_none()
+                .child(file_icon.element(14.0, accent)),
         )
         .child(div().flex_1().min_w(px(0.)).truncate().child(name))
         .on_click(move |ev, _window, cx| {
@@ -307,15 +326,7 @@ fn render_cell_compact(
             move |ev, window, cx| {
                 let pos = ev.position;
                 rv.update(cx, |this, cx| {
-                    this.process_actions(vec![Action::Select {
-                        tile: pane_id,
-                        idx: entry_idx,
-                        shift: false,
-                        ctrl: false,
-                    }]);
-                    // Right-click opens the Atlas–style menu on the (now
-                    // selected) item; native shell items stream in afterwards.
-                    let paths = this.selected_paths();
+                    let paths = this.select_context_menu_paths(pane_id, entry_idx);
                     this.open_ctx_menu(paths, pos, window, cx);
                     cx.notify();
                 });
@@ -338,7 +349,12 @@ fn render_cell_compact(
             })
             .on_drag(
                 crate::ui::drag::file_drag_value(vec![entry.path.clone()]),
-                crate::ui::drag::file_drag_handler(view.clone(), entry.path.clone()),
+                crate::ui::drag::file_drag_handler_for_item(
+                    view.clone(),
+                    pane_id,
+                    entry_idx,
+                    entry.path.clone(),
+                ),
             )
         })
         .when(matches!(entry.kind, FileKind::Dir), |s| {

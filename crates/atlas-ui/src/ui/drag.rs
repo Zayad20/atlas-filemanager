@@ -10,6 +10,7 @@ use gpui::prelude::*;
 use gpui::{Entity, Window};
 
 use crate::app::App;
+use crate::state::pane::TabId;
 #[cfg(windows)]
 use crate::ui::root::DragNoop;
 #[cfg(not(windows))]
@@ -36,18 +37,35 @@ pub(crate) fn file_drag_value(paths: Vec<PathBuf>) -> DragView {
     DraggedFiles { paths }
 }
 
-/// Build the shared `on_drag` move-closure for a file row/cell. Drags the whole
-/// current selection (falling back to just `anchor` when nothing is selected),
-/// routing through the Windows OLE `DoDragDrop` path when present.
-///
-/// Usage: `.on_drag(file_drag_value(vec![path.clone()]), file_drag_handler(view.clone(), path.clone()))`.
 pub(crate) fn file_drag_handler(
     view: Entity<App>,
     anchor: PathBuf,
 ) -> impl Fn(&DragView, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> Entity<DragView>
        + 'static {
+    build_file_drag_handler(view, None, anchor)
+}
+
+pub(crate) fn file_drag_handler_for_item(
+    view: Entity<App>,
+    pane: TabId,
+    idx: usize,
+    anchor: PathBuf,
+) -> impl Fn(&DragView, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> Entity<DragView>
+       + 'static {
+    build_file_drag_handler(view, Some((pane, idx)), anchor)
+}
+
+fn build_file_drag_handler(
+    view: Entity<App>,
+    item: Option<(TabId, usize)>,
+    anchor: PathBuf,
+) -> impl Fn(&DragView, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> Entity<DragView>
+       + 'static {
     move |_d, _pos, _window, cx| {
         view.update(cx, |app, cx| {
+            if let Some((pane, idx)) = item {
+                app.ensure_drag_selection(pane, idx);
+            }
             app.begin_drag_hover();
             cx.notify();
         });

@@ -8,7 +8,8 @@
 //! alpha values come straight from the Figma fills/strokes so the look matches.
 
 use gpui::{
-    div, hsla, linear_color_stop, linear_gradient, px, Hsla, IntoElement, ParentElement, Styled,
+    div, hsla, linear_color_stop, linear_gradient, point, px, BoxShadow, Hsla, InteractiveElement,
+    IntoElement, ParentElement, Styled,
 };
 
 /// Floating-panel corner radius (Figma pane background: radius 20, scaled to a
@@ -44,6 +45,48 @@ pub fn backdrop_tint(color: Hsla, alpha: f32) -> Hsla {
     } else {
         color
     }
+}
+
+pub fn layer_color(base: Hsla, delta_l: f32, alpha: f32) -> Hsla {
+    hsla(base.h, base.s, (base.l + delta_l).clamp(0.0, 1.0), alpha)
+}
+
+pub fn raised_shadow() -> Vec<BoxShadow> {
+    vec![
+        BoxShadow {
+            color: hsla(0., 0., 1., 0.30),
+            offset: point(px(0.0), px(-1.0)),
+            blur_radius: px(0.0),
+            spread_radius: px(0.0),
+            inset: false,
+        },
+        BoxShadow {
+            color: hsla(0., 0., 0., 0.18),
+            offset: point(px(0.0), px(8.0)),
+            blur_radius: px(18.0),
+            spread_radius: px(-8.0),
+            inset: false,
+        },
+    ]
+}
+
+pub fn sunken_shadow() -> Vec<BoxShadow> {
+    vec![
+        BoxShadow {
+            color: hsla(0., 0., 0., 0.18),
+            offset: point(px(0.0), px(1.0)),
+            blur_radius: px(2.0),
+            spread_radius: px(0.0),
+            inset: true,
+        },
+        BoxShadow {
+            color: hsla(0., 0., 1., 0.28),
+            offset: point(px(0.0), px(-1.0)),
+            blur_radius: px(1.0),
+            spread_radius: px(0.0),
+            inset: true,
+        },
+    ]
 }
 
 /// Bright rim light (Figma stroke: white `0.4 → 0.2`). One flat value here.
@@ -104,7 +147,7 @@ pub trait GlassExt: Styled + Sized {
             .border_1()
             .border_color(glass_border());
         if glass_shadows_enabled() {
-            surface.shadow_lg()
+            surface.shadow(raised_shadow())
         } else {
             surface
         }
@@ -121,11 +164,38 @@ pub trait GlassExt: Styled + Sized {
             .border_1()
             .border_color(glass_border());
         if glass_shadows_enabled() {
-            surface.shadow_lg()
+            surface.shadow(raised_shadow())
         } else {
             surface
         }
     }
+
+    #[must_use]
+    fn raised_surface(self) -> Self {
+        if glass_shadows_enabled() {
+            self.shadow(raised_shadow())
+        } else {
+            self
+        }
+    }
+
+    #[must_use]
+    fn sunken_surface(self) -> Self {
+        self.shadow(sunken_shadow())
+    }
 }
 
 impl<T: Styled + Sized> GlassExt for T {}
+
+pub trait GlassHoverExt: Styled + InteractiveElement + Sized {
+    #[must_use]
+    fn hover_lift(self) -> Self {
+        if glass_shadows_enabled() {
+            self.hover(|s| s.shadow(raised_shadow()))
+        } else {
+            self
+        }
+    }
+}
+
+impl<T: Styled + InteractiveElement + Sized> GlassHoverExt for T {}

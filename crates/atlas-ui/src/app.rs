@@ -705,9 +705,6 @@ pub struct RubberDrag {
     pub(crate) current: gpui::Point<gpui::Pixels>,
     /// Selection before the drag began (kept when Ctrl/Cmd makes the drag additive).
     pub(crate) base: HashSet<usize>,
-    /// Items intersected at any point during this drag. This keeps rubber selection
-    /// stable while the virtualized list scrolls and old rows leave the viewport.
-    pub(crate) swept: HashSet<usize>,
     pub(crate) additive: bool,
     /// True once the cursor has moved at least 4 px from origin. Prevents a plain
     /// click from drawing a marquee or clearing the selection prematurely.

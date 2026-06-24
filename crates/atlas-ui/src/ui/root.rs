@@ -13,14 +13,14 @@ use crate::input::action::Action;
 use crate::state::pane::TabId;
 use crate::state::settings::ViewMode;
 use crate::ui::drag_hover::drag_hover_layer;
-use crate::ui::glass::{backdrop_tint, glass_chrome_fill};
+use crate::ui::glass::{backdrop_tint, glass_backdrop, glass_chrome_fill, GlassExt};
 use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::interactions::rubber_layer;
 use crate::util::display::format_size;
 use gpui::prelude::*;
 use gpui::{
-    div, hsla, px, Context, Entity, MouseButton, MouseDownEvent, NavigationDirection,
-    SharedString, Window, WindowControlArea,
+    div, hsla, px, Context, Entity, MouseButton, MouseDownEvent, NavigationDirection, SharedString,
+    Window, WindowControlArea,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 use std::path::PathBuf;
@@ -235,12 +235,17 @@ impl Render for App {
         let (fg, muted, status_border, root_bg) = {
             let t = cx.theme();
             let bg = if self.state.settings.mica {
-                gpui::transparent_black()
+                hsla(0., 0., 0., 0.32)
             } else {
                 t.background
             };
             (t.foreground, t.muted_foreground, t.border, bg)
         };
+        let active_theme = self.state.profiles.active().theme.as_str();
+        let figma_glass = active_theme == "Atlas Figma Glass";
+        let glass_theme = active_theme.ends_with(" Glass")
+            || active_theme == "Atlas Frost"
+            || self.state.settings.mica;
         // Most recent background operation, rendered as a floating overlay pill
         // bar with a cancel button. `active_ops` updates via OpProgress events.
         let op_progress = self
@@ -287,8 +292,13 @@ impl Render for App {
             self.render_custom_dock(window, cx)
         };
         let sidebar = self.state.settings.show_sidebar.then(|| {
+            let windows_theme = self.state.profiles.active().theme == "Atlas Windows";
             let width = if self.state.settings.sidebar_collapsed {
-                56.0
+                if windows_theme {
+                    64.0
+                } else {
+                    56.0
+                }
             } else {
                 self.state.settings.sidebar_width
             };
@@ -316,22 +326,27 @@ impl Render for App {
                 self.sidebar_panel = Some(panel.clone());
                 panel
             };
-            let panel_bg = backdrop_tint(cx.theme().secondary, 0.18);
-            div()
+            let panel_bg = if glass_theme {
+                cx.theme().sidebar.opacity(0.42)
+            } else {
+                backdrop_tint(cx.theme().secondary, 0.10)
+            };
+            let shell = div()
                 .w(px(width))
                 .h_full()
                 .flex_none()
                 .overflow_hidden()
-                .rounded(cx.theme().radius_lg)
-                .bg(panel_bg)
-                .child(panel)
-                .into_any_element()
+                .when(figma_glass, |s| s.glass_surface(panel_bg).shadow_lg())
+                .when(!figma_glass, |s| {
+                    s.rounded(cx.theme().radius_lg).bg(panel_bg)
+                });
+            shell.child(panel).into_any_element()
         });
         let sidebar_resizer = (self.state.settings.show_sidebar
             && !self.state.settings.sidebar_collapsed)
             .then(|| {
                 div()
-                    .w(px(3.))
+                    .w(px(1.))
                     .h_full()
                     .flex_none()
                     .cursor_col_resize()
@@ -362,7 +377,7 @@ impl Render for App {
         };
         let inspector_resizer = self.preview_visible_for_focused().then(|| {
             div()
-                .w(px(3.))
+                .w(px(1.))
                 .h_full()
                 .flex_none()
                 .cursor_col_resize()
@@ -411,6 +426,7 @@ impl Render for App {
             .relative()
             .text_color(fg)
             .text_sm()
+            .children(figma_glass.then(glass_backdrop))
             .key_context(key_ctx)
             .track_focus(&self.focus_handle)
             .on_mouse_down(
@@ -809,8 +825,8 @@ impl Render for App {
                 h_flex()
                     .flex_1()
                     .min_h(px(0.))
-                    .p_2()
-                    .gap_2()
+                    .p(px(if figma_glass { 5.0 } else { 3.0 }))
+                    .gap(px(if figma_glass { 4.0 } else { 3.0 }))
                     .children(sidebar)
                     .children(sidebar_resizer)
                     .child(div().flex_1().h_full().min_w(px(0.)).child(center_content))

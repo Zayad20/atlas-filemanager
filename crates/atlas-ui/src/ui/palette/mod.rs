@@ -17,6 +17,7 @@ mod specs;
 use crate::app::App;
 use crate::input::action::Action;
 use crate::state::overlay::FuzzyOverlayState;
+use crate::ui::file_icons::FileIconRef;
 use crate::ui::icons::AtlasIcon;
 use gpui::{AnyElement, Keystroke, SharedString};
 
@@ -62,6 +63,7 @@ impl PaletteSection {
 /// One selectable row.
 pub(crate) struct PaletteItem {
     pub icon: Option<AtlasIcon>,
+    pub file_icon: Option<FileIconRef>,
     pub title: SharedString,
     /// Second line, muted. Shown for the selected row, or for every row while
     /// the palette is expanded (Tab).
@@ -85,6 +87,7 @@ impl PaletteItem {
     pub(crate) fn new(title: impl Into<SharedString>, action: Action) -> Self {
         Self {
             icon: None,
+            file_icon: None,
             title: title.into(),
             description: None,
             shortcuts: Vec::new(),

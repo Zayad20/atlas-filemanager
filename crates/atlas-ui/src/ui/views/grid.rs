@@ -9,18 +9,15 @@ use crate::ui::drag_hover::{
     drag_hover_recorder_with_drop, DragHoverCommand, DragHoverDropCommand, DragHoverId,
     DragHoverKind,
 };
+use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::backdrop_tint;
-use crate::ui::icons::file_type_icon;
-use crate::ui::root::{ctrl_scroll, rect_recorder, DraggedFiles};
+use crate::ui::root::{ctrl_scroll, pane_bounds_recorder, rect_recorder, DraggedFiles};
 use crate::ui::views::virtual_grid::AnimatedVirtualGrid;
 use gpui::prelude::*;
-use gpui::{
-    div, img, px, AnyElement, Context, Entity, Hsla, MouseButton, RenderImage, SharedString, Window,
-};
+use gpui::{div, img, px, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{v_flex, ActiveTheme, ElementExt};
 use std::ops::Range;
-use std::sync::Arc;
 
 impl App {
     /// Icons (Grid) view: a virtualized grid of fixed-size cells. Column count is
@@ -149,6 +146,7 @@ impl App {
                     },
                     scroll_y,
                     viewport_h,
+                    !self.state.settings.disable_animations,
                     move |idx, _window, cx| {
                         let app = list_view.read(cx);
                         let Some(ts) = app.state.tab_states.get(&pane_id) else {
@@ -161,10 +159,12 @@ impl App {
                             return div().into_any_element();
                         };
                         let selected = ts.selection.selected.contains(&entry_idx);
-                        let thumb_tex = app.grid_thumbnail(&entry.path);
-                        let icon_tex =
-                            app.icon_tex_for_entry(&entry.kind, entry.extension.as_deref());
-                        let record_rects = app.rubber.as_ref().is_some_and(|r| r.pane == pane_id);
+                        let file_icon = app.file_icon_for_entry(
+                            &entry.path,
+                            &entry.kind,
+                            entry.extension.as_deref(),
+                        );
+                        let record_rects = true;
                         let flashing = matches!(entry.kind, FileKind::Dir)
                             && app.drag_hover.blink_id.as_ref()
                                 == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
@@ -176,8 +176,7 @@ impl App {
                             &list_view,
                             thumb,
                             thumb,
-                            thumb_tex,
-                            icon_tex,
+                            file_icon,
                             accent,
                             accent_fg,
                             hover,
@@ -194,6 +193,7 @@ impl App {
         let focus_view = view.clone();
         let rubber_view = view.clone();
         let prepaint_view = view.clone();
+        let bounds_view = view.clone();
         let scroll_view = view;
         v_flex()
             .id(SharedString::from(format!("pane-{}", pane_id.0)))
@@ -270,6 +270,7 @@ impl App {
                     .flex_1()
                     .min_h(px(0.))
                     .relative()
+                    .on_prepaint(pane_bounds_recorder(pane_id, &bounds_view))
                     .child(inner)
                     .child(filter_pill)
                     .child(controls_pill)
@@ -279,6 +280,7 @@ impl App {
     }
 
     fn prepare_grid_visible(&mut self, pane_id: TabId, range: Range<usize>) {
+        let windows_theme = self.state.profiles.active().theme == "Atlas Windows";
         let (to_request, to_request_ext, to_request_shell, all_visible) = {
             let Some(ts) = self.state.tab_states.get(&pane_id) else {
                 return;
@@ -290,7 +292,7 @@ impl App {
                 std::collections::HashMap<String, std::path::PathBuf>,
             )> = Vec::new();
             // Windows: non-native-image files routed through IShellItemImageFactory.
-            let mut shell_paths: Vec<std::path::PathBuf> = Vec::new();
+            let mut shell_paths: Vec<(std::path::PathBuf, bool)> = Vec::new();
             let mut all_visible = Vec::new();
             for vi in range {
                 let Some(&entry_idx) = ts.visible.get(vi) else {
@@ -301,13 +303,14 @@ impl App {
                 };
                 let thumbable = is_thumbnailable(entry);
                 let not_thumbable_file = !thumbable && entry.kind == FileKind::File;
+                let windows_folder = windows_theme && entry.kind == FileKind::Dir;
 
                 // On Windows all non-native-image files use the Shell thumbnail cache
                 // (IShellItemImageFactory) — covers video, RAW, HEIC, PDF, etc. with
                 // zero processes spawned and persistent cross-session caching.
                 // On other platforms keep the existing extension thumbnailer (ffmpeg).
                 #[cfg(target_os = "windows")]
-                let use_shell = not_thumbable_file;
+                let use_shell = not_thumbable_file || windows_folder;
                 #[cfg(not(target_os = "windows"))]
                 let use_shell = false;
 
@@ -336,7 +339,7 @@ impl App {
                 if thumbable {
                     imgs.push(entry.path.clone());
                 } else if use_shell {
-                    shell_paths.push(entry.path.clone());
+                    shell_paths.push((entry.path.clone(), windows_folder));
                 } else if let Some((run, tools)) = ext_cmd {
                     exts.push((entry.path.clone(), run, tools));
                 }
@@ -356,8 +359,12 @@ impl App {
             self.request_ext_thumbnail(path, run, tools);
         }
         #[cfg(target_os = "windows")]
-        for path in to_request_shell {
-            self.request_shell_thumbnail(path);
+        for (path, allow_icon) in to_request_shell {
+            if allow_icon {
+                self.request_shell_thumbnail_or_icon(path);
+            } else {
+                self.request_shell_thumbnail(path);
+            }
         }
         // On non-Windows to_request_shell is always empty; drop it to avoid unused warning.
         #[cfg(not(target_os = "windows"))]
@@ -390,8 +397,7 @@ fn render_cell(
     view: &Entity<App>,
     thumb: f32,
     cell_w: f32,
-    thumb_tex: Option<Arc<RenderImage>>,
-    icon_tex: Option<Arc<RenderImage>>,
+    file_icon: FileIcon,
     accent: Hsla,
     accent_fg: Hsla,
     hover: Hsla,
@@ -423,26 +429,22 @@ fn render_cell(
                 .flex()
                 .items_center()
                 .justify_center();
-            match thumb_tex {
-                Some(tex) => area.child(
+            match file_icon {
+                FileIcon::PreviewTexture(tex) => area.child(
                     img(tex)
                         .max_h(px(thumb * 0.6))
                         .max_w(px(thumb))
                         .rounded_sm(),
                 ),
-                None => match icon_tex {
-                    Some(tex) => area.child(
-                        img(tex)
-                            .max_h(px(thumb * 0.56))
-                            .max_w(px(thumb * 0.56))
-                            .flex_none(),
-                    ),
-                    None => area.child(file_type_icon(
-                        &entry.kind,
-                        entry.extension.as_deref(),
-                        thumb * 0.42,
-                    )),
-                },
+                FileIcon::IconTexture(tex) => area.child(
+                    img(tex)
+                        .max_h(px(thumb * 0.56))
+                        .max_w(px(thumb * 0.56))
+                        .flex_none(),
+                ),
+                FileIcon::Builtin { kind, extension } => {
+                    area.child(FileIcon::Builtin { kind, extension }.element(thumb * 0.42, accent))
+                }
             }
         })
         .child(
@@ -480,15 +482,7 @@ fn render_cell(
             move |ev, window, cx| {
                 let pos = ev.position;
                 rv.update(cx, |this, cx| {
-                    this.process_actions(vec![Action::Select {
-                        tile: pane_id,
-                        idx: entry_idx,
-                        shift: false,
-                        ctrl: false,
-                    }]);
-                    // Right-click opens the Atlas–style menu on the (now
-                    // selected) item; native shell items stream in afterwards.
-                    let paths = this.selected_paths();
+                    let paths = this.select_context_menu_paths(pane_id, entry_idx);
                     this.open_ctx_menu(paths, pos, window, cx);
                     cx.notify();
                 });
@@ -511,7 +505,12 @@ fn render_cell(
             })
             .on_drag(
                 crate::ui::drag::file_drag_value(vec![entry.path.clone()]),
-                crate::ui::drag::file_drag_handler(view.clone(), entry.path.clone()),
+                crate::ui::drag::file_drag_handler_for_item(
+                    view.clone(),
+                    pane_id,
+                    entry_idx,
+                    entry.path.clone(),
+                ),
             )
         })
         .when(matches!(entry.kind, FileKind::Dir), |s| {

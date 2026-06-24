@@ -10,9 +10,43 @@ use gpui::prelude::*;
 use gpui::{
     canvas, Context, DispatchPhase, Entity, KeyDownEvent, MouseMoveEvent, MouseUpEvent, Window,
 };
-use gpui_component::WindowExt;
+use gpui_component::{ActiveTheme, WindowExt};
 
 impl App {
+    fn rubber_pane_bounds(&self, pane: TabId) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.pane_view_bounds
+            .get(&pane)
+            .or_else(|| self.pane_layout_bounds.get(&pane))
+            .copied()
+    }
+
+    pub(crate) fn clamp_rubber_point(
+        &self,
+        pane: TabId,
+        pos: gpui::Point<gpui::Pixels>,
+    ) -> gpui::Point<gpui::Pixels> {
+        let Some(bounds) = self.rubber_pane_bounds(pane) else {
+            return pos;
+        };
+        gpui::point(
+            gpui::px(f32::from(pos.x).clamp(f32::from(bounds.left()), f32::from(bounds.right()))),
+            gpui::px(f32::from(pos.y).clamp(f32::from(bounds.top()), f32::from(bounds.bottom()))),
+        )
+    }
+
+    pub(crate) fn ensure_drag_selection(&mut self, pane: TabId, entry_idx: usize) {
+        if let Some(ts) = self.state.tab_states.get_mut(&pane) {
+            if !ts.selection.selected.contains(&entry_idx) {
+                ts.selection.selected.clear();
+                ts.selection.selected.insert(entry_idx);
+            }
+        }
+    }
+
+    pub(crate) fn select_context_menu_paths(&mut self, pane: TabId, entry_idx: usize) -> Vec<std::path::PathBuf> {
+        self.ensure_drag_selection(pane, entry_idx);
+        self.selected_paths()
+    }
     /// Compute (cols, row_count) for autoscroll in the given pane. Uses tab_state
     /// pixel width for Grid/List; returns (1, count) for Details; (1, 0) for Miller.
     pub(crate) fn rubber_scroll_dims(&self, pane: TabId) -> (usize, usize) {
@@ -77,17 +111,12 @@ impl App {
         let Some(r) = self.rubber.as_mut() else {
             return;
         };
-        r.swept.extend(hits.iter().copied());
-        // Items visible but no longer under the rect get deselected; items that
-        // scrolled off-screen stay in swept (can't re-check their position).
-        r.swept
-            .retain(|idx| !visible.contains(idx) || hits.contains(idx));
         let mut sel: std::collections::HashSet<usize> = if r.additive {
             r.base.clone()
         } else {
             std::collections::HashSet::new()
         };
-        sel.extend(r.swept.iter().copied());
+        sel.extend(hits.iter().copied());
         if let Some(ts) = self.state.tab_states.get_mut(&pane) {
             ts.selection.selected = sel;
         }
@@ -387,7 +416,6 @@ impl App {
             origin: pos,
             current: pos,
             base,
-            swept: std::collections::HashSet::new(),
             additive,
             started: false,
         });
@@ -594,6 +622,39 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                     });
                 }
             });
+
+            // ── Draw the rubber band marquee rectangle ───────────────────────
+            if let Some(r) = v.read(cx).rubber.as_ref() {
+                let app = v.read(cx);
+                let origin = app.clamp_rubber_point(r.pane, r.origin);
+                let current = app.clamp_rubber_point(r.pane, r.current);
+                let left = f32::from(origin.x).min(f32::from(current.x));
+                let top = f32::from(origin.y).min(f32::from(current.y));
+                let right = f32::from(origin.x).max(f32::from(current.x));
+                let bottom = f32::from(origin.y).max(f32::from(current.y));
+                let w = (right - left).max(0.0);
+                let h = (bottom - top).max(0.0);
+                
+                if r.started && w >= 2.0 && h >= 2.0 {
+                    let rect = gpui::Bounds {
+                        origin: gpui::point(gpui::px(left), gpui::px(top)),
+                        size: gpui::size(gpui::px(w), gpui::px(h)),
+                    };
+                    let t = cx.theme();
+                    let mut fill = t.accent;
+                    fill.a = 0.15;
+                    
+                    window.paint_quad(gpui::fill(rect, fill));
+                    
+                    let mut border = t.accent;
+                    border.a = 0.8;
+                    let t_px = gpui::px(1.0);
+                    window.paint_quad(gpui::fill(gpui::Bounds { origin: rect.origin, size: gpui::size(rect.size.width, t_px) }, border));
+                    window.paint_quad(gpui::fill(gpui::Bounds { origin: gpui::point(rect.origin.x, rect.origin.y + rect.size.height - t_px), size: gpui::size(rect.size.width, t_px) }, border));
+                    window.paint_quad(gpui::fill(gpui::Bounds { origin: rect.origin, size: gpui::size(t_px, rect.size.height) }, border));
+                    window.paint_quad(gpui::fill(gpui::Bounds { origin: gpui::point(rect.origin.x + rect.size.width - t_px, rect.origin.y), size: gpui::size(t_px, rect.size.height) }, border));
+                }
+            }
 
             // ── Global move ──────────────────────────────────────────────────
             let vm = v.clone();

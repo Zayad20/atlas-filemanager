@@ -130,6 +130,16 @@ impl App {
     /// inflight cap so we never exceed `MAX_EXT_THUMB_INFLIGHT` concurrent COM calls.
     #[cfg(target_os = "windows")]
     pub(crate) fn request_shell_thumbnail(&mut self, path: PathBuf) {
+        self.request_shell_image(path, false);
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn request_shell_thumbnail_or_icon(&mut self, path: PathBuf) {
+        self.request_shell_image(path, true);
+    }
+
+    #[cfg(target_os = "windows")]
+    fn request_shell_image(&mut self, path: PathBuf, allow_icon: bool) {
         if self.thumb_textures.contains_key(&path)
             || self.ext_thumb_inflight.len() >= MAX_EXT_THUMB_INFLIGHT
         {
@@ -142,7 +152,11 @@ impl App {
         self.rt.spawn(async move {
             let report = path.clone();
             let result = tokio::task::spawn_blocking(move || {
-                crate::shell_thumb::shell_thumbnail(&path, THUMB_MAX_EDGE)
+                if allow_icon {
+                    crate::shell_thumb::shell_thumbnail_or_icon(&path, THUMB_MAX_EDGE)
+                } else {
+                    crate::shell_thumb::shell_thumbnail(&path, THUMB_MAX_EDGE)
+                }
             })
             .await
             .ok()

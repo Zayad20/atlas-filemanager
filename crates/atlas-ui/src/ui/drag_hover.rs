@@ -34,6 +34,7 @@ pub(crate) enum DragHoverId {
 
 #[derive(Clone)]
 pub(crate) enum DragHoverCommand {
+    Noop,
     NavigatePath(PathBuf),
     NavigatePathIn(TileId, PathBuf),
     NavigateLocation(Location),
@@ -47,6 +48,7 @@ pub(crate) enum DragHoverCommand {
 #[derive(Clone)]
 pub(crate) enum DragHoverDropCommand {
     AssignTag(TagId),
+    StageInSidebar,
     TransferTo(PathBuf),
 }
 
@@ -400,6 +402,13 @@ impl App {
             DragHoverDropCommand::AssignTag(tag) => {
                 self.process_actions(vec![Action::AssignTagToFiles { tag, paths }]);
             }
+            DragHoverDropCommand::StageInSidebar => {
+                self.state.sidebar_drop_zone.extend(
+                    paths
+                        .into_iter()
+                        .map(|path| crate::state::app_state::StagedDrop { path, from_self }),
+                );
+            }
             DragHoverDropCommand::TransferTo(dest) => {
                 use crate::state::ops::{
                     ConflictPolicy, TransferKind, TransferOrigin, TransferRequest,
@@ -557,6 +566,7 @@ impl App {
 
     fn execute_drag_hover_command(&mut self, command: DragHoverCommand) {
         match command {
+            DragHoverCommand::Noop => {}
             DragHoverCommand::NavigatePath(path) => {
                 let tile = self.state.focused_tile;
                 self.navigate(tile, path);

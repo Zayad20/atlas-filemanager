@@ -25,6 +25,7 @@ use crate::state::preview_cache::{
 use crate::state::profiles::PreviewFeature;
 use crate::state::settings::ViewMode;
 use crate::state::tab::TabState;
+use crate::ui::glass::{layer_color, GlassExt};
 use crate::ui::icons::{file_type_icon, icon, AtlasIcon};
 use crate::ui::root::DraggedFiles;
 use crate::util::display::{format_date, format_size};
@@ -486,11 +487,8 @@ impl App {
         let mut col = v_flex()
             .w(px(width))
             .h_full()
-            .bg(bg.opacity(0.9))
             .text_color(fg)
-            .rounded(px(crate::ui::glass::GLASS_RADIUS))
-            .border_1()
-            .border_color(border)
+            .glass_surface(layer_color(bg, 0.04, 0.92))
             .p_2()
             .gap_2();
 
@@ -622,10 +620,11 @@ impl App {
             .px_1()
             .py(px(2.))
             .gap_1()
-            .bg(surface)
+            .bg(layer_color(surface, 0.03, 0.88))
             .border_1()
-            .border_color(border)
+            .border_color(layer_color(border, 0.05, 0.45))
             .rounded(px(crate::ui::RADIUS))
+            .raised_surface()
             .items_center();
 
         if is_code {
@@ -1162,6 +1161,7 @@ impl App {
         };
         let view = self.preview_view_for_focused();
         let texture = self.focused_preview_texture();
+        let well = layer_color(cx.theme().secondary, -0.03, 0.62);
 
         let mut col = v_flex().flex_1().min_h(px(0.)).gap_2();
         let label = if is_pdf {
@@ -1191,6 +1191,9 @@ impl App {
                     .overflow_hidden()
                     .w(px(box_w))
                     .h(px(box_h))
+                    .bg(well)
+                    .rounded(px(crate::ui::RADIUS))
+                    .sunken_surface()
                     .child(image)
                     .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _w, cx| {
                         let dy = match ev.delta {
@@ -1286,7 +1289,12 @@ impl App {
         };
         let (border, stripe, header_bg, fg) = {
             let t = cx.theme();
-            (t.border, t.list_even, t.secondary, t.foreground)
+            (
+                t.border,
+                layer_color(t.list_even, 0.02, 0.70),
+                layer_color(t.secondary, 0.04, 0.88),
+                t.foreground,
+            )
         };
         let cols = headers
             .len()
@@ -1332,8 +1340,11 @@ impl App {
                 .flex_1()
                 .min_h(px(0.))
                 .overflow_x_scrollbar()
+                .bg(layer_color(border, -0.04, 0.10))
                 .border_1()
-                .border_color(border)
+                .border_color(border.opacity(0.45))
+                .rounded(px(crate::ui::RADIUS))
+                .sunken_surface()
                 .child(div().h_full().overflow_y_scrollbar().child(table)),
         )
         .into_any_element()
@@ -1361,6 +1372,7 @@ impl App {
             .rounded(px(3.))
             .border_1()
             .border_color(muted.opacity(0.25))
+            .raised_surface()
             .text_sm();
         if !title.is_empty() {
             page = page.child(
@@ -1428,7 +1440,8 @@ impl App {
                 .text_color(gpui::black())
                 .rounded(px(4.))
                 .border_1()
-                .border_color(muted.opacity(0.25));
+                .border_color(muted.opacity(0.25))
+                .raised_surface();
             card = card.child(
                 div()
                     .w_full()
@@ -1498,7 +1511,13 @@ impl App {
 
         let mut col = v_flex().flex_1().min_h(px(0.)).gap_2();
         if let Some(tex) = texture {
-            col = col.child(img(tex).max_w(px(220.)).max_h(px(220.)).rounded_md());
+            col = col.child(
+                img(tex)
+                    .max_w(px(220.))
+                    .max_h(px(220.))
+                    .rounded_md()
+                    .raised_surface(),
+            );
         } else {
             col = col.child(
                 h_flex()
@@ -1507,6 +1526,7 @@ impl App {
                     .rounded_md()
                     .bg(muted)
                     .opacity(0.15)
+                    .raised_surface()
                     .items_center()
                     .justify_center()
                     .child(icon(AtlasIcon::Music, 44.0, muted)),

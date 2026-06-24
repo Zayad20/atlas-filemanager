@@ -113,6 +113,7 @@ fn goto_entry(
     if expandable {
         item.expand = Some(format!("{}{}", path.display(), std::path::MAIN_SEPARATOR).into());
     }
+    item.file_icon = Some(App::file_icon_ref_for_path(path.clone(), expandable));
     item.buttons = vec![
         ItemButton {
             id: "bookmark",

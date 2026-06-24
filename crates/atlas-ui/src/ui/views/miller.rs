@@ -11,17 +11,16 @@ use crate::ui::drag_hover::{
     drag_hover_recorder_with_drop, DragHoverCommand, DragHoverDropCommand, DragHoverId,
     DragHoverKind,
 };
+use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::backdrop_tint;
-use crate::ui::icons::{file_type_icon, icon, AtlasIcon};
+use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::root::{ctrl_scroll, zone_recorder, DraggedFiles};
 use crate::util::display::display_name;
 use gpui::prelude::*;
 use gpui::{
-    div, img, px, uniform_list, AnyElement, Context, Entity, Hsla, MouseButton, RenderImage,
-    SharedString, Window,
+    div, px, uniform_list, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt};
-use std::sync::Arc;
 
 impl App {
     /// Miller (columns) view: a horizontal row of directory columns. Selecting a
@@ -100,36 +99,48 @@ impl App {
                             let _perf = crate::perf::span_detail("miller.rows.build", || {
                                 format!("pane={} col={ci} range={start}..{end}", pane_id.0)
                             });
-                            let app = list_view.read(cx);
-                            let Some(col) = app
-                                .state
-                                .tab_states
-                                .get(&pane_id)
-                                .and_then(|ts| ts.miller.columns.get(ci))
-                            else {
-                                return Vec::new();
-                            };
-                            range
-                                .filter_map(|i| {
-                                    let entry = col.entries.get(i)?;
-                                    let selected = col.selection.selected.contains(&i);
-                                    let icon_tex = app.icon_tex_for_entry(
-                                        &entry.kind,
-                                        entry.extension.as_deref(),
-                                    );
-                                    let flashing = matches!(entry.kind, FileKind::Dir)
-                                        && app.drag_hover.blink_id.as_ref()
-                                            == Some(&DragHoverId::Folder(
-                                                pane_id,
-                                                entry.path.clone(),
-                                            ));
-                                    let row = render_miller_row(
-                                        entry, ci, i, selected, pane_id, &list_view, accent,
-                                        accent_fg, hover, flashing, icon_tex,
-                                    );
-                                    Some(row.into_any_element())
-                                })
-                                .collect::<Vec<_>>()
+                            list_view.update(cx, |app, _cx| {
+                                let rows_data = {
+                                    let Some(col) = app
+                                        .state
+                                        .tab_states
+                                        .get(&pane_id)
+                                        .and_then(|ts| ts.miller.columns.get(ci))
+                                    else {
+                                        return Vec::new();
+                                    };
+                                    range
+                                        .filter_map(|i| {
+                                            let entry = col.entries.get(i)?;
+                                            let selected = col.selection.selected.contains(&i);
+                                            Some((i, entry.clone(), selected))
+                                        })
+                                        .collect::<Vec<_>>()
+                                };
+                                rows_data
+                                    .into_iter()
+                                    .map(|(i, entry, selected)| {
+                                        let file_ref = crate::ui::file_icons::FileIconRef {
+                                            path: entry.path.clone(),
+                                            kind: entry.kind.clone(),
+                                            extension: entry.extension.clone(),
+                                        };
+                                        app.maybe_request_file_icon(&file_ref);
+                                        let file_icon = app.file_icon(&file_ref);
+                                        let flashing = matches!(entry.kind, FileKind::Dir)
+                                            && app.drag_hover.blink_id.as_ref()
+                                                == Some(&DragHoverId::Folder(
+                                                    pane_id,
+                                                    entry.path.clone(),
+                                                ));
+                                        render_miller_row(
+                                            &entry, ci, i, selected, pane_id, &list_view, accent,
+                                            accent_fg, hover, flashing, file_icon,
+                                        )
+                                        .into_any_element()
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
                         },
                     )
                     .flex_1()
@@ -242,7 +253,7 @@ fn render_miller_row(
     accent_fg: Hsla,
     hover: Hsla,
     flashing: bool,
-    icon_tex: Option<Arc<RenderImage>>,
+    file_icon: FileIcon,
 ) -> AnyElement {
     let is_dir = matches!(entry.kind, FileKind::Dir);
     let trailing = if is_dir {
@@ -272,14 +283,10 @@ fn render_miller_row(
         .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
         .when(!selected, |s| s.hover(|h| h.bg(hover)))
         .child(
-            div().w(px(16.)).flex_none().child(match icon_tex {
-                Some(tex) => img(tex)
-                    .w(px(14.))
-                    .h(px(14.))
-                    .flex_none()
-                    .into_any_element(),
-                None => file_type_icon(&entry.kind, entry.extension.as_deref(), 14.0),
-            }),
+            div()
+                .w(px(16.))
+                .flex_none()
+                .child(file_icon.element(14.0, accent)),
         )
         .child(div().flex_1().min_w(px(0.)).truncate().child(name))
         .child(trailing)

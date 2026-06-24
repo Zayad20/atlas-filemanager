@@ -1,5 +1,5 @@
 use crate::state::file_entry::FileKind;
-use gpui::{img, px, svg, AnyElement, Hsla, IntoElement, Styled};
+use gpui::{div, img, px, svg, AnyElement, Hsla, IntoElement, ParentElement, Styled};
 
 const IMAGE_EXTS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tif", "tiff",
@@ -42,6 +42,7 @@ pub(crate) enum AtlasIcon {
     Copy,
     Scissors,
     Clipboard,
+    DotsThree,
     // Palette engine: section/command icons + per-item buttons.
     Star,
     StarFill,
@@ -74,6 +75,7 @@ pub(crate) enum AtlasIcon {
     ArrowRight,
     ArrowUp,
     ArrowDown,
+    TrayArrowDown,
 }
 
 #[derive(Clone, Copy)]
@@ -116,6 +118,7 @@ impl AtlasIcon {
             Self::Copy => "icons/ph/copy-simple.svg",
             Self::Scissors => "icons/ph/scissors.svg",
             Self::Clipboard => "icons/ph/clipboard.svg",
+            Self::DotsThree => "icons/ph/dots-three.svg",
             Self::Star => "icons/ph/star.svg",
             Self::StarFill => "icons/ph/star-fill.svg",
             Self::Plus => "icons/ph/plus.svg",
@@ -147,6 +150,7 @@ impl AtlasIcon {
             Self::ArrowRight => "icons/ph/arrow-right.svg",
             Self::ArrowUp => "icons/ph/arrow-up.svg",
             Self::ArrowDown => "icons/ph/arrow-down.svg",
+            Self::TrayArrowDown => "icons/ph/tray-arrow-down.svg",
         }
     }
 }
@@ -178,6 +182,49 @@ pub(crate) fn icon(kind: AtlasIcon, size: f32, color: Hsla) -> AnyElement {
         .flex_none()
         .text_color(color)
         .into_any_element()
+}
+
+#[inline]
+pub(crate) fn windows_icon(kind: AtlasIcon, size: f32, color: Hsla) -> AnyElement {
+    div()
+        .size(px(size))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .font_family("Segoe Fluent Icons")
+        .text_size(px(size))
+        .text_color(color)
+        .child(windows_icon_glyph(kind))
+        .into_any_element()
+}
+
+#[inline]
+fn windows_icon_glyph(kind: AtlasIcon) -> &'static str {
+    match kind {
+        AtlasIcon::House => "\u{E80F}",
+        AtlasIcon::Monitor => "\u{E7F4}",
+        AtlasIcon::Folder => "\u{E8B7}",
+        AtlasIcon::File | AtlasIcon::TextFile => "\u{E8A5}",
+        AtlasIcon::Download => "\u{E896}",
+        AtlasIcon::Image => "\u{E8B9}",
+        AtlasIcon::Audio | AtlasIcon::Music => "\u{EC4F}",
+        AtlasIcon::Video => "\u{E8B2}",
+        AtlasIcon::Cloud => "\u{E753}",
+        AtlasIcon::HardDrives => "\u{EDA2}",
+        AtlasIcon::Trash => "\u{E74D}",
+        AtlasIcon::ArrowLeft => "\u{E72B}",
+        AtlasIcon::ArrowRight => "\u{E72A}",
+        AtlasIcon::ArrowUp => "\u{E74A}",
+        AtlasIcon::ArrowDown => "\u{E74B}",
+        AtlasIcon::Plus => "\u{E710}",
+        AtlasIcon::X => "\u{E711}",
+        AtlasIcon::Search => "\u{E721}",
+        AtlasIcon::BookmarkSimple => "\u{E734}",
+        AtlasIcon::CaretDown => "\u{E70D}",
+        AtlasIcon::CaretRight => "\u{E76C}",
+        _ => "\u{E8A5}",
+    }
 }
 
 #[inline]

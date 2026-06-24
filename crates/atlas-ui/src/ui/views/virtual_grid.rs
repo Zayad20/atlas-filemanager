@@ -50,6 +50,7 @@ pub struct AnimatedVirtualGrid {
     item_spacing: gpui::Size<gpui::Pixels>,
     scroll_offset: f32,
     viewport_height: f32,
+    animate: bool,
     // Provide a closure to render individual items based on index
     render_item: Box<dyn FnMut(usize, &mut Window, &mut App) -> AnyElement>,
 }
@@ -63,6 +64,7 @@ impl AnimatedVirtualGrid {
         item_spacing: gpui::Size<gpui::Pixels>,
         scroll_offset: f32,
         viewport_height: f32,
+        animate: bool,
         render_item: impl FnMut(usize, &mut Window, &mut App) -> AnyElement + 'static,
     ) -> Self {
         Self {
@@ -73,6 +75,7 @@ impl AnimatedVirtualGrid {
             item_spacing,
             scroll_offset,
             viewport_height,
+            animate,
             render_item: Box::new(render_item),
         }
     }
@@ -186,18 +189,21 @@ impl Element for AnimatedVirtualGrid {
             )
         });
 
+        let animate = self.animate;
         let mut old_bounds = HashMap::new();
         let mut old_animations = HashMap::new();
 
-        _window.with_optional_element_state(
-            _id,
-            |state_opt: Option<Option<AnimatedVirtualGridState>>, _window| {
-                let state = state_opt.flatten().unwrap_or_default();
-                old_bounds = state.last_item_bounds.clone();
-                old_animations = state.animations.clone();
-                ((), Some(state))
-            },
-        );
+        if animate {
+            _window.with_optional_element_state(
+                _id,
+                |state_opt: Option<Option<AnimatedVirtualGridState>>, _window| {
+                    let state = state_opt.flatten().unwrap_or_default();
+                    old_bounds = state.last_item_bounds.clone();
+                    old_animations = state.animations.clone();
+                    ((), Some(state))
+                },
+            );
+        }
 
         let mut new_bounds_map = HashMap::new();
         let mut new_animations = HashMap::new();
@@ -226,7 +232,7 @@ impl Element for AnimatedVirtualGrid {
             let mut current_dx = 0.0;
             let mut current_dy = 0.0;
 
-            if let Some(old_b) = old_bounds.get(&i) {
+            if let Some(old_b) = animate.then(|| old_bounds.get(&i)).flatten() {
                 let dx = old_b.origin.x - logical_x;
                 let dy = old_b.origin.y - logical_y;
 

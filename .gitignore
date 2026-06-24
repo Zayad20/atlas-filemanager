@@ -6,3 +6,10 @@ build*.txt
 # Vendored binaries (not committed; distributed separately or resolved at runtime)
 crates/atlas-core/vendor/unrar-bin/
 .env
+
+# Local logs and stray Windows device-name files
+*.log
+atlas_err.log
+atlas_out.log
+nul
+**/nul

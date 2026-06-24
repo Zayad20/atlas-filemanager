@@ -239,10 +239,17 @@ pub struct AppState {
     pub batch_rename: Option<crate::batch_rename::BatchRenameState>,
     pub profiles: ProfileManager,
     pub profile_ui: ProfileUiState,
+    pub sidebar_drop_zone: Vec<StagedDrop>,
     pub tag_cache: crate::tag_cache::TagCache,
     pub ext: crate::ext_state::ExtState,
     #[cfg(feature = "cloud")]
     pub cloud: crate::cloud_state::CloudState,
+}
+
+#[derive(Clone)]
+pub struct StagedDrop {
+    pub path: PathBuf,
+    pub from_self: bool,
 }
 
 impl AppState {
@@ -472,6 +479,7 @@ impl AppState {
             batch_rename: None,
             profiles: ProfileManager::default(),
             profile_ui: ProfileUiState::default(),
+            sidebar_drop_zone: Vec::new(),
             tag_cache: crate::tag_cache::TagCache::default(),
             ext: crate::ext_state::ExtState::default(),
             #[cfg(feature = "cloud")]

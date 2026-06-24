@@ -10,13 +10,13 @@ use crate::ui::drag_hover::{
     drag_hover_recorder, drag_hover_recorder_with_drop, DragHoverCommand, DragHoverDropCommand,
     DragHoverId, DragHoverKind,
 };
-use crate::ui::glass::{glass_border, glass_fill, glass_shadows_enabled};
-use crate::ui::icons::{icon, AtlasIcon};
+use crate::ui::glass::{glass_border, glass_fill, glass_shadows_enabled, layer_color, GlassExt};
+use crate::ui::icons::{icon, windows_icon, AtlasIcon};
 use crate::ui::search_shell::search_icon;
 use crate::ui::tooltips::shortcut_tooltip;
 use gpui::prelude::*;
 use gpui::{
-    deferred, div, px, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window,
+    div, px, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window,
 };
 use gpui_component::button::ButtonVariants as _;
 use gpui_component::menu::{ContextMenuExt, DropdownMenu as _, PopupMenu, PopupMenuItem};
@@ -66,62 +66,10 @@ impl App {
     /// FASE C: the visible selection rectangle for the active drag, in window coords
     /// (same space as `row_rects`), painted as a deferred layer over the panes. Hidden
     /// until the drag actually moves, so a plain click doesn't flash a box.
-    pub(crate) fn render_rubber_marquee(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let r = self.rubber.as_ref()?;
-        let (ox, oy) = (f32::from(r.origin.x), f32::from(r.origin.y));
-        let (cxp, cyp) = (f32::from(r.current.x), f32::from(r.current.y));
-        let left = ox.min(cxp);
-        let top = oy.min(cyp);
-        let w = (ox.max(cxp) - left).max(0.0);
-        let h = (oy.max(cyp) - top).max(0.0);
-        if w < 2.0 && h < 2.0 {
-            return None;
-        }
-        let t = cx.theme();
-        let accent = t.accent;
-        let accent_fg = t.accent_foreground;
-        let mut fill = accent;
-        fill.a = 0.15;
-        let count = if r.started {
-            self.state
-                .tab_states
-                .get(&r.pane)
-                .map(|ts| ts.selection.selected.len())
-                .unwrap_or(0)
-        } else {
-            0
-        };
-        let mut badge_bg = accent;
-        badge_bg.a = 0.85;
-        Some(
-            deferred(
-                div()
-                    .absolute()
-                    .left(px(left))
-                    .top(px(top))
-                    .w(px(w))
-                    .h(px(h))
-                    .bg(fill)
-                    .border_1()
-                    .border_color(accent)
-                    .rounded_sm()
-                    .when(count > 0 && w >= 28.0 && h >= 14.0, |s| {
-                        s.child(
-                            div()
-                                .absolute()
-                                .bottom(px(2.0))
-                                .right(px(2.0))
-                                .px_1()
-                                .rounded_sm()
-                                .bg(badge_bg)
-                                .text_xs()
-                                .text_color(accent_fg)
-                                .child(count.to_string()),
-                        )
-                    }),
-            )
-            .into_any_element(),
-        )
+    pub(crate) fn render_rubber_marquee(&self, _cx: &mut Context<Self>) -> Option<AnyElement> {
+        // Drawing is now handled natively via canvas in `interactions.rs` (rubber_layer).
+        // This avoids DOM layout issues with GPUI's deferred overlays.
+        None
     }
 
     /// Compact breadcrumb strip rendered at the top of each pane, showing the
@@ -154,24 +102,40 @@ impl App {
                 )
             })
             .unwrap_or_default();
+        let windows_theme = self.state.profiles.active().theme == "Atlas Windows";
         let crumbs: Option<AnyElement> = if let Some((archive, inner)) = pane_archive_inner.as_ref()
         {
-            Some(archive_breadcrumb(view, pane_id, archive, inner, fg, muted).into_any_element())
+            Some(
+                archive_breadcrumb(
+                    view,
+                    pane_id,
+                    archive,
+                    inner,
+                    fg,
+                    muted,
+                    border,
+                    windows_theme,
+                )
+                .into_any_element(),
+            )
         } else {
-            pane_path
-                .as_ref()
-                .map(|p| breadcrumb(view, pane_id, p, fg, muted).into_any_element())
+            pane_path.as_ref().map(|p| {
+                breadcrumb(view, pane_id, p, fg, muted, border, windows_theme).into_any_element()
+            })
         };
+        let button_hover = layer_color(border, 0.04, 0.42);
         h_flex()
             .w_full()
-            .h(px(36.))
+            .h(px(if windows_theme { 44.0 } else { 36.0 }))
             .px_3()
             .min_w(px(0.))
-            .gap(px(6.))
+            .gap(px(if windows_theme { 9.0 } else { 6.0 }))
             .items_center()
+            .bg(border.opacity(0.03))
             .border_b_1()
-            .border_color(border)
-            .text_sm()
+            .border_color(border.opacity(0.45))
+            .when(!windows_theme, |s| s.text_sm())
+            .when(windows_theme, |s| s.text_base())
             .text_color(muted)
             .child(nav_button(
                 "pane-back",
@@ -186,6 +150,9 @@ impl App {
                 recent_locations.clone(),
                 up_location.clone(),
                 bookmark_target.clone(),
+                fg,
+                button_hover,
+                windows_theme,
             ))
             .child(nav_button(
                 "pane-forward",
@@ -200,6 +167,9 @@ impl App {
                 recent_locations.clone(),
                 up_location.clone(),
                 bookmark_target.clone(),
+                fg,
+                button_hover,
+                windows_theme,
             ))
             .child(nav_button(
                 "pane-up",
@@ -214,18 +184,24 @@ impl App {
                 recent_locations.clone(),
                 up_location.clone(),
                 bookmark_target.clone(),
+                fg,
+                button_hover,
+                windows_theme,
             ))
             .child(bookmark_button(
                 pane_id,
                 view.clone(),
                 bookmark_target.clone(),
+                fg,
+                button_hover,
+                windows_theme,
             ))
             .child(
                 div()
                     .flex_none()
                     .w(px(1.))
-                    .h(px(18.))
-                    .bg(border.opacity(0.65)),
+                    .h(px(if windows_theme { 22.0 } else { 18.0 }))
+                    .bg(border.opacity(0.35)),
             )
             .children(crumbs)
             .into_any_element()
@@ -399,9 +375,9 @@ impl App {
                     .items_center()
                     .rounded_full()
                     .border_1()
-                    .border_color(accent.opacity(0.6))
-                    .bg(secondary.opacity(0.85))
-                    .shadow_md()
+                    .border_color(accent.opacity(0.45))
+                    .bg(layer_color(secondary, 0.04, 0.86))
+                    .raised_surface()
                     .text_xs()
                     .cursor_pointer()
                     .child(icon(AtlasIcon::Search, 12.0, accent))
@@ -443,10 +419,10 @@ impl App {
                 .border_color(if filtering {
                     accent.opacity(0.8)
                 } else {
-                    border.opacity(0.5)
+                    border.opacity(0.35)
                 })
-                .bg(secondary.opacity(0.92))
-                .shadow_md()
+                .bg(layer_color(secondary, 0.04, 0.92))
+                .raised_surface()
                 .text_xs()
                 // Keep pill clicks away from the pane underneath (rubber band,
                 // pane-focus click handlers).
@@ -498,7 +474,7 @@ impl App {
                         .rounded_md()
                         .cursor_pointer()
                         .when(recursive, |s| s.bg(accent))
-                        .hover(|s| s.bg(border.opacity(0.4)))
+                        .hover(|s| s.bg(layer_color(border, 0.04, 0.42)))
                         .child(icon(
                             AtlasIcon::TreeStructure,
                             14.0,
@@ -536,7 +512,7 @@ impl App {
                         .p(px(3.))
                         .rounded_md()
                         .cursor_pointer()
-                        .hover(|s| s.bg(border.opacity(0.4)))
+                        .hover(|s| s.bg(layer_color(border, 0.04, 0.42)))
                         .child(icon(AtlasIcon::X, 12.0, muted))
                         .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
                             close_view.update(cx, |this, cx| {
@@ -556,11 +532,11 @@ impl App {
                 .p(px(6.))
                 .rounded_full()
                 .border_1()
-                .border_color(border.opacity(0.5))
-                .bg(secondary.opacity(0.75))
-                .shadow_md()
+                .border_color(border.opacity(0.35))
+                .bg(layer_color(secondary, 0.04, 0.82))
+                .raised_surface()
                 .cursor_pointer()
-                .hover(|s| s.bg(secondary))
+                .hover(|s| s.bg(layer_color(secondary, 0.07, 0.92)))
                 .child(icon(AtlasIcon::Search, 14.0, muted))
                 .tooltip(|window, cx| {
                     gpui_component::tooltip::Tooltip::new("Filtrar — solo empieza a escribir")
@@ -591,7 +567,7 @@ impl App {
                 .rounded_md()
                 .cursor_pointer()
                 .when(!on, |s| s.opacity(0.45))
-                .hover(move |s| s.bg(border.opacity(0.4)))
+                .hover(move |s| s.bg(layer_color(border, 0.04, 0.42)))
                 .child(icon(glyph, 14.0, if on { on_color } else { muted }))
                 .tooltip(move |window, cx| {
                     gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
@@ -676,9 +652,9 @@ impl App {
             .items_center()
             .rounded_lg()
             .border_1()
-            .border_color(border.opacity(0.5))
-            .bg(secondary.opacity(0.85))
-            .shadow_md()
+            .border_color(border.opacity(0.35))
+            .bg(layer_color(secondary, 0.04, 0.88))
+            .raised_surface()
             // The view-selector actions act on the focused pane; make sure that's
             // us — and keep the click away from the pane underneath.
             .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
@@ -724,7 +700,7 @@ impl App {
                 Action::ToggleFoldersFirst(pane_id),
                 view.clone(),
             ))
-            .child(div().w(px(1.)).h(px(14.)).bg(border.opacity(0.6)))
+            .child(div().w(px(1.)).h(px(14.)).bg(border.opacity(0.35)))
             .child(view_btn)
             .into_any_element();
 
@@ -753,6 +729,9 @@ fn nav_button(
     recent: Vec<Location>,
     up_location: Option<Location>,
     bookmark: Option<BookmarkTarget>,
+    icon_color: Hsla,
+    hover_bg: Hsla,
+    windows_theme: bool,
 ) -> impl IntoElement {
     let menu_view = view.clone();
     let menu_recent = recent.clone();
@@ -768,15 +747,20 @@ fn nav_button(
     div()
         .id(SharedString::from(format!("{id}-{}", pane_id.0)))
         .flex_none()
-        .size(px(26.))
-        .rounded(px(7.))
+        .size(px(if windows_theme { 34.0 } else { 26.0 }))
+        .rounded(px(if windows_theme { 8.0 } else { 7.0 }))
         .flex()
         .items_center()
         .justify_center()
         .cursor_pointer()
         .when(!enabled, |s| s.opacity(0.35))
-        .hover(|s| s.bg(glass_fill().opacity(0.72)))
-        .child(icon(glyph, 15.0, gpui::white()))
+        .hover(move |s| s.bg(hover_bg))
+        .child(theme_icon(
+            glyph,
+            if windows_theme { 18.0 } else { 15.0 },
+            icon_color.opacity(0.88),
+            windows_theme,
+        ))
         .when(enabled, |s| {
             s.on_prepaint(drag_hover_recorder(
                 hover_id,
@@ -819,6 +803,9 @@ fn bookmark_button(
     pane_id: TabId,
     view: Entity<App>,
     bookmark: Option<BookmarkTarget>,
+    icon_color: Hsla,
+    hover_bg: Hsla,
+    windows_theme: bool,
 ) -> impl IntoElement {
     let enabled = bookmark.as_ref().is_some_and(|b| !b.exists);
     let active = bookmark.as_ref().is_some_and(|b| b.exists);
@@ -837,22 +824,23 @@ fn bookmark_button(
     div()
         .id(SharedString::from(format!("pane-bookmark-{}", pane_id.0)))
         .flex_none()
-        .size(px(26.))
-        .rounded(px(7.))
+        .size(px(if windows_theme { 34.0 } else { 26.0 }))
+        .rounded(px(if windows_theme { 8.0 } else { 7.0 }))
         .flex()
         .items_center()
         .justify_center()
         .cursor_pointer()
         .when(!enabled && !active, |s| s.opacity(0.35))
-        .hover(|s| s.bg(glass_fill().opacity(0.72)))
-        .child(icon(
+        .hover(move |s| s.bg(hover_bg))
+        .child(theme_icon(
             AtlasIcon::BookmarkSimple,
-            15.0,
+            if windows_theme { 18.0 } else { 15.0 },
             if active {
                 gpui::yellow()
             } else {
-                gpui::white()
+                icon_color.opacity(0.88)
             },
+            windows_theme,
         ))
         .tooltip(move |window, cx| {
             shortcut_tooltip(tooltip_title.clone(), tooltip_desc.clone(), &[], window, cx)
@@ -873,6 +861,14 @@ fn bookmark_button(
                 cx.notify();
             });
         })
+}
+
+fn theme_icon(kind: AtlasIcon, size: f32, color: Hsla, windows_theme: bool) -> AnyElement {
+    if windows_theme {
+        windows_icon(kind, size, color)
+    } else {
+        icon(kind, size, color)
+    }
 }
 
 fn nav_context_menu(
@@ -987,12 +983,14 @@ fn breadcrumb(
     path: &std::path::Path,
     fg: Hsla,
     muted: Hsla,
+    layer_base: Hsla,
+    windows_theme: bool,
 ) -> impl IntoElement {
     let row_view = view.clone();
     let mut row = h_flex()
         .flex_1()
         .min_w(px(0.))
-        .gap(px(5.))
+        .gap(px(if windows_theme { 7.0 } else { 5.0 }))
         .items_center()
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
@@ -1023,6 +1021,7 @@ fn breadcrumb(
         let drop_v = view.clone();
         let drop_v_external = view.clone();
         let hover_id = DragHoverId::Folder(tile, target.clone());
+        let hover_bg = layer_color(layer_base, 0.04, 0.42);
         row = row.child(
             div()
                 .id(SharedString::from(format!("crumb-{}-{}", tile.0, i)))
@@ -1031,17 +1030,17 @@ fn breadcrumb(
                 // it the canvas anchors to the `overflow_x_scrollbar` wrapper and the
                 // drag-hover target captures a region offset below the crumb.
                 .relative()
-                .max_w(px(220.))
-                .px_2()
-                .py(px(3.))
-                .rounded(px(6.))
+                .max_w(px(if windows_theme { 260.0 } else { 220.0 }))
+                .px(px(if windows_theme { 10.0 } else { 8.0 }))
+                .py(px(if windows_theme { 5.0 } else { 3.0 }))
+                .rounded(px(if windows_theme { 7.0 } else { 6.0 }))
                 .cursor_pointer()
                 .text_color(fg)
                 .overflow_hidden()
                 .text_ellipsis()
                 .whitespace_nowrap()
                 .child(SharedString::from(label))
-                .hover(|s| s.bg(glass_fill().opacity(0.62)))
+                .hover(move |s| s.bg(hover_bg))
                 .on_prepaint(drag_hover_recorder_with_drop(
                     hover_id,
                     DragHoverKind::Folder,
@@ -1105,12 +1104,14 @@ fn archive_breadcrumb(
     inner: &std::path::Path,
     fg: Hsla,
     muted: Hsla,
+    layer_base: Hsla,
+    windows_theme: bool,
 ) -> impl IntoElement {
     let row_view = view.clone();
     let mut row = h_flex()
         .flex_1()
         .min_w(px(0.))
-        .gap(px(5.))
+        .gap(px(if windows_theme { 7.0 } else { 5.0 }))
         .items_center()
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
@@ -1129,6 +1130,7 @@ fn archive_breadcrumb(
         cumulative.push(comp.as_os_str());
         let raw = comp.as_os_str().to_string_lossy().into_owned();
         let label = if raw.is_empty() { "/".to_string() } else { raw };
+        let hover_bg = layer_color(layer_base, 0.04, 0.42);
         if sep {
             row = row.child(div().text_color(muted).child("›"));
         }
@@ -1138,17 +1140,17 @@ fn archive_breadcrumb(
             div()
                 .id(SharedString::from(format!("crumb-r{}-{}", tile.0, i)))
                 .flex_none()
-                .max_w(px(220.))
-                .px_2()
-                .py(px(3.))
-                .rounded(px(6.))
+                .max_w(px(if windows_theme { 260.0 } else { 220.0 }))
+                .px(px(if windows_theme { 10.0 } else { 8.0 }))
+                .py(px(if windows_theme { 5.0 } else { 3.0 }))
+                .rounded(px(if windows_theme { 7.0 } else { 6.0 }))
                 .cursor_pointer()
                 .text_color(fg)
                 .overflow_hidden()
                 .text_ellipsis()
                 .whitespace_nowrap()
                 .child(SharedString::from(label))
-                .hover(|s| s.bg(glass_fill().opacity(0.62)))
+                .hover(move |s| s.bg(hover_bg))
                 .on_click(move |_ev, _window, cx| {
                     v.update(cx, |this, cx| {
                         this.state.focused_tile = tile;
@@ -1164,23 +1166,24 @@ fn archive_breadcrumb(
     for (j, comp) in inner.components().enumerate() {
         inner_so_far.push(comp.as_os_str());
         let raw = comp.as_os_str().to_string_lossy().into_owned();
+        let hover_bg = layer_color(layer_base, 0.04, 0.42);
         row = row.child(div().text_color(muted).child("›"));
         let v = view.clone();
         row = row.child(
             div()
                 .id(SharedString::from(format!("crumb-a{}-{}", tile.0, j)))
                 .flex_none()
-                .max_w(px(220.))
-                .px_2()
-                .py(px(3.))
-                .rounded(px(6.))
+                .max_w(px(if windows_theme { 260.0 } else { 220.0 }))
+                .px(px(if windows_theme { 10.0 } else { 8.0 }))
+                .py(px(if windows_theme { 5.0 } else { 3.0 }))
+                .rounded(px(if windows_theme { 7.0 } else { 6.0 }))
                 .cursor_pointer()
                 .text_color(fg)
                 .overflow_hidden()
                 .text_ellipsis()
                 .whitespace_nowrap()
                 .child(SharedString::from(raw))
-                .hover(|s| s.bg(glass_fill().opacity(0.62)))
+                .hover(move |s| s.bg(hover_bg))
                 .on_click(move |_ev, _window, cx| {
                     v.update(cx, |this, cx| {
                         this.state.focused_tile = tile;

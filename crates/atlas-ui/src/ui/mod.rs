@@ -7,6 +7,7 @@ pub mod chrome;
 pub mod dock;
 pub mod drag;
 pub mod drag_hover;
+pub mod file_icons;
 pub mod glass;
 pub mod icons;
 pub mod inspector;
