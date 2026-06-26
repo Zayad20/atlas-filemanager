@@ -76,6 +76,7 @@ ignored = ["kamadak-exif"]
 
 [features]
 default = ["cloud", "rar", "sevenz"]
+dhat-heap = ["dhat"]
 # Cloud / network mounting extension. Forwards to the UI crate (which forwards to
 # atlas-core/atlas-model); the heavy HTTP/TLS/crypto deps live in `atlas-core`.
 cloud = ["atlas-ui/cloud"]
@@ -85,6 +86,7 @@ sevenz = ["atlas-ui/sevenz"]
 perf-log = ["atlas-ui/perf-log"]
 
 [dependencies]
+dhat = { version = "0.3", optional = true }
 # FASE J: the whole gpui application layer (App entity, views, overlays, input,
 # platform glue) lives in `atlas-ui`. This binary is a thin launcher over
 # `atlas_ui::run`. Backends/state live in atlas-core/atlas-model (transitive).

@@ -88,6 +88,8 @@ pub struct Settings {
     /// transparently swaps to the Glass variant of the active theme so the wallpaper
     /// shows through translucent panels. Saved per profile through [`Workspace`].
     pub mica: bool,
+    /// When true, evicts thumbnails and shrinks collections when the window is inactive.
+    pub eco_mode: bool,
 }
 
 impl Settings {
@@ -149,6 +151,7 @@ impl Default for Settings {
             disable_animations: false,
             scroll_smoothness: 0.6,
             mica: true,
+            eco_mode: true,
         }
     }
 }

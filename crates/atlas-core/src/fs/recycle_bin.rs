@@ -56,7 +56,7 @@ fn list_sync(sort_col: &SortColumn, sort_dir: &SortDir) -> Vec<FileEntry> {
                 size: Some(meta.original_size),
                 modified: Some(meta.deleted_at),
                 extension,
-                _is_hidden: false,
+                display_size: String::new(), display_date: String::new(), display_type: String::new(), _is_hidden: false,
                 _is_symlink: false,
                 archive_root: None,
                 recycle_info: Some(RecycleBinInfo {

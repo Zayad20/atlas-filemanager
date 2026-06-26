@@ -101,7 +101,7 @@ impl Panel for FilePanel {
     }
 
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (label, animation) = self
+        let (label, animation, tex) = self
             .app
             .upgrade()
             .map(|a| {
@@ -111,14 +111,25 @@ impl Panel for FilePanel {
                 } else {
                     app.pane_animation_for(self.pane_id)
                 };
-                (
-                    app.tab_data_for(self.pane_id)
-                        .map(|t| display_name(&t.location.display_path()))
-                        .unwrap_or_else(|| rust_i18n::t!("fallback_tab_title").to_string()),
-                    anim,
-                )
+                
+                let active_theme = app.state.profiles.active().theme.as_str();
+                let windows_theme = crate::ui::icons::is_windows_theme(active_theme);
+                
+                let tab_data = app.tab_data_for(self.pane_id);
+                let path = tab_data.as_ref().and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()));
+                let label = tab_data
+                    .map(|t| display_name(&t.location.display_path()))
+                    .unwrap_or_else(|| rust_i18n::t!("fallback_tab_title").to_string());
+                
+                let tex = if windows_theme {
+                    path.as_ref().and_then(|p| app.grid_thumbnail(p))
+                } else {
+                    None
+                };
+                
+                (label, anim, tex)
             })
-            .unwrap_or_else(|| (rust_i18n::t!("fallback_tab_title").to_string(), None));
+            .unwrap_or_else(|| (rust_i18n::t!("fallback_tab_title").to_string(), None, None));
         let pane_id = self.pane_id;
         let app = self.app.clone();
         let muted = cx.theme().muted_foreground;
@@ -132,6 +143,9 @@ impl Panel for FilePanel {
             .min_w(px(0.))
             .items_center()
             .gap(px(8.))
+            .when_some(tex, |s, tex| {
+                s.child(gpui::img(tex).size(px(16.0)))
+            })
             .child(
                 div()
                     .flex_1()

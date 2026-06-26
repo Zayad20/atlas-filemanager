@@ -51,8 +51,8 @@ pub struct AnimatedVirtualGrid {
     scroll_offset: f32,
     viewport_height: f32,
     animate: bool,
-    // Provide a closure to render individual items based on index
-    render_item: Box<dyn FnMut(usize, &mut Window, &mut App) -> AnyElement>,
+    // Provide a closure to render individual items based on index and whether it is actively animating
+    render_item: Box<dyn FnMut(usize, bool, &mut Window, &mut App) -> AnyElement>,
 }
 
 impl AnimatedVirtualGrid {
@@ -65,7 +65,7 @@ impl AnimatedVirtualGrid {
         scroll_offset: f32,
         viewport_height: f32,
         animate: bool,
-        render_item: impl FnMut(usize, &mut Window, &mut App) -> AnyElement + 'static,
+        render_item: impl FnMut(usize, bool, &mut Window, &mut App) -> AnyElement + 'static,
     ) -> Self {
         Self {
             id: id.into(),
@@ -162,7 +162,6 @@ impl Element for AnimatedVirtualGrid {
         let scroll_y = self.scroll_offset.max(0.0);
         let viewport_height = self
             .viewport_height
-            .max(f32::from(_window.viewport_size().height).min(1000.0))
             .max(item_height);
 
         let start_y = scroll_y;
@@ -212,8 +211,6 @@ impl Element for AnimatedVirtualGrid {
             let row = i / self.cols;
             let col = i % self.cols;
 
-            let mut child = (self.render_item)(i, _window, _cx);
-
             let logical_x = gpui::px(col as f32 * item_width);
             let logical_y = gpui::px(row as f32 * item_height);
             let child_x = _bounds.origin.x + logical_x;
@@ -231,6 +228,7 @@ impl Element for AnimatedVirtualGrid {
             let active_anim = old_animations.remove(&i);
             let mut current_dx = 0.0;
             let mut current_dy = 0.0;
+            let mut is_animating = false;
 
             if let Some(old_b) = animate.then(|| old_bounds.get(&i)).flatten() {
                 let dx = old_b.origin.x - logical_x;
@@ -245,7 +243,9 @@ impl Element for AnimatedVirtualGrid {
                     new_animations.insert(i, anim.clone());
                     current_dx = f32::from(dx);
                     current_dy = f32::from(dy);
-                } else if let Some(anim) = active_anim {
+                    is_animating = true;
+                } else if active_anim.is_some() {
+                    let anim = active_anim.unwrap();
                     let elapsed = anim.start_time.elapsed();
                     if elapsed < Duration::from_millis(250) {
                         let progress = elapsed.as_secs_f32() / 0.25;
@@ -253,9 +253,12 @@ impl Element for AnimatedVirtualGrid {
                         current_dx = f32::from(anim.start_offset.x) * (1.0 - ease_out);
                         current_dy = f32::from(anim.start_offset.y) * (1.0 - ease_out);
                         new_animations.insert(i, anim);
+                        is_animating = true;
                     }
                 }
             }
+
+            let mut child = (self.render_item)(i, is_animating, _window, _cx);
 
             let available_space = gpui::Size {
                 width: gpui::AvailableSpace::Definite(self.item_size.width),

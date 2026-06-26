@@ -257,6 +257,9 @@ pub struct App {
     pub(crate) shell_menu: Option<crate::shell_menu::ShellMenuHandle>,
     // Open right-click menu state: Atlas items + (Windows) native shell items.
     // `None` when closed. Cross-platform; on non-Windows only Atlas items show.
+    pub(crate) was_inactive: bool,
+    pub(crate) inactive_since: Option<Instant>,
+    pub(crate) eco_cleared: bool,
     pub(crate) ctx_menu: Option<crate::ui::shell_context_menu::CtxMenuState>,
     // Search input backing the context menu. Focused via `sync_overlay_focus`.
     pub(crate) ctx_menu_input: Option<Entity<InputState>>,

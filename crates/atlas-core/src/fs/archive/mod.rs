@@ -319,7 +319,7 @@ pub(crate) fn make_entry(
         size,
         modified: None,
         extension: ext,
-        _is_hidden: false,
+        display_size: String::new(), display_date: String::new(), display_type: String::new(), _is_hidden: false,
         _is_symlink: false,
         archive_root: Some(archive.to_path_buf()),
         recycle_info: None,

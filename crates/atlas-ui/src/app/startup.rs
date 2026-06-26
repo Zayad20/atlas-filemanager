@@ -408,6 +408,9 @@ impl App {
             dnd: dnd_opt,
             #[cfg(windows)]
             shell_menu,
+            was_inactive: false,
+            inactive_since: None,
+            eco_cleared: false,
             ctx_menu: None,
             ctx_menu_input: None,
             ctx_menu_sub: None,

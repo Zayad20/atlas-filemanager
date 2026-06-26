@@ -2,7 +2,14 @@
 //! this binary only sets up logging, the tokio runtime, and hands off to
 //! [`atlas_ui::run`].
 
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 fn main() {
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
+
     let app_started = std::time::Instant::now();
     use tracing_subscriber::prelude::*;
     tracing_subscriber::registry()
@@ -17,8 +24,8 @@ fn main() {
     // small fixed pool is plenty. The runtime lives on a parked thread for the life of
     // the process; gpui drives the UI on the main thread.
     let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .max_blocking_threads(16)
+        .worker_threads(4)
+        .max_blocking_threads(32)
         .thread_name("atlas-worker")
         .enable_all()
         .build();
@@ -34,5 +41,12 @@ fn main() {
         }
     });
 
-    atlas_ui::run(handle, app_started);
+    #[cfg(feature = "dhat-heap")]
+    let on_quit = Some(Box::new(move || {
+        std::mem::drop(_profiler);
+    }) as Box<dyn FnOnce() + 'static>);
+    #[cfg(not(feature = "dhat-heap"))]
+    let on_quit = None;
+
+    atlas_ui::run(handle, app_started, on_quit);
 }

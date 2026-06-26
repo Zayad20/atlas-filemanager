@@ -388,7 +388,7 @@ impl App {
 }
 
 /// Semantic category label for the Type column and filter overlay.
-fn entry_type_label(entry: &FileEntry) -> String {
+pub fn entry_type_label(entry: &FileEntry) -> String {
     file_category(&entry.kind, entry.extension.as_deref())
 }
 

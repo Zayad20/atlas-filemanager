@@ -23,6 +23,40 @@ pub(crate) struct BgDrainInfo {
 }
 
 impl App {
+    pub(crate) fn tick_eco_mode(&mut self, window: &mut gpui::Window) {
+        if !self.state.settings.eco_mode {
+            return;
+        }
+
+        let is_active = window.is_window_active();
+
+        if !is_active && !self.was_inactive {
+            self.was_inactive = true;
+            self.inactive_since = Some(std::time::Instant::now());
+        } else if is_active {
+            self.was_inactive = false;
+            self.inactive_since = None;
+            self.eco_cleared = false;
+        }
+
+        if let Some(since) = self.inactive_since {
+            if since.elapsed() > std::time::Duration::from_secs(5) && !self.eco_cleared {
+                self.eco_cleared = true;
+                
+                // Evict large GPU caches
+                self.preview_textures.clear();
+                self.multi_textures.clear();
+                self.thumb_textures.clear();
+                
+                // Shrink FS allocations
+                for tab in self.state.tab_states.values_mut() {
+                    tab.entries = tab.entries.clone().into();
+                }
+                
+                tracing::info!("eco_mode: Inactive for 5s. Evicted buffers & ran shrink_to_fit.");
+            }
+        }
+    }
     /// Tear down a dismissed palette once its exit animation has elapsed. Returns
     /// `true` when it finalized (so the caller repaints to drop the now-hidden view).
     pub(crate) fn tick_palette_close(&mut self) -> bool {
@@ -386,8 +420,17 @@ impl App {
                 BgResult::DirListed {
                     tab,
                     op_id,
-                    entries,
+                    mut entries,
                 } => {
+                    for e in entries.iter_mut() {
+                        e.display_size = if matches!(e.kind, atlas_model::file_entry::FileKind::Dir) {
+                            String::new()
+                        } else {
+                            e.size.map(crate::util::display::format_size).unwrap_or_default()
+                        };
+                        e.display_date = e.modified.map(crate::util::display::format_date).unwrap_or_default();
+                        e.display_type = crate::ui::views::details::entry_type_label(e);
+                    }
                     // Collect icon keys before moving `entries` so we can warm
                     // the icon cache for the new listing.
                     let icon_keys: Vec<String> = if self.icon_theme.is_some() {
@@ -415,7 +458,7 @@ impl App {
                                 .keyboard_cursor
                                 .and_then(|i| ts.entries.get(i))
                                 .map(|e| e.path.clone());
-                            ts.set_entries(entries);
+                            ts.set_entries(entries.into());
                             ts.load_state = LoadState::Loaded;
                             // Fresh navigation/create load → arm the item appear anim.
                             if ts.pending_appear {
@@ -459,7 +502,7 @@ impl App {
                             .iter_mut()
                             .find(|c| c.location == location && c.op_id == op_id)
                         {
-                            c.entries = entries;
+                            c.entries = entries.into();
                             c.load_state = LoadState::Loaded;
                         }
                     }
@@ -551,7 +594,7 @@ impl App {
                             && ts.search.recursive
                             && ts.search.is_filtering()
                         {
-                            ts.set_entries(entries);
+                            ts.set_entries(entries.into());
                             ts.filter.clear();
                             ts.search.status = crate::state::tab::SearchStatus::Ready;
                             ts.search.error = None;
@@ -755,7 +798,7 @@ impl App {
                 } => {
                     if let Some(ts) = self.state.tab_states.get_mut(&tab) {
                         if op_id == ts.last_nav_op_id {
-                            ts.set_entries(entries);
+                            ts.set_entries(entries.into());
                             ts.load_state = LoadState::Loaded;
                         }
                     }

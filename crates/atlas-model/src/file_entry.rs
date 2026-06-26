@@ -47,6 +47,9 @@ pub struct FileEntry {
     pub size: Option<u64>,
     pub modified: Option<SystemTime>,
     pub extension: Option<String>,
+    pub display_size: String,
+    pub display_date: String,
+    pub display_type: String,
     pub _is_hidden: bool,
     pub _is_symlink: bool,
     /// When `Some(archive_path)`, this entry is a virtual item inside that archive

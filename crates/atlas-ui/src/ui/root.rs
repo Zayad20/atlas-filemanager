@@ -182,6 +182,7 @@ impl Render for App {
         {
             let _perf = crate::perf::span("app.render.drain_bg_state");
             self.drain_bg_results_state_only();
+            self.tick_eco_mode(window);
         }
         // FASE C: reset per-frame item rects only when idle. During rubber-band drag
         // the pane content may be cached, so clearing here can leave hit-testing with

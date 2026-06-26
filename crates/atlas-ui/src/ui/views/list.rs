@@ -100,8 +100,8 @@ impl App {
                     let _perf = crate::perf::span_detail("list.rows.build", || {
                         format!("pane={} range={start}..{end} cols={cols}", pane_id.0)
                     });
-                    let record_rects = true;
                     list_view.update(cx, |app, _cx| {
+                        let record_rects = app.dock_split_animations.is_empty() && app.pane_layout_animations.is_empty();
                         let rows_data = {
                             let Some(ts) = app.state.tab_states.get(&pane_id) else {
                                 return Vec::new();

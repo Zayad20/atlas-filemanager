@@ -388,10 +388,19 @@ impl App {
             .border_color(border.opacity(0.42));
 
         for pane_id in children {
-            let label = self
+            let (label, path) = self
                 .tab_data_for(pane_id)
-                .map(|t| display_name(&t.location.display_path()))
-                .unwrap_or_else(|| rust_i18n::t!("fallback_tab_title").to_string());
+                .map(|t| (
+                    display_name(&t.location.display_path()),
+                    t.location.fs_dir().map(|p| p.to_path_buf())
+                ))
+                .unwrap_or_else(|| (rust_i18n::t!("fallback_tab_title").to_string(), None));
+            
+            let tex = if windows_theme {
+                path.as_ref().and_then(|p| self.grid_thumbnail(p))
+            } else {
+                None
+            };
             let is_active = Some(pane_id) == active;
             let animation = (!self.state.settings.disable_animations)
                 .then(|| self.pane_animation_for(pane_id))
@@ -464,6 +473,9 @@ impl App {
                         this.process_actions(vec![Action::FocusTab(pane_id)]);
                         cx.notify();
                     });
+                })
+                .when_some(tex, |s, tex| {
+                    s.child(gpui::img(tex).size(px(16.0)))
                 })
                 .child(
                     div()

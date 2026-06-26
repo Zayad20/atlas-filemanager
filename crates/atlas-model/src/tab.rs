@@ -7,7 +7,7 @@ use std::sync::Arc;
 /// One directory column in the Miller (columns) view.
 pub struct MillerColumn {
     pub location: Location,
-    pub entries: Vec<FileEntry>,
+    pub entries: std::sync::Arc<[FileEntry]>,
     pub load_state: LoadState,
     pub op_id: u64,
     /// Multi-selection state for this column (single-select for navigation,
@@ -19,7 +19,7 @@ impl MillerColumn {
     pub fn new(location: Location) -> Self {
         Self {
             location,
-            entries: Vec::new(),
+            entries: std::sync::Arc::new([]),
             load_state: LoadState::NotLoaded,
             op_id: 0,
             selection: SelectionState::default(),
@@ -93,7 +93,7 @@ pub struct SearchInPlaceState {
     pub focus: bool,
     pub status: SearchStatus,
     pub generation: u64,
-    pub original_entries: Option<Vec<FileEntry>>,
+    pub original_entries: Option<std::sync::Arc<[FileEntry]>>,
     pub error: Option<String>,
 }
 
@@ -122,7 +122,7 @@ pub struct VisibleCounts {
 }
 
 pub struct TabState {
-    pub entries: Vec<FileEntry>,
+    pub entries: std::sync::Arc<[FileEntry]>,
     pub filter: String,
     /// Per-pane visibility toggles, mirrored from `TabData` so the cached
     /// filtering below doesn't need access to the pane tree.
@@ -156,7 +156,7 @@ pub struct TabState {
     counts: VisibleCounts,
     /// Cached set of unique category labels (e.g. "Carpeta", "Imagen") derived from
     /// `entries`, rebuilt only when `entries_version` advances.
-    pub type_labels_cache: Vec<String>,
+    pub type_labels: Vec<String>,
     type_labels_version: u64,
     /// Bumped once each time a *fresh* listing (tab create / navigation) finishes
     /// loading — NOT on incremental fs-watch refreshes. Views key their item
@@ -170,7 +170,7 @@ pub struct TabState {
 impl Default for TabState {
     fn default() -> Self {
         Self {
-            entries: Vec::new(),
+            entries: std::sync::Arc::new([]),
             filter: String::new(),
             show_files: true,
             show_folders: true,
@@ -191,7 +191,7 @@ impl Default for TabState {
             visible_show_files: true,
             visible_show_folders: true,
             counts: VisibleCounts::default(),
-            type_labels_cache: Vec::new(),
+            type_labels: Vec::new(),
             type_labels_version: u64::MAX, // force rebuild on first call
             appear_seq: 0,
             pending_appear: false,
@@ -201,7 +201,7 @@ impl Default for TabState {
 
 impl TabState {
     /// Replace the directory listing, invalidating the cached visible set.
-    pub fn set_entries(&mut self, entries: Vec<FileEntry>) {
+    pub fn set_entries(&mut self, entries: std::sync::Arc<[FileEntry]>) {
         self.entries = entries;
         self.entries_version = self.entries_version.wrapping_add(1);
         self.visible_valid = false;
@@ -214,20 +214,20 @@ impl TabState {
     pub fn type_labels_cached(&mut self, label_fn: impl Fn(&FileEntry) -> String) -> &[String] {
         if self.type_labels_version != self.entries_version {
             let mut set = std::collections::BTreeSet::new();
-            for entry in &self.entries {
+            for entry in self.entries.iter() {
                 set.insert(label_fn(entry));
             }
-            self.type_labels_cache = set.into_iter().collect();
+            self.type_labels = set.into_iter().collect();
             self.type_labels_version = self.entries_version;
         }
-        &self.type_labels_cache
+        &self.type_labels
     }
 
     pub fn begin_navigation(&mut self) {
         // A real navigation (not a watch refresh) — the next completed load should
         // play the item appear animation.
         self.pending_appear = true;
-        self.entries.clear();
+        self.entries = std::sync::Arc::new([]);
         self.entries_version = self.entries_version.wrapping_add(1);
         self.visible_valid = false;
         self.selection.clear();
@@ -274,7 +274,7 @@ impl TabState {
             let visible = Arc::make_mut(&mut self.visible);
             visible.clear();
             let mut counts = VisibleCounts::default();
-            for entry in entries {
+            for entry in entries.iter() {
                 if matches!(entry.kind, FileKind::Dir) {
                     counts.folders_total += 1;
                 } else {
@@ -349,7 +349,7 @@ mod tests {
             size: None,
             modified: None,
             extension: None,
-            _is_hidden: false,
+            display_size: String::new(), display_date: String::new(), display_type: String::new(), _is_hidden: false,
             _is_symlink: false,
             archive_root: None,
             recycle_info: None,

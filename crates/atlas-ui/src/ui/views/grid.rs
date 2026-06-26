@@ -152,8 +152,11 @@ impl App {
                     scroll_y,
                     viewport_h,
                     !self.state.settings.disable_animations,
-                    move |idx, window, cx| {
+                    move |idx, mut is_animating, window, cx| {
                         let app = list_view.read(cx);
+                        if !app.dock_split_animations.is_empty() || !app.pane_layout_animations.is_empty() {
+                            is_animating = true;
+                        }
                         let Some(ts) = app.state.tab_states.get(&pane_id) else {
                             return div().into_any_element();
                         };
@@ -193,6 +196,7 @@ impl App {
                             flashing,
                             record_rects,
                             rename_input,
+                            is_animating,
                             window,
                         );
                         cell
@@ -369,17 +373,17 @@ impl App {
             wanted.extend(all_visible);
         }
         for path in to_request {
-            self.request_thumbnail(path);
+            self.request_thumbnail(&path);
         }
         for (path, run, tools) in to_request_ext {
-            self.request_ext_thumbnail(path, run, tools);
+            self.request_ext_thumbnail(&path, run, tools);
         }
         #[cfg(target_os = "windows")]
         for (path, allow_icon) in to_request_shell {
             if allow_icon {
-                self.request_shell_thumbnail_or_icon(path);
+                self.request_shell_thumbnail_or_icon(&path);
             } else {
-                self.request_shell_thumbnail(path);
+                self.request_shell_thumbnail(&path);
             }
         }
         // On non-Windows to_request_shell is always empty; drop it to avoid unused warning.
@@ -420,6 +424,7 @@ fn render_cell(
     flashing: bool,
     record_rects: bool,
     rename_input: Option<gpui::Entity<gpui_component::input::InputState>>,
+    is_animating: bool,
     window: &mut Window,
 ) -> AnyElement {
     let name = entry.name.clone();
@@ -430,7 +435,7 @@ fn render_cell(
             "cell-{}-{}",
             pane_id.0, entry_idx
         )))
-        .when(record_rects, |s| {
+        .when(record_rects && !is_animating, |s| {
             s.on_prepaint(rect_recorder(pane_id, entry_idx, view))
         })
         .w(px(cell_w))
@@ -443,7 +448,7 @@ fn render_cell(
             s.bg(accent).text_color(accent_fg)
         })
         .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
-        .when(!selected && rename_input.is_none(), |s| {
+        .when(!selected && rename_input.is_none() && !is_animating, |s| {
             s.hover(|h| h.bg(hover))
         })
         .child({
@@ -492,46 +497,48 @@ fn render_cell(
                 .child(name)
                 .into_any_element(),
         })
-        .on_click(move |ev, _window, cx| {
-            let m = ev.modifiers();
-            let shift = m.shift;
-            let ctrl = m.control || m.platform;
-            let activate = ev.click_count() >= 2;
-            v.update(cx, |this, cx| {
-                if this.rename_edit.is_some() {
-                    this.commit_rename(cx);
-                }
-                if activate {
-                    this.process_actions(vec![Action::Activate {
-                        tile: pane_id,
-                        idx: entry_idx,
-                    }]);
-                } else {
-                    this.process_actions(vec![Action::Select {
-                        tile: pane_id,
-                        idx: entry_idx,
-                        shift,
-                        ctrl,
-                    }]);
-                }
-                cx.notify();
-            });
-        })
-        .on_mouse_down(MouseButton::Right, {
-            let rv = view.clone();
-            move |ev, window, cx| {
-                let pos = ev.position;
-                rv.update(cx, |this, cx| {
-                    let paths = this.select_context_menu_paths(pane_id, entry_idx);
-                    this.open_ctx_menu(paths, pos, window, cx);
+        .when(!is_animating, |s| {
+            s.on_click(move |ev, _window, cx| {
+                let m = ev.modifiers();
+                let shift = m.shift;
+                let ctrl = m.control || m.platform;
+                let activate = ev.click_count() >= 2;
+                v.update(cx, |this, cx| {
+                    if this.rename_edit.is_some() {
+                        this.commit_rename(cx);
+                    }
+                    if activate {
+                        this.process_actions(vec![Action::Activate {
+                            tile: pane_id,
+                            idx: entry_idx,
+                        }]);
+                    } else {
+                        this.process_actions(vec![Action::Select {
+                            tile: pane_id,
+                            idx: entry_idx,
+                            shift,
+                            ctrl,
+                        }]);
+                    }
                     cx.notify();
                 });
-            }
+            })
+            .on_mouse_down(MouseButton::Right, {
+                let rv = view.clone();
+                move |ev, window, cx| {
+                    let pos = ev.position;
+                    rv.update(cx, |this, cx| {
+                        let paths = this.select_context_menu_paths(pane_id, entry_idx);
+                        this.open_ctx_menu(paths, pos, window, cx);
+                        cx.notify();
+                    });
+                }
+            })
+            .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
+                cx.stop_propagation();
+            })
         })
-        .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
-            cx.stop_propagation();
-        })
-        .when(rename_input.is_none(), |s| {
+        .when(rename_input.is_none() && !is_animating, |s| {
             s.on_drag(
                 crate::ui::drag::file_drag_value(vec![entry.path.clone()]),
                 crate::ui::drag::file_drag_handler_for_item(
@@ -542,7 +549,7 @@ fn render_cell(
                 ),
             )
         })
-        .when(matches!(entry.kind, FileKind::Dir), |s| {
+        .when(matches!(entry.kind, FileKind::Dir) && !is_animating, |s| {
             let dest = entry.path.clone();
             let hover_id = DragHoverId::Folder(pane_id, dest.clone());
             let dest_internal = dest.clone();

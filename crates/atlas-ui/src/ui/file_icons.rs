@@ -84,8 +84,8 @@ impl App {
 
     pub(crate) fn maybe_request_file_icon(&mut self, file: &FileIconRef) {
         #[cfg(target_os = "windows")]
-        if is_windows_theme(&self.state.profiles.active().theme) && file.kind == FileKind::Dir {
-            self.request_shell_thumbnail_or_icon(file.path.clone());
+        if is_windows_theme(&self.state.profiles.active().theme) {
+            self.request_shell_thumbnail_or_icon(&file.path);
         }
     }
 }

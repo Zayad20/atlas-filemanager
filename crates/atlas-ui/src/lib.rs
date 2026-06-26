@@ -153,7 +153,7 @@ pub struct SidebarResetSections;
 
 /// Launch the gpui application. The caller owns the tokio runtime and passes its
 /// handle in; gpui drives the UI on the calling (main) thread.
-pub fn run(handle: tokio::runtime::Handle, app_started: Instant) {
+pub fn run(handle: tokio::runtime::Handle, app_started: Instant, on_quit: Option<Box<dyn FnOnce() + 'static>>) {
     let run_started = Instant::now();
     let settings = crate::util::config::load_settings();
     let lang = settings
@@ -298,5 +298,17 @@ pub fn run(handle: tokio::runtime::Handle, app_started: Instant) {
             );
         })
         .detach();
+
+        if let Some(on_quit) = on_quit {
+            let mut on_quit_opt = Some(on_quit);
+            cx.on_app_quit(move |_| {
+                let cb = on_quit_opt.take();
+                async move {
+                    if let Some(cb) = cb {
+                        cb();
+                    }
+                }
+            });
+        }
     });
 }

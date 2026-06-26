@@ -28,17 +28,17 @@ pub enum ThumbState {
 
 /// Longest edge (px) of the decoded thumbnail. Generous vs. the largest zoom step so
 /// it still looks crisp, but a tiny fraction of a full-res photo's pixels.
-const THUMB_MAX_EDGE: u32 = 384;
+const THUMB_MAX_EDGE: u32 = 128;
 
 /// Max concurrent *extension* thumbnailer processes (ffmpeg/magick/…). A large folder
 /// of videos must not spawn hundreds of processes at once; over-cap requests are simply
 /// dropped and re-issued on the next frame (the cell isn't cached yet).
-const MAX_EXT_THUMB_INFLIGHT: usize = 4;
+const MAX_EXT_THUMB_INFLIGHT: usize = 8;
 
 /// Max concurrent native image decodes. Over-cap requests are dropped and re-issued
 /// next frame (no Loading marker inserted), keeping the blocking pool free for
 /// directory listing while preventing a burst of hundreds of simultaneous decodes.
-const MAX_NATIVE_THUMB_INFLIGHT: usize = 8;
+const MAX_NATIVE_THUMB_INFLIGHT: usize = 16;
 
 impl App {
     /// Ensure a thumbnail decode is requested for `path`. If the native-decode cap is
@@ -46,13 +46,14 @@ impl App {
     /// because no Loading marker is inserted). The task checks `thumb_wanted` before
     /// the expensive decode; if the path left the viewport it sends `GridThumbnailSkipped`
     /// so the Loading marker is cleared and the cell can re-request when visible again.
-    pub(crate) fn request_thumbnail(&mut self, path: PathBuf) {
-        if self.thumb_textures.contains_key(&path) {
+    pub(crate) fn request_thumbnail(&mut self, path: &std::path::Path) {
+        if self.thumb_textures.contains_key(path) {
             return;
         }
         if self.native_thumb_inflight >= MAX_NATIVE_THUMB_INFLIGHT {
             return;
         }
+        let path = path.to_path_buf();
         self.thumb_textures
             .insert(path.clone(), ThumbState::Loading);
         self.native_thumb_inflight += 1;
@@ -85,15 +86,16 @@ impl App {
     /// via the same `BgResult::GridThumbnailReady` path as native decodes.
     pub(crate) fn request_ext_thumbnail(
         &mut self,
-        path: PathBuf,
+        path: &std::path::Path,
         run_tmpl: String,
         tools: HashMap<String, PathBuf>,
     ) {
-        if self.thumb_textures.contains_key(&path)
+        if self.thumb_textures.contains_key(path)
             || self.ext_thumb_inflight.len() >= MAX_EXT_THUMB_INFLIGHT
         {
             return;
         }
+        let path = path.to_path_buf();
         self.thumb_textures
             .insert(path.clone(), ThumbState::Loading);
         self.ext_thumb_inflight.insert(path.clone());
@@ -129,22 +131,23 @@ impl App {
     /// format that has a registered Windows thumbnail provider.  Shares the extension
     /// inflight cap so we never exceed `MAX_EXT_THUMB_INFLIGHT` concurrent COM calls.
     #[cfg(target_os = "windows")]
-    pub(crate) fn request_shell_thumbnail(&mut self, path: PathBuf) {
+    pub(crate) fn request_shell_thumbnail(&mut self, path: &std::path::Path) {
         self.request_shell_image(path, false);
     }
 
     #[cfg(target_os = "windows")]
-    pub(crate) fn request_shell_thumbnail_or_icon(&mut self, path: PathBuf) {
+    pub(crate) fn request_shell_thumbnail_or_icon(&mut self, path: &std::path::Path) {
         self.request_shell_image(path, true);
     }
 
     #[cfg(target_os = "windows")]
-    fn request_shell_image(&mut self, path: PathBuf, allow_icon: bool) {
-        if self.thumb_textures.contains_key(&path)
+    fn request_shell_image(&mut self, path: &std::path::Path, allow_icon: bool) {
+        if self.thumb_textures.contains_key(path)
             || self.ext_thumb_inflight.len() >= MAX_EXT_THUMB_INFLIGHT
         {
             return;
         }
+        let path = path.to_path_buf();
         self.thumb_textures
             .insert(path.clone(), ThumbState::Loading);
         self.ext_thumb_inflight.insert(path.clone());
@@ -210,6 +213,9 @@ impl App {
             }
         };
         self.thumb_textures.insert(path, state);
+        if self.thumb_textures.len() > 1000 {
+            self.thumb_textures.clear();
+        }
     }
 }
 

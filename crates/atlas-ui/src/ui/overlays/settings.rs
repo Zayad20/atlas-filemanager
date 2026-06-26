@@ -423,6 +423,16 @@ impl App {
                     ),
             )
             .child(toggle(
+                "Eco Mode (Reduce RAM when inactive)",
+                s.eco_mode,
+                "set-eco-mode",
+                |app| {
+                    app.state.settings.eco_mode = !app.state.settings.eco_mode;
+                    crate::util::config::save_settings(&app.state.settings);
+                },
+                view.clone(),
+            ))
+            .child(toggle(
                 &rust_i18n::t!("settings_show_hidden"),
                 s.show_hidden,
                 "set-hidden",

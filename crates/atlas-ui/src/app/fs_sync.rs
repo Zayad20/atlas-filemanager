@@ -69,9 +69,9 @@ impl App {
             .and_then(|i| ts.entries.get(i))
             .map(|e| e.path.clone());
 
-        let mut entries = std::mem::take(&mut ts.entries);
+        let mut entries = std::mem::take(&mut ts.entries).to_vec();
         crate::fs::list::sort_entries(&mut entries, sort_col, sort_dir, folders_first);
-        ts.set_entries(entries);
+        ts.set_entries(entries.into());
 
         ts.selection.selected = ts
             .entries

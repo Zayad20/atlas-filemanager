@@ -779,7 +779,7 @@ fn remote_to_file_entry(e: RemoteEntry) -> FileEntry {
         size: (!e.is_dir).then_some(e.size),
         modified,
         extension,
-        _is_hidden: false,
+        display_size: String::new(), display_date: String::new(), display_type: String::new(), _is_hidden: false,
         _is_symlink: false,
         archive_root: None,
         recycle_info: None,

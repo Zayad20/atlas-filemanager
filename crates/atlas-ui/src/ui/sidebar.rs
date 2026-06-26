@@ -1338,7 +1338,7 @@ fn prime_drop_zone_thumbnails(app: &mut AtlasApp, paths: &[PathBuf], windows_the
         }
         #[cfg(target_os = "windows")]
         if windows_theme && kind == FileKind::Dir {
-            app.request_shell_thumbnail_or_icon(path.clone());
+            app.request_shell_thumbnail_or_icon(path);
             continue;
         }
         if kind != FileKind::File {
@@ -1350,10 +1350,10 @@ fn prime_drop_zone_thumbnails(app: &mut AtlasApp, paths: &[PathBuf], windows_the
             ]
             .contains(&ext)
         }) {
-            app.request_thumbnail(path.clone());
+            app.request_thumbnail(path);
         } else {
             #[cfg(target_os = "windows")]
-            app.request_shell_thumbnail(path.clone());
+            app.request_shell_thumbnail(path);
         }
     }
 }
@@ -1948,7 +1948,7 @@ fn collapsed_nav_row(
             #[cfg(target_os = "windows")]
             if windows_theme {
                 shell_app.update(cx, |this, _cx| {
-                    this.request_shell_thumbnail_or_icon(shell_path.clone());
+                    this.request_shell_thumbnail_or_icon(&shell_path);
                 });
             }
         })
@@ -2641,7 +2641,7 @@ fn drive_row(
             #[cfg(target_os = "windows")]
             if windows_theme {
                 shell_app.update(cx, |this, _cx| {
-                    this.request_shell_thumbnail_or_icon(shell_path.clone());
+                    this.request_shell_thumbnail_or_icon(&shell_path);
                 });
             }
         })
@@ -2860,7 +2860,7 @@ fn nav_row(
             #[cfg(target_os = "windows")]
             if windows_theme {
                 shell_app.update(cx, |this, _cx| {
-                    this.request_shell_thumbnail_or_icon(shell_path.clone());
+                    this.request_shell_thumbnail_or_icon(&shell_path);
                 });
             }
         })

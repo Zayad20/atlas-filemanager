@@ -547,7 +547,7 @@ mod tests {
             kind: FileKind::File,
             size: Some(1),
             modified: None,
-            _is_hidden: false,
+            display_size: String::new(), display_date: String::new(), display_type: String::new(), _is_hidden: false,
             _is_symlink: false,
             archive_root: None,
             recycle_info: None,
