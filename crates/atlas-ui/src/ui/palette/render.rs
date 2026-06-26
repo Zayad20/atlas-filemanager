@@ -34,7 +34,10 @@ pub(crate) const PANEL_WIDTH: f32 = 620.0;
 const PANEL_MAX_VIEWPORT_RATIO: f32 = 0.60;
 const PANEL_TOP_VIEWPORT_RATIO: f32 = 0.20;
 const PANEL_MIN_VISIBLE_ROWS: f32 = 2.0;
-const PANEL_ROW_HEIGHT: f32 = 34.0;
+const PANEL_HEADER_HEIGHT: f32 = 26.0;
+const PANEL_ITEM_HEIGHT: f32 = 34.0;
+const PANEL_ITEM_WITH_DESC_HEIGHT: f32 = 52.0;
+const PANEL_LIST_PADDING: f32 = 8.0;
 const PANEL_SEARCH_HEIGHT: f32 = 45.0;
 const PANEL_FOOTER_HEIGHT: f32 = 32.0;
 const SCROLLBAR_GUTTER: f32 = 16.0;
@@ -349,6 +352,29 @@ impl App {
                 self.palette_scroll.scroll_to_item(selected_idx);
             }
         }
+        let mut rows_h = PANEL_LIST_PADDING;
+        let mut row_i = 0usize;
+        for section in &spec.sections {
+            let has_header = section.title.is_some();
+            if has_header {
+                rows_h += PANEL_HEADER_HEIGHT;
+                row_i += 1;
+                if collapsed.contains(section.id) {
+                    continue;
+                }
+            }
+            for item in &section.items {
+                let shows_description = !item.inline_description
+                    && item.description.is_some()
+                    && (expanded || row_i == selected_idx);
+                rows_h += if shows_description {
+                    PANEL_ITEM_WITH_DESC_HEIGHT
+                } else {
+                    PANEL_ITEM_HEIGHT
+                };
+                row_i += 1;
+            }
+        }
 
         // ── rows ────────────────────────────────────────────────────────────
         let mut rows: Vec<AnyElement> = Vec::new();
@@ -441,11 +467,11 @@ impl App {
             } else {
                 0.0
             };
-        let min_panel_h = chrome_h + PANEL_ROW_HEIGHT * PANEL_MIN_VISIBLE_ROWS;
+        let min_panel_h = chrome_h + PANEL_ITEM_HEIGHT * PANEL_MIN_VISIBLE_ROWS;
         let rows_h = if empty {
-            PANEL_ROW_HEIGHT * PANEL_MIN_VISIBLE_ROWS
+            PANEL_ITEM_HEIGHT * PANEL_MIN_VISIBLE_ROWS
         } else {
-            row_count as f32 * PANEL_ROW_HEIGHT + 8.0
+            rows_h
         };
         let panel_h = (chrome_h + rows_h).clamp(min_panel_h, max_panel_h);
 

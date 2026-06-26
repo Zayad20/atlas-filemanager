@@ -10,6 +10,13 @@ use gpui_component::{h_flex, input::InputState, v_flex, ActiveTheme};
 use std::path::PathBuf;
 
 impl App {
+    pub(crate) fn close_batch_rename(&mut self) {
+        self.state.batch_rename = None;
+        self.batch_pattern_input = None;
+        self.batch_replacement_input = None;
+        self.batch_rename_field = BatchRenameField::Pattern;
+    }
+
     pub(crate) fn render_batch_rename(
         &mut self,
         window: &mut Window,
@@ -280,7 +287,7 @@ impl App {
                             .child(rust_i18n::t!("batch_cancel").to_string())
                             .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
                                 cancel_view.update(cx, |this, cx| {
-                                    this.state.batch_rename = None;
+                                    this.close_batch_rename();
                                     cx.notify();
                                 });
                             }),
@@ -300,10 +307,10 @@ impl App {
                             .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
                                 let actions = apply_actions.clone();
                                 rename_view.update(cx, |this, cx| {
-                                    if !actions.is_empty() {
+                                    if can_apply {
                                         this.process_actions(actions);
+                                        this.close_batch_rename();
                                     }
-                                    this.state.batch_rename = None;
                                     cx.notify();
                                 });
                             }),
@@ -315,7 +322,7 @@ impl App {
             .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 match ev.keystroke.key.as_str() {
                     "escape" => {
-                        this.state.batch_rename = None;
+                        this.close_batch_rename();
                         cx.stop_propagation();
                         cx.notify();
                     }
@@ -331,7 +338,7 @@ impl App {
                             if !actions.is_empty() {
                                 this.process_actions(actions);
                             }
-                            this.state.batch_rename = None;
+                            this.close_batch_rename();
                         }
                         cx.stop_propagation();
                         cx.notify();
@@ -353,7 +360,7 @@ impl App {
         self.overlay_scrim_custom(
             "scrim-batch-rename",
             view,
-            |this| this.state.batch_rename = None,
+            |this| this.close_batch_rename(),
             focus,
             panel.into_any_element(),
             cx,

@@ -23,6 +23,7 @@ impl App {
             Some(id) => id,
             None => return,
         };
+        self.rubber = None;
 
         // ── 1. History manipulation ──────────────────────────────────────────
         if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id) {

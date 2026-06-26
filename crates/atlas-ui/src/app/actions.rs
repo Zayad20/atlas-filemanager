@@ -160,10 +160,10 @@ impl App {
                     self.palette_closing = None;
                     self.goto_input = None;
                     self.palette_host = None;
-                    self.nucleo.reset();
                     if self.goto_prefill.is_some() {
                         // Pre-filled open (Ctrl+L): the first render scopes the
                         // index from the path in the query; skip the global build.
+                        self.nucleo.reset();
                         self.goto_index_root = None;
                     } else {
                         // Rebuild the global index from the current pane's directory.
@@ -174,9 +174,12 @@ impl App {
                             .unwrap_or_else(|| {
                                 dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
                             });
-                        let injector = self.nucleo.injector();
-                        crate::fs::index::build_index(root.clone(), injector);
-                        self.goto_index_root = Some((root, false));
+                        if self.goto_index_root.as_ref() != Some(&(root.clone(), false)) {
+                            self.nucleo.reset();
+                            let injector = self.nucleo.injector();
+                            crate::fs::index::build_index(root.clone(), injector);
+                            self.goto_index_root = Some((root, false));
+                        }
                     }
                 }
                 Action::OpenPalette => {
@@ -570,11 +573,13 @@ impl App {
                         })
                         .unwrap_or_default();
                     if !paths.is_empty() {
+                        self.rename_edit = None;
                         self.state.batch_rename =
                             Some(crate::state::batch_rename::BatchRenameState::new(paths));
                         // Fresh native inputs for this session.
                         self.batch_pattern_input = None;
                         self.batch_replacement_input = None;
+                        self.batch_rename_field = crate::app::BatchRenameField::Pattern;
                     }
                 }
                 Action::SplitHorizontal(pane_id) => self.split_pane(pane_id, false),

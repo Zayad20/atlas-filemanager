@@ -34,7 +34,6 @@ pub(crate) enum DragHoverId {
 
 #[derive(Clone)]
 pub(crate) enum DragHoverCommand {
-    Noop,
     NavigatePath(PathBuf),
     NavigatePathIn(TileId, PathBuf),
     NavigateLocation(Location),
@@ -392,28 +391,62 @@ impl App {
             })
     }
 
+    pub(crate) fn pane_drop_dest_at(&self, x: f32, y: f32) -> Option<PathBuf> {
+        let pos = gpui::Point {
+            x: gpui::px(x),
+            y: gpui::px(y),
+        };
+        for (pane, bounds) in self
+            .pane_view_bounds
+            .iter()
+            .chain(self.pane_layout_bounds.iter())
+        {
+            if contains(*bounds, pos) {
+                if let Some(dest) = self
+                    .tab_data_for(*pane)
+                    .and_then(|tab| tab.location.fs_dir().map(|path| path.to_path_buf()))
+                {
+                    return Some(dest);
+                }
+            }
+        }
+        None
+    }
+
     pub(crate) fn execute_drag_hover_drop_command(
         &mut self,
         command: DragHoverDropCommand,
         paths: Vec<PathBuf>,
         from_self: bool,
     ) {
+        self.mark_drag_committed();
+        self.rubber = None;
         match command {
             DragHoverDropCommand::AssignTag(tag) => {
+                self.clear_committed_dropzone_drag(&paths);
                 self.process_actions(vec![Action::AssignTagToFiles { tag, paths }]);
             }
             DragHoverDropCommand::StageInSidebar => {
+                let existing = self
+                    .state
+                    .sidebar_drop_zone
+                    .iter()
+                    .map(|item| item.path.clone())
+                    .collect::<std::collections::HashSet<_>>();
                 self.state.sidebar_drop_zone.extend(
                     paths
                         .into_iter()
+                        .filter(|path| !existing.contains(path))
                         .map(|path| crate::state::app_state::StagedDrop { path, from_self }),
                 );
+                self.cancel_dropzone_file_drag();
             }
             DragHoverDropCommand::TransferTo(dest) => {
                 use crate::state::ops::{
                     ConflictPolicy, TransferKind, TransferOrigin, TransferRequest,
                 };
                 let effect = crate::dnd::default_effect_for_paths(&paths, &dest);
+                self.clear_committed_dropzone_drag(&paths);
                 self.process_actions(vec![Action::Transfer(TransferRequest {
                     sources: paths,
                     dest,
@@ -439,14 +472,18 @@ impl App {
         paths: Vec<PathBuf>,
         external: bool,
     ) {
+        self.mark_drag_committed();
+        self.rubber = None;
         let Some(location) = self.tab_data_for(pane_id).map(|t| t.location.clone()) else {
             return;
         };
         match location {
             Location::Tag(tag) => {
+                self.clear_committed_dropzone_drag(&paths);
                 self.process_actions(vec![Action::AssignTagToFiles { tag, paths }]);
             }
             Location::Directory(dest) => {
+                self.clear_committed_dropzone_drag(&paths);
                 if external {
                     self.process_actions(vec![Action::CopyTo { paths, dest }]);
                 } else {
@@ -455,6 +492,36 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    pub(crate) fn begin_dropzone_file_drag(&mut self, paths: &[PathBuf]) {
+        self.dropzone_drag_paths = paths.iter().cloned().collect();
+    }
+
+    pub(crate) fn cancel_dropzone_file_drag(&mut self) {
+        self.dropzone_drag_paths.clear();
+    }
+
+    pub(crate) fn clear_committed_dropzone_drag(&mut self, paths: &[PathBuf]) {
+        if self.dropzone_drag_paths.is_empty() {
+            return;
+        }
+        let committed = paths
+            .iter()
+            .filter(|path| self.dropzone_drag_paths.contains(*path))
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        if committed.is_empty() {
+            return;
+        }
+        self.state
+            .sidebar_drop_zone
+            .retain(|item| !committed.contains(&item.path));
+        self.dropzone_selected
+            .retain(|path| !committed.contains(path));
+        self.dropzone_rects
+            .retain(|(path, _)| !committed.contains(path));
+        self.dropzone_drag_paths.clear();
     }
 
     /// Auto-scroll a pane (by row) or the sidebar (by pixel) when the drag cursor
@@ -566,7 +633,6 @@ impl App {
 
     fn execute_drag_hover_command(&mut self, command: DragHoverCommand) {
         match command {
-            DragHoverCommand::Noop => {}
             DragHoverCommand::NavigatePath(path) => {
                 let tile = self.state.focused_tile;
                 self.navigate(tile, path);

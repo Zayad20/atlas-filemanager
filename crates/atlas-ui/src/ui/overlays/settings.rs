@@ -89,6 +89,7 @@ impl App {
         let sidebar_width = s.sidebar_width;
         let inspector_width = s.inspector_width;
         let font_size = s.font_size;
+        let font_family = s.font_family.clone();
         let thumbnail_size = s.thumbnail_size;
 
         let segment = move |id: &'static str,
@@ -210,6 +211,37 @@ impl App {
             .text_xs()
             .flex_wrap()
             .children(theme_buttons);
+        let font_buttons: Vec<AnyElement> = ["Geist", "Segoe UI Variable", ".SystemUIFont"]
+            .into_iter()
+            .map(|name| {
+                let selected = name == font_family;
+                let pick = name.to_string();
+                let v = view.clone();
+                div()
+                    .id(SharedString::from(format!("set-font-family-{name}")))
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(if selected { accent } else { border })
+                    .cursor_pointer()
+                    .when(selected, |d| d.bg(accent).text_color(accent_fg))
+                    .when(!selected, |d| d.bg(surface).hover(|h| h.bg(border)))
+                    .child(name.to_string())
+                    .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
+                        let pick = pick.clone();
+                        v.update(cx, |app, cx| {
+                            app.state.settings.font_family = pick;
+                            app.state.profiles.active_mut().workspace =
+                                app.state.settings.workspace();
+                            crate::util::config::save_profiles(&app.state.profiles);
+                            crate::util::config::save_settings(&app.state.settings);
+                            cx.notify();
+                        });
+                    })
+                    .into_any_element()
+            })
+            .collect();
 
         let panel = v_flex()
             .id("settings-content")
@@ -625,6 +657,13 @@ impl App {
                 },
                 view.clone(),
             ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .text_xs()
+                    .flex_wrap()
+                    .children(font_buttons),
+            )
             .child(stepper(
                 "set-thumbnail-size",
                 &rust_i18n::t!("settings_thumbnails"),

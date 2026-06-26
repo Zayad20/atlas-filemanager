@@ -13,8 +13,8 @@ use crate::input::action::Action;
 use crate::state::pane::TabId;
 use crate::state::settings::ViewMode;
 use crate::ui::drag_hover::drag_hover_layer;
-use crate::ui::glass::{backdrop_tint, glass_backdrop, glass_chrome_fill, GlassExt};
-use crate::ui::icons::{icon, AtlasIcon};
+use crate::ui::glass::{backdrop_tint, glass_chrome_fill, glass_sidebar_fill, GlassExt};
+use crate::ui::icons::{icon, is_windows_theme, AtlasIcon};
 use crate::ui::interactions::rubber_layer;
 use crate::util::display::format_size;
 use gpui::prelude::*;
@@ -183,10 +183,15 @@ impl Render for App {
             let _perf = crate::perf::span("app.render.drain_bg_state");
             self.drain_bg_results_state_only();
         }
-        // FASE C: reset per-frame item rects; each visible row/cell re-records via
-        // on_prepaint while painting this frame (used for rubber-band hit-testing).
-        self.row_rects.clear();
-        self.pane_view_bounds.clear();
+        // FASE C: reset per-frame item rects only when idle. During rubber-band drag
+        // the pane content may be cached, so clearing here can leave hit-testing with
+        // no geometry until the pane decides to repaint.
+        if self.rubber.is_none() && !self.drag_hover_maybe_active() {
+            self.row_rects.clear();
+            self.pane_view_bounds.clear();
+            self.dropzone_rects.clear();
+            self.dropzone_bounds = None;
+        }
         self.dock_linear_bounds.clear();
         if !self.drag_hover_maybe_active() {
             self.pending_drag_hover_targets.clear();
@@ -229,19 +234,23 @@ impl Render for App {
             self.theme_dirty = false;
             self.apply_active_theme(window, cx);
         }
+        if let Some((_, _, frames)) = &mut self.rename_visual_suppress {
+            *frames = frames.saturating_sub(1);
+            if *frames == 0 {
+                self.rename_visual_suppress = None;
+            }
+        }
         // (Rename-profile is now a normal overlay layer rendered by `render_overlays`
         // + focused via the overlay-focus arbiter; no render-time dialog open.)
         self.sidebar_width_dirty = false;
         let (fg, muted, status_border, root_bg) = {
             let t = cx.theme();
-            let bg = if self.state.settings.mica {
-                hsla(0., 0., 0., 0.32)
-            } else {
-                t.background
-            };
-            (t.foreground, t.muted_foreground, t.border, bg)
+            (t.foreground, t.muted_foreground, t.border, t.background)
         };
         let active_theme = self.state.profiles.active().theme.as_str();
+        let windows_theme = is_windows_theme(active_theme);
+        let windows_glass = active_theme == "Atlas Windows Glass"
+            || (active_theme == "Atlas Windows" && self.state.settings.mica);
         let figma_glass = active_theme == "Atlas Figma Glass";
         let glass_theme = active_theme.ends_with(" Glass")
             || active_theme == "Atlas Frost"
@@ -292,7 +301,6 @@ impl Render for App {
             self.render_custom_dock(window, cx)
         };
         let sidebar = self.state.settings.show_sidebar.then(|| {
-            let windows_theme = self.state.profiles.active().theme == "Atlas Windows";
             let width = if self.state.settings.sidebar_collapsed {
                 if windows_theme {
                     64.0
@@ -326,7 +334,13 @@ impl Render for App {
                 self.sidebar_panel = Some(panel.clone());
                 panel
             };
-            let panel_bg = if glass_theme {
+            let panel_bg = if figma_glass {
+                glass_sidebar_fill()
+            } else if windows_glass {
+                cx.theme().sidebar
+            } else if windows_theme {
+                hsla(0., 0., 1., 0.20)
+            } else if glass_theme {
                 cx.theme().sidebar.opacity(0.42)
             } else {
                 backdrop_tint(cx.theme().secondary, 0.10)
@@ -346,9 +360,11 @@ impl Render for App {
             && !self.state.settings.sidebar_collapsed)
             .then(|| {
                 div()
-                    .w(px(1.))
+                    .absolute()
+                    .left(-px(4.))
+                    .top_0()
+                    .w(px(8.))
                     .h_full()
-                    .flex_none()
                     .cursor_col_resize()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -426,7 +442,7 @@ impl Render for App {
             .relative()
             .text_color(fg)
             .text_sm()
-            .children(figma_glass.then(glass_backdrop))
+            .font_family(self.state.settings.font_family.clone())
             .key_context(key_ctx)
             .track_focus(&self.focus_handle)
             .on_mouse_down(
@@ -825,11 +841,25 @@ impl Render for App {
                 h_flex()
                     .flex_1()
                     .min_h(px(0.))
-                    .p(px(if figma_glass { 5.0 } else { 3.0 }))
-                    .gap(px(if figma_glass { 4.0 } else { 3.0 }))
+                    .px(px(if figma_glass { 10.0 } else { 3.0 }))
+                    .py(px(if figma_glass { 5.0 } else { 3.0 }))
+                    .gap(px(if figma_glass {
+                        4.0
+                    } else if windows_theme {
+                        0.0
+                    } else {
+                        3.0
+                    }))
                     .children(sidebar)
-                    .children(sidebar_resizer)
-                    .child(div().flex_1().h_full().min_w(px(0.)).child(center_content))
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .h_full()
+                            .min_w(px(0.))
+                            .children(sidebar_resizer)
+                            .child(center_content),
+                    )
                     .children(inspector_resizer)
                     // FASE5: inspector panel as the third child of the central row.
                     .children(inspector),

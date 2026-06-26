@@ -9,6 +9,7 @@ pub mod details;
 pub mod grid;
 pub mod list;
 pub mod miller;
+mod rename;
 pub mod virtual_grid;
 
 pub(super) fn should_suppress_loading(location: &Location) -> bool {

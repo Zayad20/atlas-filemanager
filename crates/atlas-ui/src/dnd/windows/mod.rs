@@ -82,6 +82,7 @@ struct PendingDrag {
     archive_items: Option<Vec<(PathBuf, PathBuf)>>,
     /// Where to report move-completion / errors back to the App.
     queue: Option<DndQueue>,
+    copy_only: bool,
 }
 
 thread_local! {
@@ -105,6 +106,8 @@ unsafe extern "system" fn atlas_wndproc(
                 if !items.is_empty() {
                     start_drag_archive(pd.hwnd, &items, pd.queue.as_ref());
                 }
+            } else if pd.copy_only && !pd.paths.is_empty() {
+                start_drag_copy_only(pd.hwnd, &pd.paths);
             } else if !pd.paths.is_empty() {
                 start_drag_and_handle(pd.hwnd, &pd.paths, pd.queue.as_ref());
             }
@@ -170,6 +173,27 @@ pub fn trigger_drag(
             paths,
             archive_items,
             queue,
+            copy_only: false,
+        }));
+    });
+    unsafe {
+        let _ = PostMessageW(
+            Some(HWND(hwnd_raw as *mut _)),
+            WM_ATLAS_START_DRAG,
+            WPARAM(0),
+            LPARAM(0),
+        );
+    }
+}
+
+pub fn trigger_drag_copy_only(hwnd_raw: isize, paths: Vec<PathBuf>) {
+    PENDING_DRAG.with(|p| {
+        p.set(Some(PendingDrag {
+            hwnd: hwnd_raw,
+            paths,
+            archive_items: None,
+            queue: None,
+            copy_only: true,
         }));
     });
     unsafe {
@@ -297,6 +321,10 @@ pub fn start_drag_and_handle(hwnd_raw: isize, paths: &[PathBuf], queue: Option<&
             },
         );
     }
+}
+
+pub fn start_drag_copy_only(hwnd_raw: isize, paths: &[PathBuf]) {
+    let _ = start_drag_real(hwnd_raw, paths, DROPEFFECT_COPY);
 }
 
 /// Fase 5: Start an OLE drag of virtual files (inside an archive).

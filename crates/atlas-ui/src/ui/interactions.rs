@@ -1,7 +1,7 @@
 //! Pane interactions: rubber-band selection, inline rename, type-to-filter, ctrl-scroll.
 #![allow(clippy::too_many_lines)] // reason: cohesive UI block kept whole
 
-use crate::app::App;
+use crate::app::{App, RubberTarget};
 use crate::input::action::Action;
 use crate::state::layout_tree::Tile;
 use crate::state::pane::TabId;
@@ -13,6 +13,13 @@ use gpui::{
 use gpui_component::{ActiveTheme, WindowExt};
 
 impl App {
+    fn rubber_target_bounds(&self, target: RubberTarget) -> Option<gpui::Bounds<gpui::Pixels>> {
+        match target {
+            RubberTarget::Pane(pane) => self.rubber_pane_bounds(pane),
+            RubberTarget::Dropzone => self.dropzone_bounds,
+        }
+    }
+
     fn rubber_pane_bounds(&self, pane: TabId) -> Option<gpui::Bounds<gpui::Pixels>> {
         self.pane_view_bounds
             .get(&pane)
@@ -20,12 +27,12 @@ impl App {
             .copied()
     }
 
-    pub(crate) fn clamp_rubber_point(
+    pub(crate) fn clamp_rubber_target_point(
         &self,
-        pane: TabId,
+        target: RubberTarget,
         pos: gpui::Point<gpui::Pixels>,
     ) -> gpui::Point<gpui::Pixels> {
-        let Some(bounds) = self.rubber_pane_bounds(pane) else {
+        let Some(bounds) = self.rubber_target_bounds(target) else {
             return pos;
         };
         gpui::point(
@@ -43,7 +50,11 @@ impl App {
         }
     }
 
-    pub(crate) fn select_context_menu_paths(&mut self, pane: TabId, entry_idx: usize) -> Vec<std::path::PathBuf> {
+    pub(crate) fn select_context_menu_paths(
+        &mut self,
+        pane: TabId,
+        entry_idx: usize,
+    ) -> Vec<std::path::PathBuf> {
         self.ensure_drag_selection(pane, entry_idx);
         self.selected_paths()
     }
@@ -81,6 +92,12 @@ impl App {
 
     /// FASE C: recompute the focused rubber-band selection by intersecting its
     /// rectangle (window coords) against the recorded visible-item rects.
+    ///
+    /// Hit-test is a full AABB overlap (any contact counts), matching the
+    /// Finder/Explorer/marquee convention: a rect that merely grazes the corner of
+    /// an item selects it. The old center-point test made items "jump" into the
+    /// selection only once the marquee crossed their midpoint, which read as laggy
+    /// and "not marking objects in real time".
     pub(crate) fn apply_rubber(&mut self) {
         let Some(r) = self.rubber.as_ref() else {
             return;
@@ -88,57 +105,91 @@ impl App {
         if !r.started {
             return;
         }
-        let pane = r.pane;
-        let (ox, oy) = (f32::from(r.origin.x), f32::from(r.origin.y));
-        let (cx_, cy) = (f32::from(r.current.x), f32::from(r.current.y));
+        let target = r.target;
+        // Clamp both endpoints to the pane so the hit-test region matches the
+        // marquee rectangle that is actually drawn (which is also clamped in the
+        // paint callback). Without this the visible box and the selection region
+        // could disagree near pane edges → "descuadre".
+        let origin = self.clamp_rubber_target_point(target, r.origin);
+        let current = self.clamp_rubber_target_point(target, r.current);
+        let (ox, oy) = (f32::from(origin.x), f32::from(origin.y));
+        let (cx_, cy) = (f32::from(current.x), f32::from(current.y));
         let (rl, rr) = (ox.min(cx_), ox.max(cx_));
         let (rt, rb) = (oy.min(cy), oy.max(cy));
-        let mut hits = std::collections::HashSet::new();
-        let mut visible = std::collections::HashSet::new();
-        if let Some(rects) = self.row_rects.get(&pane) {
-            for (idx, b) in rects {
-                visible.insert(*idx);
-                let (bl, br) = (f32::from(b.left()), f32::from(b.right()));
-                let (bt, bb) = (f32::from(b.top()), f32::from(b.bottom()));
-                // Center-point: item is hit only when its midpoint falls inside the rect.
-                let cx_item = (bl + br) * 0.5;
-                let cy_item = (bt + bb) * 0.5;
-                if rl <= cx_item && cx_item <= rr && rt <= cy_item && cy_item <= rb {
-                    hits.insert(*idx);
+        match target {
+            RubberTarget::Pane(pane) => {
+                let mut hits = std::collections::HashSet::new();
+                if let Some(rects) = self.row_rects.get(&pane) {
+                    for (idx, b) in rects {
+                        let (bl, br) = (f32::from(b.left()), f32::from(b.right()));
+                        let (bt, bb) = (f32::from(b.top()), f32::from(b.bottom()));
+                        // AABB overlap: the marquee and the item box share any area.
+                        if rl < br && bl < rr && rt < bb && bt < rb {
+                            hits.insert(*idx);
+                        }
+                    }
+                }
+                let Some(r) = self.rubber.as_mut() else {
+                    return;
+                };
+                let mut sel: std::collections::HashSet<usize> = if r.additive {
+                    r.base.clone()
+                } else {
+                    std::collections::HashSet::new()
+                };
+                sel.extend(hits.iter().copied());
+                if let Some(ts) = self.state.tab_states.get_mut(&pane) {
+                    ts.selection.selected = sel;
                 }
             }
-        }
-        let Some(r) = self.rubber.as_mut() else {
-            return;
-        };
-        let mut sel: std::collections::HashSet<usize> = if r.additive {
-            r.base.clone()
-        } else {
-            std::collections::HashSet::new()
-        };
-        sel.extend(hits.iter().copied());
-        if let Some(ts) = self.state.tab_states.get_mut(&pane) {
-            ts.selection.selected = sel;
+            RubberTarget::Dropzone => {
+                let mut hits = std::collections::HashSet::new();
+                for (path, b) in &self.dropzone_rects {
+                    let (bl, br) = (f32::from(b.left()), f32::from(b.right()));
+                    let (bt, bb) = (f32::from(b.top()), f32::from(b.bottom()));
+                    if rl < br && bl < rr && rt < bb && bt < rb {
+                        hits.insert(path.clone());
+                    }
+                }
+                let Some(r) = self.rubber.as_ref() else {
+                    return;
+                };
+                let mut sel: std::collections::HashSet<std::path::PathBuf> = if r.additive {
+                    r.dropzone_base.clone()
+                } else {
+                    std::collections::HashSet::new()
+                };
+                sel.extend(hits);
+                self.dropzone_selected = sel;
+            }
         }
     }
 
     /// Nudge a virtualized file view while rubber-band selecting near the visible
     /// top/bottom edge. `cols` maps file positions to uniform-list rows.
+    /// Returns `true` when it actually scrolled (caller requests the next animation
+    /// frame only then — keeps the render loop idle while the cursor sits still in
+    /// the middle of the pane).
     pub(crate) fn rubber_autoscroll_rows(
         &mut self,
         pane: TabId,
         pos: gpui::Point<gpui::Pixels>,
         cols: usize,
         row_count: usize,
-    ) {
-        if row_count == 0 || self.rubber.as_ref().is_none_or(|r| r.pane != pane) {
-            return;
+    ) -> bool {
+        if row_count == 0
+            || self
+                .rubber
+                .as_ref()
+                .is_none_or(|r| r.target != RubberTarget::Pane(pane))
+        {
+            return false;
         }
         let Some(rects) = self.row_rects.get(&pane) else {
-            return;
+            return false;
         };
         let Some(ts) = self.state.tab_states.get(&pane) else {
-            return;
+            return false;
         };
 
         let mut top = f32::INFINITY;
@@ -160,7 +211,7 @@ impl App {
         }
 
         if !top.is_finite() || !bottom.is_finite() {
-            return;
+            return false;
         }
 
         const EDGE: f32 = 44.0;
@@ -175,11 +226,11 @@ impl App {
             let step = (1.0 + t * 3.0).round() as usize;
             (bottom_row + step).min(row_count.saturating_sub(1))
         } else {
-            return;
+            return false;
         };
 
         if self.scroll_grid_row_to(pane, target, gpui::ScrollStrategy::Nearest) {
-            return;
+            return true;
         }
 
         if let Some(handle) = self.scroll_handles.get(&pane) {
@@ -189,7 +240,9 @@ impl App {
                 gpui::ScrollStrategy::Bottom
             };
             handle.scroll_to_item_strict(target, strategy);
+            return true;
         }
+        false
     }
 
     pub(crate) fn scroll_grid_row_to(
@@ -307,29 +360,64 @@ impl App {
     }
 
     /// Begin inline rename of the focused pane's cursor item: pre-fill a native input
-    /// with its current name and stash it in `rename_edit` (rendered by `render_row`).
+    /// with its current name and stash it in `rename_edit`.
     pub(crate) fn begin_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let pane = self.state.focused_tile;
-        let Some(ts) = self.state.tab_states.get(&pane) else {
+        let Some((idx, visible_pos, path, name, initial_select_chars)) = (|| {
+            let ts = self.state.tab_states.get(&pane)?;
+            let idx = ts
+                .selection
+                .keyboard_cursor
+                .or_else(|| ts.selection.selected.iter().copied().next())?;
+            let visible_pos = ts.visible.iter().position(|&visible| visible == idx)?;
+            let entry = ts.entries.get(idx)?;
+            let stem_chars = rename_select_chars(&entry.name);
+            Some((
+                idx,
+                visible_pos,
+                entry.path.clone(),
+                entry.name.clone(),
+                stem_chars,
+            ))
+        })() else {
             return;
         };
-        let idx = ts
-            .selection
-            .keyboard_cursor
-            .or_else(|| ts.selection.selected.iter().copied().next());
-        let Some(idx) = idx else { return };
-        let Some(entry) = ts.entries.get(idx) else {
-            return;
-        };
-        let path = entry.path.clone();
-        let name = entry.name.clone();
+
+        self.close_batch_rename();
+        self.rename_visual_suppress = None;
+        match self
+            .tab_data_for(pane)
+            .map(|tab| tab.view_mode.clone())
+            .unwrap_or_default()
+        {
+            ViewMode::Grid => {
+                let (cols, _) = self.rubber_scroll_dims(pane);
+                self.scroll_grid_row_to(
+                    pane,
+                    visible_pos / cols.max(1),
+                    gpui::ScrollStrategy::Nearest,
+                );
+            }
+            ViewMode::Details => {
+                self.scroll_details_row_to(pane, visible_pos, gpui::ScrollStrategy::Nearest);
+            }
+            ViewMode::List => {
+                let (cols, _) = self.rubber_scroll_dims(pane);
+                if let Some(handle) = self.scroll_handles.get(&pane) {
+                    handle.scroll_to_item(visible_pos / cols.max(1), gpui::ScrollStrategy::Nearest);
+                }
+            }
+            ViewMode::Miller => {}
+        }
+
         let input = crate::ui::text_input::single_line(window, cx, "", name);
+        input.update(cx, |state, cx| state.focus(window, cx));
         self.rename_edit = Some(crate::app::RenameEdit {
             pane,
             idx,
             path,
             input,
-            initial_select_chars: None,
+            initial_select_chars,
         });
     }
 
@@ -339,14 +427,10 @@ impl App {
         let Some(edit) = self.rename_edit.take() else {
             return;
         };
+        self.rename_visual_suppress = Some((edit.pane, edit.idx, 2));
         let new_name = edit.input.read(cx).value().to_string();
         let new_name = new_name.trim();
-        if new_name.is_empty()
-            || new_name == "."
-            || new_name == ".."
-            || new_name.contains('/')
-            || new_name.contains('\\')
-        {
+        if !crate::state::batch_rename::name_is_valid(new_name) {
             return;
         }
         if let Some(parent) = edit.path.parent() {
@@ -362,14 +446,23 @@ impl App {
 
     /// Cancel the inline rename without touching the filesystem.
     pub(crate) fn cancel_rename(&mut self) {
-        self.rename_edit = None;
+        if let Some(edit) = self.rename_edit.take() {
+            self.rename_visual_suppress = Some((edit.pane, edit.idx, 2));
+        }
     }
 
     /// Cancel an in-flight rubber drag, restoring the pre-drag selection.
     pub(crate) fn cancel_rubber(&mut self) {
         if let Some(r) = self.rubber.take() {
-            if let Some(ts) = self.state.tab_states.get_mut(&r.pane) {
-                ts.selection.selected = r.base;
+            match r.target {
+                RubberTarget::Pane(pane) => {
+                    if let Some(ts) = self.state.tab_states.get_mut(&pane) {
+                        ts.selection.selected = r.base;
+                    }
+                }
+                RubberTarget::Dropzone => {
+                    self.dropzone_selected = r.dropzone_base;
+                }
             }
         }
     }
@@ -412,10 +505,37 @@ impl App {
             .map(|ts| ts.selection.selected.clone())
             .unwrap_or_default();
         self.rubber = Some(crate::app::RubberDrag {
-            pane,
+            target: RubberTarget::Pane(pane),
             origin: pos,
             current: pos,
             base,
+            dropzone_base: Default::default(),
+            additive,
+            started: false,
+        });
+    }
+
+    pub(crate) fn begin_dropzone_rubber(&mut self, pos: gpui::Point<gpui::Pixels>, additive: bool) {
+        if self.ctx_menu.is_some() {
+            return;
+        }
+        let staged = self
+            .state
+            .sidebar_drop_zone
+            .iter()
+            .map(|item| item.path.clone())
+            .collect::<std::collections::HashSet<_>>();
+        self.dropzone_selected.retain(|path| staged.contains(path));
+        let dropzone_base = self.dropzone_selected.clone();
+        if !additive {
+            self.dropzone_selected.clear();
+        }
+        self.rubber = Some(crate::app::RubberDrag {
+            target: RubberTarget::Dropzone,
+            origin: pos,
+            current: pos,
+            base: Default::default(),
+            dropzone_base,
             additive,
             started: false,
         });
@@ -590,6 +710,53 @@ impl App {
     }
 }
 
+fn rename_select_chars(name: &str) -> Option<u32> {
+    let lower = name.to_ascii_lowercase();
+    let compound_exts = [
+        ".tar.gz",
+        ".tar.bz2",
+        ".tar.xz",
+        ".tar.zst",
+        ".tar.lz",
+        ".tar.lzma",
+        ".tar.br",
+        ".tar.z",
+        ".d.ts",
+        ".d.mts",
+        ".d.cts",
+        ".js.map",
+        ".css.map",
+        ".min.js",
+        ".min.css",
+    ];
+    let stem = compound_exts
+        .iter()
+        .find_map(|ext| name.strip_suffix(ext).or_else(|| lower.strip_suffix(ext)))
+        .or_else(|| {
+            let dot = name.rfind('.')?;
+            (dot > 0).then(|| &name[..dot])
+        })?;
+    let chars = stem.chars().count() as u32;
+    (chars > 0).then_some(chars)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rename_select_chars;
+
+    #[test]
+    fn rename_selects_name_before_extension() {
+        assert_eq!(rename_select_chars("photo.png"), Some(5));
+        assert_eq!(rename_select_chars("archive.tar.gz"), Some(7));
+        assert_eq!(rename_select_chars("ARCHIVE.TAR.GZ"), Some(7));
+        assert_eq!(rename_select_chars("types.d.ts"), Some(5));
+        assert_eq!(rename_select_chars("app.min.js"), Some(3));
+        assert_eq!(rename_select_chars("bundle.js.map"), Some(6));
+        assert_eq!(rename_select_chars("README"), None);
+        assert_eq!(rename_select_chars(".gitignore"), None);
+    }
+}
+
 /// Global rubber-band motor: a full-size invisible canvas painted last so its
 /// `window.on_mouse_event` listeners fire even when the cursor leaves the pane.
 /// Handles move (threshold → started, apply), up (clear on empty click), and
@@ -626,15 +793,15 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
             // ── Draw the rubber band marquee rectangle ───────────────────────
             if let Some(r) = v.read(cx).rubber.as_ref() {
                 let app = v.read(cx);
-                let origin = app.clamp_rubber_point(r.pane, r.origin);
-                let current = app.clamp_rubber_point(r.pane, r.current);
+                let origin = app.clamp_rubber_target_point(r.target, r.origin);
+                let current = app.clamp_rubber_target_point(r.target, r.current);
                 let left = f32::from(origin.x).min(f32::from(current.x));
                 let top = f32::from(origin.y).min(f32::from(current.y));
                 let right = f32::from(origin.x).max(f32::from(current.x));
                 let bottom = f32::from(origin.y).max(f32::from(current.y));
                 let w = (right - left).max(0.0);
                 let h = (bottom - top).max(0.0);
-                
+
                 if r.started && w >= 2.0 && h >= 2.0 {
                     let rect = gpui::Bounds {
                         origin: gpui::point(gpui::px(left), gpui::px(top)),
@@ -643,22 +810,52 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                     let t = cx.theme();
                     let mut fill = t.accent;
                     fill.a = 0.15;
-                    
+
                     window.paint_quad(gpui::fill(rect, fill));
-                    
+
                     let mut border = t.accent;
                     border.a = 0.8;
                     let t_px = gpui::px(1.0);
-                    window.paint_quad(gpui::fill(gpui::Bounds { origin: rect.origin, size: gpui::size(rect.size.width, t_px) }, border));
-                    window.paint_quad(gpui::fill(gpui::Bounds { origin: gpui::point(rect.origin.x, rect.origin.y + rect.size.height - t_px), size: gpui::size(rect.size.width, t_px) }, border));
-                    window.paint_quad(gpui::fill(gpui::Bounds { origin: rect.origin, size: gpui::size(t_px, rect.size.height) }, border));
-                    window.paint_quad(gpui::fill(gpui::Bounds { origin: gpui::point(rect.origin.x + rect.size.width - t_px, rect.origin.y), size: gpui::size(t_px, rect.size.height) }, border));
+                    window.paint_quad(gpui::fill(
+                        gpui::Bounds {
+                            origin: rect.origin,
+                            size: gpui::size(rect.size.width, t_px),
+                        },
+                        border,
+                    ));
+                    window.paint_quad(gpui::fill(
+                        gpui::Bounds {
+                            origin: gpui::point(
+                                rect.origin.x,
+                                rect.origin.y + rect.size.height - t_px,
+                            ),
+                            size: gpui::size(rect.size.width, t_px),
+                        },
+                        border,
+                    ));
+                    window.paint_quad(gpui::fill(
+                        gpui::Bounds {
+                            origin: rect.origin,
+                            size: gpui::size(t_px, rect.size.height),
+                        },
+                        border,
+                    ));
+                    window.paint_quad(gpui::fill(
+                        gpui::Bounds {
+                            origin: gpui::point(
+                                rect.origin.x + rect.size.width - t_px,
+                                rect.origin.y,
+                            ),
+                            size: gpui::size(t_px, rect.size.height),
+                        },
+                        border,
+                    ));
                 }
             }
 
             // ── Global move ──────────────────────────────────────────────────
             let vm = v.clone();
-            window.on_mouse_event::<MouseMoveEvent>(move |ev, phase, _win, cx| {
+            window.on_mouse_event::<MouseMoveEvent>(move |ev, phase, window, cx| {
                 if phase != DispatchPhase::Bubble {
                     return;
                 }
@@ -669,7 +866,7 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                         this.state.settings.sidebar_width =
                             (resize.start_width + dx).clamp(180.0, 420.0);
                         cx.notify();
-                        return;
+                        return false;
                     }
 
                     if let Some(resize) = this.inspector_resize.as_ref() {
@@ -677,7 +874,7 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                         this.state.settings.inspector_width =
                             (resize.start_width + dx).clamp(180.0, 520.0);
                         cx.notify();
-                        return;
+                        return false;
                     }
 
                     if let Some(resize) = this.dock_resize.as_ref() {
@@ -709,12 +906,13 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                                     crate::state::layout_tree::Container::Linear(linear),
                                 )) = this.state.pane_tree.tiles.get_mut(resize.container)
                                 {
+                                    crate::app::normalize_split_shares(&mut shares);
                                     linear.shares = shares;
                                 }
                                 cx.notify();
                             }
                         }
-                        return;
+                        return false;
                     }
 
                     // Column resize takes priority over rubber-band selection.
@@ -744,11 +942,11 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                         // Scoped re-render: only the dragged pane repaints per move —
                         // NOT App + sidebar + every other pane (that cascade is the lag).
                         this.notify_pane(pane, cx);
-                        return;
+                        return false;
                     }
 
                     let Some(r) = this.rubber.as_mut() else {
-                        return;
+                        return false;
                     };
                     r.current = pos;
                     if !r.started {
@@ -758,15 +956,25 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                     }
                     if r.started {
                         this.apply_rubber();
-                        let pane = this.rubber.as_ref().map(|r| r.pane);
+                        let pane = this.rubber.as_ref().and_then(|r| match r.target {
+                            RubberTarget::Pane(pane) => Some(pane),
+                            RubberTarget::Dropzone => None,
+                        });
                         let cur = this.rubber.as_ref().map(|r| r.current);
+                        let mut scrolled = false;
                         if let (Some(pane), Some(cur)) = (pane, cur) {
                             let (cols, rows) = this.rubber_scroll_dims(pane);
-                            this.rubber_autoscroll_rows(pane, cur, cols, rows);
+                            scrolled = this.rubber_autoscroll_rows(pane, cur, cols, rows);
                         }
+                        if let Some(pane) = pane {
+                            this.notify_pane(pane, cx);
+                        }
+                        cx.notify();
+                        return scrolled;
                     }
-                    cx.notify();
+                    false
                 });
+                window.refresh();
             });
 
             // ── Global up ────────────────────────────────────────────────────
@@ -814,17 +1022,32 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                         if !r.started && !r.additive {
                             // Plain click on empty space → clear selection.
                             // If pos hit an item rect, that item's on_click already handled it.
-                            let hit = this.row_rects.get(&r.pane).is_some_and(|rects| {
-                                rects.iter().any(|(_, b)| {
-                                    pos.x >= b.left()
-                                        && pos.x <= b.right()
-                                        && pos.y >= b.top()
-                                        && pos.y <= b.bottom()
-                                })
-                            });
-                            if !hit {
-                                if let Some(ts) = this.state.tab_states.get_mut(&r.pane) {
-                                    ts.selection.clear();
+                            match r.target {
+                                RubberTarget::Pane(pane) => {
+                                    let hit = this.row_rects.get(&pane).is_some_and(|rects| {
+                                        rects.iter().any(|(_, b)| {
+                                            pos.x >= b.left()
+                                                && pos.x <= b.right()
+                                                && pos.y >= b.top()
+                                                && pos.y <= b.bottom()
+                                        })
+                                    });
+                                    if !hit {
+                                        if let Some(ts) = this.state.tab_states.get_mut(&pane) {
+                                            ts.selection.clear();
+                                        }
+                                    }
+                                }
+                                RubberTarget::Dropzone => {
+                                    let hit = this.dropzone_rects.iter().any(|(_, b)| {
+                                        pos.x >= b.left()
+                                            && pos.x <= b.right()
+                                            && pos.y >= b.top()
+                                            && pos.y <= b.bottom()
+                                    });
+                                    if !hit {
+                                        this.dropzone_selected.clear();
+                                    }
                                 }
                             }
                         }

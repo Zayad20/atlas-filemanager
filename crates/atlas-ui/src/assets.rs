@@ -85,7 +85,6 @@ phosphor_icons!(
     "caret-down",
     "caret-right",
     "magnifying-glass",
-    "dots-three",
     "trash",
     "globe-simple",
     "grid-four",

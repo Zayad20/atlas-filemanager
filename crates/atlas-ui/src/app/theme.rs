@@ -14,7 +14,7 @@ impl App {
     /// Suffix that marks a theme as the translucent "Glass" variant of a base
     /// theme. Paired by name: `"Atlas Midnight"` ↔ `"Atlas Midnight Glass"`.
     /// Used by [`App::apply_active_theme`] to swap in the glass config when the
-    /// Mica setting is on, while keeping the base name as the stored/selected
+    /// glass setting is on, while keeping the base name as the stored/selected
     /// theme so the picker stays coherent.
     const GLASS_SUFFIX: &'static str = " Glass";
 
@@ -55,9 +55,13 @@ impl App {
                 return;
             };
 
-        // Mica glass swap. When the global `mica` setting is on, transparently
+        let wants_backdrop = self.state.settings.mica
+            || resolved_name.ends_with(Self::GLASS_SUFFIX)
+            || resolved_name == "Atlas Frost";
+
+        // Glass swap. When the global `mica` setting is on, transparently
         // apply the Glass variant of the resolved theme — same palette, but with
-        // translucent backgrounds so the OS desktop material (Mica Alt) shows
+        // translucent backgrounds so the OS blurred background shows
         // through. The *stored* theme name stays the base ("Atlas Midnight"), so
         // the picker keeps showing what the user picked; only the applied config
         // comes from the glass twin. Themes without a glass twin (e.g. a custom
@@ -70,26 +74,14 @@ impl App {
                 .get(&SharedString::from(glass_name.as_str()))
                 .cloned()
                 .unwrap_or(config)
-        } else if !self.state.settings.mica && resolved_name.ends_with(Self::GLASS_SUFFIX) {
-            // Edge case: the stored theme *is* a glass variant (can happen if a
-            // future picker exposes them, or after a setting flip). With Mica off
-            // we want the opaque base, so peel the suffix off and look that up.
-            let base_name = &resolved_name[..resolved_name.len() - Self::GLASS_SUFFIX.len()];
-            registry
-                .themes()
-                .get(&SharedString::from(base_name))
-                .cloned()
-                .unwrap_or(config)
         } else {
             config
         };
 
-        // Mirror the Mica setting onto the window's OS backdrop. MicaAlt is the
-        // Windows 11 "tabbed window" material (DWMSBT_TABBEDWINDOW); Opaque falls
-        // back to a flat background. Cheap to call every apply (no-op when
-        // unchanged at the platform level).
-        window.set_background_appearance(if self.state.settings.mica {
-            WindowBackgroundAppearance::MicaAltBackdrop
+        // Enable the OS backdrop for the global glass toggle and explicit glass
+        // themes. This is Atlas' equivalent of Zed's `background.appearance=blurred`.
+        window.set_background_appearance(if wants_backdrop {
+            WindowBackgroundAppearance::Blurred
         } else {
             WindowBackgroundAppearance::Opaque
         });

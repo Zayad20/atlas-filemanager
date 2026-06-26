@@ -79,6 +79,10 @@ impl DropZones {
         self.zones = zones;
     }
 
+    pub fn len(&self) -> usize {
+        self.zones.len()
+    }
+
     /// Find the deepest (last) zone that contains the given window-space point.
     /// Returns `None` when no zone matches.
     pub fn hit(&self, px: f32, py: f32) -> Option<&DropZone> {

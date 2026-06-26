@@ -61,10 +61,100 @@ pub fn shell_thumbnail(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, us
     shell_image(path, max_edge, SIIGBF_THUMBNAILONLY)
 }
 
-/// Extract the best Shell image for a folder: thumbnail when Windows has one,
-/// otherwise the Shell icon (known-folder/custom folder icon).
+/// Extract the best Shell image for a folder: thumbnail/custom icon when Windows
+/// has one, otherwise the Shell icon.
 pub fn shell_thumbnail_or_icon(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, usize)> {
-    shell_image(path, max_edge, 0)
+    let (mut pixels, w, h) = shell_image(path, max_edge, 0)?;
+    if strip_black_shell_matte(&mut pixels, w, h) {
+        tracing::debug!(
+            path = %path.display(),
+            width = w,
+            height = h,
+            "shell thumbnail had opaque black matte; stripped it"
+        );
+    }
+    if let Some((visible_w, visible_h)) = visible_bbox_size(&pixels, w, h) {
+        let tiny_w = visible_w * 3 < w;
+        let tiny_h = visible_h * 3 < h;
+        if tiny_w && tiny_h {
+            tracing::debug!(
+                path = %path.display(),
+                width = w,
+                height = h,
+                visible_w,
+                visible_h,
+                "shell thumbnail visible content is tiny"
+            );
+        }
+    }
+    Some((pixels, w, h))
+}
+
+fn strip_black_shell_matte(pixels: &mut [u8], w: usize, h: usize) -> bool {
+    if w == 0 || h == 0 || pixels.len() != w * h * 4 {
+        return false;
+    }
+    let corner = w.min(h).min(12);
+    if corner == 0 {
+        return false;
+    }
+    let mut total = 0usize;
+    let mut black = 0usize;
+    for y in 0..corner {
+        for x in 0..corner {
+            total += sample_corner_pixel(pixels, w, x, y, &mut black);
+            total += sample_corner_pixel(pixels, w, w - 1 - x, y, &mut black);
+            total += sample_corner_pixel(pixels, w, x, h - 1 - y, &mut black);
+            total += sample_corner_pixel(pixels, w, w - 1 - x, h - 1 - y, &mut black);
+        }
+    }
+    if total == 0 || black * 100 / total < 75 {
+        return false;
+    }
+    let mut changed = false;
+    for px in pixels.chunks_exact_mut(4) {
+        if is_opaque_black(px) {
+            px[0] = 0;
+            px[1] = 0;
+            px[2] = 0;
+            px[3] = 0;
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn sample_corner_pixel(pixels: &[u8], w: usize, x: usize, y: usize, black: &mut usize) -> usize {
+    let idx = (y * w + x) * 4;
+    if is_opaque_black(&pixels[idx..idx + 4]) {
+        *black += 1;
+    }
+    1
+}
+
+fn is_opaque_black(px: &[u8]) -> bool {
+    px[3] >= 240 && px[0] <= 8 && px[1] <= 8 && px[2] <= 8
+}
+
+fn visible_bbox_size(pixels: &[u8], w: usize, h: usize) -> Option<(usize, usize)> {
+    let mut min_x = w;
+    let mut min_y = h;
+    let mut max_x = 0usize;
+    let mut max_y = 0usize;
+    let mut found = false;
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y * w + x) * 4;
+            if pixels[idx + 3] > 16 {
+                found = true;
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+    found.then_some((max_x - min_x + 1, max_y - min_y + 1))
 }
 
 fn shell_image(path: &Path, max_edge: u32, flags: i32) -> Option<(Vec<u8>, usize, usize)> {
@@ -145,14 +235,25 @@ fn shell_image(path: &Path, max_edge: u32, flags: i32) -> Option<(Vec<u8>, usize
             return None;
         }
 
-        // Windows DIBs with BI_RGB store pixels as BGRA. Thumbnails usually have
-        // an empty alpha channel; icons often have real transparency.
+        // Windows DIBs with BI_RGB store pixels as BGRA. Shell icons often arrive
+        // premultiplied; return straight RGBA because the UI upload path handles
+        // the final GPUI channel swap.
         let has_alpha = pixels.chunks_exact(4).any(|chunk| chunk[3] != 0);
         for chunk in pixels.chunks_exact_mut(4) {
-            chunk.swap(0, 2); // B↔R
-            if !has_alpha {
-                chunk[3] = 255;
-            }
+            let b = chunk[0];
+            let g = chunk[1];
+            let r = chunk[2];
+            let a = if has_alpha { chunk[3] } else { 255 };
+            let (r, g, b) = if has_alpha && a != 0 {
+                let un = |c: u8| ((c as u32 * 255) / a as u32).min(255) as u8;
+                (un(r), un(g), un(b))
+            } else {
+                (r, g, b)
+            };
+            chunk[0] = r;
+            chunk[1] = g;
+            chunk[2] = b;
+            chunk[3] = a;
         }
 
         Some((pixels, w, h))

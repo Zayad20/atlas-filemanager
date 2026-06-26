@@ -62,6 +62,17 @@ fn build_file_drag_handler(
 ) -> impl Fn(&DragView, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> Entity<DragView>
        + 'static {
     move |_d, _pos, _window, cx| {
+        if view.read(&*cx).rubber.is_some() {
+            tracing::debug!(anchor = %anchor.display(), "dnd file drag blocked by active rubber");
+            #[cfg(windows)]
+            {
+                return cx.new(|_| DragNoop);
+            }
+            #[cfg(not(windows))]
+            {
+                return cx.new(|_| DraggedFiles { paths: Vec::new() });
+            }
+        }
         view.update(cx, |app, cx| {
             if let Some((pane, idx)) = item {
                 app.ensure_drag_selection(pane, idx);
@@ -98,6 +109,7 @@ fn build_file_drag_handler(
         // "RefCell already borrowed" panic from DoDragDrop's nested message loop).
         #[cfg(windows)]
         {
+            tracing::debug!(paths = paths.len(), "dnd file drag source triggered");
             view.read(&*cx)
                 .trigger_os_drag(paths.clone(), archive_items);
             // Invisible zero-size placeholder; OLE provides cursor feedback and a

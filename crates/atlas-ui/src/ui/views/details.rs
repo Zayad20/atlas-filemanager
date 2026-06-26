@@ -11,7 +11,7 @@ use crate::ui::drag_hover::{
     DragHoverKind,
 };
 use crate::ui::file_icons::FileIcon;
-use crate::ui::glass::backdrop_tint;
+use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
 use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::root::{
     ctrl_scroll, pane_bounds_recorder, rect_recorder, zone_recorder, DraggedFiles,
@@ -19,13 +19,13 @@ use crate::ui::root::{
 use crate::util::display::{format_date, format_size};
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, fill, img, point, px, size, uniform_list, AnyElement, Bounds, Context, Corners,
-    Div, Entity, Font, Hsla, MouseButton, Pixels, ShapedLine, SharedString, Stateful, TextAlign,
+    canvas, div, img, point, px, size, uniform_list, AnyElement, Bounds, Context, Corners, Div,
+    Entity, Font, Hsla, MouseButton, Pixels, ShapedLine, SharedString, Stateful, TextAlign,
     TextRun, Window,
 };
 use gpui_component::input::InputState;
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt};
+use gpui_component::{v_flex, ActiveTheme, ElementExt};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -50,6 +50,13 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // Reset this pane's item rects before the view re-records them via
+        // prepaint. The rubber-band drag reads these for hit-testing, and with
+        // scoped re-renders (notify_pane) only THIS pane's render runs — so the
+        // global clear that used to live in App::render is no longer guaranteed
+        // to fire on every frame the selection updates. Clearing here keeps the
+        // vec from accumulating stale rects across frames.
+        self.row_rects.remove(&pane_id);
         let view_mode = self
             .tab_data_for(pane_id)
             .map(|t| t.view_mode.clone())
@@ -84,6 +91,7 @@ impl App {
             ViewMode::Details => {}
         }
         let view = cx.entity();
+        let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
         let (fg, accent, accent_fg, hover, muted, header_bg, stripe_bg, border) = {
             let t = cx.theme();
             (
@@ -92,8 +100,16 @@ impl App {
                 t.accent_foreground,
                 t.list_active,
                 t.muted_foreground,
-                backdrop_tint(t.secondary, 0.18),
-                backdrop_tint(t.list_even, 0.08),
+                if figma_glass {
+                    glass_header_fill()
+                } else {
+                    backdrop_tint(t.secondary, 0.18)
+                },
+                if figma_glass {
+                    t.list_even.opacity(0.12)
+                } else {
+                    backdrop_tint(t.list_even, 0.08)
+                },
                 t.border,
             )
         };
@@ -187,118 +203,94 @@ impl App {
                 .children(msg)
                 .into_any_element()
         } else {
-            let rename_active = self
-                .rename_edit
-                .as_ref()
-                .is_some_and(|edit| edit.pane == pane_id);
             let scroll = self.scroll_handle_for(pane_id);
             let base_scroll = scroll.0.borrow().base_handle.clone();
+            let viewport_h = f32::from(base_scroll.bounds().size.height);
+            let scroll_y = (-f32::from(base_scroll.offset().y)).max(0.0);
+            prime_details_file_icons(self, pane_id, &filtered_visible, scroll_y, viewport_h);
             let list_view = view.clone();
             let fv = filtered_visible.clone();
             let row_layout = Arc::clone(&layout);
-            if !rename_active {
-                let viewport_h = f32::from(base_scroll.bounds().size.height);
-                let scroll_y = (-f32::from(base_scroll.offset().y)).max(0.0);
-                prime_details_file_icons(self, pane_id, &filtered_visible, scroll_y, viewport_h);
-                let fallback_icons =
-                    details_fallback_icons(self, pane_id, &filtered_visible, scroll_y, viewport_h);
-                details_pane_canvas(
-                    pane_id,
-                    count,
-                    list_view,
-                    fv,
-                    row_layout,
-                    base_scroll,
-                    fallback_icons,
-                    accent,
-                    accent_fg,
-                    hover,
-                    muted,
-                    fg,
-                    stripe_bg,
-                    font_size,
-                    row_font,
-                )
-            } else {
-                div()
-                    .size_full()
-                    .relative()
-                    .child(
-                        uniform_list(
-                            SharedString::from(format!("list-{}", pane_id.0)),
-                            count,
-                            move |range, _window, cx| {
-                                let start = range.start;
-                                let end = range.end;
-                                crate::perf::count_by(
-                                    "details.rows.requested",
-                                    end.saturating_sub(start) as u64,
-                                );
-                                let _perf = crate::perf::span_detail("details.rows.build", || {
-                                    format!("pane={} range={start}..{end}", pane_id.0)
-                                });
-                                let app = list_view.read(cx);
-                                let Some(ts) = app.state.tab_states.get(&pane_id) else {
-                                    return Vec::new();
-                                };
-                                let record_rects = true;
-                                range
-                                    .filter_map(|i| {
-                                        let entry_idx = *fv.get(i)?;
-                                        let entry = ts.entries.get(entry_idx)?;
-                                        let selected = ts.selection.selected.contains(&entry_idx);
-                                        let rename_input = app
-                                            .rename_edit
-                                            .as_ref()
-                                            .filter(|e| e.pane == pane_id && e.idx == entry_idx)
-                                            .map(|e| e.input.clone());
-                                        let icon_tex = app
-                                            .file_icon_for_entry(
-                                                &entry.path,
-                                                &entry.kind,
-                                                entry.extension.as_deref(),
-                                            )
-                                            .texture();
-                                        let flashing = matches!(entry.kind, FileKind::Dir)
-                                            && app.drag_hover.blink_id.as_ref()
-                                                == Some(&DragHoverId::Folder(
-                                                    pane_id,
-                                                    entry.path.clone(),
-                                                ));
-                                        let row = canvas_row(
-                                            entry,
-                                            entry_idx,
-                                            i % 2 == 1,
-                                            selected,
-                                            pane_id,
-                                            &list_view,
-                                            accent,
-                                            accent_fg,
-                                            hover,
-                                            muted,
-                                            fg,
-                                            stripe_bg,
-                                            rename_input,
-                                            flashing,
-                                            record_rects,
-                                            icon_tex,
-                                            Arc::clone(&row_layout),
-                                            font_size,
-                                            row_font.clone(),
-                                            row_h,
+            div()
+                .size_full()
+                .relative()
+                .child(
+                    uniform_list(
+                        SharedString::from(format!("list-{}", pane_id.0)),
+                        count,
+                        move |range, window, cx| {
+                            let start = range.start;
+                            let end = range.end;
+                            crate::perf::count_by(
+                                "details.rows.requested",
+                                end.saturating_sub(start) as u64,
+                            );
+                            let _perf = crate::perf::span_detail("details.rows.build", || {
+                                format!("pane={} range={start}..{end}", pane_id.0)
+                            });
+                            let app = list_view.read(cx);
+                            let Some(ts) = app.state.tab_states.get(&pane_id) else {
+                                return Vec::new();
+                            };
+                            let record_rects = true;
+                            range
+                                .filter_map(|i| {
+                                    let entry_idx = *fv.get(i)?;
+                                    let entry = ts.entries.get(entry_idx)?;
+                                    let rename_input = crate::ui::views::rename::active_input(
+                                        app, pane_id, entry_idx,
+                                    );
+                                    let selected = ts.selection.selected.contains(&entry_idx)
+                                        && !crate::ui::views::rename::suppress_row_chrome(
+                                            app, pane_id, entry_idx,
                                         );
-                                        Some(row.into_any_element())
-                                    })
-                                    .collect::<Vec<_>>()
-                            },
-                        )
-                        .track_scroll(&scroll)
-                        .pr(px(16.))
-                        .h_full(),
+                                    let icon_tex = app
+                                        .file_icon_for_entry(
+                                            &entry.path,
+                                            &entry.kind,
+                                            entry.extension.as_deref(),
+                                        )
+                                        .texture();
+                                    let flashing = matches!(entry.kind, FileKind::Dir)
+                                        && app.drag_hover.blink_id.as_ref()
+                                            == Some(&DragHoverId::Folder(
+                                                pane_id,
+                                                entry.path.clone(),
+                                            ));
+                                    let row = canvas_row(
+                                        entry,
+                                        entry_idx,
+                                        i % 2 == 1,
+                                        selected,
+                                        pane_id,
+                                        &list_view,
+                                        accent,
+                                        accent_fg,
+                                        hover,
+                                        muted,
+                                        fg,
+                                        stripe_bg,
+                                        rename_input,
+                                        flashing,
+                                        record_rects,
+                                        icon_tex,
+                                        Arc::clone(&row_layout),
+                                        font_size,
+                                        row_font.clone(),
+                                        row_h,
+                                        window,
+                                    );
+                                    Some(row.into_any_element())
+                                })
+                                .collect::<Vec<_>>()
+                        },
                     )
-                    .vertical_scrollbar(&base_scroll)
-                    .into_any_element()
-            }
+                    .track_scroll(&scroll)
+                    .pr(px(16.))
+                    .h_full(),
+                )
+                .vertical_scrollbar(&base_scroll)
+                .into_any_element()
         };
 
         let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
@@ -311,8 +303,6 @@ impl App {
         v_flex()
             .id(SharedString::from(format!("pane-{}", pane_id.0)))
             .size_full()
-            // The pane content is transparent: the hosting TabPanel (fork) is the
-            // rounded glass card, with the tab selector inside it.
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, {
                 let v = rubber_view.clone();
@@ -320,6 +310,9 @@ impl App {
                     let (pos, additive) =
                         (ev.position, ev.modifiers.control || ev.modifiers.platform);
                     v.update(cx, |this, cx| {
+                        if this.rename_edit.is_some() {
+                            this.commit_rename(cx);
+                        }
                         this.begin_rubber(pane_id, pos, additive);
                         cx.notify();
                     });
@@ -382,6 +375,9 @@ impl App {
                     .flex_1()
                     .min_h(px(0.))
                     .relative()
+                    .when(figma_glass, |s| s.bg(glass_fill()))
+                    .rounded_bl(px(12.0))
+                    .rounded_br(px(12.0))
                     .on_prepaint(pane_bounds_recorder(pane_id, &bounds_view))
                     .child(inner)
                     .child(filter_pill)
@@ -916,26 +912,6 @@ struct DetailsPaintColumn {
     line: ShapedLine,
 }
 
-struct DetailsPaneCanvasState {
-    rows: Vec<DetailsPanePaintRow>,
-}
-
-struct DetailsPanePaintRow {
-    y: f32,
-    odd: bool,
-    selected: bool,
-    flashing: bool,
-    icon_tex: Option<std::sync::Arc<gpui::RenderImage>>,
-    name_s: Option<ShapedLine>,
-    ellipsis_s: Option<ShapedLine>,
-    columns: Vec<DetailsPaintColumn>,
-}
-
-struct DetailsFallbackIcon {
-    y: f32,
-    icon: FileIcon,
-}
-
 fn prime_details_file_icons(
     app: &mut App,
     pane_id: TabId,
@@ -964,478 +940,6 @@ fn prime_details_file_icons(
     for file in &files {
         app.maybe_request_file_icon(file);
     }
-}
-
-fn details_fallback_icons(
-    app: &App,
-    pane_id: TabId,
-    visible: &[usize],
-    scroll_y: f32,
-    viewport_h: f32,
-) -> Vec<DetailsFallbackIcon> {
-    let Some(ts) = app.state.tab_states.get(&pane_id) else {
-        return Vec::new();
-    };
-    let start = (scroll_y / DETAILS_ROW_H).floor().max(0.0) as usize;
-    let end = ((scroll_y + viewport_h) / DETAILS_ROW_H).ceil() as usize + 1;
-    let end = end.min(visible.len());
-    (start..end)
-        .filter_map(|i| {
-            let entry = ts.entries.get(*visible.get(i)?)?;
-            let icon =
-                app.file_icon_for_entry(&entry.path, &entry.kind, entry.extension.as_deref());
-            icon.texture().is_none().then(|| DetailsFallbackIcon {
-                y: i as f32 * DETAILS_ROW_H,
-                icon,
-            })
-        })
-        .collect()
-}
-
-#[allow(clippy::too_many_arguments)]
-fn details_pane_canvas(
-    pane_id: TabId,
-    count: usize,
-    view: Entity<App>,
-    visible: Arc<Vec<usize>>,
-    layout: Arc<DetailsRowLayout>,
-    base_scroll: gpui::ScrollHandle,
-    fallback_icons: Vec<DetailsFallbackIcon>,
-    accent: Hsla,
-    accent_fg: Hsla,
-    _hover: Hsla,
-    muted: Hsla,
-    fg: Hsla,
-    stripe_bg: Hsla,
-    font_size: Pixels,
-    font: Font,
-) -> AnyElement {
-    let total_h = count as f32 * DETAILS_ROW_H;
-    let paint_view = view.clone();
-    let paint_visible = Arc::clone(&visible);
-    let paint_layout = Arc::clone(&layout);
-    let paint_scroll = base_scroll.clone();
-    let viewport_scroll = base_scroll.clone();
-    let font_p = font.clone();
-
-    let pane_canvas = canvas(
-        move |bounds, window, cx| {
-            crate::perf::count("details.pane_canvas.shape");
-            let _perf = crate::perf::span("details.pane_canvas.shape");
-            let scroll_top = (-f32::from(paint_scroll.offset().y)).max(0.0);
-            let app = paint_view.read(cx);
-            let Some(ts) = app.state.tab_states.get(&pane_id) else {
-                return DetailsPaneCanvasState { rows: Vec::new() };
-            };
-            let row_w = f32::from(bounds.size.width);
-            let scroll_viewport_h = f32::from(viewport_scroll.bounds().size.height);
-            let viewport_h = if scroll_viewport_h > 1.0 {
-                scroll_viewport_h
-            } else {
-                f32::from(bounds.size.height).min(DETAILS_ROW_H * 40.0)
-            };
-            let start = (scroll_top / DETAILS_ROW_H).floor().max(0.0) as usize;
-            let end = ((scroll_top + viewport_h) / DETAILS_ROW_H).ceil() as usize + 1;
-            let end = end.min(count);
-            if row_w < 160.0 {
-                crate::perf::count("details.pane_canvas.tiny");
-                let mut rows = Vec::with_capacity(end.saturating_sub(start));
-                for i in start..end {
-                    let Some(&entry_idx) = paint_visible.get(i) else {
-                        continue;
-                    };
-                    let Some(entry) = ts.entries.get(entry_idx) else {
-                        continue;
-                    };
-                    let flashing = matches!(entry.kind, FileKind::Dir)
-                        && app.drag_hover.blink_id.as_ref()
-                            == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
-                    rows.push(DetailsPanePaintRow {
-                        y: i as f32 * DETAILS_ROW_H,
-                        odd: i % 2 == 1,
-                        selected: ts.selection.selected.contains(&entry_idx),
-                        flashing,
-                        icon_tex: app
-                            .file_icon_for_entry(
-                                &entry.path,
-                                &entry.kind,
-                                entry.extension.as_deref(),
-                            )
-                            .texture(),
-                        name_s: None,
-                        ellipsis_s: None,
-                        columns: Vec::new(),
-                    });
-                }
-                crate::perf::count_by("details.pane_canvas.rows", rows.len() as u64);
-                return DetailsPaneCanvasState { rows };
-            }
-            let tsys = window.text_system();
-            let layout_ref = &*paint_layout;
-            let name_col_w = px(layout_ref.name_col_w.min((row_w - ROW_NAME_X).max(0.0)));
-            let mk = |s: &SharedString, color: Hsla| TextRun {
-                len: s.len(),
-                font: font_p.clone(),
-                color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-
-            let mut rows = Vec::with_capacity(end.saturating_sub(start));
-            for i in start..end {
-                let Some(&entry_idx) = paint_visible.get(i) else {
-                    continue;
-                };
-                let Some(entry) = ts.entries.get(entry_idx) else {
-                    continue;
-                };
-                let selected = ts.selection.selected.contains(&entry_idx);
-                let name_color = if selected { accent_fg } else { fg };
-                let meta_color = if selected { accent_fg } else { muted };
-                let name: SharedString = entry.name.clone().into();
-                let name_run = mk(&name, name_color);
-                let mut name_s = tsys.shape_line(name, font_size, &[name_run], None);
-                let ellipsis_s = if name_s.width() > name_col_w {
-                    let ellipsis: SharedString = "...".into();
-                    let e_run = mk(&ellipsis, name_color);
-                    let es = tsys.shape_line(ellipsis, font_size, &[e_run], None);
-                    let cutoff = (name_col_w - es.width()).max(px(0.));
-                    let split_idx = name_s.index_for_x(cutoff).unwrap_or(0);
-                    let (prefix, _) = name_s.split_at(split_idx);
-                    name_s = prefix;
-                    Some(es)
-                } else {
-                    None
-                };
-
-                let columns = layout_ref
-                    .columns
-                    .iter()
-                    .filter(|col| col.x < row_w && col.w > 1.0)
-                    .map(|col| {
-                        let text: SharedString = match col.column {
-                            DetailsColumn::Size => {
-                                if matches!(entry.kind, FileKind::Dir) {
-                                    SharedString::default()
-                                } else {
-                                    entry.size.map(format_size).unwrap_or_default().into()
-                                }
-                            }
-                            DetailsColumn::Modified => {
-                                entry.modified.map(format_date).unwrap_or_default().into()
-                            }
-                            DetailsColumn::Type => {
-                                file_category(&entry.kind, entry.extension.as_deref())
-                                    .to_string()
-                                    .into()
-                            }
-                        };
-                        let run = mk(&text, meta_color);
-                        DetailsPaintColumn {
-                            column: col.column,
-                            line: tsys.shape_line(text, font_size, &[run], None),
-                        }
-                    })
-                    .collect();
-
-                let flashing = matches!(entry.kind, FileKind::Dir)
-                    && app.drag_hover.blink_id.as_ref()
-                        == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
-                rows.push(DetailsPanePaintRow {
-                    y: i as f32 * DETAILS_ROW_H,
-                    odd: i % 2 == 1,
-                    selected,
-                    flashing,
-                    icon_tex: app
-                        .file_icon_for_entry(&entry.path, &entry.kind, entry.extension.as_deref())
-                        .texture(),
-                    name_s: Some(name_s),
-                    ellipsis_s,
-                    columns,
-                });
-            }
-            crate::perf::count_by("details.pane_canvas.rows", rows.len() as u64);
-            DetailsPaneCanvasState { rows }
-        },
-        move |bounds, state, window, cx| {
-            crate::perf::count("details.pane_canvas.paint");
-            let _perf = crate::perf::span("details.pane_canvas.paint");
-            let layout_ref = &*layout;
-            for row in &state.rows {
-                let row_bounds = Bounds {
-                    origin: point(bounds.origin.x, bounds.origin.y + px(row.y)),
-                    size: size(bounds.size.width, px(DETAILS_ROW_H)),
-                };
-                if row.selected {
-                    window.paint_quad(fill(row_bounds, accent));
-                } else if row.flashing {
-                    window.paint_quad(fill(row_bounds, accent.opacity(0.38)));
-                } else if row.odd {
-                    window.paint_quad(fill(row_bounds, stripe_bg));
-                }
-
-                let text_y = row_bounds.origin.y + px(ROW_TEXT_Y_NUDGE);
-                if let Some(tex) = &row.icon_tex {
-                    let _ = window.paint_image(
-                        Bounds {
-                            origin: point(
-                                row_bounds.origin.x + px(ROW_PAD_X),
-                                row_bounds.origin.y + px((DETAILS_ROW_H - ROW_ICON_SIZE) * 0.5),
-                            ),
-                            size: size(px(ROW_ICON_SIZE), px(ROW_ICON_SIZE)),
-                        },
-                        Corners::default(),
-                        tex.clone(),
-                        0,
-                        false,
-                    );
-                }
-
-                let name_x = row_bounds.origin.x + px(ROW_NAME_X);
-                if let Some(name_s) = &row.name_s {
-                    window.paint_layer(
-                        Bounds {
-                            origin: point(name_x, row_bounds.origin.y),
-                            size: size(px(layout_ref.name_col_w), row_bounds.size.height),
-                        },
-                        |window| {
-                            let _ = name_s.paint(
-                                point(name_x, text_y),
-                                px(DETAILS_ROW_H),
-                                TextAlign::Left,
-                                None,
-                                window,
-                                cx,
-                            );
-                            if let Some(ref es) = row.ellipsis_s {
-                                let _ = es.paint(
-                                    point(name_x + name_s.width(), text_y),
-                                    px(DETAILS_ROW_H),
-                                    TextAlign::Left,
-                                    None,
-                                    window,
-                                    cx,
-                                );
-                            }
-                        },
-                    );
-                } else {
-                    let line_w = (f32::from(row_bounds.size.width) - ROW_NAME_X - 8.0)
-                        .max(0.0)
-                        .min(52.0);
-                    if line_w > 4.0 {
-                        let color = if row.selected { accent_fg } else { muted }.opacity(0.28);
-                        window.paint_quad(fill(
-                            Bounds {
-                                origin: point(
-                                    row_bounds.origin.x + px(ROW_NAME_X),
-                                    row_bounds.origin.y + px(DETAILS_ROW_H * 0.5 - 1.0),
-                                ),
-                                size: size(px(line_w), px(2.0)),
-                            },
-                            color,
-                        ));
-                    }
-                }
-
-                for paint_col in &row.columns {
-                    let Some(layout_col) = layout_ref
-                        .columns
-                        .iter()
-                        .find(|col| col.column == paint_col.column)
-                    else {
-                        continue;
-                    };
-                    let col_x = row_bounds.origin.x + px(layout_col.x);
-                    let text_x = col_x + px(CELL_PAD.min(layout_col.w));
-                    window.paint_layer(
-                        Bounds {
-                            origin: point(col_x, row_bounds.origin.y),
-                            size: size(px(layout_col.w), row_bounds.size.height),
-                        },
-                        |window| {
-                            let _ = paint_col.line.paint(
-                                point(text_x, text_y),
-                                px(DETAILS_ROW_H),
-                                TextAlign::Left,
-                                None,
-                                window,
-                                cx,
-                            );
-                        },
-                    );
-                }
-            }
-        },
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .right_0()
-    .h(px(total_h.max(DETAILS_ROW_H)));
-
-    let hit_view = view.clone();
-    let hit_visible = Arc::clone(&visible);
-    let hit_scroll = base_scroll.clone();
-    let row_at = move |pos: gpui::Point<Pixels>| -> Option<usize> {
-        let bounds = hit_scroll.bounds();
-        let local_y =
-            f32::from(pos.y) - f32::from(bounds.origin.y) - f32::from(hit_scroll.offset().y);
-        let visible_ix = (local_y / DETAILS_ROW_H).floor() as usize;
-        hit_visible.get(visible_ix).copied()
-    };
-    let click_row_at = row_at.clone();
-    let down_row_at = click_row_at.clone();
-    let right_row_at = row_at;
-    let drag_view = view.clone();
-    let record_view = view.clone();
-    let record_visible = Arc::clone(&visible);
-    let record_scroll = base_scroll.clone();
-    let clamp_scroll = base_scroll.clone();
-
-    div()
-        .id(SharedString::from(format!(
-            "details-canvas-scroll-{}",
-            pane_id.0
-        )))
-        .size_full()
-        .relative()
-        .overflow_y_scroll()
-        .track_scroll(&base_scroll)
-        .child(
-            div()
-                .relative()
-                .w_full()
-                .h(px(total_h.max(DETAILS_ROW_H)))
-                .child(pane_canvas)
-                .children(fallback_icons.into_iter().map(|icon| {
-                    div()
-                        .absolute()
-                        .left(px(ROW_PAD_X))
-                        .top(px(icon.y + (DETAILS_ROW_H - ROW_ICON_SIZE) * 0.5))
-                        .w(px(ROW_ICON_SIZE))
-                        .h(px(ROW_ICON_SIZE))
-                        .child(icon.icon.element(ROW_ICON_SIZE, muted))
-                })),
-        )
-        .vertical_scrollbar(&base_scroll)
-        .on_mouse_down(MouseButton::Left, {
-            let rv = view.clone();
-            move |ev, _window, cx| {
-                if let Some(entry_idx) = down_row_at(ev.position) {
-                    let is_selected = rv.read(cx).state.tab_states.get(&pane_id).is_some_and(|ts| ts.selection.selected.contains(&entry_idx));
-                    if is_selected {
-                        cx.stop_propagation();
-                    } else {
-                        let (pos, additive) = (ev.position, ev.modifiers.control || ev.modifiers.platform);
-                        rv.update(cx, |this, cx| {
-                            this.begin_rubber(pane_id, pos, additive);
-                            cx.notify();
-                        });
-                        cx.stop_propagation();
-                    }
-                }
-            }
-        })
-        .on_drag(
-            crate::ui::drag::file_drag_value(vec![]),
-            {
-                let v = view.clone();
-                let drag_row_at = click_row_at.clone();
-                move |_d, pos, window, cx| {
-                    let Some(entry_idx) = drag_row_at(pos) else {
-                        return cx.new(|_| crate::ui::drag::file_drag_value(vec![]));
-                    };
-                    
-                    let is_selected = v.read(cx).state.tab_states.get(&pane_id).is_some_and(|ts| ts.selection.selected.contains(&entry_idx));
-                    
-                    if is_selected {
-                        let path = v.read(cx).state.tab_states.get(&pane_id).and_then(|ts| ts.entries.get(entry_idx)).map(|e| e.path.clone()).unwrap_or_default();
-                        
-                        let handler = crate::ui::drag::file_drag_handler_for_item(
-                            v.clone(),
-                            pane_id,
-                            entry_idx,
-                            path,
-                        );
-                        let payload = crate::ui::drag::file_drag_value(vec![]); 
-                        handler(&payload, pos, window, cx)
-                    } else {
-                        cx.new(|_| crate::ui::drag::file_drag_value(vec![]))
-                    }
-                }
-            }
-        )
-        .on_click(move |ev, _window, cx| {
-            let Some(entry_idx) = click_row_at(ev.position()) else {
-                return;
-            };
-            let m = ev.modifiers();
-            let (shift, ctrl) = (m.shift, m.control || m.platform);
-            hit_view.update(cx, |this, cx| {
-                if ev.click_count() >= 2 {
-                    this.process_actions(vec![Action::Activate {
-                        tile: pane_id,
-                        idx: entry_idx,
-                    }]);
-                } else {
-                    this.process_actions(vec![Action::Select {
-                        tile: pane_id,
-                        idx: entry_idx,
-                        shift,
-                        ctrl,
-                    }]);
-                }
-                cx.notify();
-            });
-        })
-        .on_mouse_down(MouseButton::Right, move |ev, window, cx| {
-            let Some(entry_idx) = right_row_at(ev.position) else {
-                return;
-            };
-            let pos = ev.position;
-            drag_view.update(cx, |this, cx| {
-                let paths = this.select_context_menu_paths(pane_id, entry_idx);
-                this.open_ctx_menu(paths, pos, window, cx);
-                cx.notify();
-            });
-        })
-        .on_prepaint(move |bounds, _window, cx| {
-            let viewport_h = f32::from(bounds.size.height);
-            if viewport_h > 1.0 {
-                let max_scroll = (total_h - viewport_h).max(0.0);
-                let scroll_y = (-f32::from(clamp_scroll.offset().y)).max(0.0);
-                if scroll_y > max_scroll {
-                    let offset = clamp_scroll.offset();
-                    clamp_scroll.set_offset(point(offset.x, px(-max_scroll)));
-                }
-            }
-            record_view.update(cx, |this, _cx| {
-                let scroll_top = (-f32::from(record_scroll.offset().y)).max(0.0);
-                let start = (scroll_top / DETAILS_ROW_H).floor().max(0.0) as usize;
-                let end = ((scroll_top + f32::from(bounds.size.height)) / DETAILS_ROW_H).ceil()
-                    as usize
-                    + 1;
-                let end = end.min(record_visible.len());
-                let rows = this.row_rects.entry(pane_id).or_default();
-                for i in start..end {
-                    if let Some(&entry_idx) = record_visible.get(i) {
-                        let y = bounds.origin.y
-                            + px(i as f32 * DETAILS_ROW_H)
-                            + record_scroll.offset().y;
-                        rows.push((
-                            entry_idx,
-                            Bounds {
-                                origin: point(bounds.origin.x, y),
-                                size: size(bounds.size.width, px(DETAILS_ROW_H)),
-                            },
-                        ));
-                    }
-                }
-            });
-        })
-        .into_any_element()
 }
 
 fn details_column_width_raw(
@@ -1534,9 +1038,10 @@ fn canvas_row(
     font_size: Pixels,
     font: Font,
     row_h: f32,
+    window: &mut Window,
 ) -> AnyElement {
-    if rename_input.is_some() {
-        return render_row(
+    if let Some(input) = rename_input {
+        return render_rename_row(
             entry,
             entry_idx,
             odd,
@@ -1548,11 +1053,13 @@ fn canvas_row(
             hover,
             muted,
             stripe_bg,
-            rename_input,
+            input,
             flashing,
             record_rects,
             icon_tex,
             &layout,
+            window,
+            font_size,
         );
     }
 
@@ -1779,6 +1286,9 @@ fn canvas_row(
                 let m = ev.modifiers();
                 let (shift, ctrl) = (m.shift, m.control || m.platform);
                 v.update(cx, |this, cx| {
+                    if this.rename_edit.is_some() {
+                        this.commit_rename(cx);
+                    }
                     if ev.click_count() >= 2 {
                         this.process_actions(vec![Action::Activate {
                             tile: pane_id,
@@ -1873,32 +1383,33 @@ fn canvas_row(
         .into_any_element()
 }
 
-/// One file row in the Details list. Selection/activation route through `Action`s,
-/// reading click modifiers (shift = range, ctrl/cmd = toggle) and count (≥2 = open).
 #[allow(clippy::too_many_arguments)]
-fn render_row(
+fn render_rename_row(
     entry: &FileEntry,
     entry_idx: usize,
     odd: bool,
-    selected: bool,
+    _selected: bool,
     pane_id: TabId,
     view: &Entity<App>,
     accent: Hsla,
-    accent_fg: Hsla,
-    hover: Hsla,
+    _accent_fg: Hsla,
+    _hover: Hsla,
     muted: Hsla,
     stripe_bg: Hsla,
-    rename_input: Option<Entity<InputState>>,
+    rename_input: Entity<InputState>,
     flashing: bool,
     record_rects: bool,
     icon_tex: Option<std::sync::Arc<gpui::RenderImage>>,
     layout: &DetailsRowLayout,
+    window: &mut Window,
+    font_size: Pixels,
 ) -> AnyElement {
     let is_dir = matches!(entry.kind, FileKind::Dir);
     let name = entry.name.clone();
-    let v = view.clone();
-    // Metadata cells in the shared layout's order/widths so the edited row keeps
-    // lining up with the canvas rows around it.
+    let fallback_icon = FileIcon::Builtin {
+        kind: entry.kind.clone(),
+        extension: entry.extension.clone(),
+    };
     let meta_cells = layout.columns.iter().map(|col| {
         let text = match col.column {
             DetailsColumn::Size => {
@@ -1912,14 +1423,20 @@ fn render_row(
             DetailsColumn::Type => entry_type_label(entry),
         };
         div()
+            .absolute()
+            .left(px(col.x))
+            .top_0()
+            .bottom_0()
             .w(px(col.w))
-            .flex_none()
+            .flex()
+            .items_center()
             .pl(px(CELL_PAD))
             .overflow_hidden()
-            .when(!selected, |s| s.text_color(muted))
+            .text_color(muted)
             .child(text)
     });
-    h_flex()
+
+    div()
         .id(SharedString::from(format!(
             "row-{}-{}",
             pane_id.0, entry_idx
@@ -1928,175 +1445,50 @@ fn render_row(
             s.on_prepaint(rect_recorder(pane_id, entry_idx, view))
         })
         .w_full()
-        .px_2()
-        .py(px(3.))
-        .gap_2()
-        .items_center()
+        .h(px(DETAILS_ROW_H))
+        .relative()
+        .overflow_hidden()
         .rounded_sm()
         .cursor_pointer()
-        .when(selected, |s| s.bg(accent).text_color(accent_fg))
-        .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
-        .when(!selected && odd, |s| s.bg(stripe_bg))
-        .when(!selected, |s| s.hover(|h| h.bg(hover)))
-        // Icon
+        .when(flashing, |s| s.bg(accent.opacity(0.38)))
+        .when(!flashing && odd, |s| s.bg(stripe_bg))
         .child(
-            div().w(px(20.)).child(match icon_tex {
-                Some(tex) => img(tex)
-                    .w(px(16.))
-                    .h(px(16.))
-                    .flex_none()
-                    .into_any_element(),
-                None => FileIcon::Builtin {
-                    kind: entry.kind.clone(),
-                    extension: entry.extension.clone(),
-                }
-                .element(16.0, muted),
-            }),
-        )
-        // Name
-        .child(match &rename_input {
-            Some(input) => div()
-                .flex_1()
-                .min_w(px(0.))
-                .child(crate::ui::text_input::bordered(input))
-                .into_any_element(),
-            None => div()
-                .flex_1()
-                .min_w(px(0.))
-                .truncate()
-                .child(name)
-                .into_any_element(),
-        })
-        // Metadata columns (shared layout order/widths).
-        .children(meta_cells)
-        // Trailing "dead zone": starts a rubber-band drag from within a row (the row
-        // swallows left mouse-down for selection, so this column re-initiates it).
-        .child({
-            let rv = view.clone();
             div()
-                .w(px(40.))
-                .h_full()
-                .on_mouse_down(MouseButton::Left, move |ev, _window, cx| {
-                    let (pos, additive) =
-                        (ev.position, ev.modifiers.control || ev.modifiers.platform);
-                    rv.update(cx, |this, cx| {
-                        this.begin_rubber(pane_id, pos, additive);
-                        cx.notify();
-                    });
-                    cx.stop_propagation();
-                })
-        })
-        .on_click(move |ev, _window, cx| {
-            let m = ev.modifiers();
-            let shift = m.shift;
-            let ctrl = m.control || m.platform;
-            let activate = ev.click_count() >= 2;
-            v.update(cx, |this, cx| {
-                if activate {
-                    this.process_actions(vec![Action::Activate {
-                        tile: pane_id,
-                        idx: entry_idx,
-                    }]);
-                } else {
-                    this.process_actions(vec![Action::Select {
-                        tile: pane_id,
-                        idx: entry_idx,
-                        shift,
-                        ctrl,
-                    }]);
-                }
-                cx.notify();
-            });
-        })
-        .on_mouse_down(MouseButton::Right, {
-            let rv = view.clone();
-            move |ev, window, cx| {
-                let pos = ev.position;
-                rv.update(cx, |this, cx| {
-                    let paths = this.select_context_menu_paths(pane_id, entry_idx);
-                    this.open_ctx_menu(paths, pos, window, cx);
-                    cx.notify();
-                });
-            }
-        })
-        .when(!selected, |s| {
-            let rv = view.clone();
-            s.on_mouse_down(MouseButton::Left, move |ev, _window, cx| {
-                let (pos, additive) = (ev.position, ev.modifiers.control || ev.modifiers.platform);
-                rv.update(cx, |this, cx| {
-                    this.begin_rubber(pane_id, pos, additive);
-                    cx.notify();
-                });
-                cx.stop_propagation();
-            })
-        })
-        .when(selected, |s| {
-            s.on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
-                cx.stop_propagation();
-            })
-            .on_drag(
-                crate::ui::drag::file_drag_value(vec![entry.path.clone()]),
-                crate::ui::drag::file_drag_handler_for_item(
-                    view.clone(),
-                    pane_id,
-                    entry_idx,
-                    entry.path.clone(),
-                ),
-            )
-        })
-        .when(matches!(entry.kind, FileKind::Dir), |s| {
-            let dest = entry.path.clone();
-            let hover_id = DragHoverId::Folder(pane_id, dest.clone());
-            let dest_internal = dest.clone();
-            let dest_external = dest.clone();
-            let mv = view.clone();
-            let cpv = view.clone();
-            s.drag_over::<DraggedFiles>(|s, _, _, _| s.opacity(0.6))
-                .on_prepaint(drag_hover_recorder_with_drop(
-                    hover_id,
-                    DragHoverKind::Folder,
-                    DragHoverCommand::NavigatePathIn(pane_id, dest.clone()),
-                    DragHoverDropCommand::TransferTo(dest.clone()),
+                .absolute()
+                .left(px(ROW_PAD_X))
+                .top(px((DETAILS_ROW_H - ROW_ICON_SIZE) * 0.5))
+                .w(px(ROW_ICON_SIZE))
+                .h(px(ROW_ICON_SIZE))
+                .child(match icon_tex {
+                    Some(tex) => img(tex)
+                        .w(px(ROW_ICON_SIZE))
+                        .h(px(ROW_ICON_SIZE))
+                        .flex_none()
+                        .into_any_element(),
+                    None => fallback_icon.element(ROW_ICON_SIZE, muted),
+                }),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(ROW_NAME_X))
+                .top_0()
+                .w(px(crate::ui::views::rename::input_width(
+                    &name,
+                    layout.name_col_w.max(ROW_NAME_MIN_W),
+                    font_size,
+                    window,
+                )))
+                .child(crate::ui::views::rename::input_element(
+                    &rename_input,
                     view,
-                ))
-                .on_drop::<DraggedFiles>(move |d, _window, cx| {
-                    let paths = d.paths.clone();
-                    mv.update(cx, |this, cx| {
-                        this.execute_drag_hover_drop_command(
-                            DragHoverDropCommand::TransferTo(dest_internal.clone()),
-                            paths,
-                            true,
-                        );
-                        cx.notify();
-                    });
-                })
-                .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
-                    let paths = paths.paths().to_vec();
-                    cpv.update(cx, |this, cx| {
-                        this.execute_drag_hover_drop_command(
-                            DragHoverDropCommand::TransferTo(dest_external.clone()),
-                            paths,
-                            false,
-                        );
-                        cx.notify();
-                    });
-                })
-        })
-        // While renaming this row, Enter commits and Esc cancels (capture phase so the
-        // focused input doesn't swallow them first).
-        .when_some(rename_input, |row, _input| {
-            let cv = view.clone();
-            row.capture_key_down(move |ev, _window, app| match ev.keystroke.key.as_str() {
-                "enter" => {
-                    cv.update(app, App::commit_rename);
-                    app.stop_propagation();
-                }
-                "escape" => {
-                    cv.update(app, |this, _cx| this.cancel_rename());
-                    app.stop_propagation();
-                }
-                _ => {}
-            })
+                    DETAILS_ROW_H,
+                    font_size,
+                )),
+        )
+        .children(meta_cells)
+        .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
+            cx.stop_propagation();
         })
         .into_any_element()
 }

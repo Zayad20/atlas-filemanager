@@ -5,7 +5,7 @@ use gpui::{img, AnyElement, Hsla, IntoElement, RenderImage, Styled};
 
 use crate::app::App;
 use crate::state::file_entry::FileKind;
-use crate::ui::icons::file_type_icon;
+use crate::ui::icons::{file_type_icon, is_windows_theme};
 
 #[derive(Clone)]
 pub(crate) struct FileIconRef {
@@ -84,7 +84,7 @@ impl App {
 
     pub(crate) fn maybe_request_file_icon(&mut self, file: &FileIconRef) {
         #[cfg(target_os = "windows")]
-        if self.state.profiles.active().theme == "Atlas Windows" && file.kind == FileKind::Dir {
+        if is_windows_theme(&self.state.profiles.active().theme) && file.kind == FileKind::Dir {
             self.request_shell_thumbnail_or_icon(file.path.clone());
         }
     }

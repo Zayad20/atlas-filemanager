@@ -187,6 +187,10 @@ pub struct App {
     // the active drag intersects its rectangle against them to drive the selection.
     pub(crate) rubber: Option<RubberDrag>,
     pub(crate) row_rects: HashMap<TileId, Vec<(usize, gpui::Bounds<gpui::Pixels>)>>,
+    pub(crate) dropzone_selected: HashSet<PathBuf>,
+    pub(crate) dropzone_rects: Vec<(PathBuf, gpui::Bounds<gpui::Pixels>)>,
+    pub(crate) dropzone_bounds: Option<gpui::Bounds<gpui::Pixels>>,
+    pub(crate) dropzone_drag_paths: HashSet<PathBuf>,
     // FASE F: pane drop-zones for the OLE drop target. Each frame's render path
     // pushes one DropZone per visible pane (via on_prepaint) into this vec; at the
     // start of the next frame the vec is committed to `dnd.zones` (Windows only) so
@@ -217,6 +221,7 @@ pub struct App {
     pub(crate) rename_remote_input: Option<Entity<InputState>>,
     /// In-flight inline rename (one row at a time). Holds the native input being edited.
     pub(crate) rename_edit: Option<RenameEdit>,
+    pub(crate) rename_visual_suppress: Option<(TileId, usize, u8)>,
     // Goto bar "search in content": matching file paths from the latest grep, the
     // generation that produced them (stale batches are dropped), and the cancel flag
     // shared with the in-flight background search.
@@ -434,7 +439,9 @@ impl DockSplitAnimation {
         Self::opening(from, to, inserted_ix)
     }
 
-    pub(crate) fn opening(mut from: Vec<f32>, to: Vec<f32>, inserted_ix: usize) -> Self {
+    pub(crate) fn opening(mut from: Vec<f32>, mut to: Vec<f32>, inserted_ix: usize) -> Self {
+        normalize_split_shares(&mut from);
+        normalize_split_shares(&mut to);
         if from.len() + 1 == to.len() && inserted_ix <= from.len() {
             let start = 0.01;
             let delta = to
@@ -453,6 +460,7 @@ impl DockSplitAnimation {
         } else {
             from = to.clone();
         }
+        normalize_split_shares(&mut from);
         Self {
             from,
             to,
@@ -461,7 +469,8 @@ impl DockSplitAnimation {
         }
     }
 
-    pub(crate) fn closing(from: Vec<f32>, closing_ix: usize) -> Self {
+    pub(crate) fn closing(mut from: Vec<f32>, closing_ix: usize) -> Self {
+        normalize_split_shares(&mut from);
         let mut to = from.clone();
         if closing_ix < to.len() {
             let end = 0.01;
@@ -476,6 +485,7 @@ impl DockSplitAnimation {
                 to[ix] += delta;
             }
         }
+        normalize_split_shares(&mut to);
         Self {
             from,
             to,
@@ -492,15 +502,39 @@ impl DockSplitAnimation {
         } else {
             eased
         };
-        self.from
+        let mut shares = self
+            .from
             .iter()
             .zip(&self.to)
             .map(|(from, to)| from + (to - from) * eased)
-            .collect()
+            .collect::<Vec<_>>();
+        normalize_split_shares(&mut shares);
+        shares
     }
 
     pub(crate) fn done(&self) -> bool {
         self.started.elapsed() >= Self::DURATION
+    }
+}
+
+pub(crate) fn normalize_split_shares(shares: &mut [f32]) {
+    if shares.is_empty() {
+        return;
+    }
+    for share in shares.iter_mut() {
+        if !share.is_finite() || *share <= 0.0 {
+            *share = 1.0;
+        }
+    }
+    let sum = shares.iter().sum::<f32>();
+    if sum <= f32::EPSILON {
+        shares.fill(1.0);
+        return;
+    }
+    let max = shares.len() as f32;
+    let scale = max / sum;
+    for share in shares {
+        *share = (*share * scale).clamp(0.01, max);
     }
 }
 
@@ -510,6 +544,33 @@ fn split_spring(t: f32) -> f32 {
     let wd = omega * (1.0 - zeta * zeta).sqrt();
     let e = (-zeta * omega * t).exp();
     1.0 - e * ((wd * t).cos() + (zeta * omega / wd) * (wd * t).sin())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_animation_normalizes_runaway_shares() {
+        let anim = DockSplitAnimation::closing(vec![8_430_453.0, 7_901_766.0, 168_608_530.0], 2);
+
+        assert!(anim.from.iter().all(|share| share.is_finite()));
+        assert!(anim.to.iter().all(|share| share.is_finite()));
+        assert!(anim.from.iter().all(|share| *share <= 3.0));
+        assert!(anim.to.iter().all(|share| *share <= 3.0));
+    }
+
+    #[test]
+    fn split_animation_replaces_bad_shares() {
+        let anim = DockSplitAnimation::opening(vec![f32::NAN], vec![f32::INFINITY, -1.0], 1);
+
+        assert!(anim
+            .from
+            .iter()
+            .chain(&anim.to)
+            .all(|share| share.is_finite()));
+        assert!(anim.from.iter().chain(&anim.to).all(|share| *share > 0.0));
+    }
 }
 
 /// Widths of the fixed-width columns in the Details view (Name is flex_1, not stored).
@@ -698,17 +759,24 @@ pub struct RenameEdit {
     pub(crate) initial_select_chars: Option<u32>,
 }
 
-/// In-flight rubber-band selection (one pane at a time).
+/// In-flight rubber-band selection.
 pub struct RubberDrag {
-    pub(crate) pane: TileId,
+    pub(crate) target: RubberTarget,
     pub(crate) origin: gpui::Point<gpui::Pixels>,
     pub(crate) current: gpui::Point<gpui::Pixels>,
     /// Selection before the drag began (kept when Ctrl/Cmd makes the drag additive).
     pub(crate) base: HashSet<usize>,
+    pub(crate) dropzone_base: HashSet<PathBuf>,
     pub(crate) additive: bool,
     /// True once the cursor has moved at least 4 px from origin. Prevents a plain
     /// click from drawing a marquee or clearing the selection prematurely.
     pub(crate) started: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RubberTarget {
+    Pane(TileId),
+    Dropzone,
 }
 
 // FASE5: pub(crate) so the gpui inspector module (crate::ui::inspector) can reuse
@@ -970,7 +1038,14 @@ impl App {
     ) {
         let Some(hwnd) = self.hwnd else { return };
         let queue = self.dnd.as_ref().map(|d| d.action_queue.clone());
+        let archive_len = archive_items.as_ref().map_or(0, Vec::len);
         let (paths, stale): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| p.exists());
+        tracing::debug!(
+            paths = paths.len(),
+            stale = stale.len(),
+            archive_len,
+            "dnd trigger_os_drag"
+        );
         if !stale.is_empty() {
             if let Some(q) = queue.as_ref().and_then(|q| q.lock().ok()) {
                 let mut q = q;
@@ -989,6 +1064,30 @@ impl App {
             return;
         }
         crate::dnd::windows::trigger_drag(hwnd, paths, archive_items, queue);
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn trigger_os_drag_copy_only(&self, paths: Vec<PathBuf>) {
+        let Some(hwnd) = self.hwnd else { return };
+        let queue = self.dnd.as_ref().map(|d| d.action_queue.clone());
+        let (paths, stale): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| p.exists());
+        if !stale.is_empty() {
+            if let Some(q) = queue.as_ref().and_then(|q| q.lock().ok()) {
+                let mut q = q;
+                for p in &stale {
+                    q.push(crate::dnd::windows::DndEvent::Error(
+                        rust_i18n::t!(
+                            "app_path_not_exists",
+                            path = p.file_name().unwrap_or_default().to_string_lossy()
+                        )
+                        .to_string(),
+                    ));
+                }
+            }
+        }
+        if !paths.is_empty() {
+            crate::dnd::windows::trigger_drag_copy_only(hwnd, paths);
+        }
     }
 
     /// Record a pane's window-space bounds so the OLE drop target can route external

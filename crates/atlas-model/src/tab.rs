@@ -232,6 +232,8 @@ impl TabState {
         self.visible_valid = false;
         self.selection.clear();
         self.filter.clear();
+        self.show_files = true;
+        self.show_folders = true;
         self.search.reset();
         self.path_edit.editing = false;
         self.path_edit.error = None;
@@ -396,6 +398,20 @@ mod tests {
         let c = ts.counts();
         assert_eq!(c.files_shown, 1);
         assert_eq!(c.folders_shown, 0);
+    }
+
+    #[test]
+    fn navigation_resets_kind_visibility() {
+        let mut ts = TabState::default();
+        ts.set_visibility(true, false);
+
+        ts.begin_navigation();
+
+        ts.set_entries(vec![
+            entry("docs", FileKind::Dir),
+            entry("a.txt", FileKind::File),
+        ]);
+        assert_eq!(ts.visible_indices(), &[0, 1]);
     }
 }
 

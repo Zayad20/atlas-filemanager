@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{div, px, Context, Render, SharedString, Window};
+use gpui::{px, Context, Render, SharedString, Window};
 use gpui_component::{h_flex, ActiveTheme as _};
 
 use crate::state::layout_tree::TileId;
@@ -23,11 +23,4 @@ impl Render for TabDrag {
 
 pub(crate) fn tab_drag_entity(pane_id: TileId, cx: &mut gpui::App) -> gpui::Entity<TabDrag> {
     cx.new(|_| TabDrag { pane_id })
-}
-
-pub(crate) fn edge_zone() -> gpui::Div {
-    div()
-        .absolute()
-        .bg(gpui::transparent_black())
-        .hover(|s| s.bg(gpui::hsla(0.58, 0.75, 0.52, 0.18)))
 }

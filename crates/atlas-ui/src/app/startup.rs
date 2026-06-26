@@ -322,6 +322,14 @@ impl App {
             .active()
             .scoped::<crate::app::profiles::DetailsColumns>();
 
+        let nucleo = NucleoPool::new();
+        let goto_root = state
+            .active_tab_data()
+            .and_then(|td| td.location.fs_dir().map(std::path::Path::to_path_buf))
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| std::path::PathBuf::from("/"));
+        crate::fs::index::build_index(goto_root.clone(), nucleo.injector());
+
         Self {
             state,
             startup_started,
@@ -332,9 +340,9 @@ impl App {
             focus_handle,
             scroll_handles: HashMap::new(),
             watchers: HashMap::new(),
-            nucleo: NucleoPool::new(),
+            nucleo,
             nucleo_results: Vec::new(),
-            goto_index_root: None,
+            goto_index_root: Some((goto_root, false)),
             goto_prefill: None,
             fuzzy_scorer: crate::search::fuzzy::FuzzyScorer::new(),
             palette_scroll: gpui::ScrollHandle::new(),
@@ -372,6 +380,10 @@ impl App {
             // FASE C: rubber-band selection state.
             rubber: None,
             row_rects: HashMap::new(),
+            dropzone_selected: HashSet::new(),
+            dropzone_rects: Vec::new(),
+            dropzone_bounds: None,
+            dropzone_drag_paths: HashSet::new(),
             pending_pane_zones: Vec::new(),
             goto_input: None,
             palette_input: None,
@@ -384,6 +396,7 @@ impl App {
             create_tag_input: None,
             renaming_profile_idx: None,
             rename_edit: None,
+            rename_visual_suppress: None,
             content_results: Vec::new(),
             content_gen: 0,
             content_cancel: None,

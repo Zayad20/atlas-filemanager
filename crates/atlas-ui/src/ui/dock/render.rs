@@ -1,16 +1,16 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, AnimationExt, AnyElement, Context, Entity, Focusable, Hsla, MouseButton, SharedString,
-    Window,
+    div, px, relative, AnimationExt, AnyElement, Context, Entity, Focusable, Hsla, MouseButton,
+    SharedString, Window,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme as _, ElementExt as _};
 
 use crate::app::{App, PaneAnimation, PaneAnimationKind};
 use crate::input::action::Action;
 use crate::state::layout_tree::{Container, LinearDir, Tile, TileId};
-use crate::ui::dock::drag::{edge_zone, tab_drag_entity, TabDrag};
-use crate::ui::glass::{backdrop_tint, GlassExt};
-use crate::ui::icons::{icon, windows_icon, AtlasIcon};
+use crate::ui::dock::drag::{tab_drag_entity, TabDrag};
+use crate::ui::glass::{backdrop_tint, glass_chip_fill, glass_fill, GlassExt};
+use crate::ui::icons::{icon, is_windows_theme, windows_icon, AtlasIcon};
 use crate::ui::pane_panel::FilePanel;
 use crate::util::display::display_name;
 use std::time::Instant;
@@ -25,6 +25,35 @@ enum SplitMotion {
 enum TabMotion {
     Opening(Instant),
     Closing(Instant),
+}
+
+fn split_drop_zone(kind: AtlasIcon) -> gpui::Div {
+    div()
+        .absolute()
+        .opacity(0.0)
+        .bg(gpui::transparent_black())
+        .drag_over::<TabDrag>(|s, _, _, _| s.opacity(1.0).bg(gpui::hsla(0.58, 0.70, 0.42, 0.24)))
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .size(px(58.))
+                        .rounded(px(10.))
+                        .border_1()
+                        .border_color(gpui::hsla(0.58, 0.84, 0.58, 0.78))
+                        .bg(gpui::hsla(0.58, 0.78, 0.30, 0.58))
+                        .shadow_lg()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon(kind, 26.0, gpui::hsla(0.58, 0.90, 0.84, 1.0))),
+                ),
+        )
 }
 
 impl App {
@@ -87,7 +116,8 @@ impl App {
                 .min_w(px(0.))
                 .min_h(px(0.))
                 .items_stretch();
-                let final_shares = linear.shares;
+                let mut final_shares = linear.shares;
+                crate::app::normalize_split_shares(&mut final_shares);
                 let sum: f32 = final_shares.iter().copied().filter(|v| *v > 0.0).sum();
                 let shares = if final_shares.len() == children.len() && sum > f32::EPSILON {
                     self.dock_split_shares(id, final_shares, window, cx)
@@ -218,10 +248,12 @@ impl App {
         let shares = anim.shares();
         let elapsed_ms = anim.started.elapsed().as_millis();
         if anim.closing && (elapsed_ms < 20 || elapsed_ms % 80 < 18) {
-            eprintln!(
-                "[atlas close] split_frame parent={} elapsed_ms={} shares={:?}",
-                id.0, elapsed_ms, shares
-            );
+            crate::perf::event(|| {
+                format!(
+                    "pane_close.split_frame parent={} elapsed_ms={} shares={:?}",
+                    id.0, elapsed_ms, shares
+                )
+            });
         }
         shares
     }
@@ -245,20 +277,35 @@ impl App {
             .filter(|id| children.contains(id))
             .or_else(|| children.first().copied());
         let content = active
-            .map(|id| self.get_or_make_file_panel(id, cx).into_any_element())
+            .map(|id| {
+                if self.should_render_pane_body(id) {
+                    self.get_or_make_file_panel(id, cx).into_any_element()
+                } else {
+                    crate::perf::count("render.pane_body_skipped");
+                    div().size_full().into_any_element()
+                }
+            })
             .unwrap_or_else(|| div().size_full().into_any_element());
         let content = if let Some(active) = active {
             self.with_split_drop_zones(active, content, cx)
         } else {
             content
         };
-        let panel_bg = if self.state.settings.mica {
+        let active_theme = self.state.profiles.active().theme.as_str();
+        let figma_glass = active_theme == "Atlas Figma Glass";
+        let windows_glass = active_theme == "Atlas Windows Glass"
+            || (active_theme == "Atlas Windows" && self.state.settings.mica);
+        let panel_bg = if figma_glass {
+            glass_fill()
+        } else if windows_glass {
+            cx.theme().secondary
+        } else if is_windows_theme(active_theme) {
+            gpui::hsla(0., 0., 1., 0.20)
+        } else if self.state.settings.mica {
             backdrop_tint(cx.theme().secondary, 0.06)
         } else {
             backdrop_tint(cx.theme().secondary, 0.24)
         };
-        let active_theme = self.state.profiles.active().theme.as_str();
-        let figma_glass = active_theme == "Atlas Figma Glass";
         let panel = v_flex()
             .size_full()
             .min_w(px(0.))
@@ -276,6 +323,10 @@ impl App {
         panel.into_any_element()
     }
 
+    fn should_render_pane_body(&self, pane_id: TileId) -> bool {
+        !self.pane_closing.contains_key(&pane_id)
+    }
+
     fn render_tab_strip(
         &mut self,
         children: Vec<TileId>,
@@ -286,19 +337,36 @@ impl App {
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
         let accent = cx.theme().accent;
-        let tab_bar_bg = if self.state.settings.mica {
+        let active_theme = self.state.profiles.active().theme.as_str();
+        let figma_glass = active_theme == "Atlas Figma Glass";
+        let windows_glass = active_theme == "Atlas Windows Glass"
+            || (active_theme == "Atlas Windows" && self.state.settings.mica);
+        let tab_bar_bg = if figma_glass {
+            glass_fill()
+        } else if windows_glass {
+            cx.theme().tab_bar
+        } else if self.state.settings.mica {
             backdrop_tint(cx.theme().tab_bar, 0.06)
         } else {
             backdrop_tint(cx.theme().tab_bar, 0.16)
         };
-        let active_bg = if self.state.settings.mica {
+        let active_bg = if figma_glass {
+            glass_chip_fill()
+        } else if windows_glass {
+            cx.theme().tab_active
+        } else if self.state.settings.mica {
             backdrop_tint(cx.theme().tab_active, 0.12)
         } else {
             backdrop_tint(cx.theme().tab_active, 0.22)
         };
         let active_fg = cx.theme().tab_active_foreground;
         let tab_fg = cx.theme().tab_foreground;
-        let windows_theme = self.state.profiles.active().theme == "Atlas Windows";
+        let windows_theme = is_windows_theme(active_theme);
+        let hover_bg = if figma_glass {
+            glass_chip_fill().opacity(0.36)
+        } else {
+            border.opacity(0.22)
+        };
         let strip_h = if windows_theme { 46.0 } else { 34.0 };
         let tab_h = if windows_theme { 38.0 } else { 26.0 };
         let tab_min_w = if windows_theme { 118.0 } else { 56.0 };
@@ -314,6 +382,8 @@ impl App {
             .gap(px(4.))
             .px_2()
             .bg(tab_bar_bg)
+            .rounded_tl(px(12.0))
+            .rounded_tr(px(12.0))
             .border_b_1()
             .border_color(border.opacity(0.42));
 
@@ -374,7 +444,7 @@ impl App {
                     if is_active {
                         s.bg(active_bg)
                     } else {
-                        s.bg(border.opacity(0.22))
+                        s.bg(hover_bg)
                     }
                 })
                 .on_drag(TabDrag { pane_id }, move |_d, _pos, _window, cx| {
@@ -455,7 +525,7 @@ impl App {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .hover(|s| s.bg(border.opacity(0.35)))
+                    .hover(move |s| s.bg(hover_bg))
                     .child(theme_icon(
                         AtlasIcon::Plus,
                         if windows_theme { 15.0 } else { 13.0 },
@@ -480,61 +550,62 @@ impl App {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let app = cx.entity();
-        let left_app = app.clone();
-        let right_app = app.clone();
-        let top_app = app.clone();
-        let bottom_app = app;
+        let overlay_top_app = app.clone();
+        let overlay_left_app = app.clone();
+        let overlay_right_app = app.clone();
+        let overlay_bottom_app = app;
         div()
             .size_full()
             .relative()
+            .group("tab-split-zone")
             .child(content)
             .child(
-                edge_zone()
+                split_drop_zone(AtlasIcon::SplitHorizontal)
                     .left_0()
-                    .top_0()
-                    .bottom_0()
-                    .w(px(18.))
+                    .top(relative(0.25))
+                    .bottom(relative(0.25))
+                    .w(relative(0.35))
                     .on_drop::<TabDrag>(move |drag, _window, cx| {
-                        left_app.update(cx, |this, cx| {
+                        overlay_left_app.update(cx, |this, cx| {
                             this.split_existing_tab(target, drag.pane_id, false, true);
                             cx.notify();
                         });
                     }),
             )
             .child(
-                edge_zone()
+                split_drop_zone(AtlasIcon::SplitHorizontal)
                     .right_0()
-                    .top_0()
-                    .bottom_0()
-                    .w(px(18.))
+                    .top(relative(0.25))
+                    .bottom(relative(0.25))
+                    .w(relative(0.35))
                     .on_drop::<TabDrag>(move |drag, _window, cx| {
-                        right_app.update(cx, |this, cx| {
+                        overlay_right_app.update(cx, |this, cx| {
                             this.split_existing_tab(target, drag.pane_id, false, false);
                             cx.notify();
                         });
                     }),
             )
             .child(
-                edge_zone()
+                split_drop_zone(AtlasIcon::SplitVertical)
                     .left_0()
                     .right_0()
                     .top_0()
-                    .h(px(18.))
+                    .h(relative(0.25))
                     .on_drop::<TabDrag>(move |drag, _window, cx| {
-                        top_app.update(cx, |this, cx| {
+                        overlay_top_app.update(cx, |this, cx| {
                             this.split_existing_tab(target, drag.pane_id, true, true);
                             cx.notify();
                         });
                     }),
             )
             .child(
-                edge_zone()
+                split_drop_zone(AtlasIcon::SplitVertical)
                     .left_0()
                     .right_0()
                     .bottom_0()
-                    .h(px(18.))
+                    .h(relative(0.25))
                     .on_drop::<TabDrag>(move |drag, _window, cx| {
-                        bottom_app.update(cx, |this, cx| {
+                        overlay_bottom_app.update(cx, |this, cx| {
                             this.split_existing_tab(target, drag.pane_id, true, false);
                             cx.notify();
                         });

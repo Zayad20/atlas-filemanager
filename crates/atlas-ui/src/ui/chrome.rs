@@ -10,14 +10,14 @@ use crate::ui::drag_hover::{
     drag_hover_recorder, drag_hover_recorder_with_drop, DragHoverCommand, DragHoverDropCommand,
     DragHoverId, DragHoverKind,
 };
-use crate::ui::glass::{glass_border, glass_fill, glass_shadows_enabled, layer_color, GlassExt};
-use crate::ui::icons::{icon, windows_icon, AtlasIcon};
+use crate::ui::glass::{
+    glass_fill, glass_header_fill, glass_shadows_enabled, layer_color, GlassExt,
+};
+use crate::ui::icons::{icon, is_windows_theme, windows_icon, AtlasIcon};
 use crate::ui::search_shell::search_icon;
 use crate::ui::tooltips::shortcut_tooltip;
 use gpui::prelude::*;
-use gpui::{
-    div, px, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window,
-};
+use gpui::{div, px, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window};
 use gpui_component::button::ButtonVariants as _;
 use gpui_component::menu::{ContextMenuExt, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement;
@@ -29,6 +29,13 @@ impl App {
     #[allow(dead_code)]
     pub(crate) fn render_floating_search_pill(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
+        let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
+        let windows_theme = is_windows_theme(&self.state.profiles.active().theme);
+        let bg = if figma_glass {
+            glass_fill()
+        } else {
+            layer_color(cx.theme().secondary, 0.02, 0.92)
+        };
         div()
             .absolute()
             .left_0()
@@ -45,15 +52,23 @@ impl App {
                     .gap_2()
                     .items_center()
                     .rounded_full()
-                    .bg(glass_fill())
+                    .bg(bg)
                     .border_1()
-                    .border_color(glass_border())
+                    .border_color(
+                        cx.theme()
+                            .border
+                            .opacity(if figma_glass { 0.45 } else { 0.60 }),
+                    )
                     .when(glass_shadows_enabled(), |s| s.shadow_lg())
                     .cursor_pointer()
                     .text_color(muted)
-                    .hover(|s| s.bg(glass_fill().opacity(0.68)))
-                    .active(|s| s.bg(glass_fill().opacity(0.78)))
-                    .child(search_icon(muted))
+                    .hover(move |s| s.bg(bg.opacity(0.82)))
+                    .active(move |s| s.bg(bg.opacity(0.92)))
+                    .child(if windows_theme {
+                        theme_icon(AtlasIcon::Search, 15.0, muted, true)
+                    } else {
+                        search_icon(muted)
+                    })
                     .child(rust_i18n::t!("search"))
                     .on_click(cx.listener(|this, _ev, _window, cx| {
                         this.process_actions(vec![Action::OpenGotoBar]);
@@ -102,7 +117,8 @@ impl App {
                 )
             })
             .unwrap_or_default();
-        let windows_theme = self.state.profiles.active().theme == "Atlas Windows";
+        let windows_theme = is_windows_theme(&self.state.profiles.active().theme);
+        let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
         let crumbs: Option<AnyElement> = if let Some((archive, inner)) = pane_archive_inner.as_ref()
         {
             Some(
@@ -124,6 +140,11 @@ impl App {
             })
         };
         let button_hover = layer_color(border, 0.04, 0.42);
+        let strip_bg = if figma_glass {
+            glass_header_fill()
+        } else {
+            border.opacity(0.03)
+        };
         h_flex()
             .w_full()
             .h(px(if windows_theme { 44.0 } else { 36.0 }))
@@ -131,7 +152,7 @@ impl App {
             .min_w(px(0.))
             .gap(px(if windows_theme { 9.0 } else { 6.0 }))
             .items_center()
-            .bg(border.opacity(0.03))
+            .bg(strip_bg)
             .border_b_1()
             .border_color(border.opacity(0.45))
             .when(!windows_theme, |s| s.text_sm())
@@ -356,6 +377,7 @@ impl App {
         } else {
             None
         };
+        let windows_theme = is_windows_theme(&self.state.profiles.active().theme);
 
         // Only the active pane shows the floating chrome. An inactive pane that
         // still has a filter applied keeps a tiny badge so it's obvious why
@@ -380,7 +402,7 @@ impl App {
                     .raised_surface()
                     .text_xs()
                     .cursor_pointer()
-                    .child(icon(AtlasIcon::Search, 12.0, accent))
+                    .child(theme_icon(AtlasIcon::Search, 12.0, accent, windows_theme))
                     .children(
                         status_text.map(|t| div().text_color(muted).whitespace_nowrap().child(t)),
                     )
@@ -457,10 +479,11 @@ impl App {
                         }
                     }),
                 )
-                .child(icon(
+                .child(theme_icon(
                     AtlasIcon::Search,
                     14.0,
                     if filtering { accent } else { muted },
+                    windows_theme,
                 ))
                 .child(
                     div()
@@ -475,10 +498,11 @@ impl App {
                         .cursor_pointer()
                         .when(recursive, |s| s.bg(accent))
                         .hover(|s| s.bg(layer_color(border, 0.04, 0.42)))
-                        .child(icon(
+                        .child(theme_icon(
                             AtlasIcon::TreeStructure,
                             14.0,
                             if recursive { accent_fg } else { muted },
+                            windows_theme,
                         ))
                         .tooltip(|window, cx| {
                             gpui_component::tooltip::Tooltip::new(
@@ -513,7 +537,7 @@ impl App {
                         .rounded_md()
                         .cursor_pointer()
                         .hover(|s| s.bg(layer_color(border, 0.04, 0.42)))
-                        .child(icon(AtlasIcon::X, 12.0, muted))
+                        .child(theme_icon(AtlasIcon::X, 12.0, muted, windows_theme))
                         .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
                             close_view.update(cx, |this, cx| {
                                 this.process_actions(vec![Action::CloseSearchInPlace]);
@@ -537,7 +561,7 @@ impl App {
                 .raised_surface()
                 .cursor_pointer()
                 .hover(|s| s.bg(layer_color(secondary, 0.07, 0.92)))
-                .child(icon(AtlasIcon::Search, 14.0, muted))
+                .child(theme_icon(AtlasIcon::Search, 14.0, muted, windows_theme))
                 .tooltip(|window, cx| {
                     gpui_component::tooltip::Tooltip::new("Filtrar — solo empieza a escribir")
                         .build(window, cx)
@@ -568,7 +592,12 @@ impl App {
                 .cursor_pointer()
                 .when(!on, |s| s.opacity(0.45))
                 .hover(move |s| s.bg(layer_color(border, 0.04, 0.42)))
-                .child(icon(glyph, 14.0, if on { on_color } else { muted }))
+                .child(theme_icon(
+                    glyph,
+                    14.0,
+                    if on { on_color } else { muted },
+                    windows_theme,
+                ))
                 .tooltip(move |window, cx| {
                     gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
                 })
@@ -597,7 +626,7 @@ impl App {
         )))
         .ghost()
         .xsmall()
-        .icon(gpui_component::Icon::empty().path(view_icon.path()))
+        .child(theme_icon(view_icon, 14.0, muted, windows_theme))
         // Anchored to the bottom so the menu opens upward, above the icon.
         .dropdown_menu_with_anchor(
             gpui::Anchor::BottomRight,
@@ -607,7 +636,7 @@ impl App {
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(gpui_component::Icon::empty().path(glyph.path()).small())
+                            .child(theme_icon(glyph, 14.0, muted, windows_theme))
                             .child(label.clone())
                     }
                 };

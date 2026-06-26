@@ -261,17 +261,15 @@ pub fn run(handle: tokio::runtime::Handle, app_started: Instant) {
             cx.quit();
         });
 
-        // Desktop glass via Windows 11 Mica Alt material (DWMWA_SYSTEMBACKDROP_TYPE =
-        // DWMSBT_TABBEDWINDOW, build 22621+). gpui_windows applies it in
-        // set_background_appearance. It only composites when the whole content tree is
-        // transparent: the active theme's `background` must have alpha 0 (Atlas Frost)
-        // and the root paints no opaque layer — then the blurred desktop wallpaper
-        // shows through the translucent floating panes.
+        // Desktop blur via GPUI's `WindowBackgroundAppearance::Blurred`, matching
+        // Zed themes with `background.appearance = "blurred"`. It only composites
+        // when the content tree stays translucent: the active theme's `background`
+        // supplies the tint and the root paints no opaque layer.
         let window_options = WindowOptions {
             titlebar: Some(TitleBar::title_bar_options()),
             window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
             window_min_size: Some(size(px(900.), px(560.))),
-            window_background: WindowBackgroundAppearance::MicaAltBackdrop,
+            window_background: WindowBackgroundAppearance::Blurred,
             ..Default::default()
         };
 

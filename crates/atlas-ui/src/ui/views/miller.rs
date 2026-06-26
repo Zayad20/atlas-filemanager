@@ -12,7 +12,7 @@ use crate::ui::drag_hover::{
     DragHoverKind,
 };
 use crate::ui::file_icons::FileIcon;
-use crate::ui::glass::backdrop_tint;
+use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
 use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::root::{ctrl_scroll, zone_recorder, DraggedFiles};
 use crate::util::display::display_name;
@@ -50,6 +50,7 @@ impl App {
             }
         }
         let view = cx.entity();
+        let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
         let (fg, accent, accent_fg, hover, muted, header_bg) = {
             let t = cx.theme();
             (
@@ -58,7 +59,11 @@ impl App {
                 t.accent_foreground,
                 t.list_active,
                 t.muted_foreground,
-                backdrop_tint(t.secondary, 0.18),
+                if figma_glass {
+                    glass_header_fill()
+                } else {
+                    backdrop_tint(t.secondary, 0.18)
+                },
             )
         };
         let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, header_bg);
@@ -225,6 +230,9 @@ impl App {
                     .flex_1()
                     .min_h(px(0.))
                     .relative()
+                    .when(figma_glass, |s| s.bg(glass_fill()))
+                    .rounded_bl(px(12.0))
+                    .rounded_br(px(12.0))
                     .child(
                         h_flex()
                             .id(SharedString::from(format!("miller-{}", pane_id.0)))

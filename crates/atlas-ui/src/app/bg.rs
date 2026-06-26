@@ -61,12 +61,14 @@ impl App {
                         .map(|started| started.elapsed().as_millis())
                 })
                 .collect::<Vec<_>>();
-            eprintln!(
-                "[atlas close] finalize_ready done={} ages_ms={:?} pending_before={}",
-                done.len(),
-                ages,
-                self.pane_closing.len()
-            );
+            crate::perf::event(|| {
+                format!(
+                    "pane_close.finalize_ready done={} ages_ms={:?} pending_before={}",
+                    done.len(),
+                    ages,
+                    self.pane_closing.len()
+                )
+            });
         }
         for id in &done {
             self.pane_closing.remove(id);
@@ -144,6 +146,7 @@ impl App {
                 }
                 DndEvent::DragLeave => {
                     had = true;
+                    self.cancel_dropzone_file_drag();
                     self.drag_hover_external_left();
                     continue;
                 }
@@ -151,11 +154,34 @@ impl App {
             // A real drop landed inside Atlas: it's a deliberate release, not an
             // ESC-cancel, so keep any spring-load nav and tear the engine down here
             // (the synthetic mouse-up no longer clears it on Windows).
+            tracing::debug!(
+                x = p.x,
+                y = p.y,
+                paths = p.paths.len(),
+                from_self = p.from_self,
+                "dnd drop in"
+            );
             self.mark_drag_committed();
             self.drag_hover.clear();
             if let Some(command) = self.drag_hover_drop_command_at(p.x, p.y) {
+                tracing::debug!("dnd drop resolved by drag-hover command");
                 had = true;
                 self.execute_drag_hover_drop_command(command, p.paths, p.from_self);
+                continue;
+            }
+            if self.dropzone_bounds.is_some_and(|bounds| {
+                p.x >= f32::from(bounds.left())
+                    && p.x <= f32::from(bounds.right())
+                    && p.y >= f32::from(bounds.top())
+                    && p.y <= f32::from(bounds.bottom())
+            }) {
+                tracing::debug!("dnd drop resolved by dropzone bounds");
+                had = true;
+                self.execute_drag_hover_drop_command(
+                    crate::ui::drag_hover::DragHoverDropCommand::StageInSidebar,
+                    p.paths,
+                    p.from_self,
+                );
                 continue;
             }
             let dest = if p.x >= 0.0 && p.y >= 0.0 {
@@ -165,23 +191,80 @@ impl App {
                 // Zone-based dest computed from the drop position. A drop over empty
                 // space (no zone, no drag-hover target) is a no-op — never fall back
                 // to the active pane dir, which silently transferred to the wrong place.
-                self.dnd.as_ref().and_then(|d| {
-                    d.zones
-                        .lock()
-                        .ok()
-                        .and_then(|z| z.hit(p.x, p.y).map(|z| z.dest.clone()))
-                })
+                let pane_dest = self.pane_drop_dest_at(p.x, p.y);
+                let (zone_dest, zone_count) = self
+                    .dnd
+                    .as_ref()
+                    .and_then(|d| d.zones.lock().ok())
+                    .map(|z| (z.hit(p.x, p.y).map(|z| z.dest.clone()), z.len()))
+                    .unwrap_or((None, 0));
+                tracing::debug!(
+                    pane_hit = pane_dest.is_some(),
+                    zone_hit = zone_dest.is_some(),
+                    zone_count,
+                    pane_view_bounds = self.pane_view_bounds.len(),
+                    pane_layout_bounds = self.pane_layout_bounds.len(),
+                    "dnd drop destination resolved"
+                );
+                pane_dest.or(zone_dest)
             } else {
                 // Synthetic position (no real cursor): fall back to the active dir.
                 self.state
                     .active_tab_data()
                     .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
             };
-            let Some(dest) = dest else { continue };
+            let Some(dest) = dest else {
+                let dropzone = self.dropzone_bounds.map(|b| {
+                    (
+                        f32::from(b.left()),
+                        f32::from(b.top()),
+                        f32::from(b.right()),
+                        f32::from(b.bottom()),
+                    )
+                });
+                let nearest_pane = self
+                    .pane_view_bounds
+                    .iter()
+                    .chain(self.pane_layout_bounds.iter())
+                    .map(|(pane, b)| {
+                        let left = f32::from(b.left());
+                        let top = f32::from(b.top());
+                        let right = f32::from(b.right());
+                        let bottom = f32::from(b.bottom());
+                        let dx = if p.x < left {
+                            left - p.x
+                        } else if p.x > right {
+                            p.x - right
+                        } else {
+                            0.0
+                        };
+                        let dy = if p.y < top {
+                            top - p.y
+                        } else if p.y > bottom {
+                            p.y - bottom
+                        } else {
+                            0.0
+                        };
+                        (dx + dy, pane.0, (left, top, right, bottom))
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0));
+                tracing::warn!(
+                    x = p.x,
+                    y = p.y,
+                    paths = p.paths.len(),
+                    ?dropzone,
+                    ?nearest_pane,
+                    pane_view_bounds = self.pane_view_bounds.len(),
+                    pane_layout_bounds = self.pane_layout_bounds.len(),
+                    "dnd drop ignored: no destination"
+                );
+                continue;
+            };
             // Vtable always enqueues Copy; decide move vs copy here by volume.
             // Conflicts always go through the dialog (policy `Ask`) — a drop
             // must never overwrite or vanish silently.
             let vol_effect = crate::dnd::default_effect_for_paths(&p.paths, &dest);
+            self.clear_committed_dropzone_drag(&p.paths);
             actions.push(Action::Transfer(TransferRequest {
                 sources: p.paths,
                 dest,
@@ -391,6 +474,8 @@ impl App {
                     info.notify_panes.push(tab);
                 }
                 BgResult::FsEvent(changed_path) => {
+                    self.nucleo.reset();
+                    self.goto_index_root = None;
                     // Refresh any pane watching the directory containing the changed path
                     let parent = changed_path.parent().map(std::path::Path::to_path_buf);
                     let to_refresh: Vec<TileId> = self

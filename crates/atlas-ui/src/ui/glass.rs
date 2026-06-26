@@ -3,9 +3,8 @@
 //! panels — panes, sidebar, chrome — over the window background so they read as
 //! one glass material with a soft rim light and drop shadow.
 //!
-//! gpui has no real backdrop blur, so "glass" here is the *material language*:
-//! a translucent fill, a bright 1px rim, a corner radius and a soft shadow. The
-//! alpha values come straight from the Figma fills/strokes so the look matches.
+//! gpui supplies the blurred window backdrop; this file keeps the Figma glass
+//! material: translucent fill, bright 1px rim, radius and soft shadow.
 
 use gpui::{
     div, hsla, linear_color_stop, linear_gradient, point, px, BoxShadow, Hsla, InteractiveElement,
@@ -16,16 +15,25 @@ use gpui::{
 /// tighter desktop density).
 pub const GLASS_RADIUS: f32 = 12.0;
 
-/// Translucent fill for floating panes — Figma pane bg is `#262626 @ 20%` layered
-/// under `#ffffff @ 67%`, i.e. a near-white glass. Approximated as white at ~55%.
+/// Figma glass fill: #262626 at 20%, then #fff at 67%, nudged to the middle
+/// between the previous airy panes and dense sidebar.
 pub fn glass_fill() -> Hsla {
-    hsla(0., 0., 1., 0.55)
+    hsla(0., 0., 0.93, 0.80)
 }
 
-/// Darker glass for the sidebar — Figma layers a `#262626` base with a `#f5f5f5 @ 67%`
-/// veil plus a black glass tint. Kept a touch denser than the panes.
+/// Same material as panes so the shell reads as one glass sheet.
 pub fn glass_sidebar_fill() -> Hsla {
-    hsla(0., 0., 1., 0.45)
+    glass_fill()
+}
+
+/// Internal glass strips: headers/columns need separation without becoming gray bars.
+pub fn glass_header_fill() -> Hsla {
+    hsla(0., 0., 1., 0.24)
+}
+
+/// Raised chip/tab fill over a glass strip.
+pub fn glass_chip_fill() -> Hsla {
+    hsla(0., 0., 1., 0.58)
 }
 
 /// Translucent chrome (title bar / status bar) — lighter so it sits behind panes.

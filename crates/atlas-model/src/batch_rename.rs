@@ -23,6 +23,12 @@ pub enum RenameMode {
     Number,
 }
 
+/// Whether a proposed new name is a usable filename on Linux/macOS/Windows. We
+/// reject path separators (which would move the file) and the `.`/`..` specials.
+pub fn name_is_valid(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\\')
+}
+
 impl std::fmt::Display for RenameMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -89,16 +95,6 @@ impl BatchRenameState {
             .collect();
     }
 
-    /// Whether a proposed new name is a usable filename on Linux/macOS/Windows. We
-    /// reject path separators (which would move the file) and the `.`/`..` specials.
-    fn name_is_valid(name: &str) -> bool {
-        !name.is_empty()
-            && name != "."
-            && name != ".."
-            && !name.contains('/')
-            && !name.contains('\\')
-    }
-
     /// Resolve the absolute target path for preview `i` (its parent dir + new name).
     fn target(&self, i: usize) -> Option<PathBuf> {
         let parent = self.files.get(i)?.parent()?;
@@ -121,7 +117,7 @@ impl BatchRenameState {
         (0..self.files.len())
             .map(|i| {
                 let name = self.previews.get(i).map(String::as_str).unwrap_or_default();
-                if !Self::name_is_valid(name) {
+                if !name_is_valid(name) {
                     return RenameIssue::Invalid;
                 }
                 let Some(target) = self.target(i) else {

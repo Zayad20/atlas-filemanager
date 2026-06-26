@@ -1,6 +1,11 @@
 use crate::state::file_entry::FileKind;
 use gpui::{div, img, px, svg, AnyElement, Hsla, IntoElement, ParentElement, Styled};
 
+#[inline]
+pub(crate) fn is_windows_theme(name: &str) -> bool {
+    name == "Atlas Windows" || name == "Atlas Windows Glass"
+}
+
 const IMAGE_EXTS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tif", "tiff",
 ];
@@ -42,7 +47,6 @@ pub(crate) enum AtlasIcon {
     Copy,
     Scissors,
     Clipboard,
-    DotsThree,
     // Palette engine: section/command icons + per-item buttons.
     Star,
     StarFill,
@@ -118,7 +122,6 @@ impl AtlasIcon {
             Self::Copy => "icons/ph/copy-simple.svg",
             Self::Scissors => "icons/ph/scissors.svg",
             Self::Clipboard => "icons/ph/clipboard.svg",
-            Self::DotsThree => "icons/ph/dots-three.svg",
             Self::Star => "icons/ph/star.svg",
             Self::StarFill => "icons/ph/star-fill.svg",
             Self::Plus => "icons/ph/plus.svg",
@@ -223,7 +226,37 @@ fn windows_icon_glyph(kind: AtlasIcon) -> &'static str {
         AtlasIcon::BookmarkSimple => "\u{E734}",
         AtlasIcon::CaretDown => "\u{E70D}",
         AtlasIcon::CaretRight => "\u{E76C}",
-        _ => "\u{E8A5}",
+        AtlasIcon::Details => "\u{E8FD}",
+        AtlasIcon::Grid => "\u{ECA5}",
+        AtlasIcon::List => "\u{EA37}",
+        AtlasIcon::Columns => "\u{E9D2}",
+        AtlasIcon::Copy => "\u{E8C8}",
+        AtlasIcon::Scissors => "\u{E8C6}",
+        AtlasIcon::Clipboard => "\u{E77F}",
+        AtlasIcon::Star => "\u{E734}",
+        AtlasIcon::StarFill => "\u{E735}",
+        AtlasIcon::Lightning => "\u{E945}",
+        AtlasIcon::Gear => "\u{E713}",
+        AtlasIcon::Palette => "\u{E771}",
+        AtlasIcon::UserSwitch => "\u{E748}",
+        AtlasIcon::PuzzlePiece => "\u{EA86}",
+        AtlasIcon::ArrowsLeftRight => "\u{E8AB}",
+        AtlasIcon::SplitHorizontal => "\u{E9EF}",
+        AtlasIcon::SplitVertical => "\u{E9F0}",
+        AtlasIcon::SidebarSimple => "\u{E700}",
+        AtlasIcon::Eye => "\u{E890}",
+        AtlasIcon::PencilSimple => "\u{E70F}",
+        AtlasIcon::ArrowCounterClockwise => "\u{E72C}",
+        AtlasIcon::ArrowClockwise => "\u{E72A}",
+        AtlasIcon::SelectionAll => "\u{E762}",
+        AtlasIcon::SelectionInverse => "\u{E8B5}",
+        AtlasIcon::SortAscending => "\u{E8CB}",
+        AtlasIcon::TreeStructure => "\u{E8B7}",
+        AtlasIcon::ClockCounterClockwise => "\u{E81C}",
+        AtlasIcon::Tag => "\u{E8EC}",
+        AtlasIcon::Minus => "\u{E738}",
+        AtlasIcon::Square => "\u{E739}",
+        AtlasIcon::TrayArrowDown => "\u{E896}",
     }
 }
 

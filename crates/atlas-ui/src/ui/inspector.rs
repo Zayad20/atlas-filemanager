@@ -25,7 +25,7 @@ use crate::state::preview_cache::{
 use crate::state::profiles::PreviewFeature;
 use crate::state::settings::ViewMode;
 use crate::state::tab::TabState;
-use crate::ui::glass::{layer_color, GlassExt};
+use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill, layer_color, GlassExt};
 use crate::ui::icons::{file_type_icon, icon, AtlasIcon};
 use crate::ui::root::DraggedFiles;
 use crate::util::display::{format_date, format_size};
@@ -447,15 +447,9 @@ impl App {
         self.sync_active_preview_gpui();
         self.sync_selection_tags();
 
-        let (bg, fg, muted, border, danger) = {
+        let (fg, muted, border, danger) = {
             let t = cx.theme();
-            (
-                t.sidebar,
-                t.foreground,
-                t.muted_foreground,
-                t.border,
-                t.danger,
-            )
+            (t.foreground, t.muted_foreground, t.border, t.danger)
         };
         // FASE6: when `expanded` is set (Space), widen the inspector to most of the
         // window so the zoomable image has room. The image-preview box dimensions are
@@ -484,11 +478,28 @@ impl App {
             .map(|(tab, data)| selection_summary(tab, &data.view_mode))
             .unwrap_or_default();
 
+        let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
+        let (panel_bg, panel_border) = {
+            let t = cx.theme();
+            (
+                if figma_glass {
+                    glass_fill()
+                } else {
+                    t.background
+                },
+                t.border,
+            )
+        };
         let mut col = v_flex()
             .w(px(width))
             .h_full()
             .text_color(fg)
-            .glass_surface(layer_color(bg, 0.04, 0.92))
+            .bg(panel_bg)
+            .rounded(px(crate::ui::RADIUS))
+            .border_1()
+            .border_color(panel_border.opacity(if figma_glass { 0.22 } else { 0.45 }))
+            .when(figma_glass, |s| s.glass_surface(panel_bg))
+            .when(!figma_glass, |s| s.raised_surface())
             .p_2()
             .gap_2();
 
@@ -1287,12 +1298,26 @@ impl App {
         else {
             return div().into_any_element();
         };
-        let (border, stripe, header_bg, fg) = {
+        let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
+        let (border, stripe, header_bg, table_bg, fg) = {
             let t = cx.theme();
             (
                 t.border,
-                layer_color(t.list_even, 0.02, 0.70),
-                layer_color(t.secondary, 0.04, 0.88),
+                if figma_glass {
+                    t.list_even.opacity(0.12)
+                } else {
+                    backdrop_tint(t.list_even, 0.08)
+                },
+                if figma_glass {
+                    glass_header_fill()
+                } else {
+                    layer_color(t.secondary, 0.04, 0.88)
+                },
+                if figma_glass {
+                    glass_fill()
+                } else {
+                    t.background
+                },
                 t.foreground,
             )
         };
@@ -1340,7 +1365,7 @@ impl App {
                 .flex_1()
                 .min_h(px(0.))
                 .overflow_x_scrollbar()
-                .bg(layer_color(border, -0.04, 0.10))
+                .bg(table_bg)
                 .border_1()
                 .border_color(border.opacity(0.45))
                 .rounded(px(crate::ui::RADIUS))

@@ -34,6 +34,7 @@ pub struct Workspace {
     pub sidebar_width: f32,
     pub inspector_width: f32,
     pub font_size: f32,
+    pub font_family: String,
     pub thumbnail_size: f32,
     pub global_zoom: f32,
 }
@@ -51,6 +52,7 @@ impl Default for Workspace {
             sidebar_width: 220.0,
             inspector_width: 280.0,
             font_size: 13.0,
+            font_family: "Geist".to_string(),
             thumbnail_size: 128.0,
             global_zoom: 1.0,
         }
@@ -69,6 +71,7 @@ pub struct Settings {
     pub sidebar_width: f32,
     pub inspector_width: f32,
     pub font_size: f32,
+    pub font_family: String,
     pub thumbnail_size: f32,
     pub recent_folders: Vec<PathBuf>,
     pub global_zoom: f32,
@@ -81,11 +84,9 @@ pub struct Settings {
     /// glide). Maps to the gpui scroll handle's ease + per-notch boost. Global, like
     /// `disable_animations`. Trackpad (pixel-precise) input is unaffected.
     pub scroll_smoothness: f32,
-    /// When true, the window uses the OS desktop-glass material (Windows 11 Mica Alt
-    /// via `WindowBackgroundAppearance::MicaAltBackdrop`) and `apply_active_theme`
+    /// When true, the window uses GPUI's blurred background and `apply_active_theme`
     /// transparently swaps to the Glass variant of the active theme so the wallpaper
-    /// shows through translucent panels. When false, the window is opaque and the
-    /// base theme is applied as-is. Saved per profile through [`Workspace`].
+    /// shows through translucent panels. Saved per profile through [`Workspace`].
     pub mica: bool,
 }
 
@@ -103,6 +104,7 @@ impl Settings {
             sidebar_width: self.sidebar_width,
             inspector_width: self.inspector_width,
             font_size: self.font_size,
+            font_family: self.font_family.clone(),
             thumbnail_size: self.thumbnail_size,
             global_zoom: self.global_zoom,
         }
@@ -121,6 +123,7 @@ impl Settings {
         self.sidebar_width = ws.sidebar_width;
         self.inspector_width = ws.inspector_width;
         self.font_size = ws.font_size;
+        self.font_family.clone_from(&ws.font_family);
         self.thumbnail_size = ws.thumbnail_size;
         self.global_zoom = ws.global_zoom;
     }
@@ -138,6 +141,7 @@ impl Default for Settings {
             sidebar_width: 220.0,
             inspector_width: 280.0,
             font_size: 13.0,
+            font_family: "Geist".to_string(),
             thumbnail_size: 128.0,
             recent_folders: Vec::new(),
             global_zoom: 1.0,

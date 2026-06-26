@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-cargo build --release
+cargo build --release --features perf-log
 
 $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
 if (-not $iscc) {

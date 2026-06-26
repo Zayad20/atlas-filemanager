@@ -10,7 +10,7 @@ use crate::ui::drag_hover::{
     DragHoverKind,
 };
 use crate::ui::file_icons::FileIcon;
-use crate::ui::glass::backdrop_tint;
+use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
 use crate::ui::root::{ctrl_scroll, pane_bounds_recorder, rect_recorder, DraggedFiles};
 use crate::ui::views::virtual_grid::AnimatedVirtualGrid;
 use gpui::prelude::*;
@@ -31,6 +31,7 @@ impl App {
     ) -> AnyElement {
         crate::perf::count("render.view.grid");
         let view = cx.entity();
+        let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
         let (fg, accent, accent_fg, hover, muted, header_bg) = {
             let t = cx.theme();
             (
@@ -39,7 +40,11 @@ impl App {
                 t.accent_foreground,
                 t.list_active,
                 t.muted_foreground,
-                backdrop_tint(t.secondary, 0.18),
+                if figma_glass {
+                    glass_header_fill()
+                } else {
+                    backdrop_tint(t.secondary, 0.18)
+                },
             )
         };
         let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, header_bg);
@@ -147,7 +152,7 @@ impl App {
                     scroll_y,
                     viewport_h,
                     !self.state.settings.disable_animations,
-                    move |idx, _window, cx| {
+                    move |idx, window, cx| {
                         let app = list_view.read(cx);
                         let Some(ts) = app.state.tab_states.get(&pane_id) else {
                             return div().into_any_element();
@@ -158,7 +163,6 @@ impl App {
                         let Some(entry) = ts.entries.get(entry_idx) else {
                             return div().into_any_element();
                         };
-                        let selected = ts.selection.selected.contains(&entry_idx);
                         let file_icon = app.file_icon_for_entry(
                             &entry.path,
                             &entry.kind,
@@ -168,6 +172,12 @@ impl App {
                         let flashing = matches!(entry.kind, FileKind::Dir)
                             && app.drag_hover.blink_id.as_ref()
                                 == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
+                        let rename_input =
+                            crate::ui::views::rename::active_input(app, pane_id, entry_idx);
+                        let selected = ts.selection.selected.contains(&entry_idx)
+                            && !crate::ui::views::rename::suppress_row_chrome(
+                                app, pane_id, entry_idx,
+                            );
                         let cell = render_cell(
                             entry,
                             entry_idx,
@@ -182,6 +192,8 @@ impl App {
                             hover,
                             flashing,
                             record_rects,
+                            rename_input,
+                            window,
                         );
                         cell
                     },
@@ -198,8 +210,6 @@ impl App {
         v_flex()
             .id(SharedString::from(format!("pane-{}", pane_id.0)))
             .size_full()
-            // The pane content is transparent: the hosting TabPanel (fork) is the
-            // rounded glass card, with the tab selector inside it.
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, {
                 let v = rubber_view.clone();
@@ -207,6 +217,9 @@ impl App {
                     let (pos, additive) =
                         (ev.position, ev.modifiers.control || ev.modifiers.platform);
                     v.update(cx, |this, cx| {
+                        if this.rename_edit.is_some() {
+                            this.commit_rename(cx);
+                        }
                         this.begin_rubber(pane_id, pos, additive);
                         cx.notify();
                     });
@@ -270,6 +283,9 @@ impl App {
                     .flex_1()
                     .min_h(px(0.))
                     .relative()
+                    .when(figma_glass, |s| s.bg(glass_fill()))
+                    .rounded_bl(px(12.0))
+                    .rounded_br(px(12.0))
                     .on_prepaint(pane_bounds_recorder(pane_id, &bounds_view))
                     .child(inner)
                     .child(filter_pill)
@@ -280,7 +296,7 @@ impl App {
     }
 
     fn prepare_grid_visible(&mut self, pane_id: TabId, range: Range<usize>) {
-        let windows_theme = self.state.profiles.active().theme == "Atlas Windows";
+        let windows_theme = crate::ui::icons::is_windows_theme(&self.state.profiles.active().theme);
         let (to_request, to_request_ext, to_request_shell, all_visible) = {
             let Some(ts) = self.state.tab_states.get(&pane_id) else {
                 return;
@@ -403,9 +419,12 @@ fn render_cell(
     hover: Hsla,
     flashing: bool,
     record_rects: bool,
+    rename_input: Option<gpui::Entity<gpui_component::input::InputState>>,
+    window: &mut Window,
 ) -> AnyElement {
     let name = entry.name.clone();
     let v = view.clone();
+    let font_size = window.rem_size() * 0.75;
     v_flex()
         .id(SharedString::from(format!(
             "cell-{}-{}",
@@ -420,9 +439,13 @@ fn render_cell(
         .items_center()
         .rounded_md()
         .cursor_pointer()
-        .when(selected, |s| s.bg(accent).text_color(accent_fg))
+        .when(selected && rename_input.is_none(), |s| {
+            s.bg(accent).text_color(accent_fg)
+        })
         .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
-        .when(!selected, |s| s.hover(|h| h.bg(hover)))
+        .when(!selected && rename_input.is_none(), |s| {
+            s.hover(|h| h.bg(hover))
+        })
         .child({
             let area = div()
                 .h(px(thumb * 0.62))
@@ -447,20 +470,37 @@ fn render_cell(
                 }
             }
         })
-        .child(
-            div()
+        .child(match &rename_input {
+            Some(input) => div()
+                .w(px(crate::ui::views::rename::input_width(
+                    &name, cell_w, font_size, window,
+                )))
+                .h(px(crate::ui::views::rename::INLINE_INPUT_H))
+                .text_xs()
+                .child(crate::ui::views::rename::input_element(
+                    input,
+                    view,
+                    crate::ui::views::rename::INLINE_INPUT_H,
+                    font_size,
+                ))
+                .into_any_element(),
+            None => div()
                 .w_full()
                 .text_center()
                 .text_xs()
                 .truncate()
-                .child(name),
-        )
+                .child(name)
+                .into_any_element(),
+        })
         .on_click(move |ev, _window, cx| {
             let m = ev.modifiers();
             let shift = m.shift;
             let ctrl = m.control || m.platform;
             let activate = ev.click_count() >= 2;
             v.update(cx, |this, cx| {
+                if this.rename_edit.is_some() {
+                    this.commit_rename(cx);
+                }
                 if activate {
                     this.process_actions(vec![Action::Activate {
                         tile: pane_id,
@@ -488,22 +528,11 @@ fn render_cell(
                 });
             }
         })
-        .when(!selected, |s| {
-            let rv = view.clone();
-            s.on_mouse_down(MouseButton::Left, move |ev, _window, cx| {
-                let (pos, additive) = (ev.position, ev.modifiers.control || ev.modifiers.platform);
-                rv.update(cx, |this, cx| {
-                    this.begin_rubber(pane_id, pos, additive);
-                    cx.notify();
-                });
-                cx.stop_propagation();
-            })
+        .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
+            cx.stop_propagation();
         })
-        .when(selected, |s| {
-            s.on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
-                cx.stop_propagation();
-            })
-            .on_drag(
+        .when(rename_input.is_none(), |s| {
+            s.on_drag(
                 crate::ui::drag::file_drag_value(vec![entry.path.clone()]),
                 crate::ui::drag::file_drag_handler_for_item(
                     view.clone(),

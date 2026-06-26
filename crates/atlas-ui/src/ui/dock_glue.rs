@@ -396,6 +396,7 @@ impl App {
                                     self.state.pane_tree.tiles.get_mut(id)
                                 {
                                     lin.shares = sizes.iter().map(|p| f32::from(*p)).collect();
+                                    crate::app::normalize_split_shares(&mut lin.shares);
                                 }
                             }
                         }
