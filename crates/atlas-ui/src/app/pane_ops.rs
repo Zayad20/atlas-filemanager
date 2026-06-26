@@ -137,12 +137,11 @@ impl App {
         let cloned_loaded_snapshot = source_pane_id
             .and_then(|source_id| self.state.tab_states.get(&source_id))
             .and_then(|source| {
-                matches!(source.load_state, LoadState::Loaded).then(|| source.entries.clone())
+                matches!(source.load_state, LoadState::Loaded).then(|| source.clone())
             })
-            .is_some_and(|entries| {
+            .is_some_and(|source_state| {
                 if let Some(target) = self.state.tab_states.get_mut(&new_pane_id) {
-                    target.set_entries(entries);
-                    target.load_state = LoadState::Loaded;
+                    *target = source_state;
                     // Synchronous load (cloned from source) → arm appear anim now.
                     target.appear_seq = target.appear_seq.wrapping_add(1);
                     true

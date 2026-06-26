@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 /// One directory column in the Miller (columns) view.
+#[derive(Clone)]
 pub struct MillerColumn {
     pub location: Location,
     pub entries: std::sync::Arc<[FileEntry]>,
@@ -35,7 +36,7 @@ impl MillerColumn {
 }
 
 /// Cascading column navigation state for the Miller view.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct MillerState {
     pub columns: Vec<MillerColumn>,
     pub focused: usize,
@@ -49,7 +50,7 @@ pub enum LoadState {
     Error(String),
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SelectionState {
     pub selected: HashSet<usize>,
     pub last_clicked_index: Option<usize>,
@@ -68,7 +69,7 @@ impl SelectionState {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct PathEditState {
     pub editing: bool,
     pub text: String,
@@ -85,7 +86,7 @@ pub enum SearchStatus {
     Error,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SearchInPlaceState {
     pub active: bool,
     pub query: String,
@@ -121,6 +122,7 @@ pub struct VisibleCounts {
     pub files_total: usize,
 }
 
+#[derive(Clone)]
 pub struct TabState {
     pub entries: std::sync::Arc<[FileEntry]>,
     pub filter: String,
