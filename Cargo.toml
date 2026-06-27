@@ -173,12 +173,12 @@ panic = "abort"
 # segmented (pill) tabs — matches the Figma "Tab selector". Redirects every git
 # reference to that repo so there's a single source (avoids duplicate gpui App types).
 [patch."https://github.com/longbridge/gpui-component"]
-gpui-component = { path = "C:/Users/user/developer/gpui-component-fork/crates/ui" }
-gpui-component-assets = { path = "C:/Users/user/developer/gpui-component-fork/crates/assets" }
-gpui-component-macros = { path = "C:/Users/user/developer/gpui-component-fork/crates/macros" }
+gpui-component = { path = "../gpui-component-fork/crates/ui" }
+gpui-component-assets = { path = "../gpui-component-fork/crates/assets" }
+gpui-component-macros = { path = "../gpui-component-fork/crates/macros" }
 
 # Local GPUI fork at Cargo.lock's pinned Zed commit (95dfe8c), patched with
 # paint-only offsets so pane FLIP animations do not mutate layout each frame.
 [patch."https://github.com/zed-industries/zed"]
-gpui = { path = "C:/Users/user/developer/zed-reference/crates/gpui" }
-gpui_platform = { path = "C:/Users/user/developer/zed-reference/crates/gpui_platform" }
+gpui = { path = "../zed-reference/crates/gpui" }
+gpui_platform = { path = "../zed-reference/crates/gpui_platform" }
