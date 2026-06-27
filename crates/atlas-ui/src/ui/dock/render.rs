@@ -306,6 +306,7 @@ impl App {
         } else {
             backdrop_tint(cx.theme().secondary, 0.24)
         };
+        let active_id = active.unwrap_or_else(|| *children.first().unwrap());
         let panel = v_flex()
             .size_full()
             .min_w(px(0.))
@@ -320,7 +321,38 @@ impl App {
             })
             .child(self.render_tab_strip(children, active, window, cx))
             .child(div().flex_1().min_h(px(0.)).min_w(px(0.)).child(content));
-        panel.into_any_element()
+            
+        let is_mod = window.modifiers().alt;
+        let activate_drag_app = cx.entity().clone();
+        let app_for_resize = cx.entity().clone();
+
+        let panel = if is_mod {
+            div()
+                .size_full()
+                .relative()
+                .child(panel)
+                .child(
+                    div()
+                        .id(gpui::SharedString::from(format!("alt-drag-{}", active_id.0)))
+                        .absolute()
+                        .inset_0()
+                        .cursor_grab()
+                        .on_drag(TabDrag { pane_id: active_id }, move |_d, _pos, _window, cx| {
+                            tab_drag_entity(active_id, cx)
+                        })
+                        .on_mouse_down(MouseButton::Right, move |ev, _window, cx| {
+                            app_for_resize.update(cx, |this, _cx| {
+                                this.start_alt_resize(active_id, ev.position);
+                            });
+                            cx.stop_propagation();
+                        })
+                )
+                .into_any_element()
+        } else {
+            panel.into_any_element()
+        };
+        
+        panel
     }
 
     fn should_render_pane_body(&self, pane_id: TileId) -> bool {

@@ -972,4 +972,94 @@ impl App {
         }
         self.reconcile_tree_state();
     }
+
+    pub(crate) fn start_alt_resize(&mut self, pane_id: TileId, pos: gpui::Point<gpui::Pixels>) {
+        use crate::state::layout_tree::{Container, Tile};
+        let Some(bounds) = self.pane_layout_bounds.get(&pane_id).copied() else { return; };
+        
+        // Find nearest linear parent
+        let mut current = pane_id;
+        let mut target_linear = None;
+        loop {
+            let mut found_parent = None;
+            for (id, tile) in self.state.pane_tree.tiles.iter() {
+                if let Tile::Container(c) = tile {
+                    match c {
+                        Container::Tabs(tabs) => {
+                            if tabs.children.contains(&current) {
+                                found_parent = Some((*id, None));
+                                break;
+                            }
+                        }
+                        Container::Linear(linear) => {
+                            if let Some(idx) = linear.children.iter().position(|child| *child == current) {
+                                found_parent = Some((*id, Some((idx, linear.clone()))));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            match found_parent {
+                Some((parent_id, Some((idx, linear)))) => {
+                    target_linear = Some((parent_id, idx, linear));
+                    break;
+                }
+                Some((parent_id, None)) => {
+                    current = parent_id;
+                }
+                None => {
+                    break;
+                }
+            }
+        }
+        
+        let Some((container_id, child_idx, linear)) = target_linear else { return; };
+        let Some(container_bounds) = self.dock_linear_bounds.get(&container_id).copied() else { return; };
+        
+        let (dir, start_pos, span_px) = match linear.dir {
+            crate::state::layout_tree::LinearDir::Horizontal => (
+                crate::state::layout_tree::LinearDir::Horizontal,
+                pos.x.into(),
+                container_bounds.size.width.into(),
+            ),
+            crate::state::layout_tree::LinearDir::Vertical => (
+                crate::state::layout_tree::LinearDir::Vertical,
+                pos.y.into(),
+                container_bounds.size.height.into(),
+            ),
+        };
+        
+        let num_children = linear.children.len();
+        if num_children < 2 { return; }
+        
+        let divider = if child_idx == 0 {
+            0
+        } else if child_idx == num_children - 1 {
+            child_idx - 1
+        } else {
+            match linear.dir {
+                crate::state::layout_tree::LinearDir::Horizontal => {
+                    let d_left = (pos.x - bounds.left()).abs();
+                    let d_right = (pos.x - bounds.right()).abs();
+                    if d_left < d_right { child_idx - 1 } else { child_idx }
+                }
+                crate::state::layout_tree::LinearDir::Vertical => {
+                    let d_top = (pos.y - bounds.top()).abs();
+                    let d_bottom = (pos.y - bounds.bottom()).abs();
+                    if d_top < d_bottom { child_idx - 1 } else { child_idx }
+                }
+            }
+        };
+        
+        self.dock_resize = Some(crate::app::DockResizeState {
+            container: container_id,
+            divider,
+            dir,
+            start_pos,
+            span_px,
+            start_shares: linear.shares,
+        });
+    }
 }
