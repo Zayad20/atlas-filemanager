@@ -68,6 +68,13 @@ pub enum Action {
         parent: PathBuf,
         name: String,
     },
+    CreateFile {
+        parent: PathBuf,
+        name: String,
+    },
+    OpenTerminal {
+        dir: PathBuf,
+    },
     Select {
         tile: TabId,
         idx: usize,

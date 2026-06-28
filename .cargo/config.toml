@@ -1,7 +1,7 @@
 [build]
 # sccache is installed on this Windows machine. It caches Rust compile outputs
 # across clean builds, branch switches, and dependency rebuilds.
-rustc-wrapper = "sccache"
+# rustc-wrapper = "sccache"
 
 [target.x86_64-pc-windows-msvc]
 # rust-lld ships with the Rust toolchain and is much faster than link.exe for

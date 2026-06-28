@@ -27,6 +27,7 @@ use gpui_component::input::{InputEvent, InputState};
 pub struct PaletteHost {
     app: WeakEntity<App>,
     kind: PaletteKind,
+    is_rendering: bool,
 }
 
 impl PaletteHost {
@@ -47,10 +48,16 @@ impl PaletteHost {
         // App repaint (streamed index results, state changes) → re-render. The open
         // animation notifies us directly via `request_animation_frame`, so it does
         // not go through here (and thus never re-renders App or the panes).
-        cx.observe(&app, |_, _, cx| cx.notify()).detach();
+        cx.observe(&app, |this: &mut Self, _, cx| {
+            if !this.is_rendering {
+                cx.notify();
+            }
+        })
+        .detach();
         Self {
             app: app.downgrade(),
             kind,
+            is_rendering: false,
         }
     }
 }
@@ -58,12 +65,15 @@ impl PaletteHost {
 impl Render for PaletteHost {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let kind = self.kind;
-        match self.app.upgrade() {
+        self.is_rendering = true;
+        let el = match self.app.upgrade() {
             Some(app) => app
                 .update(cx, |app, cx| app.render_palette_layer(kind, window, cx))
                 .into_any_element(),
             None => div().into_any_element(),
-        }
+        };
+        self.is_rendering = false;
+        el
     }
 }
 

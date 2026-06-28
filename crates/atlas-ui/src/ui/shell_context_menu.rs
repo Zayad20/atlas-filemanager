@@ -82,6 +82,8 @@ enum AtlasCmd {
     Restore,
     Properties,
     NewFolder,
+    NewFile,
+    OpenTerminal,
     SelectAll,
 }
 
@@ -92,6 +94,8 @@ impl AtlasCmd {
             Self::Rename => rust_i18n::t!("root_rename").to_string(),
             Self::Copy => rust_i18n::t!("root_copy").to_string(),
             Self::NewFolder => rust_i18n::t!("root_new_folder").to_string(),
+            Self::NewFile => "New file".to_string(),
+            Self::OpenTerminal => "Open terminal".to_string(),
             Self::SelectAll => rust_i18n::t!("root_select_all").to_string(),
             Self::Cut => rust_i18n::t!("root_cut").to_string(),
             Self::Paste => rust_i18n::t!("root_paste").to_string(),
@@ -113,6 +117,8 @@ impl AtlasCmd {
             Self::Restore => Some(AtlasIcon::ArrowCounterClockwise),
             Self::Properties => Some(AtlasIcon::Gear),
             Self::NewFolder => Some(AtlasIcon::Folder),
+            Self::NewFile => Some(AtlasIcon::File),
+            Self::OpenTerminal => Some(AtlasIcon::Lightning),
             Self::SelectAll => Some(AtlasIcon::SelectionAll),
         }
     }
@@ -127,7 +133,7 @@ impl AtlasCmd {
             Self::Trash => Some("delete"),
             Self::DeletePerm => Some("shift-delete"),
             Self::SelectAll => Some("ctrl-a"),
-            Self::Restore | Self::Properties | Self::NewFolder => None,
+            Self::Restore | Self::Properties | Self::NewFolder | Self::NewFile | Self::OpenTerminal => None,
         }
     }
 }
@@ -140,7 +146,8 @@ const ATLAS_ITEMS: &[(AtlasCmd, bool)] = &[
     (AtlasCmd::Cut, false),
     (AtlasCmd::Paste, true),
     (AtlasCmd::Trash, false),
-    (AtlasCmd::DeletePerm, false),
+    (AtlasCmd::DeletePerm, true),
+    (AtlasCmd::Properties, false),
 ];
 
 /// Atlas items shown when the current tab is the Recycle Bin.
@@ -153,7 +160,9 @@ const ATLAS_ITEMS_RECYCLE: &[(AtlasCmd, bool)] = &[
 
 /// Atlas items shown on right-click on empty background (no file selection).
 const ATLAS_ITEMS_BACKGROUND: &[(AtlasCmd, bool)] = &[
-    (AtlasCmd::NewFolder, true),
+    (AtlasCmd::NewFile, false),
+    (AtlasCmd::NewFolder, false),
+    (AtlasCmd::OpenTerminal, true),
     (AtlasCmd::Paste, false),
     (AtlasCmd::SelectAll, false),
 ];
@@ -990,6 +999,29 @@ impl App {
                     self.process_actions(vec![Action::CreateFolder { parent: dir, name }]);
                 }
             }
+            AtlasCmd::NewFile => {
+                if let Some(dir) = self
+                    .state
+                    .active_tab_data()
+                    .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
+                {
+                    let tile = self.state.focused_tile;
+                    let base = "New file".to_string();
+                    let name = unique_folder_name(&dir, &base); // Just use this for uniqueness
+                    let path = dir.join(&name);
+                    self.pending_select = Some((tile, path));
+                    self.process_actions(vec![Action::CreateFile { parent: dir, name }]);
+                }
+            }
+            AtlasCmd::OpenTerminal => {
+                if let Some(dir) = self
+                    .state
+                    .active_tab_data()
+                    .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
+                {
+                    self.process_actions(vec![Action::OpenTerminal { dir }]);
+                }
+            }
         }
         cx.notify();
     }
@@ -998,6 +1030,7 @@ impl App {
     #[allow(dead_code)]
     pub(crate) fn open_background_ctx_menu(
         &mut self,
+        current_dir: Option<PathBuf>,
         anchor: Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1022,10 +1055,6 @@ impl App {
         self.ctx_menu_input = Some(input);
 
         // Request native shell items for the current directory (background menu).
-        let current_dir = self
-            .state
-            .active_tab_data()
-            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()));
 
         #[cfg(windows)]
         let loading = {

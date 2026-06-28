@@ -120,6 +120,8 @@ fn build_file_drag_handler(
         #[cfg(not(windows))]
         {
             let _ = archive_items;
+            let urls: Vec<String> = paths.iter().map(|p| format!("file://{}", p.display())).collect();
+            _window.start_urilist_drag(urls);
             cx.new(|_| DraggedFiles { paths })
         }
     }

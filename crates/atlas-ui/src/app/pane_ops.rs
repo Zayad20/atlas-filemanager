@@ -11,6 +11,39 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 impl App {
+    pub(crate) fn animate_pane_drag(&mut self, pane_id: TileId, is_starting: bool) {
+        if let Some(tabs_id) = self.state.find_tabs_container(pane_id) {
+            if let Some(parent_id) = self.state.find_parent_of(tabs_id) {
+                if let Some(Tile::Container(Container::Linear(linear))) = self.state.pane_tree.tiles.get(parent_id) {
+                    if let Some(pos) = linear.children.iter().position(|c| *c == tabs_id) {
+                        let mut current_shares = linear.shares.clone();
+                        if let Some(anim) = self.dock_split_animations.get(&parent_id) {
+                            current_shares = anim.shares();
+                        }
+                        
+                        let mut target_shares = linear.shares.clone();
+                        if is_starting {
+                            target_shares[pos] = 0.0;
+                        }
+                        
+                        // We do not mutate `linear.shares` here! We only create the animation.
+                        // The render pass will dynamically override the target share to 0.0 while dragging.
+                        
+                        crate::app::normalize_split_shares(&mut target_shares);
+                        
+                        let anim = DockSplitAnimation {
+                            started: Instant::now(),
+                            from: current_shares,
+                            to: target_shares,
+                            closing: is_starting,
+                        };
+                        self.dock_split_animations.insert(parent_id, anim);
+                    }
+                }
+            }
+        }
+    }
+
     /// Reconcile the app's side-tables with `pane_tree` after `egui_tiles` may have
     /// mutated the tree itself (tab drag-to-split moves and prunes tiles during
     /// `Tree::ui`). Drops state for panes that no longer exist and guarantees
@@ -914,9 +947,13 @@ impl App {
                         } else {
                             sum / old_len as f32
                         };
+                        let mut from = linear.shares.clone();
                         linear.children.insert(insert_at, new_tabs);
                         linear.shares.insert(insert_at, new_share);
                         crate::app::normalize_split_shares(&mut linear.shares);
+                        
+                        let anim = DockSplitAnimation::opening(from, linear.shares.clone(), insert_at);
+                        self.dock_split_animations.insert(parent_id, anim);
                         return;
                     }
                 }
@@ -932,6 +969,16 @@ impl App {
             LinearDir::Horizontal => self.state.pane_tree.tiles.insert_horizontal_tile(children),
             LinearDir::Vertical => self.state.pane_tree.tiles.insert_vertical_tile(children),
         };
+        
+        let insert_at = if before { 0 } else { 1 };
+        let anim = DockSplitAnimation {
+            started: Instant::now(),
+            from: if before { vec![0.0, 1.0] } else { vec![1.0, 0.0] },
+            to: vec![0.5, 0.5],
+            closing: false,
+        };
+        self.dock_split_animations.insert(linear, anim);
+
         if self.state.pane_tree.root == Some(target_tabs) {
             self.state.pane_tree.root = Some(linear);
             return;

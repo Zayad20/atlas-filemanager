@@ -78,6 +78,18 @@ impl App {
             let _perf = crate::perf::span("dock.sync_focus");
             self.sync_pane_focus(window, cx);
         }
+        let is_dragging = cx.has_active_drag();
+        if !is_dragging && self.state.dragging_pane.is_some() {
+            if !self.state.drag_pending {
+                let pane_id = self.state.dragging_pane.unwrap();
+                self.state.dragging_pane = None;
+                self.animate_pane_drag(pane_id, false);
+                cx.notify();
+            }
+        } else if is_dragging {
+            self.state.drag_pending = false;
+        }
+
         self.state
             .pane_tree
             .root
@@ -93,9 +105,16 @@ impl App {
     ) -> Option<AnyElement> {
         crate::perf::count("dock.render_tree");
         match self.state.pane_tree.tiles.get(id)?.clone() {
-            Tile::Pane(_) => Some(self.render_tabs_like(vec![id], Some(id), window, cx)),
+            Tile::Pane(_) => {
+                Some(self.render_tabs_like(vec![id], Some(id), window, cx))
+            }
             Tile::Container(Container::Tabs(tabs)) => {
-                Some(self.render_tabs_like(tabs.children, tabs.active, window, cx))
+                let children = tabs.children;
+                if children.is_empty() {
+                    return None;
+                }
+                let active = tabs.active.filter(|a| children.contains(a)).or_else(|| children.first().copied());
+                Some(self.render_tabs_like(children, active, window, cx))
             }
             Tile::Container(Container::Linear(linear)) => {
                 let mut children = Vec::new();
@@ -116,7 +135,16 @@ impl App {
                 .min_w(px(0.))
                 .min_h(px(0.))
                 .items_stretch();
-                let mut final_shares = linear.shares;
+                let mut final_shares = linear.shares.clone();
+                if cx.has_active_drag() {
+                    if let Some(dragged) = self.state.dragging_pane {
+                        for (ix, child_id) in linear.children.iter().enumerate() {
+                            if self.state.container_contains_pane(*child_id, dragged) {
+                                final_shares[ix] = 0.0;
+                            }
+                        }
+                    }
+                }
                 crate::app::normalize_split_shares(&mut final_shares);
                 let sum: f32 = final_shares.iter().copied().filter(|v| *v > 0.0).sum();
                 let shares = if final_shares.len() == children.len() && sum > f32::EPSILON {
@@ -324,6 +352,8 @@ impl App {
             
         let is_mod = window.modifiers().alt;
         let activate_drag_app = cx.entity().clone();
+        let activate_drag_app_down = cx.entity().clone();
+        let activate_drag_app_up = cx.entity().clone();
         let app_for_resize = cx.entity().clone();
 
         let panel = if is_mod {
@@ -337,8 +367,45 @@ impl App {
                         .absolute()
                         .inset_0()
                         .cursor_grab()
-                        .on_drag(TabDrag { pane_id: active_id }, move |_d, _pos, _window, cx| {
-                            tab_drag_entity(active_id, cx)
+                        .on_drag(
+                            TabDrag {
+                                pane_id: active_id,
+                                content: self.get_or_make_file_panel(active_id, cx).clone().into(),
+                                size: self.pane_view_bounds.get(&active_id).map(|b| b.size),
+                            },
+                            move |drag, _pos, _window, cx| {
+                                activate_drag_app.update(cx, |this, cx| {
+                                    if this.state.dragging_pane != Some(drag.pane_id) {
+                                        this.animate_pane_drag(drag.pane_id, true);
+                                        this.state.dragging_pane = Some(drag.pane_id);
+                                        this.state.drag_pending = false;
+                                        cx.notify();
+                                    }
+                                });
+                                tab_drag_entity(drag.pane_id, drag.content.clone(), drag.size, cx)
+                            },
+                        )
+                        .on_mouse_down(MouseButton::Left, move |_, _window, cx| {
+                            activate_drag_app_down.update(cx, |this, cx| {
+                                if this.state.dragging_pane != Some(active_id) {
+                                    this.animate_pane_drag(active_id, true);
+                                    this.state.dragging_pane = Some(active_id);
+                                    this.state.drag_pending = true;
+                                    cx.notify();
+                                }
+                            });
+                        })
+                        .on_mouse_up(MouseButton::Left, move |_, _window, cx| {
+                            activate_drag_app_up.update(cx, |this, cx| {
+                                if this.state.drag_pending {
+                                    this.state.drag_pending = false;
+                                    if this.state.dragging_pane == Some(active_id) {
+                                        this.state.dragging_pane = None;
+                                        this.animate_pane_drag(active_id, false);
+                                        cx.notify();
+                                    }
+                                }
+                            });
                         })
                         .on_mouse_down(MouseButton::Right, move |ev, _window, cx| {
                             app_for_resize.update(cx, |this, _cx| {
@@ -488,9 +555,26 @@ impl App {
                         s.bg(hover_bg)
                     }
                 })
-                .on_drag(TabDrag { pane_id }, move |_d, _pos, _window, cx| {
-                    tab_drag_entity(pane_id, cx)
-                })
+                .on_drag(
+                    TabDrag {
+                        pane_id,
+                        content: self.get_or_make_file_panel(pane_id, cx).clone().into(),
+                        size: self.pane_view_bounds.get(&pane_id).map(|b| b.size),
+                    },
+                    {
+                        let drag_app = app.clone();
+                        move |drag, _pos, _window, cx| {
+                            drag_app.update(cx, |this, cx| {
+                                if this.state.dragging_pane != Some(drag.pane_id) {
+                                    this.animate_pane_drag(drag.pane_id, true);
+                                    this.state.dragging_pane = Some(drag.pane_id);
+                                    cx.notify();
+                                }
+                            });
+                            tab_drag_entity(drag.pane_id, drag.content.clone(), drag.size, cx)
+                        }
+                    },
+                )
                 .on_drop::<TabDrag>({
                     let drop_app = app.clone();
                     move |drag, _window, cx| {
@@ -505,6 +589,23 @@ impl App {
                         this.process_actions(vec![Action::FocusTab(pane_id)]);
                         cx.notify();
                     });
+                })
+                .when_some(path.clone(), |s, drop_dest| {
+                    s.on_prepaint(crate::ui::drag_hover::drag_hover_recorder_with_drop(
+                        crate::ui::drag_hover::DragHoverId::Chrome("Tab", pane_id),
+                        crate::ui::drag_hover::DragHoverKind::Nav,
+                        crate::ui::drag_hover::DragHoverCommand::Process(crate::input::action::Action::FocusTab(pane_id)),
+                        crate::ui::drag_hover::DragHoverDropCommand::TransferTo(drop_dest),
+                        &app,
+                    ))
+                })
+                .when(path.is_none(), |s| {
+                    s.on_prepaint(crate::ui::drag_hover::drag_hover_recorder(
+                        crate::ui::drag_hover::DragHoverId::Chrome("Tab", pane_id),
+                        crate::ui::drag_hover::DragHoverKind::Nav,
+                        crate::ui::drag_hover::DragHoverCommand::Process(crate::input::action::Action::FocusTab(pane_id)),
+                        &app,
+                    ))
                 })
                 .when_some(tex, |s, tex| {
                     s.child(gpui::img(tex).size(px(16.0)))

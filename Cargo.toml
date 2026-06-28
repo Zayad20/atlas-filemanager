@@ -182,3 +182,4 @@ gpui-component-macros = { path = "../gpui-component-fork/crates/macros" }
 [patch."https://github.com/zed-industries/zed"]
 gpui = { path = "../zed-reference/crates/gpui" }
 gpui_platform = { path = "../zed-reference/crates/gpui_platform" }
+gpui_linux = { path = "../zed-reference/crates/gpui_linux" }

@@ -118,6 +118,7 @@ pub(crate) fn zone_recorder(
 
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        gpui_component::global_state::GlobalState::global_mut(cx).animations_enabled = !self.state.settings.disable_animations;
         let frame = crate::perf::next_frame();
         crate::perf::count("render.app");
         crate::perf::frame_summary(frame, || {
@@ -446,6 +447,12 @@ impl Render for App {
             .font_family(self.state.settings.font_family.clone())
             .key_context(key_ctx)
             .track_focus(&self.focus_handle)
+            .on_modifiers_changed({
+                let view = view.clone();
+                move |_ev, _window, cx| {
+                    view.update(cx, |_, cx| cx.notify());
+                }
+            })
             .on_mouse_down(
                 MouseButton::Navigate(NavigationDirection::Back),
                 move |_ev, _window, cx| {

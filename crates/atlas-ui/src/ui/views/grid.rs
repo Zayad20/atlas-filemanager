@@ -229,6 +229,21 @@ impl App {
                     });
                 }
             })
+            .on_mouse_down(MouseButton::Right, {
+                let v = rubber_view.clone();
+                move |ev, window, cx| {
+                    let pos = ev.position;
+                    v.update(cx, |this, cx| {
+                        if let Some(path) = this
+                            .tab_data_for(pane_id)
+                            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
+                        {
+                            this.open_background_ctx_menu(Some(path), pos, window, cx);
+                            cx.notify();
+                        }
+                    });
+                }
+            })
             .on_drop::<DraggedFiles>({
                 let v = rubber_view.clone();
                 move |d, _window, cx| {

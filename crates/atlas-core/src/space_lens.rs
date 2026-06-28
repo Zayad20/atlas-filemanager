@@ -249,7 +249,7 @@ fn top_level_child(root: &Path, path: &Path) -> Option<PathBuf> {
         .map(|component| root.join(component.as_os_str()))
 }
 
-const fn should_skip_descendants(root: &Path, path: &Path) -> bool {
+fn should_skip_descendants(root: &Path, path: &Path) -> bool {
     #[cfg(target_os = "linux")]
     {
         root == Path::new("/")

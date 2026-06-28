@@ -234,6 +234,8 @@ pub struct AppState {
     pub settings: Settings,
     pub ops: crate::ops::OperationManager,
     pub overlay: crate::overlay::OverlayState,
+    pub dragging_pane: Option<TileId>,
+    pub drag_pending: bool,
     // Phase 5 — inspector preview
     pub preview: crate::preview_cache::PreviewState,
     pub batch_rename: Option<crate::batch_rename::BatchRenameState>,
@@ -253,6 +255,17 @@ pub struct StagedDrop {
 }
 
 impl AppState {
+    pub fn container_contains_pane(&self, container_id: TileId, pane_id: TileId) -> bool {
+        if container_id == pane_id {
+            return true;
+        }
+        match self.pane_tree.tiles.get(container_id) {
+            Some(Tile::Container(Container::Tabs(tabs))) => tabs.children.contains(&pane_id),
+            Some(Tile::Container(Container::Linear(linear))) => linear.children.iter().any(|c| self.container_contains_pane(*c, pane_id)),
+            _ => false,
+        }
+    }
+
     pub fn new(settings: Settings) -> (Self, crate::pane::PaneId) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let tab_data = TabData::with_view(
@@ -475,11 +488,13 @@ impl AppState {
             settings,
             ops: crate::ops::OperationManager::default(),
             overlay: crate::overlay::OverlayState::default(),
+            dragging_pane: None,
             preview: crate::preview_cache::PreviewState::default(),
             batch_rename: None,
             profiles: ProfileManager::default(),
             profile_ui: ProfileUiState::default(),
             sidebar_drop_zone: Vec::new(),
+            drag_pending: false,
             tag_cache: crate::tag_cache::TagCache::default(),
             ext: crate::ext_state::ExtState::default(),
             #[cfg(feature = "cloud")]

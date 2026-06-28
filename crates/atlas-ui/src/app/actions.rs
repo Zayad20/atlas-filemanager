@@ -511,6 +511,28 @@ impl App {
                     let path = parent.join(&name);
                     self.create_dir(path);
                 }
+                Action::CreateFile { parent, name } => {
+                    let path = parent.join(&name);
+                    let _ = std::fs::File::create(&path);
+                }
+                Action::OpenTerminal { dir } => {
+                    #[cfg(target_os = "linux")]
+                    {
+                        let _ = std::process::Command::new("xdg-terminal").current_dir(&dir).spawn()
+                            .or_else(|_| std::process::Command::new("gnome-terminal").arg("--working-directory").arg(&dir).spawn())
+                            .or_else(|_| std::process::Command::new("alacritty").arg("--working-directory").arg(&dir).spawn())
+                            .or_else(|_| std::process::Command::new("kitty").arg("--directory").arg(&dir).spawn())
+                            .or_else(|_| std::process::Command::new("konsole").arg("--workdir").arg(&dir).spawn());
+                    }
+                    #[cfg(target_os = "windows")]
+                    {
+                        let _ = std::process::Command::new("cmd").arg("/c").arg("start").arg("cmd").current_dir(&dir).spawn();
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        let _ = std::process::Command::new("open").arg("-a").arg("Terminal").arg(&dir).spawn();
+                    }
+                }
                 Action::Paste { dest } => {
                     #[cfg(feature = "cloud")]
                     {

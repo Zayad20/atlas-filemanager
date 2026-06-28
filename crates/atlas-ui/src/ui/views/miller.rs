@@ -153,26 +153,69 @@ impl App {
                     .min_h(px(0.))
                     .into_any_element()
                 };
-                columns.push(
-                    v_flex()
-                        .w(px(240.))
-                        .h_full()
-                        .border_r_1()
-                        .border_color(header_bg)
-                        .child(
-                            div()
-                                .w_full()
-                                .px_2()
-                                .py_1()
-                                .bg(header_bg)
-                                .text_xs()
-                                .text_color(muted)
-                                .truncate()
-                                .child(title),
-                        )
-                        .child(body)
-                        .into_any_element(),
-                );
+
+                let col_loc = col.location.fs_dir().map(|p| p.to_path_buf());
+                let mut col_container = v_flex()
+                    .w(px(240.))
+                    .h_full()
+                    .border_r_1()
+                    .border_color(header_bg)
+                    .child(
+                        div()
+                            .w_full()
+                            .px_2()
+                            .py_1()
+                            .bg(header_bg)
+                            .text_xs()
+                            .text_color(muted)
+                            .truncate()
+                            .child(title),
+                    )
+                    .child(body);
+                
+                if let Some(col_path) = col_loc {
+                    let mv = view.clone();
+                    let cpv = view.clone();
+                    let dest_internal = col_path.clone();
+                    let dest_external = col_path.clone();
+                    let hover_id = crate::ui::drag_hover::DragHoverId::Folder(pane_id, col_path.clone());
+                    col_container = col_container
+                        .drag_over::<crate::ui::root::DraggedFiles>(|s, _, _, _| s.bg(crate::ui::glass::glass_fill().opacity(0.1)))
+                        .on_prepaint(crate::ui::drag_hover::drag_hover_recorder_with_drop(
+                            hover_id,
+                            crate::ui::drag_hover::DragHoverKind::Folder,
+                            crate::ui::drag_hover::DragHoverCommand::NavigatePathIn(pane_id, col_path.clone()),
+                            crate::ui::drag_hover::DragHoverDropCommand::TransferTo(col_path.clone()),
+                            &view,
+                        ))
+                        .on_drop::<crate::ui::root::DraggedFiles>(move |d, _window, cx| {
+                            let paths = d.paths.clone();
+                            mv.update(cx, |this, cx| {
+                                this.execute_drag_hover_drop_command(
+                                    crate::ui::drag_hover::DragHoverDropCommand::TransferTo(dest_internal.clone()),
+                                    paths,
+                                    true,
+                                );
+                                cx.notify();
+                            });
+                            cx.stop_propagation();
+                        })
+                        .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
+                            let paths = paths.paths().to_vec();
+                            cpv.update(cx, |this, cx| {
+                                this.execute_drag_hover_drop_command(
+                                    crate::ui::drag_hover::DragHoverDropCommand::TransferTo(dest_external.clone()),
+                                    paths,
+                                    false,
+                                );
+                                cx.notify();
+                            });
+                            cx.stop_propagation();
+                        });
+                }
+                
+                columns.push(col_container.into_any_element());
+
             }
         }
 
@@ -190,6 +233,21 @@ impl App {
                     let (pos, additive) =
                         (ev.position, ev.modifiers.control || ev.modifiers.platform);
                     v.update(cx, |this, _| this.begin_rubber(pane_id, pos, additive));
+                }
+            })
+            .on_mouse_down(MouseButton::Right, {
+                let v = rubber_view.clone();
+                move |ev, window, cx| {
+                    let pos = ev.position;
+                    v.update(cx, |this, cx| {
+                        if let Some(path) = this
+                            .tab_data_for(pane_id)
+                            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
+                        {
+                            this.open_background_ctx_menu(Some(path), pos, window, cx);
+                            cx.notify();
+                        }
+                    });
                 }
             })
             .on_drop::<DraggedFiles>({
@@ -298,6 +356,32 @@ fn render_miller_row(
         )
         .child(div().flex_1().min_w(px(0.)).truncate().child(name))
         .child(trailing)
+        .on_drag(
+            crate::ui::drag::file_drag_value(vec![dest.clone()]),
+            {
+                let v = view.clone();
+                let drag_dest = dest.clone();
+                move |_d, _pos, _window, cx| {
+                    v.update(cx, |this, cx| {
+                        this.process_actions(vec![Action::MillerSelect {
+                            tile: pane_id,
+                            column,
+                            idx,
+                        }]);
+                        this.begin_drag_hover();
+                        cx.notify();
+                    });
+                    #[cfg(windows)]
+                    {
+                        cx.new(|_| crate::ui::root::DragNoop)
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        cx.new(|_| crate::ui::root::DraggedFiles { paths: vec![drag_dest.clone()] })
+                    }
+                }
+            },
+        )
         .on_click(move |ev, _window, cx| {
             let activate = ev.click_count() >= 2;
             v.update(cx, |this, cx| {
