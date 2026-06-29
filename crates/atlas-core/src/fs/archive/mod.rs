@@ -10,6 +10,7 @@
 
 pub mod bomb_guard;
 pub mod cache;
+pub(crate) mod common;
 #[cfg(feature = "rar")]
 pub mod rar_backend;
 pub mod sanitize;

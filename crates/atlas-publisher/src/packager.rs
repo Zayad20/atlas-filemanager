@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 use walkdir::WalkDir;
-use zip::write::FileOptions;
+use zip::write::SimpleFileOptions;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ExtensionManifest {
@@ -34,7 +34,7 @@ pub fn parse_manifest(dir: &Path) -> Result<ExtensionManifest> {
 pub fn zip_extension(source_dir: &Path, output_path: &Path) -> Result<()> {
     let file = File::create(output_path)?;
     let mut zip = zip::ZipWriter::new(file);
-    let options = FileOptions::default()
+    let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o755);
 

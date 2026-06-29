@@ -13,7 +13,7 @@ use crate::ui::drag_hover::{
 use crate::ui::glass::{
     glass_fill, glass_header_fill, glass_shadows_enabled, layer_color, GlassExt,
 };
-use crate::ui::icons::{icon, is_windows_theme, windows_icon, AtlasIcon};
+use crate::ui::icons::{is_windows_theme, theme_icon, AtlasIcon};
 use crate::ui::search_shell::search_icon;
 use crate::ui::tooltips::shortcut_tooltip;
 use gpui::prelude::*;
@@ -890,14 +890,6 @@ fn bookmark_button(
                 cx.notify();
             });
         })
-}
-
-fn theme_icon(kind: AtlasIcon, size: f32, color: Hsla, windows_theme: bool) -> AnyElement {
-    if windows_theme {
-        windows_icon(kind, size, color)
-    } else {
-        icon(kind, size, color)
-    }
 }
 
 fn nav_context_menu(

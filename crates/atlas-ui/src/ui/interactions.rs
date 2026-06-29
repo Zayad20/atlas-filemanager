@@ -974,7 +974,19 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                     }
                     false
                 });
-                window.refresh();
+                // Only force a full-window repaint while an interaction needs
+                // cross-pane visual feedback (DnD drop zones, drag-hover, rubber-band).
+                // Plain hover/move relies on gpui's own hover repaints and the scoped
+                // `notify_pane` calls above; refreshing on every mouse move re-rendered
+                // the entire App (all panes) and was the lag under many panes — and it
+                // silently undid the scoped col/dock-resize notifies.
+                let needs_full = cx.has_active_drag() || {
+                    let app = vm.read(cx);
+                    app.drag_hover_maybe_active() || app.rubber.is_some()
+                };
+                if needs_full {
+                    window.refresh();
+                }
             });
 
             // ── Global up ────────────────────────────────────────────────────

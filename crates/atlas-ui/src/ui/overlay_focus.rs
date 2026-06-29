@@ -18,6 +18,12 @@
 //!    own the keyboard. Adding a bespoke overlay = one arm here (not a branch
 //!    scattered across the codebase). If no claim is active, focus returns to the
 //!    root so pane keyboard-nav works.
+//!
+//! # Adding a new overlay
+//! 1. Add a variant to [`OverlayClaim`].
+//! 2. Add the state check in [`App::active_claim`] (detection, priority order).
+//! 3. Add the focus-handle arm in [`App::overlay_focus_target`] (resolution).
+//! That's it — `modal_overlay_active` and `sync_overlay_focus` update automatically.
 
 use crate::app::{App, BatchRenameField};
 use crate::state::batch_rename::RenameMode;
@@ -25,160 +31,87 @@ use gpui::{Context, FocusHandle, Focusable, Window};
 use gpui_component::input::{Position, SelectToStartOfLine};
 use gpui_component::WindowExt;
 
+/// Which of the app's bespoke overlays currently claims the keyboard.
+///
+/// This enum is the single source of truth shared by `modal_overlay_active` (pure
+/// state check) and `overlay_focus_target` (focus-handle resolution). Adding a new
+/// overlay requires only: one new variant + one arm in each of those two places.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum OverlayClaim {
+    TagPicker,
+    TypeFilter,
+    SizeFilter,
+    CtxMenu,
+    GotoBar,
+    Commands,
+    ExtPalette,
+    ExtManager,
+    BatchRename,
+    RenamingProfile,
+    CreatingTag,
+    #[cfg(feature = "cloud")]
+    CloudAdd,
+    #[cfg(feature = "cloud")]
+    CloudRename,
+    /// Covers show_settings and transfer_conflict — both use a neutral focus handle.
+    TextlessModal,
+    InlineRename,
+    SearchFilter,
+}
+
 impl App {
-    /// THE single source of truth for "is a keyboard-owning overlay open?".
-    ///
-    /// Used by the window root to swap its key context from `Atlas` to `AtlasModal`
-    /// — the latter omits the pane navigation keybindings (`up`/`down` → NavUp/Down),
-    /// so an open overlay's own keys (its `capture_key_down`/focused input) take over
-    /// instead of the file pane behind it. Every overlay that captures the keyboard
-    /// must be listed here once; forgetting one is exactly why arrow keys leaked to
-    /// the pane while the right-click menu was open.
-    pub(crate) fn modal_overlay_active(&self) -> bool {
-        let o = &self.state.overlay;
-        o.show_goto_bar
-            || self.palette_closing.is_some()
-            || o.show_palette
-            || o.show_ext_palette
-            || o.show_settings
-            || o.transfer_conflict.is_some()
-            || o.renaming_profile
-            || self.state.profile_ui.creating_tag
-            || self.state.batch_rename.is_some()
-            || self.rename_edit.is_some()
-            || self.ctx_menu.is_some()
-            || self.type_filter_menu.is_some()
-            || self.size_filter_menu.is_some()
-            || self.tag_picker_menu.is_some()
-            || self.state.ext.show_manager
-            || {
-                #[cfg(feature = "cloud")]
-                {
-                    self.state.cloud.show_add_dialog
-                        || self.state.cloud.renaming_remote_id.is_some()
-                }
-                #[cfg(not(feature = "cloud"))]
-                {
-                    false
-                }
-            }
-            || self
-                .state
-                .active_tab_state()
-                .is_some_and(|ts| ts.search.active)
-    }
-
-    /// Decide which focus handle should own the keyboard this frame and move focus
-    /// to it (only when not already focused, to avoid fighting the cursor).
-    pub(crate) fn sync_overlay_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Layer 1 — yield to gpui-component overlays. A `Dialog`/`Sheet` (and the
-        // `AlertDialog` built on `Dialog`) manage their own focus; touching focus
-        // here would steal it from their inputs every frame. Bail out entirely.
-        if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
-            return;
-        }
-
-        // Layer 2 — resolve the app's own overlay claims.
-        let target = self.overlay_focus_target(window, cx);
-        if let Some(handle) = target {
-            if !handle.is_focused(window) {
-                window.focus(&handle, cx);
-            }
-        } else {
-            // Nothing claims the keyboard: return it to the root so pane nav works.
-            let root = self.focus_handle.clone();
-            if !root.is_focused(window) {
-                window.focus(&root, cx);
-            }
-        }
-    }
-
-    /// Ordered claim resolver for the app's bespoke overlays. First active claim
-    /// wins. To add a new bespoke overlay that captures input, add an arm here (or
-    /// prefer a gpui-component `Dialog`/`Popover`, which Layer 1 yields to).
-    fn overlay_focus_target(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<FocusHandle> {
-        use crate::ui::palette::PaletteKind;
-
-        // The tag-picker overlay's search input owns the keyboard while open.
+    /// First active overlay claim, in focus-priority order. Pure state read — no
+    /// window or cx required. Used by both `modal_overlay_active` and
+    /// `overlay_focus_target` so they can never desync.
+    pub(crate) fn active_claim(&self) -> Option<OverlayClaim> {
         if self.tag_picker_menu.is_some() {
-            if let Some(input) = &self.tag_picker_input {
-                return Some(input.read(cx).focus_handle(cx));
-            }
+            return Some(OverlayClaim::TagPicker);
         }
-        // The type-filter overlay's search input owns the keyboard while open.
         if self.type_filter_menu.is_some() {
-            if let Some(input) = &self.type_filter_input {
-                return Some(input.read(cx).focus_handle(cx));
-            }
+            return Some(OverlayClaim::TypeFilter);
         }
         if self.size_filter_menu.is_some() {
-            return Some(self.overlay_focus(cx));
+            return Some(OverlayClaim::SizeFilter);
         }
-        // The right-click menu's search input owns the keyboard while open. Placed
-        // first: opening a palette closes the menu, so they never contend.
         if self.ctx_menu.is_some() {
-            return self.ctx_menu_focus(cx);
+            return Some(OverlayClaim::CtxMenu);
         }
-        if self.state.overlay.show_goto_bar {
-            let input = self.palette_input_for(PaletteKind::Goto, window, cx);
-            return Some(input.read(cx).focus_handle(cx));
+        let o = &self.state.overlay;
+        if o.show_goto_bar {
+            return Some(OverlayClaim::GotoBar);
         }
-        if self.state.overlay.show_palette {
-            let input = self.palette_input_for(PaletteKind::Commands, window, cx);
-            return Some(input.read(cx).focus_handle(cx));
+        if o.show_palette {
+            return Some(OverlayClaim::Commands);
         }
-        if self.state.overlay.show_ext_palette {
-            let input = self.palette_input_for(PaletteKind::Ext, window, cx);
-            return Some(input.read(cx).focus_handle(cx));
+        if o.show_ext_palette {
+            return Some(OverlayClaim::ExtPalette);
         }
         if self.state.ext.show_manager {
-            return Some(self.ext_manager_focus_handle(window, cx));
+            return Some(OverlayClaim::ExtManager);
         }
         if self.state.batch_rename.is_some() {
-            return Some(self.batch_focus_handle(window, cx));
+            return Some(OverlayClaim::BatchRename);
         }
-        if self.state.overlay.renaming_profile {
-            return Some(self.rename_profile_focus(window, cx));
+        if o.renaming_profile {
+            return Some(OverlayClaim::RenamingProfile);
         }
         if self.state.profile_ui.creating_tag {
-            return Some(self.create_tag_focus(window, cx));
+            return Some(OverlayClaim::CreatingTag);
         }
         #[cfg(feature = "cloud")]
         if self.state.cloud.show_add_dialog {
-            return Some(self.cloud_add_focus(window, cx));
+            return Some(OverlayClaim::CloudAdd);
         }
         #[cfg(feature = "cloud")]
         if self.state.cloud.renaming_remote_id.is_some() {
-            return Some(self.rename_remote_focus(window, cx));
+            return Some(OverlayClaim::CloudRename);
         }
-        // Text-less modals: a neutral handle so Esc/buttons work but no input steals.
-        if self.state.overlay.show_settings || self.state.overlay.transfer_conflict.is_some() {
-            return Some(self.overlay_focus(cx));
+        if o.show_settings || o.transfer_conflict.is_some() {
+            return Some(OverlayClaim::TextlessModal);
         }
-        // Inline (in-row) rename owns the keyboard while active.
         if self.rename_edit.is_some() {
-            let pending = self.rename_edit.as_mut().and_then(|edit| {
-                edit.initial_select_chars
-                    .take()
-                    .map(|chars| (edit.input.clone(), chars))
-            });
-            if let Some((input, chars)) = pending {
-                input.update(cx, |state, cx| {
-                    state.set_cursor_position(Position::new(0, chars), window, cx);
-                });
-                window.dispatch_action(Box::new(SelectToStartOfLine), cx);
-            }
-            return self
-                .rename_edit
-                .as_ref()
-                .map(|edit| edit.input.read(cx).focus_handle(cx));
+            return Some(OverlayClaim::InlineRename);
         }
-        // The focused pane's local filter owns the keyboard while active; arrows/
-        // enter/escape still work via the filter pill's key capture.
         let tile = self.state.focused_tile;
         if self
             .state
@@ -186,12 +119,106 @@ impl App {
             .get(&tile)
             .is_some_and(|ts| ts.search.active)
         {
-            return self
-                .search_inputs
-                .get(&tile)
-                .map(|input| input.read(cx).focus_handle(cx));
+            return Some(OverlayClaim::SearchFilter);
         }
         None
+    }
+
+    /// THE single source of truth for "is a keyboard-owning overlay open?".
+    ///
+    /// Used by the window root to swap its key context from `Atlas` to `AtlasModal`.
+    /// Derived from `active_claim` so it can never drift out of sync with the focus
+    /// resolver. `palette_closing` is the only extra: it's modal (blocks pane nav)
+    /// but needs no focus (the palette is animating out).
+    pub(crate) fn modal_overlay_active(&self) -> bool {
+        self.palette_closing.is_some() || self.active_claim().is_some()
+    }
+
+    /// Decide which focus handle should own the keyboard this frame and move focus
+    /// to it (only when not already focused, to avoid fighting the cursor).
+    pub(crate) fn sync_overlay_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Layer 1 — yield to gpui-component overlays (Dialog/Sheet manage focus themselves).
+        if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+            return;
+        }
+        // Layer 2 — resolve the app's own overlay claims.
+        let target = self.overlay_focus_target(window, cx);
+        if let Some(handle) = target {
+            if !handle.is_focused(window) {
+                window.focus(&handle, cx);
+            }
+        } else {
+            let root = self.focus_handle.clone();
+            if !root.is_focused(window) {
+                window.focus(&root, cx);
+            }
+        }
+    }
+
+    /// Resolve the active claim to a concrete focus handle. Driven by `active_claim`
+    /// so detection and resolution always agree on which overlay is "the active one".
+    fn overlay_focus_target(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<FocusHandle> {
+        use crate::ui::palette::PaletteKind;
+        match self.active_claim()? {
+            OverlayClaim::TagPicker => self
+                .tag_picker_input
+                .as_ref()
+                .map(|i| i.read(cx).focus_handle(cx)),
+            OverlayClaim::TypeFilter => self
+                .type_filter_input
+                .as_ref()
+                .map(|i| i.read(cx).focus_handle(cx)),
+            OverlayClaim::SizeFilter => Some(self.overlay_focus(cx)),
+            OverlayClaim::CtxMenu => self.ctx_menu_focus(cx),
+            OverlayClaim::GotoBar => {
+                let input = self.palette_input_for(PaletteKind::Goto, window, cx);
+                Some(input.read(cx).focus_handle(cx))
+            }
+            OverlayClaim::Commands => {
+                let input = self.palette_input_for(PaletteKind::Commands, window, cx);
+                Some(input.read(cx).focus_handle(cx))
+            }
+            OverlayClaim::ExtPalette => {
+                let input = self.palette_input_for(PaletteKind::Ext, window, cx);
+                Some(input.read(cx).focus_handle(cx))
+            }
+            OverlayClaim::ExtManager => Some(self.ext_manager_focus_handle(window, cx)),
+            OverlayClaim::BatchRename => Some(self.batch_focus_handle(window, cx)),
+            OverlayClaim::RenamingProfile => Some(self.rename_profile_focus(window, cx)),
+            OverlayClaim::CreatingTag => Some(self.create_tag_focus(window, cx)),
+            #[cfg(feature = "cloud")]
+            OverlayClaim::CloudAdd => Some(self.cloud_add_focus(window, cx)),
+            #[cfg(feature = "cloud")]
+            OverlayClaim::CloudRename => Some(self.rename_remote_focus(window, cx)),
+            OverlayClaim::TextlessModal => Some(self.overlay_focus(cx)),
+            OverlayClaim::InlineRename => {
+                // Cursor-positioning side-effect fires once (initial_select_chars is taken).
+                let pending = self.rename_edit.as_mut().and_then(|edit| {
+                    edit.initial_select_chars
+                        .take()
+                        .map(|chars| (edit.input.clone(), chars))
+                });
+                if let Some((input, chars)) = pending {
+                    input.update(cx, |state, cx| {
+                        state.set_cursor_position(Position::new(0, chars), window, cx);
+                    });
+                    window.dispatch_action(Box::new(SelectToStartOfLine), cx);
+                }
+                self.rename_edit
+                    .as_ref()
+                    .map(|edit| edit.input.read(cx).focus_handle(cx))
+            }
+            OverlayClaim::SearchFilter => {
+                let tile = self.state.focused_tile;
+                self.search_inputs
+                    .get(&tile)
+                    .map(|input| input.read(cx).focus_handle(cx))
+            }
+        }
     }
 
     /// Ensure both batch-rename inputs exist (pre-filled from state) and return the
@@ -224,7 +251,6 @@ impl App {
         } else {
             self.batch_pattern_input.clone()
         };
-        // Both were just ensured above; fall back to the neutral handle defensively.
         if let Some(i) = input {
             i.read(cx).focus_handle(cx)
         } else {

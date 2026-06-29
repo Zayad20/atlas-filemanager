@@ -11,6 +11,7 @@ use atlas_model::ops::{
     TransferReport, TransferRequest,
 };
 use atlas_model::pane::TabId;
+use crate::util::display::display_name;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -87,13 +88,6 @@ fn ext_path(p: &Path) -> PathBuf {
         }
     }
     p.to_path_buf()
-}
-
-fn display_name(path: &Path) -> String {
-    path.file_name().map_or_else(
-        || path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    )
 }
 
 // ---------------------------------------------------------------------------

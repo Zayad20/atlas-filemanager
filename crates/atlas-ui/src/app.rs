@@ -132,6 +132,11 @@ pub struct App {
     /// so they don't flash when a new split or close restructures the layout.
     pub(crate) file_panel_cache: HashMap<TileId, Entity<crate::ui::pane_panel::FilePanel>>,
     pub(crate) sidebar_panel: Option<Entity<crate::ui::sidebar::SidebarPanel>>,
+    /// The dock tree hosted in its own view (see `ui::dock_host`). Split/close/drag
+    /// animations call `request_animation_frame`, which notifies the *current* view;
+    /// hosting the dock here keeps that per-frame notify off `App`, so animations no
+    /// longer re-render the whole App tree (was the stutter source under many panes).
+    pub(crate) dock_host: Option<Entity<crate::ui::dock_host::DockHost>>,
     /// MRU focus history: pane TileIds in the order they last held focus.
     /// `find_focus_after_close` pops entries until it finds a live pane,
     /// giving VS-Code-style "go to previously used pane" on Ctrl+W.

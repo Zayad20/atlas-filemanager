@@ -947,7 +947,7 @@ impl App {
                         } else {
                             sum / old_len as f32
                         };
-                        let mut from = linear.shares.clone();
+                        let from = linear.shares.clone();
                         linear.children.insert(insert_at, new_tabs);
                         linear.shares.insert(insert_at, new_share);
                         crate::app::normalize_split_shares(&mut linear.shares);
@@ -970,7 +970,7 @@ impl App {
             LinearDir::Vertical => self.state.pane_tree.tiles.insert_vertical_tile(children),
         };
         
-        let insert_at = if before { 0 } else { 1 };
+        let _insert_at = if before { 0 } else { 1 };
         let anim = DockSplitAnimation {
             started: Instant::now(),
             from: if before { vec![0.0, 1.0] } else { vec![1.0, 0.0] },

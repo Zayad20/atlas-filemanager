@@ -112,10 +112,11 @@ impl App {
         let focus = self.overlay_focus(cx);
 
         let name_input = self.cloud_add_name_input(window, cx);
-        let host_input = self.cloud_add_inputs.as_ref().unwrap().host.clone();
-        let port_input = self.cloud_add_inputs.as_ref().unwrap().port.clone();
-        let user_input = self.cloud_add_inputs.as_ref().unwrap().user.clone();
-        let pass_input = self.cloud_add_inputs.as_ref().unwrap().password.clone();
+        let inputs = self.cloud_add_inputs.as_ref().expect("initialized by cloud_add_name_input");
+        let host_input = inputs.host.clone();
+        let port_input = inputs.port.clone();
+        let user_input = inputs.user.clone();
+        let pass_input = inputs.password.clone();
 
         let kind = self.state.cloud.add_form.kind;
         let is_oauth = kind.is_oauth();

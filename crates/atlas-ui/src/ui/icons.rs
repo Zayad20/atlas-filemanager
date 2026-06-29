@@ -202,6 +202,16 @@ pub(crate) fn windows_icon(kind: AtlasIcon, size: f32, color: Hsla) -> AnyElemen
         .into_any_element()
 }
 
+/// Render either a Windows Fluent icon or an SVG icon based on the active theme.
+#[inline]
+pub(crate) fn theme_icon(kind: AtlasIcon, size: f32, color: Hsla, windows_theme: bool) -> AnyElement {
+    if windows_theme {
+        windows_icon(kind, size, color)
+    } else {
+        icon(kind, size, color)
+    }
+}
+
 #[inline]
 fn windows_icon_glyph(kind: AtlasIcon) -> &'static str {
     match kind {

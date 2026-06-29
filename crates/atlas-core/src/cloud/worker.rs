@@ -18,6 +18,9 @@ use atlas_model::file_entry::{FileEntry, FileKind};
 use atlas_model::pane::TabId;
 
 const MAX_CONCURRENT: usize = 4;
+const DAEMON_READY_POLLS: u32 = 40;
+const DAEMON_POLL_MS: u64 = 100;
+
 
 /// Commands the UI sends to the cloud worker.
 pub enum CloudCmd {
@@ -166,6 +169,20 @@ struct Worker {
 }
 
 impl Worker {
+    /// Calls `ensure_ready()`; on error sends `on_err(e)` through the bg channel and returns None.
+    async fn require_ready(
+        &mut self,
+        on_err: impl FnOnce(anyhow::Error) -> BgResult,
+    ) -> Option<Arc<dyn CloudProvider>> {
+        match self.ensure_ready().await {
+            Ok(p) => Some(p),
+            Err(e) => {
+                let _ = self.bg_tx.send(on_err(e));
+                None
+            }
+        }
+    }
+
     /// Lazily download rclone + start the daemon on first use. Cached afterwards.
     async fn ensure_ready(&mut self) -> anyhow::Result<Arc<dyn CloudProvider>> {
         if let Some(p) = &self.provider {
@@ -181,12 +198,12 @@ impl Worker {
 
         // Wait for the daemon to accept connections (poll core/version briefly).
         let mut ready = false;
-        for _ in 0..40 {
+        for _ in 0..DAEMON_READY_POLLS {
             if rc.version().await.is_ok() {
                 ready = true;
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(DAEMON_POLL_MS)).await;
         }
         if !ready {
             return Err(anyhow::anyhow!("rclone daemon did not become ready"));
@@ -270,8 +287,7 @@ impl Worker {
                     open_on_done,
                     delete_source: false,
                 };
-                self.transfers.push(t);
-                self.emit_transfers();
+                self.mutate_transfers(|ts| ts.push(t));
             }
             CloudCmd::EnqueueUpload {
                 id,
@@ -294,8 +310,7 @@ impl Worker {
                     open_on_done: false,
                     delete_source,
                 };
-                self.transfers.push(t);
-                self.emit_transfers();
+                self.mutate_transfers(|ts| ts.push(t));
             }
             CloudCmd::PauseTransfer(id) => self.set_state(id, |s| {
                 if *s == TransferState::Queued {
@@ -307,22 +322,20 @@ impl Worker {
                     *s = TransferState::Queued;
                 }
             }),
-            CloudCmd::RetryTransfer(id) => {
-                if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
+            CloudCmd::RetryTransfer(id) => self.mutate_transfers(|ts| {
+                if let Some(t) = ts.iter_mut().find(|t| t.id == id) {
                     if matches!(t.state, TransferState::Failed(_)) {
                         t.state = TransferState::Queued;
                         t.bytes_done = 0;
                         t.retries += 1;
                     }
                 }
-                self.emit_transfers();
-            }
+            }),
             CloudCmd::CancelTransfer(id) => {
                 if let Some(h) = self.running.remove(&id) {
                     h.abort();
                 }
-                self.transfers.retain(|t| t.id != id);
-                self.emit_transfers();
+                self.mutate_transfers(|ts| ts.retain(|t| t.id != id));
             }
         }
     }
@@ -341,13 +354,7 @@ impl Worker {
     }
 
     async fn add_remote(&mut self, remote: CloudRemote, secret: String) {
-        let provider = match self.ensure_ready().await {
-            Ok(p) => p,
-            Err(e) => {
-                let _ = self.bg_tx.send(BgResult::CloudError(e.to_string()));
-                return;
-            }
-        };
+        let Some(provider) = self.require_ready(|e| BgResult::CloudError(e.to_string())).await else { return; };
         // Build backend params from the remote kind + secret and let the provider
         // persist them (passwords are obscured by the backend, never stored by us).
         let id = remote.id.clone();
@@ -406,17 +413,7 @@ impl Worker {
     }
 
     async fn list_remote(&mut self, tab: TabId, op_id: u64, id: RemoteId, path: String) {
-        let provider = match self.ensure_ready().await {
-            Ok(p) => p,
-            Err(e) => {
-                let _ = self.bg_tx.send(BgResult::DirListError {
-                    tab,
-                    op_id,
-                    error: e.to_string(),
-                });
-                return;
-            }
-        };
+        let Some(provider) = self.require_ready(|e| BgResult::DirListError { tab, op_id, error: e.to_string() }).await else { return; };
         let bg = self.bg_tx.clone();
         self.rt.spawn(async move {
             match provider.list(&id, &path).await {
@@ -440,15 +437,14 @@ impl Worker {
     }
 
     async fn mount(&mut self, id: RemoteId) {
-        let provider = match self.ensure_ready().await {
-            Ok(p) => p,
-            Err(e) => {
-                let _ = self.bg_tx.send(BgResult::RemoteStatusChanged {
-                    id,
-                    status: RemoteStatus::Error(e.to_string()),
-                });
-                return;
-            }
+        let Some(provider) = self
+            .require_ready(|e| BgResult::RemoteStatusChanged {
+                id: id.clone(),
+                status: RemoteStatus::Error(e.to_string()),
+            })
+            .await
+        else {
+            return;
         };
         let _ = self.bg_tx.send(BgResult::RemoteStatusChanged {
             id: id.clone(),
@@ -648,13 +644,7 @@ impl Worker {
     }
 
     async fn delete_remote(&mut self, id: RemoteId, entries: Vec<(String, bool)>, parent: String) {
-        let provider = match self.ensure_ready().await {
-            Ok(p) => p,
-            Err(e) => {
-                let _ = self.bg_tx.send(BgResult::CloudError(format!("{id}: {e}")));
-                return;
-            }
-        };
+        let Some(provider) = self.require_ready(|e| BgResult::CloudError(format!("{id}: {e}"))).await else { return; };
         let bg = self.bg_tx.clone();
         self.rt.spawn(async move {
             let mut errors = Vec::new();
@@ -671,13 +661,7 @@ impl Worker {
     }
 
     async fn mkdir_remote(&mut self, id: RemoteId, path: String, parent: String) {
-        let provider = match self.ensure_ready().await {
-            Ok(p) => p,
-            Err(e) => {
-                let _ = self.bg_tx.send(BgResult::CloudError(format!("{id}: {e}")));
-                return;
-            }
-        };
+        let Some(provider) = self.require_ready(|e| BgResult::CloudError(format!("{id}: {e}"))).await else { return; };
         let bg = self.bg_tx.clone();
         self.rt.spawn(async move {
             if let Err(e) = provider.mkdir(&id, &path).await {
@@ -694,13 +678,7 @@ impl Worker {
         to: String,
         parent: String,
     ) {
-        let provider = match self.ensure_ready().await {
-            Ok(p) => p,
-            Err(e) => {
-                let _ = self.bg_tx.send(BgResult::CloudError(format!("{id}: {e}")));
-                return;
-            }
-        };
+        let Some(provider) = self.require_ready(|e| BgResult::CloudError(format!("{id}: {e}"))).await else { return; };
         let bg = self.bg_tx.clone();
         self.rt.spawn(async move {
             if let Err(e) = provider.rename(&id, &from, &to).await {
@@ -717,13 +695,7 @@ impl Worker {
         is_move: bool,
         parent: String,
     ) {
-        let provider = match self.ensure_ready().await {
-            Ok(p) => p,
-            Err(e) => {
-                let _ = self.bg_tx.send(BgResult::CloudError(format!("{id}: {e}")));
-                return;
-            }
-        };
+        let Some(provider) = self.require_ready(|e| BgResult::CloudError(format!("{id}: {e}"))).await else { return; };
         let bg = self.bg_tx.clone();
         self.rt.spawn(async move {
             let mut errors = Vec::new();
@@ -748,6 +720,11 @@ impl Worker {
         let _ = self
             .bg_tx
             .send(BgResult::TransferUpdate(self.transfers.clone()));
+    }
+
+    fn mutate_transfers(&mut self, f: impl FnOnce(&mut Vec<Transfer>)) {
+        f(&mut self.transfers);
+        self.emit_transfers();
     }
 }
 

@@ -61,7 +61,7 @@ impl App {
         let wanted = self.thumb_wanted.clone();
         self.rt.spawn(async move {
             if let Ok(bg) = tokio::task::spawn_blocking(move || {
-                if !wanted.lock().unwrap().contains(&path) {
+                if !wanted.lock().unwrap_or_else(|p| p.into_inner()).contains(&path) {
                     return BgResult::GridThumbnailSkipped { path };
                 }
                 decode_thumbnail(&path, THUMB_MAX_EDGE)

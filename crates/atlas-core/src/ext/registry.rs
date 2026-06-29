@@ -107,13 +107,7 @@ impl Registry {
     pub fn command(&self, ext_id: &str, cmd_id: &str) -> Option<CommandRef> {
         let ext = self.get(ext_id)?;
         let command = ext.manifest.commands.iter().find(|c| c.id == cmd_id)?;
-        Some(CommandRef {
-            ext_id: ext.manifest.id.clone(),
-            ext_dir: ext.dir.clone(),
-            kind: ext.manifest.kind,
-            command: command.clone(),
-            tools: self.required_tools(command)?,
-        })
+        Some(Self::make_ref(ext, command, self.required_tools(command)?))
     }
 
     /// Find an enabled thumbnailer command that accepts files with extension `ext` and
@@ -133,13 +127,7 @@ impl Registry {
                 let Some(tools) = self.required_tools(cmd) else {
                     continue;
                 };
-                return Some(CommandRef {
-                    ext_id: extension.manifest.id.clone(),
-                    ext_dir: extension.dir.clone(),
-                    kind: extension.manifest.kind,
-                    command: cmd.clone(),
-                    tools,
-                });
+                return Some(Self::make_ref(extension, cmd, tools));
             }
         }
         None
@@ -159,13 +147,7 @@ impl Registry {
                 let Some(tools) = self.required_tools(cmd) else {
                     continue;
                 };
-                return Some(CommandRef {
-                    ext_id: extension.manifest.id.clone(),
-                    ext_dir: extension.dir.clone(),
-                    kind: extension.manifest.kind,
-                    command: cmd.clone(),
-                    tools,
-                });
+                return Some(Self::make_ref(extension, cmd, tools));
             }
         }
         None
@@ -225,13 +207,7 @@ impl Registry {
                 let Some(tools) = self.required_tools(cmd) else {
                     continue;
                 };
-                out.push(CommandRef {
-                    ext_id: ext.manifest.id.clone(),
-                    ext_dir: ext.dir.clone(),
-                    kind: ext.manifest.kind,
-                    command: cmd.clone(),
-                    tools,
-                });
+                out.push(Self::make_ref(ext, cmd, tools));
             }
         }
         out
@@ -239,6 +215,16 @@ impl Registry {
 
     pub fn resolve_tool(&self, name: &str) -> Option<PathBuf> {
         self.tools.get(name).cloned().or_else(|| binary_path(name))
+    }
+
+    fn make_ref(ext: &Extension, cmd: &ExtCommand, tools: HashMap<String, PathBuf>) -> CommandRef {
+        CommandRef {
+            ext_id: ext.manifest.id.clone(),
+            ext_dir: ext.dir.clone(),
+            kind: ext.manifest.kind,
+            command: cmd.clone(),
+            tools,
+        }
     }
 
     fn required_tools(&self, cmd: &ExtCommand) -> Option<HashMap<String, PathBuf>> {

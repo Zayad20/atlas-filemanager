@@ -11,6 +11,7 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use super::common::{build_synthetic_ancestors, path_to_dir_key, write_to_dest};
 use super::{make_entry, ArchiveCaps, ArchiveProvider};
 use atlas_model::file_entry::FileEntry;
 
@@ -66,51 +67,8 @@ impl RarProvider {
                 continue;
             }
 
-            let parent_key = inner
-                .parent()
-                .map(|p| {
-                    let s = p.to_string_lossy().replace('\\', "/");
-                    if s.is_empty() {
-                        String::new()
-                    } else {
-                        format!("{s}/")
-                    }
-                })
-                .unwrap_or_default();
-
-            // Ensure all ancestor keys exist and synthetic Dir entries are
-            // visible in each ancestor's parent listing, mirroring ZIP.
-            let mut cur = PathBuf::new();
-            for comp in inner.parent().into_iter().flat_map(|p| p.components()) {
-                let prev = cur.clone();
-                cur.push(comp);
-                let k = {
-                    let s = cur.to_string_lossy().replace('\\', "/");
-                    format!("{s}/")
-                };
-                if !index.contains_key(&k) {
-                    index.entry(k).or_default();
-                    let dir_name = cur
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    if !dir_name.is_empty() {
-                        let prev_key = {
-                            let s = prev.to_string_lossy().replace('\\', "/");
-                            if s.is_empty() {
-                                String::new()
-                            } else {
-                                format!("{s}/")
-                            }
-                        };
-                        let synthetic = make_entry(path, cur.clone(), dir_name.clone(), true, None);
-                        let parent_list = index.entry(prev_key).or_default();
-                        if !parent_list.iter().any(|e| e.name == dir_name) {
-                            parent_list.push(synthetic);
-                        }
-                    }
-                }
-            }
+            let parent_key = inner.parent().map(path_to_dir_key).unwrap_or_default();
+            build_synthetic_ancestors(path, &inner, &mut index);
 
             let file_entry = make_entry(path, inner, name, is_dir, None);
             index.entry(parent_key).or_default().push(file_entry);
@@ -159,14 +117,7 @@ impl ArchiveProvider for RarProvider {
 
     fn list(&self, inner_dir: &Path) -> anyhow::Result<Vec<FileEntry>> {
         self.ensure_unencrypted()?;
-        let key = {
-            let s = inner_dir.to_string_lossy().replace('\\', "/");
-            if s.is_empty() {
-                String::new()
-            } else {
-                format!("{s}/")
-            }
-        };
+        let key = path_to_dir_key(inner_dir);
         Ok(self.index.get(&key).cloned().unwrap_or_default())
     }
 
@@ -176,15 +127,7 @@ impl ArchiveProvider for RarProvider {
     }
 
     fn extract_to(&self, inner_path: &Path, dest: &Path) -> anyhow::Result<()> {
-        let data = self.read_entry(inner_path)?;
-        if let Some(parent) = dest.parent() {
-            #[allow(clippy::disallowed_methods)]
-            // reason: trait is sync; runs under spawn_blocking
-            std::fs::create_dir_all(parent)?;
-        }
-        #[allow(clippy::disallowed_methods)] // reason: trait is sync; runs under spawn_blocking
-        std::fs::write(dest, data)?;
-        Ok(())
+        write_to_dest(dest, &self.read_entry(inner_path)?)
     }
 
     fn archive_path(&self) -> &Path {

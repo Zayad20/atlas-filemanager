@@ -422,18 +422,25 @@ impl App {
                     op_id,
                     mut entries,
                 } => {
-                    for e in entries.iter_mut() {
-                        e.display_size = if matches!(e.kind, atlas_model::file_entry::FileKind::Dir) {
-                            String::new()
-                        } else {
-                            e.size.map(crate::util::display::format_size).unwrap_or_default()
-                        };
-                        e.display_date = e.modified.map(crate::util::display::format_date).unwrap_or_default();
-                        e.display_type = crate::ui::views::details::entry_type_label(e);
+                    crate::perf::count_by("bg.entries", entries.len() as u64);
+                    {
+                        let _perf = crate::perf::span_detail("bg.fmt_entries", || {
+                            format!("n={}", entries.len())
+                        });
+                        for e in entries.iter_mut() {
+                            e.display_size = if matches!(e.kind, atlas_model::file_entry::FileKind::Dir) {
+                                String::new()
+                            } else {
+                                e.size.map(crate::util::display::format_size).unwrap_or_default()
+                            };
+                            e.display_date = e.modified.map(crate::util::display::format_date).unwrap_or_default();
+                            e.display_type = crate::ui::views::details::entry_type_label(e);
+                        }
                     }
                     // Collect icon keys before moving `entries` so we can warm
                     // the icon cache for the new listing.
                     let icon_keys: Vec<String> = if self.icon_theme.is_some() {
+                        let _perf = crate::perf::span("bg.collect_icon_keys");
                         crate::icon_theme::collect_keys(&entries)
                     } else {
                         vec![]
@@ -484,8 +491,13 @@ impl App {
                         self.pane_items_appear
                             .insert(tab, std::time::Instant::now());
                     }
-                    for key in icon_keys {
-                        self.request_icon(key);
+                    {
+                        let _perf = crate::perf::span_detail("bg.request_icons", || {
+                            format!("n={}", icon_keys.len())
+                        });
+                        for key in icon_keys {
+                            self.request_icon(key);
+                        }
                     }
                     info.notify_panes.push(tab);
                 }

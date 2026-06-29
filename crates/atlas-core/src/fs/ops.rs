@@ -1,6 +1,7 @@
 use atlas_model::app_state::BgResult;
 use atlas_model::pane::TabId;
 use std::path::{Path, PathBuf};
+use crate::util::display::display_name;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -62,12 +63,6 @@ pub async fn delete_files(
     });
 }
 
-fn display_name(path: &Path) -> String {
-    path.file_name().map_or_else(
-        || path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    )
-}
 
 pub async fn rename_file(
     from: PathBuf,

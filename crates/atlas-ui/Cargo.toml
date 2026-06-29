@@ -35,7 +35,7 @@ serde_json.workspace = true
 # gpui's async executor uses smol; `smol::Timer` drives the BgResult drain loop.
 smol = "2"
 arboard = "3"
-dirs = "6"
+dirs.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "ico"] }
 open = "5"
 rfd = "0.15"

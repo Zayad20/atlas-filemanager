@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{px, Context, Render, SharedString, Window, div, Styled};
+use gpui::{px, Context, Render, Window, div, Styled};
 use gpui_component::{ActiveTheme as _};
 
 use crate::state::layout_tree::TileId;

@@ -1,6 +1,6 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, relative, AnimationExt, AnyElement, Context, Entity, Focusable, Hsla, MouseButton,
+    div, px, relative, AnimationExt, AnyElement, Context, Entity, Focusable, MouseButton,
     SharedString, Window,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme as _, ElementExt as _};
@@ -10,7 +10,7 @@ use crate::input::action::Action;
 use crate::state::layout_tree::{Container, LinearDir, Tile, TileId};
 use crate::ui::dock::drag::{tab_drag_entity, TabDrag};
 use crate::ui::glass::{backdrop_tint, glass_chip_fill, glass_fill, GlassExt};
-use crate::ui::icons::{icon, is_windows_theme, windows_icon, AtlasIcon};
+use crate::ui::icons::{icon, is_windows_theme, theme_icon, AtlasIcon};
 use crate::ui::pane_panel::FilePanel;
 use crate::util::display::display_name;
 use std::time::Instant;
@@ -63,7 +63,8 @@ impl App {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if self.tick_tab_close() {
-            cx.notify();
+            // Self-drive the next frame on the host view (DockHost), not App.
+            window.request_animation_frame();
         }
         crate::perf::count("render.dock");
         let _perf = crate::perf::span_detail("dock.render", || {
@@ -74,17 +75,17 @@ impl App {
                 self.state.focused_tile.0
             )
         });
-        {
-            let _perf = crate::perf::span("dock.sync_focus");
-            self.sync_pane_focus(window, cx);
-        }
+        // Focus is synced from `App::render` (root.rs), not here: hosting the dock in
+        // its own `DockHost` view means this render no longer runs every App frame, and
+        // pane focus must be re-asserted every frame (see `sync_overlay_focus`).
         let is_dragging = cx.has_active_drag();
         if !is_dragging && self.state.dragging_pane.is_some() {
             if !self.state.drag_pending {
                 let pane_id = self.state.dragging_pane.unwrap();
                 self.state.dragging_pane = None;
                 self.animate_pane_drag(pane_id, false);
-                cx.notify();
+                // Settle frame on the host view (DockHost), not App.
+                window.request_animation_frame();
             }
         } else if is_dragging {
             self.state.drag_pending = false;
@@ -258,7 +259,7 @@ impl App {
         id: TileId,
         final_shares: Vec<f32>,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> Vec<f32> {
         let Some(anim) = self.dock_split_animations.get(&id) else {
             return final_shares;
@@ -271,8 +272,17 @@ impl App {
             self.dock_split_animations.remove(&id);
             return final_shares;
         }
+        // The opening resize animation interpolates EVERY sibling's width each frame,
+        // which repaints all of them ~15× over the animation. With many panes in one
+        // container that is the stutter when rapidly splitting. Past a small count, snap
+        // to the final layout (the new pane still fades in via PaneAnimation). Closing
+        // keeps its animation — it's not spammed by a held shortcut.
+        // heuristic cap; raise if paint per pane gets cheap enough.
+        if !anim.closing && anim.to.len() > 4 {
+            self.dock_split_animations.remove(&id);
+            return final_shares;
+        }
         window.request_animation_frame();
-        cx.notify();
         let shares = anim.shares();
         let elapsed_ms = anim.started.elapsed().as_millis();
         if anim.closing && (elapsed_ms < 20 || elapsed_ms % 80 < 18) {
@@ -775,7 +785,7 @@ impl App {
         panel
     }
 
-    fn sync_pane_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn sync_pane_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.modal_overlay_active() || self.pane_closing.contains_key(&self.state.focused_tile) {
             return;
         }
@@ -785,10 +795,4 @@ impl App {
     }
 }
 
-fn theme_icon(kind: AtlasIcon, size: f32, color: Hsla, windows_theme: bool) -> AnyElement {
-    if windows_theme {
-        windows_icon(kind, size, color)
-    } else {
-        icon(kind, size, color)
-    }
-}
+

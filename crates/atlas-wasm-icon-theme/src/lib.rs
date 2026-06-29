@@ -95,7 +95,7 @@ pub fn execute_command(input: String) -> FnResult<String> {
             let mut archive = ZipArchive::new(file)?;
 
             for i in 0..archive.len() {
-                let mut file = archive.by_index(i).unwrap();
+                let Ok(mut file) = archive.by_index(i) else { continue };
                 let outpath = match file.enclosed_name() {
                     Some(path) => format!("{}/{}", out_dir, path.to_string_lossy()),
                     None => continue,

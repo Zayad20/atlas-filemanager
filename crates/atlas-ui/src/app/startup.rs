@@ -372,6 +372,7 @@ impl App {
             dock: None,
             file_panel_cache: HashMap::new(),
             sidebar_panel: None,
+            dock_host: None,
             focus_history: std::collections::VecDeque::new(),
             palette_host: None,
             palette_closing: None,

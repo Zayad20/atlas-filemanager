@@ -20,7 +20,12 @@ impl App {
         }
     }
 
-    pub(crate) fn process_actions(&mut self, actions: Vec<Action>) {
+    #[inline]
+    pub(crate) fn process_action(&mut self, action: Action) {
+        self.process_actions([action]);
+    }
+
+    pub(crate) fn process_actions(&mut self, actions: impl IntoIterator<Item = Action>) {
         for action in actions {
             match action {
                 Action::Navigate { tab, path } => self.navigate(tab, path),

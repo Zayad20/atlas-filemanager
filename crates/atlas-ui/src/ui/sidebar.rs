@@ -19,7 +19,7 @@ use crate::ui::drag_hover::{
 };
 use crate::ui::glass::{glass_chip_fill, glass_fill, layer_color, GlassExt};
 use crate::ui::icons::{
-    atlas_logo, file_type_icon, icon, is_windows_theme, windows_icon, AtlasIcon,
+    atlas_logo, file_type_icon, icon, is_windows_theme, theme_icon, AtlasIcon,
 };
 use crate::ui::root::DraggedFiles;
 #[cfg(all(feature = "cloud", windows))]
@@ -1603,14 +1603,6 @@ fn place_sidebar_drop_zone(app: &mut AtlasApp, dest: PathBuf) {
 /// A 16px Phosphor icon (`icons/ph/<name>.svg`), tinted with `color`.
 fn ph(name: &str, color: Hsla) -> impl IntoElement {
     icon(ph_icon(name), 16.0, color)
-}
-
-fn theme_icon(kind: AtlasIcon, size: f32, color: Hsla, windows_theme: bool) -> AnyElement {
-    if windows_theme {
-        windows_icon(kind, size, color)
-    } else {
-        icon(kind, size, color)
-    }
 }
 
 fn sidebar_shell_tex(

@@ -118,7 +118,6 @@ pub(crate) fn zone_recorder(
 
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        gpui_component::global_state::GlobalState::global_mut(cx).animations_enabled = !self.state.settings.disable_animations;
         let frame = crate::perf::next_frame();
         crate::perf::count("render.app");
         crate::perf::frame_summary(frame, || {
@@ -300,7 +299,12 @@ impl Render for App {
 
         let center_content = {
             let _perf = crate::perf::span("app.render.center_dock");
-            self.render_custom_dock(window, cx)
+            // Re-assert pane focus every App frame (the dock now lives in its own
+            // `DockHost` view, which doesn't render on every App frame).
+            self.sync_pane_focus(window, cx);
+            // Host the dock in its own view so split/resize animations
+            // (`request_animation_frame`) re-render only the dock, not all of App.
+            self.ensure_dock_host(cx).into_any_element()
         };
         let sidebar = self.state.settings.show_sidebar.then(|| {
             let width = if self.state.settings.sidebar_collapsed {

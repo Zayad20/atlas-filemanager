@@ -20,6 +20,10 @@ use tokio::process::{Child, Command};
 /// Progress callback for the binary download: `(bytes_done, bytes_total)`.
 pub type DownloadProgress = Box<dyn Fn(u64, u64) + Send + Sync>;
 
+fn rclone_bin_name() -> &'static str {
+    if cfg!(windows) { "rclone.exe" } else { "rclone" }
+}
+
 /// Map the host platform to rclone's `<os>-<arch>` asset suffix. Covers every
 /// target rclone publishes so the download works on any system.
 fn os_arch() -> anyhow::Result<(&'static str, &'static str)> {
@@ -67,11 +71,7 @@ async fn current_version(client: &reqwest::Client) -> anyhow::Result<String> {
 fn managed_binary_path() -> PathBuf {
     crate::util::config::data_dir()
         .join("bin")
-        .join(if cfg!(windows) {
-            "rclone.exe"
-        } else {
-            "rclone"
-        })
+        .join(rclone_bin_name())
 }
 
 /// Find a usable rclone: prefer `$PATH`, else our managed copy if already present.
@@ -162,11 +162,7 @@ async fn download_and_verify(progress: DownloadProgress) -> anyhow::Result<()> {
 fn extract_binary(zip_path: &Path, dest: &Path) -> anyhow::Result<()> {
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
-    let bin_name = if cfg!(windows) {
-        "rclone.exe"
-    } else {
-        "rclone"
-    };
+    let bin_name = rclone_bin_name();
 
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;

@@ -1264,10 +1264,11 @@ fn canvas_row(
         extension: entry.extension.clone(),
     };
     let has_tex = icon_tex.is_some();
-    let row_id = SharedString::from(format!("row-{}-{}", pane_id.0, entry_idx));
 
+    // Row id is scoped within this pane's `uniform_list` (id `list-{pane}`), so the
+    // entry index alone is unique — avoids a per-row `format!` heap alloc (×~900/frame).
     let outer = div()
-        .id(row_id)
+        .id(("row", entry_idx))
         .w_full()
         .h(px(row_h))
         .relative()
@@ -1452,10 +1453,7 @@ fn render_rename_row(
     });
 
     div()
-        .id(SharedString::from(format!(
-            "row-{}-{}",
-            pane_id.0, entry_idx
-        )))
+        .id(("row", entry_idx))
         .when(record_rects, |s| {
             s.on_prepaint(rect_recorder(pane_id, entry_idx, view))
         })

@@ -85,7 +85,9 @@ impl WasmPluginManager {
                 let _ = bg_tx_clone.send(BgResult::ExtShowQuickPick { items, reply_tx });
 
                 // BLOCK the WASM execution until the user clicks an option in GPUI
-                let selection = reply_rx.recv().unwrap_or_else(|_| String::new());
+                let selection = reply_rx
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .unwrap_or_default();
 
                 let out_handle = plugin.memory_new(selection)?;
                 outputs[0] = Val::I64(out_handle.offset() as i64);
@@ -176,6 +178,8 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    #[ignore = "requires icon-manager extension installed locally"]
+    #[cfg(target_os = "windows")]
     fn test_execute_wasm() {
         let path = PathBuf::from(std::env::var("APPDATA").unwrap())
             .join("atlas\\extensions\\icon-manager\\plugin.wasm");

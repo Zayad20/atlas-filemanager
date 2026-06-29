@@ -360,7 +360,7 @@ fn render_miller_row(
             crate::ui::drag::file_drag_value(vec![dest.clone()]),
             {
                 let v = view.clone();
-                let drag_dest = dest.clone();
+                let _drag_dest = dest.clone();
                 move |_d, _pos, _window, cx| {
                     v.update(cx, |this, cx| {
                         this.process_actions(vec![Action::MillerSelect {
