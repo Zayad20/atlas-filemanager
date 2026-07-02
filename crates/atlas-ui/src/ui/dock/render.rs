@@ -106,15 +106,16 @@ impl App {
     ) -> Option<AnyElement> {
         crate::perf::count("dock.render_tree");
         match self.state.pane_tree.tiles.get(id)?.clone() {
-            Tile::Pane(_) => {
-                Some(self.render_tabs_like(vec![id], Some(id), window, cx))
-            }
+            Tile::Pane(_) => Some(self.render_tabs_like(vec![id], Some(id), window, cx)),
             Tile::Container(Container::Tabs(tabs)) => {
                 let children = tabs.children;
                 if children.is_empty() {
                     return None;
                 }
-                let active = tabs.active.filter(|a| children.contains(a)).or_else(|| children.first().copied());
+                let active = tabs
+                    .active
+                    .filter(|a| children.contains(a))
+                    .or_else(|| children.first().copied());
                 Some(self.render_tabs_like(children, active, window, cx))
             }
             Tile::Container(Container::Linear(linear)) => {
@@ -127,15 +128,22 @@ impl App {
                 if children.is_empty() {
                     return None;
                 }
-                let mut row = if linear.dir == LinearDir::Horizontal {
-                    h_flex()
+                let container_bounds = self.dock_linear_bounds.get(&id).copied();
+                let exact_span = if linear.dir == LinearDir::Horizontal {
+                    container_bounds.map(|b| f32::from(b.size.width))
                 } else {
-                    v_flex()
+                    container_bounds.map(|b| f32::from(b.size.height))
+                };
+
+                let mut row = if exact_span.is_some() { div().relative() } else { if linear.dir == LinearDir::Horizontal { h_flex() } else { v_flex() } }
+                    .size_full()
+                    .min_w(px(0.))
+                    .min_h(px(0.));
+                    
+                if exact_span.is_none() {
+                    row = row.items_stretch();
                 }
-                .size_full()
-                .min_w(px(0.))
-                .min_h(px(0.))
-                .items_stretch();
+
                 let mut final_shares = linear.shares.clone();
                 if cx.has_active_drag() {
                     if let Some(dragged) = self.state.dragging_pane {
@@ -153,27 +161,55 @@ impl App {
                 } else {
                     vec![1.0; children.len()]
                 };
+                
                 let view = cx.entity();
+                let num_splitters = children.len().saturating_sub(1);
+                let splitter_size = 5.0; // from resize.rs splitter thickness
+                let mut current_offset = 0.0;
+
                 for (ix, (child_id, child, intro)) in children.into_iter().enumerate() {
+                    let share = shares[ix].max(0.01);
+                    
                     if ix > 0 {
-                        row = row.child(crate::ui::dock::resize::splitter(
-                            id,
-                            ix - 1,
-                            linear.dir,
-                            &view,
-                            cx,
-                        ));
+                        let splitter_el = crate::ui::dock::resize::splitter(id, ix - 1, linear.dir, &view, cx);
+                        if exact_span.is_some() {
+                            let mut s_div = div().absolute();
+                            if linear.dir == LinearDir::Horizontal {
+                                s_div = s_div.left(px(current_offset)).top_0().bottom_0();
+                            } else {
+                                s_div = s_div.top(px(current_offset)).left_0().right_0();
+                            }
+                            row = row.child(s_div.child(splitter_el));
+                            current_offset += splitter_size;
+                        } else {
+                            row = row.child(splitter_el);
+                        }
                     }
-                    row = row.child(
-                        div()
-                            .size_full()
-                            .flex_grow(shares[ix].max(0.01))
-                            .flex_basis(px(0.))
-                            .min_w(px(0.))
-                            .min_h(px(0.))
-                            .child(self.render_split_intro(child_id, child, intro)),
-                    );
+
+                    let child_span = if let Some(span) = exact_span {
+                        let available = (span - (num_splitters as f32 * splitter_size)).max(0.0);
+                        Some(share * available)
+                    } else {
+                        None
+                    };
+
+                    let mut pane_div = div().size_full().min_w(px(0.)).min_h(px(0.));
+                    
+                    if let Some(span) = child_span {
+                        pane_div = pane_div.absolute();
+                        if linear.dir == LinearDir::Horizontal {
+                            pane_div = pane_div.left(px(current_offset)).top_0().bottom_0().w(px(span));
+                        } else {
+                            pane_div = pane_div.top(px(current_offset)).left_0().right_0().h(px(span));
+                        }
+                        current_offset += span;
+                    } else {
+                        pane_div = pane_div.flex_grow(share).flex_basis(px(0.));
+                    }
+                    
+                    row = row.child(pane_div.child(self.render_split_intro(child_id, child, intro)));
                 }
+
                 let view = cx.entity();
                 Some(
                     row.on_prepaint(move |bounds, _window, cx| {
@@ -245,9 +281,7 @@ impl App {
                         SplitMotion::Closing(_) => 1.0 - s,
                     }
                     .clamp(0.0, 1.0);
-                    let hidden = (1.0 - visible).clamp(0.0, 1.0);
                     this.opacity((0.25 + 0.9 * visible).clamp(0.0, 1.0))
-                        .p(px(42.0 * hidden))
                         .scale((0.48 + 0.52 * visible).clamp(0.48, 1.10))
                 },
             )
@@ -272,13 +306,13 @@ impl App {
             self.dock_split_animations.remove(&id);
             return final_shares;
         }
-        // The opening resize animation interpolates EVERY sibling's width each frame,
-        // which repaints all of them ~15× over the animation. With many panes in one
-        // container that is the stutter when rapidly splitting. Past a small count, snap
-        // to the final layout (the new pane still fades in via PaneAnimation). Closing
-        // keeps its animation — it's not spammed by a held shortcut.
+        // The resize animation interpolates EVERY sibling's width each frame, which
+        // repaints all of them ~15× over the animation. With many panes in one
+        // container that is the stutter when rapidly splitting or closing under a held
+        // shortcut (perf.log: 40-54ms frames at 10+ panes). Past a small count, snap to
+        // the final layout (open still fades via PaneAnimation, close via the pop anim).
         // heuristic cap; raise if paint per pane gets cheap enough.
-        if !anim.closing && anim.to.len() > 4 {
+        if anim.to.len() > 4 {
             self.dock_split_animations.remove(&id);
             return final_shares;
         }
@@ -317,7 +351,13 @@ impl App {
         let content = active
             .map(|id| {
                 if self.should_render_pane_body(id) {
-                    self.get_or_make_file_panel(id, cx).into_any_element()
+                    // Patrón Zed (pane_group.rs:554): pane cacheado como AnyView. Si el
+                    // pane no fue notificado y sus bounds no cambiaron, gpui recicla su
+                    // layout, hitboxes y primitivas del frame anterior — el pane cuesta
+                    // 1 nodo taffy en vez de ~250.
+                    gpui::AnyView::from(self.get_or_make_file_panel(id, cx))
+                        .cached(gpui::StyleRefinement::default().size_full())
+                        .into_any_element()
                 } else {
                     crate::perf::count("render.pane_body_skipped");
                     div().size_full().into_any_element()
@@ -359,7 +399,7 @@ impl App {
             })
             .child(self.render_tab_strip(children, active, window, cx))
             .child(div().flex_1().min_h(px(0.)).min_w(px(0.)).child(content));
-            
+
         let is_mod = window.modifiers().alt;
         let activate_drag_app = cx.entity().clone();
         let activate_drag_app_down = cx.entity().clone();
@@ -373,7 +413,10 @@ impl App {
                 .child(panel)
                 .child(
                     div()
-                        .id(gpui::SharedString::from(format!("alt-drag-{}", active_id.0)))
+                        .id(gpui::SharedString::from(format!(
+                            "alt-drag-{}",
+                            active_id.0
+                        )))
                         .absolute()
                         .inset_0()
                         .cursor_grab()
@@ -422,13 +465,13 @@ impl App {
                                 this.start_alt_resize(active_id, ev.position);
                             });
                             cx.stop_propagation();
-                        })
+                        }),
                 )
                 .into_any_element()
         } else {
             panel.into_any_element()
         };
-        
+
         panel
     }
 
@@ -499,12 +542,14 @@ impl App {
         for pane_id in children {
             let (label, path) = self
                 .tab_data_for(pane_id)
-                .map(|t| (
-                    display_name(&t.location.display_path()),
-                    t.location.fs_dir().map(|p| p.to_path_buf())
-                ))
+                .map(|t| {
+                    (
+                        display_name(&t.location.display_path()),
+                        t.location.fs_dir().map(|p| p.to_path_buf()),
+                    )
+                })
                 .unwrap_or_else(|| (rust_i18n::t!("fallback_tab_title").to_string(), None));
-            
+
             let tex = if windows_theme {
                 path.as_ref().and_then(|p| self.grid_thumbnail(p))
             } else {
@@ -604,7 +649,9 @@ impl App {
                     s.on_prepaint(crate::ui::drag_hover::drag_hover_recorder_with_drop(
                         crate::ui::drag_hover::DragHoverId::Chrome("Tab", pane_id),
                         crate::ui::drag_hover::DragHoverKind::Nav,
-                        crate::ui::drag_hover::DragHoverCommand::Process(crate::input::action::Action::FocusTab(pane_id)),
+                        crate::ui::drag_hover::DragHoverCommand::Process(
+                            crate::input::action::Action::FocusTab(pane_id),
+                        ),
                         crate::ui::drag_hover::DragHoverDropCommand::TransferTo(drop_dest),
                         &app,
                     ))
@@ -613,13 +660,13 @@ impl App {
                     s.on_prepaint(crate::ui::drag_hover::drag_hover_recorder(
                         crate::ui::drag_hover::DragHoverId::Chrome("Tab", pane_id),
                         crate::ui::drag_hover::DragHoverKind::Nav,
-                        crate::ui::drag_hover::DragHoverCommand::Process(crate::input::action::Action::FocusTab(pane_id)),
+                        crate::ui::drag_hover::DragHoverCommand::Process(
+                            crate::input::action::Action::FocusTab(pane_id),
+                        ),
                         &app,
                     ))
                 })
-                .when_some(tex, |s, tex| {
-                    s.child(gpui::img(tex).size(px(16.0)))
-                })
+                .when_some(tex, |s, tex| s.child(gpui::img(tex).size(px(16.0))))
                 .child(
                     div()
                         .flex_1()
@@ -794,5 +841,3 @@ impl App {
         }
     }
 }
-
-

@@ -26,7 +26,8 @@ impl App {
         let show_hidden = self.state.settings.show_hidden;
         self.rt.spawn(async move {
             match list_dir(&path, show_hidden, sort_col, sort_dir, folders_first).await {
-                Ok(entries) => {
+                Ok(mut entries) => {
+                    crate::ui::views::details::format_entries(&mut entries);
                     let _ = tx.send(BgResult::DirListed {
                         tab: tab_id,
                         op_id,
@@ -141,8 +142,9 @@ impl App {
             let show_hidden = self.state.settings.show_hidden;
             let paths = paths.clone();
             self.rt.spawn(async move {
-                let entries =
+                let mut entries =
                     entries_for_paths(&paths, show_hidden, sort_col, sort_dir, folders_first).await;
+                crate::ui::views::details::format_entries(&mut entries);
                 let _ = tx.send(BgResult::DirListed {
                     tab: tab_id,
                     op_id,
@@ -334,7 +336,8 @@ impl App {
         ts.last_nav_op_id = op_id;
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            let entries = atlas_core::fs::recycle_bin::list_recycle_bin(sort_col, sort_dir).await;
+            let mut entries = atlas_core::fs::recycle_bin::list_recycle_bin(sort_col, sort_dir).await;
+            crate::ui::views::details::format_entries(&mut entries);
             let _ = tx.send(BgResult::DirListed {
                 tab: tab_id,
                 op_id,

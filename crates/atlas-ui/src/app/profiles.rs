@@ -104,7 +104,8 @@ impl App {
                 )
                 .await
                 {
-                    Ok(entries) => {
+                    Ok(mut entries) => {
+                        crate::ui::views::details::format_entries(&mut entries);
                         let _ = tx_clone.send(crate::state::app_state::BgResult::DirListed {
                             tab: tile_id,
                             op_id,

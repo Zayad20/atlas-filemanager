@@ -143,8 +143,28 @@ impl Render for App {
                     }
                 }
             }
+            // Qué interacción estaba activa cuando se dibujó el frame; frames lentos
+            // con cause=none = hover u otra notificación no rastreada.
+            let mut cause = String::new();
+            if self.dock_resize.is_some() {
+                cause.push_str("drag_split,");
+            }
+            if !self.dock_split_animations.is_empty() {
+                cause.push_str("anim_split,");
+            }
+            if !self.pane_animations.is_empty() {
+                cause.push_str("anim_pane,");
+            }
+            if !self.pane_closing.is_empty() {
+                cause.push_str("closing,");
+            }
+            if cause.is_empty() {
+                cause.push_str("none");
+            } else {
+                cause.pop();
+            }
             format!(
-                "panes={panes} tabs={tabs} linear={linear} tab_children={tab_children} linear_children={linear_children} panels={} signals={} row_rect_panes={} row_rects={} pane_bounds={} dock_bounds={} pending_zones={} dirty={} dirty_all={} closing={}",
+                "cause={cause} panes={panes} tabs={tabs} linear={linear} tab_children={tab_children} linear_children={linear_children} panels={} signals={} row_rect_panes={} row_rects={} pane_bounds={} dock_bounds={} pending_zones={} dirty={} dirty_all={} closing={}",
                 self.file_panel_cache.len(),
                 self.pane_signals.len(),
                 self.row_rects.len(),

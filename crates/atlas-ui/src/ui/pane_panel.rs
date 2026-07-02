@@ -281,7 +281,7 @@ impl Render for FilePanel {
                 let content = AnyView::from(self.content.clone())
                     .cached(StyleRefinement::default().v_flex().size_full());
                 let bounds_app = self.app.clone();
-                let panel = div().size_full().relative().child(content).on_prepaint(
+                let panel = div().size_full().relative().overflow_hidden().child(content).on_prepaint(
                     move |bounds, _window, cx| {
                         if let Some(app) = bounds_app.upgrade() {
                             app.update(cx, |app, _cx| {

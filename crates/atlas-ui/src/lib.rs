@@ -308,7 +308,8 @@ pub fn run(handle: tokio::runtime::Handle, app_started: Instant, on_quit: Option
                         cb();
                     }
                 }
-            });
+            })
+            .detach();
         }
     });
 }

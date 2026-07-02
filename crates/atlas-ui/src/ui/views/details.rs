@@ -16,7 +16,6 @@ use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::root::{
     ctrl_scroll, pane_bounds_recorder, rect_recorder, zone_recorder, DraggedFiles,
 };
-use crate::util::display::{format_date, format_size};
 use gpui::prelude::*;
 use gpui::{
     canvas, div, img, point, px, size, uniform_list, AnyElement, Bounds, Context, Corners, Div,
@@ -214,6 +213,9 @@ impl App {
             div()
                 .size_full()
                 .relative()
+                .overflow_hidden()
+                .min_w(px(0.))
+                .min_h(px(0.))
                 .child(
                     uniform_list(
                         SharedString::from(format!("list-{}", pane_id.0)),
@@ -232,7 +234,8 @@ impl App {
                             let Some(ts) = app.state.tab_states.get(&pane_id) else {
                                 return Vec::new();
                             };
-                            let record_rects = true;
+                            let record_rects = app.dock_split_animations.is_empty()
+                                && app.pane_layout_animations.is_empty();
                             range
                                 .filter_map(|i| {
                                     let entry_idx = *fv.get(i)?;
@@ -405,6 +408,26 @@ impl App {
 /// Semantic category label for the Type column and filter overlay.
 pub fn entry_type_label(entry: &FileEntry) -> String {
     file_category(&entry.kind, entry.extension.as_deref())
+}
+
+/// Fill the `display_*` fields of a fresh listing. Called on the background
+/// worker (inside the producing task), never on the UI thread: formatting a
+/// 500-entry listing during `App::render` cost 5-14ms per drain.
+pub(crate) fn format_entries(entries: &mut [FileEntry]) {
+    for e in entries.iter_mut() {
+        e.display_size = if matches!(e.kind, FileKind::Dir) {
+            String::new()
+        } else {
+            e.size
+                .map(crate::util::display::format_size)
+                .unwrap_or_default()
+        };
+        e.display_date = e
+            .modified
+            .map(crate::util::display::format_date)
+            .unwrap_or_default();
+        e.display_type = entry_type_label(e);
+    }
 }
 
 fn file_category(kind: &FileKind, ext: Option<&str>) -> String {
@@ -1080,10 +1103,9 @@ fn canvas_row(
 
     let name: SharedString = entry.name.clone().into();
     let is_dir = matches!(entry.kind, FileKind::Dir);
-    let file_size = entry.size;
-    let modified = entry.modified;
-    let kind = entry.kind.clone();
-    let extension = entry.extension.clone();
+    let display_size: SharedString = entry.display_size.clone().into();
+    let display_date: SharedString = entry.display_date.clone().into();
+    let display_type: SharedString = entry.display_type.clone().into();
 
     let name_color = if selected { accent_fg } else { fg };
     let meta_color = if selected { accent_fg } else { muted };
@@ -1097,6 +1119,7 @@ fn canvas_row(
         move |bounds, window, _cx| {
             crate::perf::count("details.row.shape_count");
             let _perf = crate::perf::span("details.row.shape");
+            let shape_t0 = std::time::Instant::now();
             let ts = window.text_system();
             let mk = |s: &SharedString, color: Hsla| TextRun {
                 len: s.len(),
@@ -1119,19 +1142,9 @@ fn canvas_row(
                 .filter(|col| col.x < row_w && col.w > 1.0)
                 .map(|col| {
                     let text: SharedString = match col.column {
-                        DetailsColumn::Size => {
-                            if matches!(kind, FileKind::Dir) {
-                                SharedString::default()
-                            } else {
-                                file_size.map(format_size).unwrap_or_default().into()
-                            }
-                        }
-                        DetailsColumn::Modified => {
-                            modified.map(format_date).unwrap_or_default().into()
-                        }
-                        DetailsColumn::Type => file_category(&kind, extension.as_deref())
-                            .to_string()
-                            .into(),
+                        DetailsColumn::Size => display_size.clone(),
+                        DetailsColumn::Modified => display_date.clone(),
+                        DetailsColumn::Type => display_type.clone(),
                     };
                     let run = mk(&text, meta_color);
                     DetailsPaintColumn {
@@ -1155,6 +1168,10 @@ fn canvas_row(
                 None
             };
 
+            crate::perf::count_by(
+                "details.row.shape_us",
+                shape_t0.elapsed().as_micros() as u64,
+            );
             DetailsRowCanvasState {
                 name_s,
                 ellipsis_s,
@@ -1420,7 +1437,6 @@ fn render_rename_row(
     window: &mut Window,
     font_size: Pixels,
 ) -> AnyElement {
-    let is_dir = matches!(entry.kind, FileKind::Dir);
     let name = entry.name.clone();
     let fallback_icon = FileIcon::Builtin {
         kind: entry.kind.clone(),
@@ -1428,15 +1444,9 @@ fn render_rename_row(
     };
     let meta_cells = layout.columns.iter().map(|col| {
         let text = match col.column {
-            DetailsColumn::Size => {
-                if is_dir {
-                    String::new()
-                } else {
-                    entry.size.map(format_size).unwrap_or_default()
-                }
-            }
-            DetailsColumn::Modified => entry.modified.map(format_date).unwrap_or_default(),
-            DetailsColumn::Type => entry_type_label(entry),
+            DetailsColumn::Size => entry.display_size.clone(),
+            DetailsColumn::Modified => entry.display_date.clone(),
+            DetailsColumn::Type => entry.display_type.clone(),
         };
         div()
             .absolute()

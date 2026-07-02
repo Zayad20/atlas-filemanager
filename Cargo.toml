@@ -185,3 +185,8 @@ gpui-component-macros = { path = "../gpui-component-fork/crates/macros" }
 gpui = { path = "../zed-reference/crates/gpui" }
 gpui_platform = { path = "../zed-reference/crates/gpui_platform" }
 gpui_linux = { path = "../zed-reference/crates/gpui_linux" }
+
+# Local taffy with perf counters (layout calls + cache hits) to diagnose the
+# 20µs/node layout solve; see perf-120fps work. Drop when diagnosis is done.
+[patch.crates-io]
+taffy = { path = "../taffy-patch" }

@@ -180,7 +180,8 @@ impl App {
             let tx_clone = tx.clone();
             rt.spawn(async move {
                 match list_dir(&path, show_hidden, sort_col, sort_dir, folders_first).await {
-                    Ok(entries) => {
+                    Ok(mut entries) => {
+                        crate::ui::views::details::format_entries(&mut entries);
                         let _ = tx_clone.send(BgResult::DirListed {
                             tab: tile_id,
                             op_id,

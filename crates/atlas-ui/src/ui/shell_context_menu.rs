@@ -1133,11 +1133,12 @@ impl App {
                 }
             }
             // Refresh the recycle bin listing after restore.
-            let entries = atlas_core::fs::recycle_bin::list_recycle_bin(
+            let mut entries = atlas_core::fs::recycle_bin::list_recycle_bin(
                 Default::default(),
                 Default::default(),
             )
             .await;
+            crate::ui::views::details::format_entries(&mut entries);
             let _ = tx.send(crate::state::app_state::BgResult::DirListed {
                 tab: tab_id,
                 op_id,

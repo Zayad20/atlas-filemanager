@@ -215,6 +215,8 @@ impl App {
             .id(SharedString::from(format!("pane-{}", pane_id.0)))
             .size_full()
             .overflow_hidden()
+            .min_w(gpui::px(0.))
+            .min_h(gpui::px(0.))
             .on_mouse_down(MouseButton::Left, {
                 let v = rubber_view.clone();
                 move |ev, _window, cx| {

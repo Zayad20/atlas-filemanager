@@ -365,7 +365,7 @@ mod tests {
             entry("docs", FileKind::Dir),
             entry("a.txt", FileKind::File),
             entry("b.txt", FileKind::File),
-        ]);
+        ].into());
 
         assert_eq!(ts.visible_indices(), &[0, 1, 2]);
         let c = ts.counts();
@@ -390,7 +390,7 @@ mod tests {
             entry("textures", FileKind::Dir),
             entry("notes.txt", FileKind::File),
             entry("image.png", FileKind::File),
-        ]);
+        ].into());
         ts.filter = "txt".to_string();
         // "txt" fuzzy-matches both "textures" (t-x-t) and "notes.txt".
         assert_eq!(ts.visible_indices().len(), 2);
@@ -412,7 +412,7 @@ mod tests {
         ts.set_entries(vec![
             entry("docs", FileKind::Dir),
             entry("a.txt", FileKind::File),
-        ]);
+        ].into());
         assert_eq!(ts.visible_indices(), &[0, 1]);
     }
 }

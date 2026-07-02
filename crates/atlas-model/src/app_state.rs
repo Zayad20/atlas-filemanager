@@ -598,7 +598,7 @@ mod tests {
             entry("photo.png"),
             entry("notes.txt"),
             entry("other.jpg"),
-        ]);
+        ].into());
         tab.selection.selected.extend([0, 1, 2]);
 
         let Some(PreviewRequest::Multiple { paths, .. }) = state.active_preview_request() else {

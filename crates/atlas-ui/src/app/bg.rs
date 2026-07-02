@@ -420,23 +420,11 @@ impl App {
                 BgResult::DirListed {
                     tab,
                     op_id,
-                    mut entries,
+                    entries,
                 } => {
                     crate::perf::count_by("bg.entries", entries.len() as u64);
-                    {
-                        let _perf = crate::perf::span_detail("bg.fmt_entries", || {
-                            format!("n={}", entries.len())
-                        });
-                        for e in entries.iter_mut() {
-                            e.display_size = if matches!(e.kind, atlas_model::file_entry::FileKind::Dir) {
-                                String::new()
-                            } else {
-                                e.size.map(crate::util::display::format_size).unwrap_or_default()
-                            };
-                            e.display_date = e.modified.map(crate::util::display::format_date).unwrap_or_default();
-                            e.display_type = crate::ui::views::details::entry_type_label(e);
-                        }
-                    }
+                    // display_* fields are pre-formatted by the producing task
+                    // (see `details::format_entries`); keep the drain allocation-free.
                     // Collect icon keys before moving `entries` so we can warm
                     // the icon cache for the new listing.
                     let icon_keys: Vec<String> = if self.icon_theme.is_some() {
@@ -595,8 +583,11 @@ impl App {
                     width,
                     height,
                 } => {
+                    // Only the panes showing this path care about the texture;
+                    // notify_all here repainted every pane per decoded thumbnail.
+                    let tabs = self.affected_tabs_for_path(&path);
                     self.apply_grid_thumbnail(path, rgba, width, height);
-                    info.notify_all = true;
+                    info.notify_panes.extend(tabs);
                 }
 
                 BgResult::SearchInPlaceResults { tab, gen, entries } => {
@@ -760,8 +751,13 @@ impl App {
                     self.state.tag_cache.apply_definitions(defs);
                 }
                 BgResult::TagsForPaths { tags } => {
+                    // Scope the repaint to panes whose dir contains a tagged path.
+                    let mut tabs = std::collections::HashSet::new();
+                    for path in tags.keys() {
+                        tabs.extend(self.affected_tabs_for_path(path));
+                    }
                     self.state.tag_cache.apply_for_paths(tags);
-                    info.notify_all = true;
+                    info.notify_panes.extend(tabs);
                 }
                 BgResult::PathsForTag { tag, paths } => {
                     self.populate_tag_tabs(tag, paths);
@@ -825,8 +821,9 @@ impl App {
                     info.notify_panes.push(tab);
                 }
                 BgResult::GridThumbnailSkipped { path } => {
+                    let tabs = self.affected_tabs_for_path(&path);
                     self.apply_thumb_skipped(path);
-                    info.notify_all = true;
+                    info.notify_panes.extend(tabs);
                 }
                 BgResult::ExtToolInstalled {
                     tool,
