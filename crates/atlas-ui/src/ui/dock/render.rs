@@ -27,6 +27,43 @@ enum TabMotion {
     Closing(Instant),
 }
 
+/// Un tile tabs-like (tab strip + cuerpo) hospedado en su propio entity para poder
+/// embederse con `AnyView::cached` (patrón Zed `dock.rs:1185`: el Pane completo se
+/// cachea, tab bar incluida). El render delega en `App::render_tabs_like`; la
+/// invalidación la decide el skeleton vía fingerprint (`render_cached_tabs`).
+pub(crate) struct PaneTabsView {
+    app: gpui::WeakEntity<App>,
+    tile: TileId,
+}
+
+impl gpui::Render for PaneTabsView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf::count("render.pane_tabs_view");
+        let tile = self.tile;
+        let Some(app) = self.app.upgrade() else {
+            return div().into_any_element();
+        };
+        app.update(cx, |app, cx| {
+            let (children, active) = match app.state.pane_tree.tiles.get(tile) {
+                Some(Tile::Pane(_)) => (vec![tile], Some(tile)),
+                Some(Tile::Container(Container::Tabs(tabs))) => {
+                    let children = tabs.children.clone();
+                    let active = tabs
+                        .active
+                        .filter(|a| children.contains(a))
+                        .or_else(|| children.first().copied());
+                    (children, active)
+                }
+                _ => return div().size_full().into_any_element(),
+            };
+            if children.is_empty() {
+                return div().size_full().into_any_element();
+            }
+            app.render_tabs_like(children, active, window, cx)
+        })
+    }
+}
+
 fn split_drop_zone(kind: AtlasIcon) -> gpui::Div {
     div()
         .absolute()
@@ -91,6 +128,11 @@ impl App {
             self.state.drag_pending = false;
         }
 
+        // Poda de views/fingerprints de tiles que ya no existen (split/close/dnd).
+        let tiles = &self.state.pane_tree.tiles;
+        self.pane_tabs_cache.retain(|id, _| tiles.get(*id).is_some());
+        self.pane_tabs_fp.retain(|id, _| tiles.get(*id).is_some());
+
         self.state
             .pane_tree
             .root
@@ -106,17 +148,12 @@ impl App {
     ) -> Option<AnyElement> {
         crate::perf::count("dock.render_tree");
         match self.state.pane_tree.tiles.get(id)?.clone() {
-            Tile::Pane(_) => Some(self.render_tabs_like(vec![id], Some(id), window, cx)),
+            Tile::Pane(_) => Some(self.render_cached_tabs(id, window, cx)),
             Tile::Container(Container::Tabs(tabs)) => {
-                let children = tabs.children;
-                if children.is_empty() {
+                if tabs.children.is_empty() {
                     return None;
                 }
-                let active = tabs
-                    .active
-                    .filter(|a| children.contains(a))
-                    .or_else(|| children.first().copied());
-                Some(self.render_tabs_like(children, active, window, cx))
+                Some(self.render_cached_tabs(id, window, cx))
             }
             Tile::Container(Container::Linear(linear)) => {
                 let mut children = Vec::new();
@@ -312,7 +349,12 @@ impl App {
         // shortcut (perf.log: 40-54ms frames at 10+ panes). Past a small count, snap to
         // the final layout (open still fades via PaneAnimation, close via the pop anim).
         // heuristic cap; raise if paint per pane gets cheap enough.
-        if anim.to.len() > 4 {
+        // El gate por hermanos no cubre árboles binarios anidados (2 hijos por
+        // container × 21 panes): el seam animado desplaza los bounds de todo el
+        // subárbol downstream cada frame e invalida sus PaneTabsView cacheados.
+        // Con muchos panes totales, asentar el layout en 1 frame (el fade del
+        // pane nuevo/cerrado sigue dando la sensación de animación).
+        if anim.to.len() > 4 || self.file_panel_cache.len() > 8 {
             self.dock_split_animations.remove(&id);
             return final_shares;
         }
@@ -328,6 +370,81 @@ impl App {
             });
         }
         shares
+    }
+
+    /// Embebe el tile tabs-like como `PaneTabsView` cacheado. El fingerprint captura
+    /// todo el estado que `render_tabs_like`/`render_tab_strip` leen; si no cambió,
+    /// el view no se notifica y gpui recicla layout+hitboxes+paint del frame anterior
+    /// (el chrome del pane cuesta 1 nodo taffy).
+    fn render_cached_tabs(
+        &mut self,
+        id: TileId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let fp = self.tabs_fingerprint(id, window, cx);
+        let view = if let Some(view) = self.pane_tabs_cache.get(&id) {
+            view.clone()
+        } else {
+            let app = cx.entity().downgrade();
+            let view = cx.new(|_| PaneTabsView { app, tile: id });
+            self.pane_tabs_cache.insert(id, view.clone());
+            view
+        };
+        if self.pane_tabs_fp.insert(id, fp) != Some(fp) {
+            view.update(cx, |_, cx| cx.notify());
+        }
+        gpui::AnyView::from(view)
+            .cached(gpui::StyleRefinement::default().size_full())
+            .into_any_element()
+    }
+
+    fn tabs_fingerprint(&self, id: TileId, window: &Window, cx: &Context<Self>) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let epoch = self.startup_started;
+        let hash_instant = |h: &mut std::collections::hash_map::DefaultHasher, i: Instant| {
+            i.saturating_duration_since(epoch).as_nanos().hash(h);
+        };
+
+        let children: Vec<TileId> = match self.state.pane_tree.tiles.get(id) {
+            Some(Tile::Pane(_)) => vec![id],
+            Some(Tile::Container(Container::Tabs(tabs))) => {
+                tabs.active.map(|a| a.0).hash(&mut h);
+                tabs.children.clone()
+            }
+            _ => Vec::new(),
+        };
+        for child in &children {
+            child.0.hash(&mut h);
+            if let Some(t) = self.tab_data_for(*child) {
+                t.location.display_path().hash(&mut h);
+                if let Some(p) = t.location.fs_dir() {
+                    self.grid_thumbnail(&p.to_path_buf()).is_some().hash(&mut h);
+                }
+            }
+            if let Some(started) = self.tab_closing.get(child) {
+                hash_instant(&mut h, *started);
+            }
+            self.pane_closing.contains_key(child).hash(&mut h);
+            if let Some(anim) = (!self.state.settings.disable_animations)
+                .then(|| self.pane_animation_for(*child))
+                .flatten()
+            {
+                std::mem::discriminant(&anim.kind).hash(&mut h);
+                hash_instant(&mut h, anim.started);
+            }
+        }
+        // Estado global que cambia el chrome: tema, glass, overlay alt (alt-drag
+        // drag), y drag activo (zonas de drop del cuerpo).
+        self.state.profiles.active().theme.hash(&mut h);
+        self.state.settings.mica.hash(&mut h);
+        self.state.settings.disable_animations.hash(&mut h);
+        window.modifiers().alt.hash(&mut h);
+        cx.has_active_drag().hash(&mut h);
+        self.state.dragging_pane.map(|p| p.0).hash(&mut h);
+        self.state.drag_pending.hash(&mut h);
+        h.finish()
     }
 
     fn render_tabs_like(

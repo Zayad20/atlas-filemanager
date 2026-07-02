@@ -131,6 +131,13 @@ pub struct App {
     /// `rebuild_dock_center` calls keeps gpui animation state alive on existing panes
     /// so they don't flash when a new split or close restructures the layout.
     pub(crate) file_panel_cache: HashMap<TileId, Entity<crate::ui::pane_panel::FilePanel>>,
+    /// One `PaneTabsView` (tab strip + body) per tabs-like tile, embedded cacheado
+    /// (`AnyView::cached`, patrón Zed). Invalidación por fingerprint: el skeleton
+    /// (`render_tree`) recalcula `pane_tabs_fp` y solo notifica al view si cambió,
+    /// así el chrome de panes quietos se recicla completo.
+    pub(crate) pane_tabs_cache:
+        HashMap<TileId, Entity<crate::ui::dock::render::PaneTabsView>>,
+    pub(crate) pane_tabs_fp: HashMap<TileId, u64>,
     pub(crate) sidebar_panel: Option<Entity<crate::ui::sidebar::SidebarPanel>>,
     /// The dock tree hosted in its own view (see `ui::dock_host`). Split/close/drag
     /// animations call `request_animation_frame`, which notifies the *current* view;

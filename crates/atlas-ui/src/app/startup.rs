@@ -372,6 +372,8 @@ impl App {
             // FASE A: dock built lazily on first render from the restored pane_tree.
             dock: None,
             file_panel_cache: HashMap::new(),
+            pane_tabs_cache: HashMap::new(),
+            pane_tabs_fp: HashMap::new(),
             sidebar_panel: None,
             dock_host: None,
             focus_history: std::collections::VecDeque::new(),
