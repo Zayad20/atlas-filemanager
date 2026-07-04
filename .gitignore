@@ -13,3 +13,14 @@ atlas_err.log
 atlas_out.log
 nul
 **/nul
+
+# Vendored forks are committed; their build output is not.
+vendor/**/target/
+vendor/**/node_modules/
+vendor/**/.next/
+
+# Profiling artifacts (dhat, perf captures)
+dhat-*.json
+
+# Unrelated local checkouts / generated side projects
+website/
