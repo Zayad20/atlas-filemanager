@@ -26,8 +26,8 @@ pub(crate) fn image_file_to_preview(path: &Path) -> PreviewResult {
 }
 
 pub(crate) fn run_magick_preview(path: &Path, magick: &Path) -> PreviewResult {
-    let output = std::env::temp_dir()
-        .join(format!("atlas-magick-preview-{}.png", uuid::Uuid::new_v4()));
+    let output =
+        std::env::temp_dir().join(format!("atlas-magick-preview-{}.png", uuid::Uuid::new_v4()));
     let input = format!("{}[0]", path.to_string_lossy());
     let ran = std::process::Command::new(magick)
         .args([

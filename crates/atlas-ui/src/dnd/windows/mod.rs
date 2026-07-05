@@ -365,7 +365,7 @@ pub fn start_drag_archive(hwnd_raw: isize, items: &[(PathBuf, PathBuf)], queue: 
 
     let mut extracted: Vec<PathBuf> = Vec::new();
     for (archive_path, inners) in &by_archive {
-        let Some(provider) = crate::fs::archive::open(archive_path) else {
+        let Some(provider) = atlas_core::fs::archive::open(archive_path) else {
             push_event(
                 queue,
                 DndEvent::Error(format!(

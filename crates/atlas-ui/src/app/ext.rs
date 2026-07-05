@@ -1,4 +1,3 @@
-#![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
 //! App-side glue for the extension system: routes `ExtAction`s, runs commands,
 //! and applies `BgResult::ExtCommandDone`.
 
@@ -6,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::app::App;
-use crate::state::ext_state::PendingCommand;
+use atlas_model::ext_state::PendingCommand;
 
 /// Bundled extensions seeded into the extensions dir on first run.
 pub const FILE_TOOLS_MANIFEST: &str =
@@ -54,7 +53,7 @@ pub enum ExtAction {
 
 impl App {
     pub(crate) fn reload_ext_registry(&mut self) {
-        self.ext_registry = crate::ext::Registry::load(&self.state.ext.enabled);
+        self.ext_registry = atlas_core::ext::Registry::load(&self.state.ext.enabled);
     }
 
     pub(crate) fn handle_ext_action(&mut self, action: ExtAction) {
@@ -73,7 +72,13 @@ impl App {
                         .iter()
                         .map(|(name, _, val)| (name.clone(), val.clone()))
                         .collect();
-                    crate::ext::runner::run(&self.rt, self.tx.clone(), p.cmd, p.paths, answers);
+                    atlas_core::ext::runner::run(
+                        &self.rt,
+                        self.tx.clone(),
+                        p.cmd,
+                        p.paths,
+                        answers,
+                    );
                 }
             }
             ExtAction::CancelPending => {
@@ -85,7 +90,7 @@ impl App {
             }
             ExtAction::Install => self.install_extension(),
             ExtAction::Uninstall(id) => {
-                if let Err(e) = crate::ext::install::uninstall(&id) {
+                if let Err(e) = atlas_core::ext::install::uninstall(&id) {
                     self.state.ext.last_error = Some(e.to_string());
                 } else {
                     self.state.ext.enabled.remove(&id);
@@ -97,7 +102,7 @@ impl App {
                 self.state.ext.last_error = None;
                 let tx = self.tx.clone();
                 self.rt.spawn(async move {
-                    let mut result = crate::ext::marketplace::fetch_registry()
+                    let mut result = atlas_core::ext::marketplace::fetch_registry()
                         .await
                         .map_err(|e| e.to_string());
 
@@ -107,7 +112,7 @@ impl App {
                         for (id, ext) in &mut registry.extensions {
                             if let Some(url) = &ext.icon_url {
                                 let local_path = cache_dir.join(format!("{}.png", id));
-                                if crate::ext::marketplace::download_icon(url, &local_path)
+                                if atlas_core::ext::marketplace::download_icon(url, &local_path)
                                     .await
                                     .is_ok()
                                 {
@@ -120,9 +125,7 @@ impl App {
                         }
                     }
 
-                    let _ = tx.send(crate::state::app_state::BgResult::ExtRegistryFetched(
-                        result,
-                    ));
+                    let _ = tx.send(atlas_model::app_state::BgResult::ExtRegistryFetched(result));
                 });
             }
             ExtAction::InstallRemote { id, download_url } => {
@@ -131,17 +134,18 @@ impl App {
                 let tx = self.tx.clone();
                 self.rt.spawn(async move {
                     let result = async {
-                        let zip_path = crate::ext::marketplace::download_zip(&download_url)
+                        let zip_path = atlas_core::ext::marketplace::download_zip(&download_url)
                             .await
                             .map_err(|e| e.to_string())?;
-                        crate::ext::install::install_zip(&zip_path).map_err(|e| e.to_string())?;
+                        atlas_core::ext::install::install_zip(&zip_path)
+                            .map_err(|e| e.to_string())?;
                         // Clean up temp zip.
                         let _ = std::fs::remove_file(&zip_path);
                         Ok::<(), String>(())
                     }
                     .await;
                     let _ = tx
-                        .send(crate::state::app_state::BgResult::ExtRemoteInstalled { id, result });
+                        .send(atlas_model::app_state::BgResult::ExtRemoteInstalled { id, result });
                 });
             }
         }
@@ -150,12 +154,12 @@ impl App {
     /// Handle background results for the marketplace (called from `bg.rs`).
     pub(crate) fn handle_ext_registry_fetched(
         &mut self,
-        result: Result<crate::state::ext_model::RemoteRegistry, String>,
+        result: Result<atlas_model::ext_model::RemoteRegistry, String>,
     ) {
         self.state.ext.remote_loading = false;
         match result {
             Ok(registry) => {
-                let mut list: Vec<crate::state::ext_model::RemoteExtension> =
+                let mut list: Vec<atlas_model::ext_model::RemoteExtension> =
                     registry.extensions.into_values().collect();
                 list.sort_by(|a, b| a.name.cmp(&b.name));
                 self.state.ext.remote = Some(list);
@@ -216,7 +220,7 @@ impl App {
             return;
         }
         if cmd.command.prompts.is_empty() {
-            crate::ext::runner::run(&self.rt, self.tx.clone(), cmd, paths, HashMap::new());
+            atlas_core::ext::runner::run(&self.rt, self.tx.clone(), cmd, paths, HashMap::new());
         } else {
             let answers = cmd
                 .command
@@ -243,14 +247,14 @@ impl App {
                     .pick_file()
                     .or_else(|| rfd::FileDialog::new().pick_folder())?; // None = cancelled
                 Some(if path.is_dir() {
-                    crate::ext::install::install_folder(&path).map_err(|e| e.to_string())
+                    atlas_core::ext::install::install_folder(&path).map_err(|e| e.to_string())
                 } else {
-                    crate::ext::install::install_zip(&path).map_err(|e| e.to_string())
+                    atlas_core::ext::install::install_zip(&path).map_err(|e| e.to_string())
                 })
             })
             .await;
             if let Ok(Some(result)) = outcome {
-                let _ = tx.send(crate::state::app_state::BgResult::ExtLocalInstalled(result));
+                let _ = tx.send(atlas_model::app_state::BgResult::ExtLocalInstalled(result));
             }
         });
     }
@@ -266,8 +270,8 @@ impl App {
             tracing::warn!("extension {ext_id} command failed: {e}");
         }
 
-        // Si la extensión generó un archivo de mapeos (como un Icon Theme), cargarlo en caché.
-        let mappings_path = crate::util::config::data_dir()
+        // If the extension generated a mapping file (like an icon theme), cache it.
+        let mappings_path = atlas_core::util::config::data_dir()
             .join("extensions")
             .join(&ext_id)
             .join("theme_mappings.json");
@@ -288,7 +292,7 @@ impl App {
             }
         }
         // Re-list any directory tab whose contents may have changed.
-        let targets: Vec<(crate::state::layout_tree::TileId, PathBuf, _, _)> = self
+        let targets: Vec<(atlas_model::layout_tree::TileId, PathBuf, _, _)> = self
             .state
             .all_pane_tile_ids()
             .into_iter()

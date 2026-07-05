@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 
 use crate::app::App;
 use crate::input::action::Action;
-use crate::state::layout_tree::TileId;
-use crate::state::location::Location;
-use crate::state::tag_cache::TagId;
+use atlas_model::layout_tree::TileId;
+use atlas_model::location::Location;
+use atlas_model::tag_cache::TagId;
 use gpui::prelude::*;
 use gpui::{
     canvas, div, AnyElement, Context, DispatchPhase, Entity, MouseMoveEvent, MouseUpEvent, Window,
@@ -126,7 +126,7 @@ impl App {
         self.drag_hover.active = true;
         self.drag_hover.committed = false;
         // Snapshot every pane's nav state so a cancel can undo spring-load nav.
-        use crate::state::layout_tree::Tile;
+        use atlas_model::layout_tree::Tile;
         let snap: std::collections::HashMap<_, _> = self
             .state
             .pane_tree
@@ -163,7 +163,7 @@ impl App {
         let Some(snap) = self.drag_hover.nav_snapshot.take() else {
             return;
         };
-        use crate::state::layout_tree::Tile;
+        use atlas_model::layout_tree::Tile;
         for (id, (loc, history, forward)) in snap {
             if let Some(Tile::Pane(p)) = self.state.pane_tree.tiles.get_mut(id) {
                 if p.location == loc {
@@ -437,12 +437,12 @@ impl App {
                     paths
                         .into_iter()
                         .filter(|path| !existing.contains(path))
-                        .map(|path| crate::state::app_state::StagedDrop { path, from_self }),
+                        .map(|path| atlas_model::app_state::StagedDrop { path, from_self }),
                 );
                 self.cancel_dropzone_file_drag();
             }
             DragHoverDropCommand::TransferTo(dest) => {
-                use crate::state::ops::{
+                use atlas_model::ops::{
                     ConflictPolicy, TransferKind, TransferOrigin, TransferRequest,
                 };
                 let effect = crate::dnd::default_effect_for_paths(&paths, &dest);

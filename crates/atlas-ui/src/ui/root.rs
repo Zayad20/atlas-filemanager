@@ -10,13 +10,13 @@
 
 use crate::app::App;
 use crate::input::action::Action;
-use crate::state::pane::TabId;
-use crate::state::settings::ViewMode;
 use crate::ui::drag_hover::drag_hover_layer;
 use crate::ui::glass::{backdrop_tint, glass_chrome_fill, glass_sidebar_fill, GlassExt};
 use crate::ui::icons::{icon, is_windows_theme, AtlasIcon};
 use crate::ui::interactions::rubber_layer;
-use crate::util::display::format_size;
+use atlas_core::util::display::format_size;
+use atlas_model::pane::TabId;
+use atlas_model::settings::ViewMode;
 use gpui::prelude::*;
 use gpui::{
     div, hsla, px, Context, Entity, MouseButton, MouseDownEvent, NavigationDirection, SharedString,
@@ -128,23 +128,23 @@ impl Render for App {
             let mut linear_children = 0;
             for (_, tile) in self.state.pane_tree.tiles.iter() {
                 match tile {
-                    crate::state::layout_tree::Tile::Pane(_) => panes += 1,
-                    crate::state::layout_tree::Tile::Container(
-                        crate::state::layout_tree::Container::Tabs(t),
+                    atlas_model::layout_tree::Tile::Pane(_) => panes += 1,
+                    atlas_model::layout_tree::Tile::Container(
+                        atlas_model::layout_tree::Container::Tabs(t),
                     ) => {
                         tabs += 1;
                         tab_children += t.children.len();
                     }
-                    crate::state::layout_tree::Tile::Container(
-                        crate::state::layout_tree::Container::Linear(l),
+                    atlas_model::layout_tree::Tile::Container(
+                        atlas_model::layout_tree::Container::Linear(l),
                     ) => {
                         linear += 1;
                         linear_children += l.children.len();
                     }
                 }
             }
-            // Qué interacción estaba activa cuando se dibujó el frame; frames lentos
-            // con cause=none = hover u otra notificación no rastreada.
+            // Track which interaction was active when the frame was drawn; slow
+            // frames with cause=none mean hover or another untracked notification.
             let mut cause = String::new();
             if self.dock_resize.is_some() {
                 cause.push_str("drag_split,");
@@ -217,7 +217,6 @@ impl Render for App {
         if !self.drag_hover_maybe_active() {
             self.pending_drag_hover_targets.clear();
         }
-        self.begin_pane_layout_frame();
         self.prune_pane_animations();
         self.prune_pane_layout_animations();
         // Note: no App-level `request_animation_frame` here. Each animating `FilePanel`
@@ -786,7 +785,7 @@ impl Render for App {
                         // Remote tab: use an empty sentinel; the action handler
                         // detects Location::Remote and routes to the cloud worker.
                         #[cfg(feature = "cloud")]
-                        if matches!(t.location, crate::state::location::Location::Remote { .. }) {
+                        if matches!(t.location, atlas_model::location::Location::Remote { .. }) {
                             return Some(PathBuf::new());
                         }
                         None

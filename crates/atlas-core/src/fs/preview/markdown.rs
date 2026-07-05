@@ -192,4 +192,3 @@ pub(crate) fn parse_markdown(source: &str) -> Vec<MarkdownBlock> {
     }
     blocks
 }
-

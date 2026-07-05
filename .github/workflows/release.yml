@@ -1,0 +1,161 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without the v prefix, for example 0.1.0"
+        required: true
+      prerelease:
+        description: "Mark the GitHub release as prerelease"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Resolve version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $version = "${{ inputs.version }}"
+          } else {
+            $version = "${env:GITHUB_REF_NAME}".TrimStart("v")
+          }
+          "ATLAS_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Build installer
+        shell: pwsh
+        run: ./scripts/build-windows-installer.ps1 -Version "$env:ATLAS_VERSION"
+
+      - name: Stage artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "target/installer/AtlasSetup-$env:ATLAS_VERSION.exe" "dist/AtlasSetup-$env:ATLAS_VERSION.exe"
+          Get-FileHash "dist/AtlasSetup-$env:ATLAS_VERSION.exe" -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  AtlasSetup-$env:ATLAS_VERSION.exe" } |
+            Set-Content "dist/AtlasSetup-$env:ATLAS_VERSION.exe.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-windows-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  linux:
+    name: Linux tarball
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang g++ libasound2-dev libfontconfig-dev libssl-dev libvulkan1 libxcb1-dev \
+            libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev pkg-config
+
+      - name: Resolve version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "ATLAS_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Build binary
+        run: cargo build --release --locked
+
+      - name: Package tarball
+        run: |
+          package="atlas-$ATLAS_VERSION-linux-x86_64"
+          mkdir -p "dist/$package/bin" "dist/$package/share/applications" "dist/$package/share/icons/hicolor/512x512/apps"
+          cp target/release/atlas "dist/$package/bin/atlas"
+          cp packaging/linux/atlas.desktop "dist/$package/share/applications/atlas.desktop"
+          cp packaging/icons/atlas.png "dist/$package/share/icons/hicolor/512x512/apps/atlas.png"
+          cp README.md LICENSE "dist/$package/"
+          tar -C dist -czf "dist/$package.tar.gz" "$package"
+          (cd dist && sha256sum "$package.tar.gz" > "$package.tar.gz.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-linux-x86_64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs: [windows, linux]
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Resolve release metadata
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+            prerelease="${{ inputs.prerelease }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+            prerelease="false"
+            if [[ "$version" == *-* ]]; then
+              prerelease="true"
+            fi
+          fi
+          echo "ATLAS_VERSION=$version" >> "$GITHUB_ENV"
+          echo "ATLAS_TAG=v$version" >> "$GITHUB_ENV"
+          echo "ATLAS_PRERELEASE=$prerelease" >> "$GITHUB_ENV"
+
+      - name: Publish assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          if [ "$ATLAS_PRERELEASE" = "true" ]; then
+            flags+=(--prerelease)
+          fi
+
+          if gh release view "$ATLAS_TAG" >/dev/null 2>&1; then
+            gh release upload "$ATLAS_TAG" dist/* --clobber
+          else
+            gh release create "$ATLAS_TAG" dist/* \
+              --target "$GITHUB_SHA" \
+              --title "Atlas $ATLAS_VERSION" \
+              --notes "Windows installer and Linux tarball." \
+              "${flags[@]}"
+          fi

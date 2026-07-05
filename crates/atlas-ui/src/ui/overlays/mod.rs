@@ -62,6 +62,9 @@ impl App {
         if self.state.overlay.transfer_conflict.is_some() {
             layers.push(self.render_transfer_conflict(cx));
         }
+        if self.state.overlay.properties.is_some() {
+            layers.push(self.render_properties(window, cx));
+        }
         if self.state.profile_ui.creating_tag {
             layers.push(self.render_create_tag(window, cx));
         }
@@ -79,6 +82,10 @@ impl App {
         if self.state.cloud.renaming_remote_id.is_some() {
             layers.push(self.render_rename_remote(window, cx));
         }
+        #[cfg(feature = "cloud")]
+        if self.state.cloud.show_transfers && !self.state.cloud.transfers.is_empty() {
+            layers.push(self.render_cloud_transfers_bar(window, cx));
+        }
         if !self.state.overlay.op_errors.is_empty() {
             layers.push(self.render_op_errors(window, cx));
         }
@@ -89,7 +96,7 @@ impl App {
         if self.size_filter_menu.is_some() {
             layers.push(self.render_size_filter_layer(window, cx));
         }
-        // Tag-picker overlay (inspector "Añadir tag" button).
+        // Tag-picker overlay (inspector add-tag button).
         if self.tag_picker_menu.is_some() {
             layers.push(self.render_tag_picker_layer(window, cx));
         }
@@ -163,6 +170,7 @@ pub(crate) mod add_cloud;
 mod batch_rename;
 mod create_tag;
 mod ext_manager;
+mod properties;
 mod rename_profile;
 #[cfg(feature = "cloud")]
 mod rename_remote;
@@ -170,3 +178,5 @@ mod scrim;
 mod settings;
 mod toasts;
 mod transfer_conflict;
+#[cfg(feature = "cloud")]
+mod transfers_bar;

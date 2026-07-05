@@ -1,5 +1,5 @@
 use crate::app::App;
-use crate::state::pane::TabId;
+use atlas_model::pane::TabId;
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, Entity, Hsla, MouseButton, Pixels, SharedString, TextRun, Window};
 use gpui_component::input::InputState;

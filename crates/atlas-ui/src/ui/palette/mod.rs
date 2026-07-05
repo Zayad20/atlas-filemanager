@@ -16,9 +16,9 @@ mod specs;
 
 use crate::app::App;
 use crate::input::action::Action;
-use crate::state::overlay::FuzzyOverlayState;
 use crate::ui::file_icons::FileIconRef;
 use crate::ui::icons::AtlasIcon;
+use atlas_model::overlay::FuzzyOverlayState;
 use gpui::{AnyElement, Keystroke, SharedString};
 
 /// A complete palette: what to search, how rows look, and what surrounds them.

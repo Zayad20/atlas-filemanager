@@ -1,9 +1,9 @@
 //! Size-filter overlay for the Details view.
 
 use crate::app::App;
-use crate::state::file_entry::{FileEntry, FileKind};
-use crate::state::pane::TabId;
 use crate::ui::icons::{icon, AtlasIcon};
+use atlas_model::file_entry::{FileEntry, FileKind};
+use atlas_model::pane::TabId;
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, Context, MouseButton, Pixels, Point, SharedString, Window};
 use gpui_component::{v_flex, ActiveTheme, Sizable as _};

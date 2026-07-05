@@ -3,14 +3,14 @@
 
 use crate::app::App;
 use crate::input::action::Action;
-use crate::state::ops::Resolution;
+use atlas_model::ops::Resolution;
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, Context, Entity, MouseButton, SharedString};
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
 impl App {
     pub(crate) fn render_transfer_conflict(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        use crate::state::ops::{ConflictPolicy, TransferKind};
+        use atlas_model::ops::{ConflictPolicy, TransferKind};
         let (popover, fg, muted, border, accent, accent_fg) = {
             let t = cx.theme();
             (
@@ -39,10 +39,10 @@ impl App {
         let detail = |size: Option<u64>, modified: Option<std::time::SystemTime>| {
             let mut parts: Vec<String> = Vec::new();
             if let Some(s) = size {
-                parts.push(crate::util::display::format_size(s));
+                parts.push(atlas_core::util::display::format_size(s));
             }
             if let Some(m) = modified {
-                parts.push(crate::util::display::format_date(m));
+                parts.push(atlas_core::util::display::format_date(m));
             }
             if parts.is_empty() {
                 "—".to_string()

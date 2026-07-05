@@ -81,6 +81,49 @@ impl ProfileScoped for PreviewFeature {
     type State = PreviewPrefs;
 }
 
+/// View/sort remembered for a single directory (see [`FolderViewPrefs`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FolderViewPref {
+    pub view_mode: crate::settings::ViewMode,
+    pub sort_col: crate::file_entry::SortColumn,
+    pub sort_dir: crate::file_entry::SortDir,
+}
+
+/// LRU-capped `path -> FolderViewPref` map, most-recently-used first. Lets each
+/// folder remember its own view mode / sort without growing [`Profile`] or
+/// [`ProfilePrefs`] unbounded as the user browses.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct FolderViewPrefs {
+    entries: Vec<(PathBuf, FolderViewPref)>,
+}
+
+impl FolderViewPrefs {
+    const CAP: usize = 200;
+
+    pub fn get(&self, path: &std::path::Path) -> Option<FolderViewPref> {
+        self.entries
+            .iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, v)| v.clone())
+    }
+
+    /// Insert/update `path`, bumping it to most-recently-used and evicting the
+    /// oldest entry past [`Self::CAP`].
+    pub fn set(&mut self, path: PathBuf, pref: FolderViewPref) {
+        self.entries.retain(|(p, _)| *p != path);
+        self.entries.insert(0, (path, pref));
+        self.entries.truncate(Self::CAP);
+    }
+}
+
+/// Marker for [`ProfileScoped`] — stores [`FolderViewPrefs`] under key `"folder_view"`.
+pub struct FolderViewFeature;
+
+impl ProfileScoped for FolderViewFeature {
+    const KEY: &'static str = "folder_view";
+    type State = FolderViewPrefs;
+}
+
 /// Name of the theme applied to new profiles. Must match a theme registered in
 /// `ThemeRegistry` (see `crates/atlas-ui/assets/themes/atlas-themes.json`).
 pub const DEFAULT_THEME: &str = "Atlas Figma Glass";

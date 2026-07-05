@@ -3,9 +3,9 @@
 
 use crate::app::{App, RubberTarget};
 use crate::input::action::Action;
-use crate::state::layout_tree::Tile;
-use crate::state::pane::TabId;
-use crate::state::settings::ViewMode;
+use atlas_model::layout_tree::Tile;
+use atlas_model::pane::TabId;
+use atlas_model::settings::ViewMode;
 use gpui::prelude::*;
 use gpui::{
     canvas, Context, DispatchPhase, Entity, KeyDownEvent, MouseMoveEvent, MouseUpEvent, Window,
@@ -69,8 +69,8 @@ impl App {
         };
         let count = ts.visible.len();
         match &td.view_mode {
-            crate::state::settings::ViewMode::Details => (1, count),
-            crate::state::settings::ViewMode::Grid => {
+            atlas_model::settings::ViewMode::Details => (1, count),
+            atlas_model::settings::ViewMode::Grid => {
                 let thumb = td.thumbnail_size;
                 const GAP: f32 = 8.0;
                 const PAD: f32 = 0.0;
@@ -79,14 +79,14 @@ impl App {
                 let cols = (((inner + GAP) / (thumb + GAP)).floor() as usize).max(1);
                 (cols, count.div_ceil(cols))
             }
-            crate::state::settings::ViewMode::List => {
+            atlas_model::settings::ViewMode::List => {
                 const CELL_W: f32 = 220.0;
                 let stride = CELL_W + 6.0;
                 let avail = ts.last_pane_width.max(stride);
                 let cols = ((avail / stride).floor() as usize).max(1);
                 (cols, count.div_ceil(cols))
             }
-            crate::state::settings::ViewMode::Miller => (1, 0),
+            atlas_model::settings::ViewMode::Miller => (1, 0),
         }
     }
 
@@ -430,7 +430,7 @@ impl App {
         self.rename_visual_suppress = Some((edit.pane, edit.idx, 2));
         let new_name = edit.input.read(cx).value().to_string();
         let new_name = new_name.trim();
-        if !crate::state::batch_rename::name_is_valid(new_name) {
+        if !atlas_model::batch_rename::name_is_valid(new_name) {
             return;
         }
         if let Some(parent) = edit.path.parent() {
@@ -879,10 +879,10 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
 
                     if let Some(resize) = this.dock_resize.as_ref() {
                         let delta = match resize.dir {
-                            crate::state::layout_tree::LinearDir::Horizontal => {
+                            atlas_model::layout_tree::LinearDir::Horizontal => {
                                 f32::from(pos.x) - resize.start_pos
                             }
-                            crate::state::layout_tree::LinearDir::Vertical => {
+                            atlas_model::layout_tree::LinearDir::Vertical => {
                                 f32::from(pos.y) - resize.start_pos
                             }
                         };
@@ -902,8 +902,8 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                                         .clamp(min_share, total_share - min_share);
                                 }
                                 shares[right] = (total_share - shares[left]).max(0.0);
-                                if let Some(crate::state::layout_tree::Tile::Container(
-                                    crate::state::layout_tree::Container::Linear(linear),
+                                if let Some(atlas_model::layout_tree::Tile::Container(
+                                    atlas_model::layout_tree::Container::Linear(linear),
                                 )) = this.state.pane_tree.tiles.get_mut(resize.container)
                                 {
                                     crate::app::normalize_split_shares(&mut shares);
@@ -998,13 +998,13 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                 let pos = ev.position;
                 vu.update(cx, |this, cx| {
                     if this.sidebar_resize.take().is_some() {
-                        crate::util::config::save_settings(&this.state.settings);
+                        atlas_core::util::config::save_settings(&this.state.settings);
                         cx.notify();
                         return;
                     }
 
                     if this.inspector_resize.take().is_some() {
-                        crate::util::config::save_settings(&this.state.settings);
+                        atlas_core::util::config::save_settings(&this.state.settings);
                         cx.notify();
                         return;
                     }

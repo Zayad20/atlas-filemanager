@@ -1,23 +1,23 @@
 //! `App::new`: construct the app, restore session/profiles, kick off loads.
 #![allow(clippy::too_many_lines)] // reason: cohesive startup/drain kept whole
 
-use crate::state::layout_tree::Tile;
+use atlas_model::layout_tree::Tile;
 use std::collections::{HashMap, HashSet};
 
 use gpui::{Context, Window};
 use smol::Timer;
 
 use super::*;
-use crate::fs::list::list_dir;
-use crate::search::nucleo_pool::NucleoPool;
-use crate::state::app_state::{AppState, BgResult};
-use crate::state::tab::LoadState;
-use crate::util::config::{load_profiles, load_session};
+use atlas_core::fs::list::list_dir;
+use atlas_core::search::nucleo_pool::NucleoPool;
+use atlas_core::util::config::{load_profiles, load_session};
+use atlas_model::app_state::{AppState, BgResult};
+use atlas_model::tab::LoadState;
 
 impl App {
     pub fn new(
         rt: tokio::runtime::Handle,
-        settings: crate::state::settings::Settings,
+        settings: atlas_model::settings::Settings,
         startup_started: std::time::Instant,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -88,9 +88,9 @@ impl App {
         // Spawn the SQLite tag-db worker. On a brand-new database it imports the tags
         // that previously lived only in profile config (global + per-profile).
         let migration = collect_tag_migration(&state.profiles);
-        let tag_db_tx = crate::fs::tag_db::spawn(
+        let tag_db_tx = atlas_core::fs::tag_db::spawn(
             &rt,
-            crate::util::config::data_dir().join("tags.db"),
+            atlas_core::util::config::data_dir().join("tags.db"),
             migration,
             tx.clone(),
         );
@@ -117,20 +117,20 @@ impl App {
                 };
             // A restored Access-mode remote tab can't reconnect before rclone is up.
             #[cfg(feature = "cloud")]
-            if matches!(location, crate::state::location::Location::Remote { .. }) {
+            if matches!(location, atlas_model::location::Location::Remote { .. }) {
                 continue;
             }
             // A restored virtual tag tab re-queries its paths instead of listing a dir.
-            if let crate::state::location::Location::Tag(tag) = location {
+            if let atlas_model::location::Location::Tag(tag) = location {
                 let op_id = state.next_op_id();
                 let ts = state.tab_states.entry(tile_id).or_default();
                 ts.load_state = LoadState::Loading;
                 ts.last_nav_op_id = op_id;
-                let _ = tag_db_tx.send(crate::fs::tag_db::TagDbCmd::QueryPathsForTag(tag));
+                let _ = tag_db_tx.send(atlas_core::fs::tag_db::TagDbCmd::QueryPathsForTag(tag));
                 continue;
             }
             // A restored archive tab lists its inner directory on startup.
-            if let crate::state::location::Location::Archive { archive, inner } = location {
+            if let atlas_model::location::Location::Archive { archive, inner } = location {
                 let op_id = state.next_op_id();
                 let ts = state.tab_states.entry(tile_id).or_default();
                 ts.load_state = LoadState::Loading;
@@ -140,7 +140,7 @@ impl App {
                 let inner2 = inner.clone();
                 rt.spawn(async move {
                     let result = tokio::task::spawn_blocking(move || {
-                        let provider = crate::fs::archive::open(&archive)
+                        let provider = atlas_core::fs::archive::open(&archive)
                             .ok_or_else(|| rust_i18n::t!("app_archive_unsupported").to_string())?;
                         provider.list(&inner).map_err(|e| e.to_string())
                     })
@@ -245,26 +245,28 @@ impl App {
         let shell_menu = Some(crate::shell_menu::spawn());
 
         // Extensions: seed bundled ones, load enabled overrides, build the registry.
-        let _ =
-            crate::ext::install::ensure_bundled("file-tools", crate::app::ext::FILE_TOOLS_MANIFEST);
-        let _ = crate::ext::install::ensure_bundled(
+        let _ = atlas_core::ext::install::ensure_bundled(
+            "file-tools",
+            crate::app::ext::FILE_TOOLS_MANIFEST,
+        );
+        let _ = atlas_core::ext::install::ensure_bundled(
             "media-thumbs",
             crate::app::ext::MEDIA_THUMBS_MANIFEST,
         );
-        let _ = crate::ext::install::ensure_bundled(
+        let _ = atlas_core::ext::install::ensure_bundled(
             "document-previews",
             crate::app::ext::DOCUMENT_PREVIEWS_MANIFEST,
         );
         let runtime_tools_src =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions/runtime-tools");
-        let _ = crate::ext::install::ensure_bundled_with_assets(
+        let _ = atlas_core::ext::install::ensure_bundled_with_assets(
             "runtime-tools",
             crate::app::ext::RUNTIME_TOOLS_MANIFEST,
             &runtime_tools_src,
         );
-        state.ext.enabled = crate::util::config::load_ext_enabled();
+        state.ext.enabled = atlas_core::util::config::load_ext_enabled();
         let ext_started = std::time::Instant::now();
-        let ext_registry = crate::ext::Registry::load(&state.ext.enabled);
+        let ext_registry = atlas_core::ext::Registry::load(&state.ext.enabled);
         tracing::info!(
             total_ms = startup_started.elapsed().as_millis(),
             phase_ms = ext_started.elapsed().as_millis(),
@@ -274,15 +276,15 @@ impl App {
         // Spawn the cloud worker (rclone sidecar is started lazily on first use)
         // and restore previously-configured remotes for the sidebar.
         #[cfg(feature = "cloud")]
-        let cloud_tx = crate::cloud::spawn(&rt, tx.clone());
+        let cloud_tx = atlas_core::cloud::spawn(&rt, tx.clone());
         #[cfg(feature = "cloud")]
         {
-            state.cloud.remotes = crate::util::config::load_cloud_remotes();
+            state.cloud.remotes = atlas_core::util::config::load_cloud_remotes();
             // Auto-mount remotes the user flagged. Not added to `navigate_on_mount`,
             // so they mount silently without hijacking the startup tab.
             for r in &state.cloud.remotes {
-                if r.auto_mount && r.access == crate::cloud::AccessKind::Mount {
-                    let _ = cloud_tx.send(crate::cloud::CloudCmd::Mount { id: r.id.clone() });
+                if r.auto_mount && r.access == atlas_core::cloud::AccessKind::Mount {
+                    let _ = cloud_tx.send(atlas_core::cloud::CloudCmd::Mount { id: r.id.clone() });
                 }
             }
         }
@@ -329,7 +331,7 @@ impl App {
             .and_then(|td| td.location.fs_dir().map(std::path::Path::to_path_buf))
             .or_else(dirs::home_dir)
             .unwrap_or_else(|| std::path::PathBuf::from("/"));
-        crate::fs::index::build_index(goto_root.clone(), nucleo.injector());
+        atlas_core::fs::index::build_index(goto_root.clone(), nucleo.injector());
 
         Self {
             state,
@@ -342,13 +344,11 @@ impl App {
             scroll_handles: HashMap::new(),
             watchers: HashMap::new(),
             nucleo,
-            nucleo_results: Vec::new(),
             goto_index_root: Some((goto_root, false)),
             goto_prefill: None,
-            fuzzy_scorer: crate::search::fuzzy::FuzzyScorer::new(),
+            fuzzy_scorer: atlas_core::search::fuzzy::FuzzyScorer::new(),
             palette_scroll: gpui::ScrollHandle::new(),
             ext_registry,
-            pending_preview: None,
             tag_db_tx,
             #[cfg(feature = "cloud")]
             cloud_tx,
@@ -370,7 +370,6 @@ impl App {
             icon_tx,
             icon_rx,
             // FASE A: dock built lazily on first render from the restored pane_tree.
-            dock: None,
             file_panel_cache: HashMap::new(),
             pane_tabs_cache: HashMap::new(),
             pane_tabs_fp: HashMap::new(),
@@ -380,7 +379,6 @@ impl App {
             palette_host: None,
             palette_closing: None,
             layout_revision: 0,
-            dock_revision: 0,
             // FASE C: rubber-band selection state.
             rubber: None,
             row_rects: HashMap::new(),
@@ -392,7 +390,6 @@ impl App {
             goto_input: None,
             palette_input: None,
             ext_palette_input: None,
-            rename_input: None,
             search_inputs: HashMap::new(),
             batch_pattern_input: None,
             batch_replacement_input: None,
@@ -437,12 +434,9 @@ impl App {
             atlas_launcher_profiles_anchor: gpui::Point::default(),
             pane_layout_bounds: HashMap::new(),
             pane_layout_animations: HashMap::new(),
-            pane_layout_frame_pending: false,
             dock_split_animations: HashMap::new(),
-            pending_dock_ops: Vec::new(),
             pane_closing: HashMap::new(),
             tab_closing: HashMap::new(),
-            reconcile_pending: false,
             pane_items_appear: HashMap::new(),
             ext_manager_input: None,
             #[cfg(feature = "cloud")]

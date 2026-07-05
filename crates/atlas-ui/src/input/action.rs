@@ -1,14 +1,19 @@
-#![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
-use crate::state::file_entry::{SortColumn, SortDir};
-use crate::state::location::Location;
-use crate::state::pane::{PaneId, TabId};
-use crate::state::settings::ViewMode;
-use crate::state::tag_cache::TagId;
+use atlas_model::file_entry::{SortColumn, SortDir};
+use atlas_model::location::Location;
+use atlas_model::pane::{PaneId, TabId};
+use atlas_model::settings::ViewMode;
+use atlas_model::tag_cache::TagId;
 use std::path::PathBuf;
 
+// reason: several variants are constructed only under other-platform cfg
+// (e.g. Mount/UnmountDevice from the Linux udisks sidebar), so per-cfg dead-code
+// analysis flags them on Windows. Keep the allow scoped to the enum.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
-
 pub enum Action {
+    /// Navigate to a *filesystem path*, reinterpreted by tab context: inside a
+    /// Remote tab the path is treated as a remote path (used by goto results).
+    /// For an explicit target use `NavigateLocation`.
     Navigate {
         tab: TabId,
         path: PathBuf,
@@ -30,11 +35,8 @@ pub enum Action {
     CloseTab(TabId),
     CloseFocusedTab,
     FocusTab(TabId),
-    SplitHorizontal(PaneId),
-    SplitVertical(PaneId),
     SplitHorizontalFocused,
     SplitVerticalFocused,
-    ClosePane(PaneId),
     CloseFocusedPane,
     FocusNextPane,
     Open(Vec<PathBuf>),
@@ -44,10 +46,10 @@ pub enum Action {
         dest: PathBuf,
     },
     /// Resolve the pending transfer-conflict dialog. `None` cancels.
-    ResolveTransferConflict(Option<crate::state::ops::ConflictPolicy>),
+    ResolveTransferConflict(Option<atlas_model::ops::ConflictPolicy>),
     /// Fully-specified transfer (used by the OLE drop queue, which knows the
     /// origin and kind); `Move`/`CopyTo` below are convenience forms.
-    Transfer(crate::state::ops::TransferRequest),
+    Transfer(atlas_model::ops::TransferRequest),
     Move {
         paths: Vec<PathBuf>,
         dest: PathBuf,
@@ -75,13 +77,22 @@ pub enum Action {
     OpenTerminal {
         dir: PathBuf,
     },
+    /// Compress `paths` into a new zip next to the first item (auto-named,
+    /// uniqued against collisions).
+    CompressToZip(Vec<PathBuf>),
+    // ── Recycle Bin ──
+    /// Restore the focused pane's selected recycled items to their original paths.
+    RestoreSelectedFromRecycleBin,
+    /// Permanently delete the focused pane's selected recycled items ($R + $I).
+    PurgeSelectedFromRecycleBin,
+    /// Permanently delete everything in every accessible recycle bin.
+    EmptyRecycleBin,
     Select {
         tile: TabId,
         idx: usize,
         shift: bool,
         ctrl: bool,
     },
-    ClearSelection(TabId),
     Activate {
         tile: TabId,
         idx: usize,
@@ -102,10 +113,6 @@ pub enum Action {
         column: usize,
         idx: usize,
     },
-    MillerFocusColumn {
-        tile: TabId,
-        column: usize,
-    },
     ToggleHidden,
     SetViewMode(ViewMode),
     /// Switch the active profile's theme by registered theme name.
@@ -121,16 +128,8 @@ pub enum Action {
     /// Pin/unpin a command-palette command (by stable id) to the "Quick" section.
     ToggleCommandPin(String),
     /// Begin recording the next keypress as a command-palette shortcut.
+    /// (Cancel/set/remove happen via direct methods in `input::shortcuts`.)
     StartCommandShortcutCapture(String),
-    /// Cancel command shortcut recording without changing the persisted binding.
-    CancelCommandShortcutCapture,
-    /// Persist a command-palette shortcut override.
-    SetCommandShortcut {
-        id: String,
-        keystroke: String,
-    },
-    /// Disable a command-palette shortcut.
-    RemoveCommandShortcut(String),
     OpenSearchInPlace,
     CloseSearchInPlace,
     ToggleSearchInSubfolders,
@@ -145,6 +144,9 @@ pub enum Action {
     OpenBatchRename,
     OpenSettings,
     OpenExtManager,
+    /// Toggle the space-analyzer overlay. Currently unreachable: no palette
+    /// entry or shortcut constructs it — re-wire when the analyzer UI lands.
+    #[allow(dead_code)]
     ToggleAnalyzer,
     Refresh(TabId),
     CopyPathToClipboard(PathBuf),

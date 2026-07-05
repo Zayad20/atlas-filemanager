@@ -70,10 +70,8 @@ fn bytes_to_preview(bytes: Vec<u8>, ext: &str) -> PreviewResult {
             Ok(img) => {
                 let original_width = img.width() as usize;
                 let original_height = img.height() as usize;
-                let img = img.thumbnail(
-                    super::MAX_IMAGE_PREVIEW_EDGE,
-                    super::MAX_IMAGE_PREVIEW_EDGE,
-                );
+                let img =
+                    img.thumbnail(super::MAX_IMAGE_PREVIEW_EDGE, super::MAX_IMAGE_PREVIEW_EDGE);
                 let rgba = img.to_rgba8();
                 let (width, height) = rgba.dimensions();
                 PreviewResult::Image {

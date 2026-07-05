@@ -5,9 +5,9 @@ use super::{
 };
 use crate::app::App;
 use crate::input::action::Action;
-use crate::state::pane::PaneId;
-use crate::state::settings::ViewMode;
 use crate::ui::icons::AtlasIcon;
+use atlas_model::pane::PaneId;
+use atlas_model::settings::ViewMode;
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, Context, MouseButton};
 use gpui_component::ActiveTheme;
@@ -96,7 +96,7 @@ fn goto_entry(
     path: PathBuf,
     icon: AtlasIcon,
     expandable: bool,
-    tab: crate::state::pane::TabId,
+    tab: atlas_model::pane::TabId,
     pane: PaneId,
 ) -> PaletteItem {
     let mut item = PaletteItem::new(
@@ -140,7 +140,7 @@ fn goto_entry(
 
 /// `goto_entry` with the file name as the title and a heuristic icon (an
 /// extension usually means a file; no fs metadata on the render path).
-fn goto_item(path: PathBuf, tab: crate::state::pane::TabId, pane: PaneId) -> PaletteItem {
+fn goto_item(path: PathBuf, tab: atlas_model::pane::TabId, pane: PaneId) -> PaletteItem {
     let name = path.file_name().map_or_else(
         || path.to_string_lossy().into_owned(),
         |n| n.to_string_lossy().into_owned(),
@@ -156,8 +156,8 @@ fn goto_item(path: PathBuf, tab: crate::state::pane::TabId, pane: PaneId) -> Pal
 
 /// `goto_entry` for an indexed result, where `is_dir` is known from the walk.
 fn goto_index_item(
-    entry: crate::search::nucleo_pool::IndexEntry,
-    tab: crate::state::pane::TabId,
+    entry: atlas_core::search::nucleo_pool::IndexEntry,
+    tab: atlas_model::pane::TabId,
     pane: PaneId,
 ) -> PaletteItem {
     let name = entry.path.file_name().map_or_else(
@@ -408,9 +408,9 @@ impl App {
         self.nucleo.reset();
         let injector = self.nucleo.injector();
         if scoped {
-            crate::fs::index::build_index_scoped(root.clone(), injector);
+            atlas_core::fs::index::build_index_scoped(root.clone(), injector);
         } else {
-            crate::fs::index::build_index(root.clone(), injector);
+            atlas_core::fs::index::build_index(root.clone(), injector);
         }
         self.goto_index_root = Some((root, scoped));
     }
@@ -419,7 +419,7 @@ impl App {
     /// (drives), Marcadores (profile bookmarks) and Lugares (user dirs).
     fn goto_home_sections(
         &self,
-        tab: crate::state::pane::TabId,
+        tab: atlas_model::pane::TabId,
         pane: PaneId,
     ) -> Vec<PaletteSection> {
         let mut sections: Vec<PaletteSection> = Vec::new();
@@ -447,7 +447,7 @@ impl App {
         ));
 
         // Almacenamiento: mounted drives (cached; same source as the sidebar).
-        let drives: Vec<PaletteItem> = crate::fs::mounts::list_drives()
+        let drives: Vec<PaletteItem> = atlas_core::fs::mounts::list_drives()
             .into_iter()
             .take(GOTO_HOME_LIMIT)
             .map(|d| {
@@ -578,7 +578,7 @@ impl App {
                 view.update(cx, |this, cx| {
                     let now = !this.state.profiles.active().search_in_content;
                     this.state.profiles.active_mut().search_in_content = now;
-                    crate::util::config::save_profiles(&this.state.profiles);
+                    atlas_core::util::config::save_profiles(&this.state.profiles);
                     // Reset results and relaunch in the new mode.
                     this.relaunch_content_search();
                     this.state.overlay.goto_state.selected_idx = 0;
@@ -924,7 +924,12 @@ impl App {
         ];
 
         let selected_paths = self.state.selected_paths();
-        let files = if selected_paths.is_empty() {
+        let recycle_focused = self
+            .tab_data_for(focused)
+            .is_some_and(|t| t.location == atlas_model::location::Location::RecycleBin);
+        // In the recycle bin, trash/delete don't apply to the $R payloads —
+        // restore/purge below take their place.
+        let mut files = if selected_paths.is_empty() || recycle_focused {
             Vec::new()
         } else {
             vec![
@@ -944,12 +949,42 @@ impl App {
                     rust_i18n::t!("cmd_files_delete_desc"),
                     AtlasIcon::Trash,
                     Action::Delete {
-                        paths: selected_paths,
+                        paths: selected_paths.clone(),
                         to_trash: false,
                     },
                 ),
+                CommandDef::new(
+                    "files.compress",
+                    rust_i18n::t!("cmd_files_compress_title"),
+                    rust_i18n::t!("cmd_files_compress_desc"),
+                    AtlasIcon::File,
+                    Action::CompressToZip(selected_paths),
+                ),
             ]
         };
+        if recycle_focused {
+            files.push(CommandDef::new(
+                "recycle.restore",
+                rust_i18n::t!("cmd_recycle_restore_title"),
+                rust_i18n::t!("cmd_recycle_restore_desc"),
+                AtlasIcon::ArrowCounterClockwise,
+                Action::RestoreSelectedFromRecycleBin,
+            ));
+            files.push(CommandDef::new(
+                "recycle.purge",
+                rust_i18n::t!("cmd_recycle_purge_title"),
+                rust_i18n::t!("cmd_recycle_purge_desc"),
+                AtlasIcon::Trash,
+                Action::PurgeSelectedFromRecycleBin,
+            ));
+        }
+        files.push(CommandDef::new(
+            "recycle.empty",
+            rust_i18n::t!("cmd_recycle_empty_title"),
+            rust_i18n::t!("cmd_recycle_empty_desc"),
+            AtlasIcon::Trash,
+            Action::EmptyRecycleBin,
+        ));
 
         let mut profiles: Vec<CommandDef> = self
             .state
@@ -1027,8 +1062,8 @@ impl App {
             if extension.manifest.hidden
                 || matches!(
                     extension.manifest.kind,
-                    crate::state::ext_model::ExtKind::Builtin
-                        | crate::state::ext_model::ExtKind::ToolProvider
+                    atlas_model::ext_model::ExtKind::Builtin
+                        | atlas_model::ext_model::ExtKind::ToolProvider
                 )
             {
                 continue;

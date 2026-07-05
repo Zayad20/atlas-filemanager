@@ -55,12 +55,12 @@ pub enum ArchiveError {
 impl std::fmt::Display for ArchiveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::PasswordRequired => write!(f, "Contraseña requerida"),
-            Self::WrongPassword => write!(f, "Contraseña incorrecta"),
-            Self::Corrupt { detail, .. } => write!(f, "Archivo dañado: {detail}"),
-            Self::UnsupportedOp(op) => write!(f, "Operación no soportada: {op}"),
-            Self::Io(e) => write!(f, "Error de E/S: {e}"),
-            Self::Cancelled => write!(f, "Operación cancelada"),
+            Self::PasswordRequired => write!(f, "Password required"),
+            Self::WrongPassword => write!(f, "Wrong password"),
+            Self::Corrupt { detail, .. } => write!(f, "Corrupt archive: {detail}"),
+            Self::UnsupportedOp(op) => write!(f, "Unsupported operation: {op}"),
+            Self::Io(e) => write!(f, "I/O error: {e}"),
+            Self::Cancelled => write!(f, "Operation cancelled"),
         }
     }
 }
@@ -320,7 +320,10 @@ pub(crate) fn make_entry(
         size,
         modified: None,
         extension: ext,
-        display_size: String::new(), display_date: String::new(), display_type: String::new(), _is_hidden: false,
+        display_size: String::new(),
+        display_date: String::new(),
+        display_type: String::new(),
+        _is_hidden: false,
         _is_symlink: false,
         archive_root: Some(archive.to_path_buf()),
         recycle_info: None,

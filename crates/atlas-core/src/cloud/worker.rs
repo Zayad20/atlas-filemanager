@@ -21,7 +21,6 @@ const MAX_CONCURRENT: usize = 4;
 const DAEMON_READY_POLLS: u32 = 40;
 const DAEMON_POLL_MS: u64 = 100;
 
-
 /// Commands the UI sends to the cloud worker.
 pub enum CloudCmd {
     /// Create/overwrite a remote's rclone config. `secret` is the password/key
@@ -354,7 +353,12 @@ impl Worker {
     }
 
     async fn add_remote(&mut self, remote: CloudRemote, secret: String) {
-        let Some(provider) = self.require_ready(|e| BgResult::CloudError(e.to_string())).await else { return; };
+        let Some(provider) = self
+            .require_ready(|e| BgResult::CloudError(e.to_string()))
+            .await
+        else {
+            return;
+        };
         // Build backend params from the remote kind + secret and let the provider
         // persist them (passwords are obscured by the backend, never stored by us).
         let id = remote.id.clone();
@@ -413,7 +417,16 @@ impl Worker {
     }
 
     async fn list_remote(&mut self, tab: TabId, op_id: u64, id: RemoteId, path: String) {
-        let Some(provider) = self.require_ready(|e| BgResult::DirListError { tab, op_id, error: e.to_string() }).await else { return; };
+        let Some(provider) = self
+            .require_ready(|e| BgResult::DirListError {
+                tab,
+                op_id,
+                error: e.to_string(),
+            })
+            .await
+        else {
+            return;
+        };
         let bg = self.bg_tx.clone();
         self.rt.spawn(async move {
             match provider.list(&id, &path).await {
@@ -644,7 +657,12 @@ impl Worker {
     }
 
     async fn delete_remote(&mut self, id: RemoteId, entries: Vec<(String, bool)>, parent: String) {
-        let Some(provider) = self.require_ready(|e| BgResult::CloudError(format!("{id}: {e}"))).await else { return; };
+        let Some(provider) = self
+            .require_ready(|e| BgResult::CloudError(format!("{id}: {e}")))
+            .await
+        else {
+            return;
+        };
         let bg = self.bg_tx.clone();
         self.rt.spawn(async move {
             let mut errors = Vec::new();
@@ -661,7 +679,12 @@ impl Worker {
     }
 
     async fn mkdir_remote(&mut self, id: RemoteId, path: String, parent: String) {
-        let Some(provider) = self.require_ready(|e| BgResult::CloudError(format!("{id}: {e}"))).await else { return; };
+        let Some(provider) = self
+            .require_ready(|e| BgResult::CloudError(format!("{id}: {e}")))
+            .await
+        else {
+            return;
+        };
         let bg = self.bg_tx.clone();
         self.rt.spawn(async move {
             if let Err(e) = provider.mkdir(&id, &path).await {
@@ -678,7 +701,12 @@ impl Worker {
         to: String,
         parent: String,
     ) {
-        let Some(provider) = self.require_ready(|e| BgResult::CloudError(format!("{id}: {e}"))).await else { return; };
+        let Some(provider) = self
+            .require_ready(|e| BgResult::CloudError(format!("{id}: {e}")))
+            .await
+        else {
+            return;
+        };
         let bg = self.bg_tx.clone();
         self.rt.spawn(async move {
             if let Err(e) = provider.rename(&id, &from, &to).await {
@@ -695,7 +723,12 @@ impl Worker {
         is_move: bool,
         parent: String,
     ) {
-        let Some(provider) = self.require_ready(|e| BgResult::CloudError(format!("{id}: {e}"))).await else { return; };
+        let Some(provider) = self
+            .require_ready(|e| BgResult::CloudError(format!("{id}: {e}")))
+            .await
+        else {
+            return;
+        };
         let bg = self.bg_tx.clone();
         self.rt.spawn(async move {
             let mut errors = Vec::new();
@@ -756,7 +789,10 @@ fn remote_to_file_entry(e: RemoteEntry) -> FileEntry {
         size: (!e.is_dir).then_some(e.size),
         modified,
         extension,
-        display_size: String::new(), display_date: String::new(), display_type: String::new(), _is_hidden: false,
+        display_size: String::new(),
+        display_date: String::new(),
+        display_type: String::new(),
+        _is_hidden: false,
         _is_symlink: false,
         archive_root: None,
         recycle_info: None,

@@ -6,8 +6,8 @@
 
 use crate::app::cloud::CloudAction;
 use crate::app::App;
-use crate::cloud::AccessKind;
-use crate::state::cloud_state::AddRemoteKind;
+use atlas_core::cloud::AccessKind;
+use atlas_model::cloud_state::AddRemoteKind;
 use gpui::prelude::*;
 use gpui::{
     div, px, AnyElement, Context, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton,
@@ -112,7 +112,10 @@ impl App {
         let focus = self.overlay_focus(cx);
 
         let name_input = self.cloud_add_name_input(window, cx);
-        let inputs = self.cloud_add_inputs.as_ref().expect("initialized by cloud_add_name_input");
+        let inputs = self
+            .cloud_add_inputs
+            .as_ref()
+            .expect("initialized by cloud_add_name_input");
         let host_input = inputs.host.clone();
         let port_input = inputs.port.clone();
         let user_input = inputs.user.clone();

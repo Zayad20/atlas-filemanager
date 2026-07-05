@@ -2,6 +2,7 @@
 name = "atlas-model"
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-or-later"
 
 [features]
 # Cloud request/result models (gated to mirror the binary's `cloud` feature).

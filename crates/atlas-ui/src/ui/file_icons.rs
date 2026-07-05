@@ -4,8 +4,8 @@ use std::sync::Arc;
 use gpui::{img, AnyElement, Hsla, IntoElement, RenderImage, Styled};
 
 use crate::app::App;
-use crate::state::file_entry::FileKind;
 use crate::ui::icons::{file_type_icon, is_windows_theme};
+use atlas_model::file_entry::FileKind;
 
 #[derive(Clone)]
 pub(crate) struct FileIconRef {

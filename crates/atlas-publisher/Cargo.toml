@@ -2,6 +2,7 @@
 name = "atlas-publisher"
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-or-later"
 description = "CLI tool to publish Atlas extensions to Cloudflare R2"
 
 [dependencies]

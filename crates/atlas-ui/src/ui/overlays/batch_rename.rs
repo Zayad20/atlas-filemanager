@@ -3,7 +3,7 @@
 
 use crate::app::{App, BatchRenameField};
 use crate::input::action::Action;
-use crate::state::batch_rename::{RenameIssue, RenameMode};
+use atlas_model::batch_rename::{RenameIssue, RenameMode};
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, Context, Entity, KeyDownEvent, MouseButton, SharedString, Window};
 use gpui_component::{h_flex, input::InputState, v_flex, ActiveTheme};

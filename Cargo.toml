@@ -2,6 +2,7 @@
 name = "atlas"
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-or-later"
 default-run = "atlas"
 
 [workspace]
@@ -13,6 +14,7 @@ members = [
     "crates/atlas-wasm-file-tools",
     "crates/atlas-publisher",
 ]
+exclude = ["vendor/zed-reference", "vendor/gpui-component-fork"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -98,41 +100,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "fs", "io-util", "sync",
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 
-[lints.rust]
-unsafe_code = "deny"
-
-[lints.clippy]
-# Estricto total: grupos a deny con priority -1 para que los ajustes puntuales
-# de abajo puedan rebajarlos. unwrap/expect quedan en warn (restriction, no en
-# los grupos). I/O síncrona de filesystem está prohibida vía clippy.toml.
-all = { level = "deny", priority = -1 }
-pedantic = { level = "deny", priority = -1 }
-nursery = { level = "deny", priority = -1 }
-unwrap_used = "warn"
-expect_used = "warn"
-# Ruido aceptado en una app GUI: módulos planos y futuros que sí queremos.
-module_name_repetitions = "allow"
-must_use_candidate = "allow"
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-# Matemática de píxeles/tamaños/física: los casts numéricos son ubicuos y benignos
-# en una GUI; vetarlos solo añade `as` con anotaciones que no aportan seguridad.
-cast_precision_loss = "allow"
-cast_possible_truncation = "allow"
-cast_sign_loss = "allow"
-cast_possible_wrap = "allow"
-# Era-migración: estos rebajan churn de firmas/nursery frágil mientras el código
-# se mueve a los crates atlas-* (Fase F). Revisar y re-activar tras el split.
-#   - nursery con falsos positivos en código con forma de framework (gpui):
-option_if_let_else = "allow"
-needless_pass_by_ref_mut = "allow"
-#   - cambiar estas firmas ripplea a los call-sites; se estabilizan en el split:
-needless_pass_by_value = "allow"
-trivially_copy_pass_by_ref = "allow"
-# Las funciones de render gpui son declarativas y largas por naturaleza.
-too_many_lines = "allow"
-similar_names = "allow"
-struct_excessive_bools = "allow"
+# The lint policy lives in [workspace.lints]; this package inherits it.
+[lints]
+workspace = true
 
 [profile.dev]
 opt-level = 1
@@ -171,22 +141,20 @@ codegen-units = 1
 strip = true
 panic = "abort"
 
-# Local fork of gpui-component (rev b2472cd) with the Dock TabPanel patched to render
-# segmented (pill) tabs — matches the Figma "Tab selector". Redirects every git
-# reference to that repo so there's a single source (avoids duplicate gpui App types).
+# Vendored gpui-component fork with Atlas tab styling patches. Keep every
+# gpui-component crate on the same source to avoid duplicate GPUI app types.
 [patch."https://github.com/longbridge/gpui-component"]
-gpui-component = { path = "../gpui-component-fork/crates/ui" }
-gpui-component-assets = { path = "../gpui-component-fork/crates/assets" }
-gpui-component-macros = { path = "../gpui-component-fork/crates/macros" }
+gpui-component = { path = "vendor/gpui-component-fork/crates/ui" }
+gpui-component-assets = { path = "vendor/gpui-component-fork/crates/assets" }
+gpui-component-macros = { path = "vendor/gpui-component-fork/crates/macros" }
 
-# Local GPUI fork at Cargo.lock's pinned Zed commit (95dfe8c), patched with
-# paint-only offsets so pane FLIP animations do not mutate layout each frame.
+# Vendored GPUI fork with paint-only offsets for pane layout animation.
 [patch."https://github.com/zed-industries/zed"]
-gpui = { path = "../zed-reference/crates/gpui" }
-gpui_platform = { path = "../zed-reference/crates/gpui_platform" }
-gpui_linux = { path = "../zed-reference/crates/gpui_linux" }
+gpui = { path = "vendor/zed-reference/crates/gpui" }
+gpui_platform = { path = "vendor/zed-reference/crates/gpui_platform" }
+gpui_linux = { path = "vendor/zed-reference/crates/gpui_linux" }
 
-# Local taffy with perf counters (layout calls + cache hits) to diagnose the
-# 20µs/node layout solve; see perf-120fps work. Drop when diagnosis is done.
-[patch.crates-io]
-taffy = { path = "../taffy-patch" }
+# Optional local taffy perf patch. The normal build uses crates.io taffy.
+# To re-enable the counters temporarily, restore the checkout and add:
+# [patch.crates-io]
+# taffy = { path = "../taffy-patch" }

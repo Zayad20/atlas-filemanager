@@ -1,5 +1,4 @@
-#![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
-use crate::state::layout_tree::{Container, Tile, TileId};
+use atlas_model::layout_tree::{Container, Tile, TileId};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -7,11 +6,11 @@ use std::time::{Duration, Instant};
 use gpui::{AppContext as _, Entity, FocusHandle, ScrollStrategy, UniformListScrollHandle};
 use gpui_component::input::InputState;
 
-use crate::search::nucleo_pool::NucleoPool;
-use crate::state::app_state::{AppState, BgResult};
-use crate::state::pane::TabData;
-use crate::state::preview_cache::PreviewRequest;
-use crate::util::config::{save_profiles, save_session, save_settings};
+use atlas_core::search::nucleo_pool::NucleoPool;
+use atlas_model::app_state::{AppState, BgResult};
+use atlas_model::pane::TabData;
+
+use atlas_core::util::config::{save_profiles, save_session, save_settings};
 
 pub mod actions;
 mod bg;
@@ -43,11 +42,10 @@ pub struct App {
     pub(crate) scroll_handles: HashMap<TileId, UniformListScrollHandle>,
     /// Runtime filesystem watcher handles keyed by pane tile. Kept out of
     /// `AppState` so model/state does not depend on `fs`.
-    pub(crate) watchers: HashMap<TileId, crate::fs::watcher::WatcherHandle>,
+    pub(crate) watchers: HashMap<TileId, atlas_core::fs::watcher::WatcherHandle>,
     /// Runtime fuzzy-search index. Kept out of model/state so state never owns
     /// search engine internals.
     pub(crate) nucleo: NucleoPool,
-    pub(crate) nucleo_results: Vec<PathBuf>,
     /// Directory the goto's nucleo index was built from and whether it is a
     /// scoped (drill-in) index; a path-prefixed query re-scopes when either
     /// differs.
@@ -55,7 +53,7 @@ pub struct App {
     /// Pre-fill for the goto input on its next open (Ctrl+L: current dir).
     pub(crate) goto_prefill: Option<String>,
     /// One-shot fuzzy ranker for the command/ext palettes (matcher reused).
-    pub(crate) fuzzy_scorer: crate::search::fuzzy::FuzzyScorer,
+    pub(crate) fuzzy_scorer: atlas_core::search::fuzzy::FuzzyScorer,
     /// Scroll state of the open palette's result list (keyboard nav keeps the
     /// selected row in view). Shared: only one palette is open at a time.
     pub(crate) palette_scroll: gpui::ScrollHandle,
@@ -65,13 +63,12 @@ pub struct App {
     pub(crate) ext_manager_scroll: gpui::ScrollHandle,
     /// Runtime extension registry. Kept out of `AppState` because loading it scans
     /// extension folders and PATH.
-    pub(crate) ext_registry: crate::ext::Registry,
-    pub(crate) pending_preview: Option<PendingPreview>,
+    pub(crate) ext_registry: atlas_core::ext::Registry,
     /// Channel to the `SQLite` tag-db worker (writes fire-and-forget, reads reply via `tx`).
-    pub(crate) tag_db_tx: flume::Sender<crate::fs::tag_db::TagDbCmd>,
+    pub(crate) tag_db_tx: flume::Sender<atlas_core::fs::tag_db::TagDbCmd>,
     /// Channel to the cloud worker (rclone sidecar + transfers). Replies via `tx`.
     #[cfg(feature = "cloud")]
-    pub(crate) cloud_tx: flume::Sender<crate::cloud::CloudCmd>,
+    pub(crate) cloud_tx: flume::Sender<atlas_core::cloud::CloudCmd>,
     // FASE5: UI-side preview texture caches (state holds only neutral RGBA).
     // FASE5: single-preview texture per tab, keyed by its source path for invalidation.
     pub(crate) preview_textures: HashMap<TileId, (PathBuf, std::sync::Arc<gpui::RenderImage>)>,
@@ -97,12 +94,12 @@ pub struct App {
     pub(crate) tag_picker_sub: Option<gpui::Subscription>,
     /// Scroll handle for the tag-picker list.
     pub(crate) tag_picker_scroll: gpui::ScrollHandle,
-    // FASE5: keyboard focus for the active overlay (fuzzy bars / modals capture keys here).
+    // Keyboard focus for the active overlay (fuzzy bars / modals capture keys here).
     pub(crate) overlay_focus: Option<FocusHandle>,
     pub(crate) batch_rename_field: BatchRenameField,
-    // FASE4: UI-side cache of downscaled grid thumbnails, keyed by file path.
+    // UI-side cache of downscaled grid thumbnails, keyed by file path.
     pub(crate) thumb_textures: HashMap<PathBuf, crate::ui::thumbs::ThumbState>,
-    // FASE6: paths with an in-flight *extension* thumbnailer process. Caps how many
+    // Paths with an in-flight *extension* thumbnailer process. Caps how many
     // external processes (ffmpeg/magick) run at once so a big folder can't spawn
     // hundreds. Native image decodes are CPU-only and not throttled here.
     pub(crate) ext_thumb_inflight: std::collections::HashSet<PathBuf>,
@@ -123,20 +120,15 @@ pub struct App {
     /// so GPUI types never enter atlas-model's `BgResult` enum.
     pub(crate) icon_tx: flume::Sender<(String, Option<std::sync::Arc<gpui::RenderImage>>)>,
     pub(crate) icon_rx: flume::Receiver<(String, Option<std::sync::Arc<gpui::RenderImage>>)>,
-    // FASE A: central tabs/splits rendered by the gpui-component Dock. `pane_tree`
-    // stays the source of truth; the Dock is rebuilt when `layout_revision` advances
-    // (explicit ops) and reconciled back on interactive changes.
-    pub(crate) dock: Option<Entity<gpui_component::dock::DockArea>>,
     /// Cached `FilePanel` entities keyed by pane `TileId`. Reusing entities across
     /// `rebuild_dock_center` calls keeps gpui animation state alive on existing panes
     /// so they don't flash when a new split or close restructures the layout.
     pub(crate) file_panel_cache: HashMap<TileId, Entity<crate::ui::pane_panel::FilePanel>>,
-    /// One `PaneTabsView` (tab strip + body) per tabs-like tile, embedded cacheado
-    /// (`AnyView::cached`, patrón Zed). Invalidación por fingerprint: el skeleton
-    /// (`render_tree`) recalcula `pane_tabs_fp` y solo notifica al view si cambió,
-    /// así el chrome de panes quietos se recicla completo.
-    pub(crate) pane_tabs_cache:
-        HashMap<TileId, Entity<crate::ui::dock::render::PaneTabsView>>,
+    /// One `PaneTabsView` (tab strip + body) per tabs-like tile, embedded through
+    /// `AnyView::cached` (the same pattern Zed uses). Fingerprint invalidation lets
+    /// `render_tree` recalculate `pane_tabs_fp` and notify the view only when it
+    /// changes, so unchanged pane chrome is reused wholesale.
+    pub(crate) pane_tabs_cache: HashMap<TileId, Entity<crate::ui::dock::render::PaneTabsView>>,
     pub(crate) pane_tabs_fp: HashMap<TileId, u64>,
     pub(crate) sidebar_panel: Option<Entity<crate::ui::sidebar::SidebarPanel>>,
     /// The dock tree hosted in its own view (see `ui::dock_host`). Split/close/drag
@@ -159,7 +151,6 @@ pub struct App {
     // it down.
     pub(crate) palette_closing: Option<(crate::ui::palette::PaletteKind, Instant)>,
     pub(crate) layout_revision: u64,
-    pub(crate) dock_revision: u64,
     /// Short-lived visual affordances for panes that just entered through a tab
     /// create or split operation. UI-only; never persisted into AppState.
     pub(crate) pane_animations: HashMap<TileId, PaneAnimation>,
@@ -172,24 +163,13 @@ pub struct App {
     /// every frame for interaction hit-testing.
     pub(crate) pane_layout_bounds: HashMap<TileId, gpui::Bounds<gpui::Pixels>>,
     pub(crate) pane_layout_animations: HashMap<TileId, PaneLayoutAnimation>,
-    pub(crate) pane_layout_frame_pending: bool,
     pub(crate) dock_split_animations: HashMap<TileId, DockSplitAnimation>,
-    /// Incremental dock mutations queued by keyboard split/close actions and drained
-    /// in `render` (which has `Window`/`Context`, unlike `process_actions`). Driving
-    /// the live dock + reconcile this way avoids the O(N) `rebuild_dock_center` churn
-    /// that recreated every `TabPanel`/`StackPanel` on each op.
-    pub(crate) pending_dock_ops: Vec<DockOp>,
     /// Panes mid close-out animation: kept mounted (and in the dock) until the exit
-    /// animation elapses, then a `DockOp::Remove` is queued. Mirrors `palette_closing`.
+    /// animation elapses, then the pane is removed. Mirrors `palette_closing`.
     pub(crate) pane_closing: HashMap<TileId, Instant>,
     /// Tabs mid close-out animation inside an existing tab strip. Separate from
     /// `pane_closing` so a tab close never triggers split/pane collapse motion.
     pub(crate) tab_closing: HashMap<TileId, Instant>,
-    /// Set when the dock's structure changed (programmatic op or interactive drag) and
-    /// `pane_tree` needs to be resynced. Drained once per render in `ensure_dock`, so
-    /// many `LayoutChanged` events coalesce into a single synchronous reconcile (no
-    /// async double-render / container-id churn when creating or splitting panes).
-    pub(crate) reconcile_pending: bool,
     /// When a pane's fresh listing last appeared (tab create / navigation). Views
     /// stagger-animate item rows in only while within `ITEM_APPEAR_WINDOW` of this,
     /// so scrolling later never re-triggers the appear. Set alongside `appear_seq`.
@@ -215,7 +195,6 @@ pub struct App {
     pub(crate) goto_input: Option<Entity<InputState>>,
     pub(crate) palette_input: Option<Entity<InputState>>,
     pub(crate) ext_palette_input: Option<Entity<InputState>>,
-    pub(crate) rename_input: Option<Entity<InputState>>,
     pub(crate) search_inputs: HashMap<TileId, Entity<InputState>>,
     pub(crate) batch_pattern_input: Option<Entity<InputState>>,
     pub(crate) batch_replacement_input: Option<Entity<InputState>>,
@@ -353,22 +332,6 @@ pub(crate) enum PaneAnimationKind {
 
 /// A deferred mutation of the live dock, applied in `render`. `Split` adds a new
 /// pane next to `source`; `Remove` drops a pane. Both let `reconcile_from_dock`
-/// resync `pane_tree` afterwards (same path as interactive drag/close).
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum DockOp {
-    Split {
-        source: TileId,
-        new_pane: TileId,
-        vertical: bool,
-    },
-    /// Add `new_pane` as a tab into the `TabPanel` that holds `source` (a live pane).
-    AddTab {
-        source: TileId,
-        new_pane: TileId,
-    },
-    Remove(TileId),
-}
-
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PaneAnimation {
     pub(crate) kind: PaneAnimationKind,
@@ -390,42 +353,18 @@ impl PaneAnimation {
     }
 }
 
+/// Marker for a pane mid layout transition. The FLIP offsets themselves now
+/// live in the gpui paint-offset patch; this only tracks liveness.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PaneLayoutAnimation {
-    pub(crate) from: gpui::Bounds<gpui::Pixels>,
-    pub(crate) to: gpui::Bounds<gpui::Pixels>,
     pub(crate) started: Instant,
 }
 
 impl PaneLayoutAnimation {
     const TTL: Duration = Duration::from_millis(crate::ui::motion::PANE_MS);
 
-    pub(crate) fn new(from: gpui::Bounds<gpui::Pixels>, to: gpui::Bounds<gpui::Pixels>) -> Self {
-        Self {
-            from,
-            to,
-            started: Instant::now(),
-        }
-    }
-
     pub(crate) fn is_alive(self) -> bool {
         self.started.elapsed() < Self::TTL
-    }
-
-    pub(crate) fn progress(self) -> f32 {
-        let elapsed = self.started.elapsed().as_secs_f32();
-        let total = Self::TTL.as_secs_f32().max(f32::EPSILON);
-        crate::ui::motion::ease_out_quart((elapsed / total).min(1.0))
-    }
-
-    pub(crate) fn offset(self) -> (f32, f32) {
-        self.offset_at(self.progress())
-    }
-
-    pub(crate) fn offset_at(self, t: f32) -> (f32, f32) {
-        let dx = f32::from(self.from.origin.x) - f32::from(self.to.origin.x);
-        let dy = f32::from(self.from.origin.y) - f32::from(self.to.origin.y);
-        (dx * (1.0 - t), dy * (1.0 - t))
     }
 }
 
@@ -438,7 +377,11 @@ pub(crate) struct DockSplitAnimation {
 }
 
 impl DockSplitAnimation {
-    pub(crate) const DURATION: Duration = Duration::from_millis(260);
+    // El spring del seam asienta visualmente a ~160ms (perf.log: share=0.01 en
+    // elapsed_ms=160). Con 260ms el pane cerrado quedaba colgado ~150ms como
+    // astilla de 0.01 share antes del desmontaje (PANE_CLOSE_FINALIZE es alias
+    // de esta constante) — el "segundo movimiento fuera de tiempo" al cerrar.
+    pub(crate) const DURATION: Duration = Duration::from_millis(170);
 
     pub(crate) fn new(to: Vec<f32>, inserted_ix: usize) -> Self {
         if to.is_empty() {
@@ -697,7 +640,7 @@ pub(crate) struct ColResizeState {
 pub(crate) struct DockResizeState {
     pub(crate) container: TileId,
     pub(crate) divider: usize,
-    pub(crate) dir: crate::state::layout_tree::LinearDir,
+    pub(crate) dir: atlas_model::layout_tree::LinearDir,
     pub(crate) start_pos: f32,
     pub(crate) span_px: f32,
     pub(crate) start_shares: Vec<f32>,
@@ -757,8 +700,6 @@ pub(crate) struct PreviewEditor {
     pub(crate) line_numbers: bool,
     /// Set by `TogglePreviewLineNumbers`; cleared by the render after syncing.
     pub(crate) ln_needs_sync: bool,
-    /// Language token passed to `code_editor` (e.g. `"rust"`, `"python"`).
-    pub(crate) lang: gpui::SharedString,
     /// Change subscription — kept alive as long as the editor is open.
     pub(crate) _sub: gpui::Subscription,
 }
@@ -824,17 +765,10 @@ pub(crate) fn scroll_smooth_params(smoothness: f32) -> (f32, f32) {
 // Window after a fresh listing appears during which item rows stagger-animate in.
 // Must comfortably exceed the longest staggered row animation; past it, scrolling
 // never re-triggers the appear.
+#[allow(dead_code)] // reason: only read by the parked `pane_item_appear_seq`
 pub(crate) const ITEM_APPEAR_WINDOW: Duration = Duration::from_millis(150);
 
-pub struct PendingPreview {
-    pub(crate) tab: TileId,
-    pub(crate) request: PreviewRequest,
-    pub(crate) ready_at: Instant,
-}
-
 impl App {
-    const MAX_PANE_LAYOUT_ANIMATIONS: usize = 12;
-
     /// Notify only the signal entity for `pane_id`. The `PaneContentView` for that
     /// pane observes this signal, so only it re-renders — not every other pane.
     pub(crate) fn notify_pane(&self, pane_id: TileId, cx: &mut gpui::Context<Self>) {
@@ -908,6 +842,9 @@ impl App {
     /// If `pane_id` is within its item-appear window, return the `appear_seq` to key
     /// the row animation on (changes per fresh listing, so it plays once). `None`
     /// once the window elapses, so scrolling never re-triggers the cascade.
+    // reason: stagger-appear parked — views stopped calling it during the perf
+    // work; the arming machinery stays live so re-enabling is one call site.
+    #[allow(dead_code)]
     pub(crate) fn pane_item_appear_seq(&self, pane_id: TileId) -> Option<u64> {
         if self.state.settings.disable_animations {
             return None;
@@ -930,13 +867,6 @@ impl App {
             .retain(|_, animation| animation.is_alive());
     }
 
-    pub(crate) fn pane_layout_animation_for(&self, pane_id: TileId) -> Option<PaneLayoutAnimation> {
-        self.pane_layout_animations
-            .get(&pane_id)
-            .copied()
-            .filter(|animation| animation.is_alive())
-    }
-
     pub(crate) fn prune_pane_layout_animations(&mut self) {
         self.pane_layout_animations
             .retain(|_, animation| animation.is_alive());
@@ -945,69 +875,6 @@ impl App {
     /// Live column-reorder slide, if still running.
     pub(crate) fn details_reorder_anim(&self) -> Option<DetailsReorderAnim> {
         self.details_reorder.filter(|a| a.is_alive())
-    }
-
-    pub(crate) fn begin_pane_layout_frame(&mut self) {
-        self.pane_layout_frame_pending = false;
-    }
-
-    pub(crate) fn request_pane_layout_frame(&mut self) -> bool {
-        if self.pane_layout_frame_pending {
-            return false;
-        }
-        self.pane_layout_frame_pending = true;
-        true
-    }
-
-    pub(crate) fn record_pane_layout_bounds(
-        &mut self,
-        pane_id: TileId,
-        bounds: gpui::Bounds<gpui::Pixels>,
-    ) -> bool {
-        if self.dock_resize.is_some()
-            || self.sidebar_resize.is_some()
-            || self.inspector_resize.is_some()
-        {
-            self.pane_layout_bounds.insert(pane_id, bounds);
-            return false;
-        }
-
-        if self
-            .pane_animations
-            .get(&pane_id)
-            .copied()
-            .is_some_and(PaneAnimation::is_alive)
-            || self
-                .pane_layout_animations
-                .get(&pane_id)
-                .copied()
-                .is_some_and(PaneLayoutAnimation::is_alive)
-        {
-            self.pane_layout_bounds.insert(pane_id, bounds);
-            return false;
-        }
-
-        let changed = self
-            .pane_layout_bounds
-            .get(&pane_id)
-            .copied()
-            .is_some_and(|old| {
-                if !pane_bounds_changed(old, bounds) {
-                    return false;
-                }
-
-                if !pane_bounds_moved(old, bounds)
-                    || pane_bounds_resized(old, bounds)
-                    || self.pane_layout_animations.len() >= Self::MAX_PANE_LAYOUT_ANIMATIONS
-                {
-                    return false;
-                }
-                self.pane_layout_animations
-                    .insert(pane_id, PaneLayoutAnimation::new(old, bounds));
-                true
-            });
-        self.pane_layout_bounds.insert(pane_id, bounds);
-        changed
     }
 
     /// (Re)launch the goto bar's content search for the current query + directory.
@@ -1034,7 +901,7 @@ impl App {
         self.content_cancel = Some(cancel.clone());
         let gen = self.content_gen;
         let tx = self.tx.clone();
-        crate::search::content::search_content(root, query, cancel, move |path| {
+        atlas_core::search::content::search_content(root, query, cancel, move |path| {
             let _ = tx.send(BgResult::ContentResults {
                 gen,
                 paths: vec![path],
@@ -1214,7 +1081,7 @@ impl App {
             .tab_data_for(tile)
             .map(|td| {
                 (
-                    matches!(td.view_mode, crate::state::settings::ViewMode::Grid),
+                    matches!(td.view_mode, atlas_model::settings::ViewMode::Grid),
                     self.rubber_scroll_dims(tile).0,
                 )
             })
@@ -1299,38 +1166,15 @@ impl App {
         save_settings(&self.state.settings);
         save_session(&self.state.pane_tree);
         save_profiles(&self.state.profiles);
-        crate::util::config::save_ext_enabled(&self.state.ext.enabled);
+        atlas_core::util::config::save_ext_enabled(&self.state.ext.enabled);
         #[cfg(feature = "cloud")]
-        crate::util::config::save_cloud_remotes(&self.state.cloud.remotes);
+        atlas_core::util::config::save_cloud_remotes(&self.state.cloud.remotes);
     }
 
     #[cfg(feature = "cloud")]
     pub fn on_exit(&mut self) {
         self.cleanup_cloud_on_exit();
     }
-}
-
-fn pane_bounds_changed(old: gpui::Bounds<gpui::Pixels>, new: gpui::Bounds<gpui::Pixels>) -> bool {
-    const MIN_DELTA: f32 = 1.25;
-    let dx = (f32::from(old.origin.x) - f32::from(new.origin.x)).abs();
-    let dy = (f32::from(old.origin.y) - f32::from(new.origin.y)).abs();
-    let dw = (f32::from(old.size.width) - f32::from(new.size.width)).abs();
-    let dh = (f32::from(old.size.height) - f32::from(new.size.height)).abs();
-    dx > MIN_DELTA || dy > MIN_DELTA || dw > MIN_DELTA || dh > MIN_DELTA
-}
-
-fn pane_bounds_moved(old: gpui::Bounds<gpui::Pixels>, new: gpui::Bounds<gpui::Pixels>) -> bool {
-    const MIN_MOVE_DELTA: f32 = 1.25;
-    let dx = (f32::from(old.origin.x) - f32::from(new.origin.x)).abs();
-    let dy = (f32::from(old.origin.y) - f32::from(new.origin.y)).abs();
-    dx > MIN_MOVE_DELTA || dy > MIN_MOVE_DELTA
-}
-
-fn pane_bounds_resized(old: gpui::Bounds<gpui::Pixels>, new: gpui::Bounds<gpui::Pixels>) -> bool {
-    const MIN_SIZE_DELTA: f32 = 1.25;
-    let dw = (f32::from(old.size.width) - f32::from(new.size.width)).abs();
-    let dh = (f32::from(old.size.height) - f32::from(new.size.height)).abs();
-    dw > MIN_SIZE_DELTA || dh > MIN_SIZE_DELTA
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1342,9 +1186,9 @@ pub(crate) enum BatchRenameField {
 /// Build the one-time migration payload for a fresh tag database: every tag that
 /// previously lived only in profile config (globals + each profile's own tags).
 fn collect_tag_migration(
-    profiles: &crate::state::profiles::ProfileManager,
-) -> Vec<crate::state::tag_cache::TagDef> {
-    use crate::state::tag_cache::{TagDef, TagId};
+    profiles: &atlas_model::profiles::ProfileManager,
+) -> Vec<atlas_model::tag_cache::TagDef> {
+    use atlas_model::tag_cache::{TagDef, TagId};
     let mut out = Vec::new();
     for tag in &profiles.global_tags {
         out.push(TagDef {

@@ -1,7 +1,7 @@
 use crate::app::App;
 use crate::input::action::Action;
-use crate::state::profiles::ProfileScoped;
-use crate::state::settings::ViewMode;
+use atlas_model::profiles::ProfileScoped;
+use atlas_model::settings::ViewMode;
 use gpui::{Context, KeyDownEvent, KeybindingKeystroke, Keystroke, Window};
 use std::collections::HashMap;
 
@@ -164,7 +164,7 @@ impl App {
             .profiles
             .active_mut()
             .set_scoped::<CommandShortcuts>(&prefs);
-        crate::util::config::save_profiles(&self.state.profiles);
+        atlas_core::util::config::save_profiles(&self.state.profiles);
         self.command_shortcut_capture = None;
     }
 
@@ -178,7 +178,7 @@ impl App {
             .profiles
             .active_mut()
             .set_scoped::<CommandShortcuts>(&prefs);
-        crate::util::config::save_profiles(&self.state.profiles);
+        atlas_core::util::config::save_profiles(&self.state.profiles);
         self.command_shortcut_capture = None;
     }
 

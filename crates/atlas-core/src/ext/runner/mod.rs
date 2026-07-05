@@ -28,8 +28,7 @@ pub fn run_thumbnail(
     tools: &HashMap<String, PathBuf>,
     max_edge: u32,
 ) -> Option<(Vec<u8>, usize, usize)> {
-    let output = std::env::temp_dir()
-        .join(format!("atlas-extthumb-{}.png", uuid::Uuid::new_v4()));
+    let output = std::env::temp_dir().join(format!("atlas-extthumb-{}.png", uuid::Uuid::new_v4()));
     let argv = argv::build_thumb_argv(run_tmpl, input, &output);
     let (program, args) = argv.split_first()?;
     let program = tools
@@ -110,7 +109,11 @@ pub fn run(
             };
             let payload_json = serde_json::to_string(&payload).unwrap_or_default();
 
-            tracing::info!("dispatching WASM command {} to extension {}", cmd.command.id, ext_id);
+            tracing::info!(
+                "dispatching WASM command {} to extension {}",
+                cmd.command.id,
+                ext_id
+            );
             if let Err(e) = manager.execute_command(&cmd.command.id, &payload_json) {
                 tracing::error!("Error executing WASM: {:#}", e);
             }

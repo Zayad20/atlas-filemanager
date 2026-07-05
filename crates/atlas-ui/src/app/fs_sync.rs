@@ -1,11 +1,10 @@
-#![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
 use crate::app::App;
-use crate::fs::list::{entries_for_paths, list_dir};
-use crate::state::app_state::BgResult;
-use crate::state::layout_tree::{Tile, TileId};
-use crate::state::location::Location;
-use crate::state::tab::LoadState;
-use crate::state::tag_cache::TagId;
+use atlas_core::fs::list::{entries_for_paths, list_dir};
+use atlas_model::app_state::BgResult;
+use atlas_model::layout_tree::{Tile, TileId};
+use atlas_model::location::Location;
+use atlas_model::tab::LoadState;
+use atlas_model::tag_cache::TagId;
 use std::path::PathBuf;
 
 impl App {
@@ -13,8 +12,8 @@ impl App {
         &mut self,
         tab_id: TileId,
         path: PathBuf,
-        sort_col: crate::state::file_entry::SortColumn,
-        sort_dir: crate::state::file_entry::SortDir,
+        sort_col: atlas_model::file_entry::SortColumn,
+        sort_dir: atlas_model::file_entry::SortDir,
     ) {
         let folders_first = self.tab_data_for(tab_id).is_none_or(|td| td.folders_first);
         let op_id = self.state.next_op_id();
@@ -51,8 +50,8 @@ impl App {
     pub(crate) fn resort_entries_in_place(
         &mut self,
         tab_id: TileId,
-        sort_col: &crate::state::file_entry::SortColumn,
-        sort_dir: &crate::state::file_entry::SortDir,
+        sort_col: &atlas_model::file_entry::SortColumn,
+        sort_dir: &atlas_model::file_entry::SortDir,
         folders_first: bool,
     ) {
         let Some(ts) = self.state.tab_states.get_mut(&tab_id) else {
@@ -71,7 +70,7 @@ impl App {
             .map(|e| e.path.clone());
 
         let mut entries = std::mem::take(&mut ts.entries).to_vec();
-        crate::fs::list::sort_entries(&mut entries, sort_col, sort_dir, folders_first);
+        atlas_core::fs::list::sort_entries(&mut entries, sort_col, sort_dir, folders_first);
         ts.set_entries(entries.into());
 
         ts.selection.selected = ts
@@ -106,7 +105,7 @@ impl App {
         }
         let _ = self
             .tag_db_tx
-            .send(crate::fs::tag_db::TagDbCmd::QueryTagsForPaths(unknown));
+            .send(atlas_core::fs::tag_db::TagDbCmd::QueryTagsForPaths(unknown));
     }
 
     /// Rebuild the listing of every tab showing results for `tag` from the paths the
@@ -116,8 +115,8 @@ impl App {
     pub(crate) fn populate_tag_tabs(&mut self, tag: TagId, paths: Vec<PathBuf>) {
         let targets: Vec<(
             TileId,
-            crate::state::file_entry::SortColumn,
-            crate::state::file_entry::SortDir,
+            atlas_model::file_entry::SortColumn,
+            atlas_model::file_entry::SortDir,
             bool,
         )> = self
             .state
@@ -181,7 +180,7 @@ impl App {
                     .await
                     .unwrap_or_default(),
                 Location::Archive { archive, inner } => tokio::task::spawn_blocking(move || {
-                    crate::fs::archive::open(&archive)
+                    atlas_core::fs::archive::open(&archive)
                         .and_then(|p| p.list(&inner).ok())
                         .unwrap_or_default()
                 })
@@ -225,7 +224,7 @@ impl App {
             ts.miller.columns[column].selection.keyboard_cursor = Some(idx);
             ts.miller.columns.truncate(column + 1);
             ts.selection.scroll_to_selected = true;
-            if kind == crate::state::file_entry::FileKind::Dir {
+            if kind == atlas_model::file_entry::FileKind::Dir {
                 let child_loc = if let Some(archive) = archive_root {
                     // Dir inside an archive — navigate as virtual path.
                     Location::Archive {
@@ -237,16 +236,16 @@ impl App {
                 };
                 ts.miller
                     .columns
-                    .push(crate::state::tab::MillerColumn::new(child_loc.clone()));
+                    .push(atlas_model::tab::MillerColumn::new(child_loc.clone()));
                 Some(child_loc)
-            } else if crate::fs::archive::is_archive_path(&path) {
+            } else if atlas_core::fs::archive::is_archive_path(&path) {
                 let child_loc = Location::Archive {
                     archive: path.clone(),
                     inner: std::path::PathBuf::new(),
                 };
                 ts.miller
                     .columns
-                    .push(crate::state::tab::MillerColumn::new(child_loc.clone()));
+                    .push(atlas_model::tab::MillerColumn::new(child_loc.clone()));
                 Some(child_loc)
             } else {
                 None
@@ -263,8 +262,8 @@ impl App {
         tab_id: TileId,
         archive: PathBuf,
         inner: PathBuf,
-        sort_col: crate::state::file_entry::SortColumn,
-        sort_dir: crate::state::file_entry::SortDir,
+        sort_col: atlas_model::file_entry::SortColumn,
+        sort_dir: atlas_model::file_entry::SortDir,
     ) {
         let folders_first = self.tab_data_for(tab_id).is_none_or(|td| td.folders_first);
         let op_id = self.state.next_op_id();
@@ -278,10 +277,10 @@ impl App {
                 let archive = archive.clone();
                 let inner = inner.clone();
                 move || -> Result<Vec<atlas_model::file_entry::FileEntry>, String> {
-                    let provider = crate::fs::archive::open(&archive)
+                    let provider = atlas_core::fs::archive::open(&archive)
                         .ok_or_else(|| rust_i18n::t!("app_archive_unsupported").to_string())?;
                     let mut entries = provider.list(&inner).map_err(|e| e.to_string())?;
-                    crate::fs::list::sort_entries(
+                    atlas_core::fs::list::sort_entries(
                         &mut entries,
                         &sort_col,
                         &sort_dir,
@@ -293,19 +292,19 @@ impl App {
             .await;
 
             let send_result = match result {
-                Ok(Ok(entries)) => crate::state::app_state::BgResult::ArchiveListed {
+                Ok(Ok(entries)) => atlas_model::app_state::BgResult::ArchiveListed {
                     tab: tab_id,
                     op_id,
                     archive,
                     inner,
                     entries,
                 },
-                Ok(Err(e)) => crate::state::app_state::BgResult::ArchiveListError {
+                Ok(Err(e)) => atlas_model::app_state::BgResult::ArchiveListError {
                     tab: tab_id,
                     op_id,
                     error: e,
                 },
-                Err(e) => crate::state::app_state::BgResult::ArchiveListError {
+                Err(e) => atlas_model::app_state::BgResult::ArchiveListError {
                     tab: tab_id,
                     op_id,
                     error: e.to_string(),
@@ -327,8 +326,8 @@ impl App {
     pub(crate) fn spawn_list_recycle_bin(
         &mut self,
         tab_id: TileId,
-        sort_col: crate::state::file_entry::SortColumn,
-        sort_dir: crate::state::file_entry::SortDir,
+        sort_col: atlas_model::file_entry::SortColumn,
+        sort_dir: atlas_model::file_entry::SortDir,
     ) {
         let op_id = self.state.next_op_id();
         let ts = self.state.tab_states.entry(tab_id).or_default();
@@ -336,7 +335,8 @@ impl App {
         ts.last_nav_op_id = op_id;
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            let mut entries = atlas_core::fs::recycle_bin::list_recycle_bin(sort_col, sort_dir).await;
+            let mut entries =
+                atlas_core::fs::recycle_bin::list_recycle_bin(sort_col, sort_dir).await;
             crate::ui::views::details::format_entries(&mut entries);
             let _ = tx.send(BgResult::DirListed {
                 tab: tab_id,
@@ -389,7 +389,7 @@ impl App {
                 }
                 let mut done = 0u64;
                 'outer: for (archive_path, inners) in by_archive {
-                    let Some(provider) = crate::fs::archive::open(&archive_path) else {
+                    let Some(provider) = atlas_core::fs::archive::open(&archive_path) else {
                         errors.push(
                             rust_i18n::t!(
                                 "fs_sync_open_err",
@@ -426,8 +426,10 @@ impl App {
                             bytes_total: 0,
                             current_file: PathBuf::from(&name),
                         });
-                        let out_base =
-                            crate::fs::transfer::unique_target(&dest, std::ffi::OsStr::new(&name));
+                        let out_base = atlas_core::fs::transfer::unique_target(
+                            &dest,
+                            std::ffi::OsStr::new(&name),
+                        );
                         let written = extract_entry_recursive(
                             provider.as_ref(),
                             &inner,
@@ -442,7 +444,14 @@ impl App {
                 let result = if errors.is_empty() {
                     Ok(())
                 } else {
-                    Err(errors.join("\n"))
+                    // These strings are already localized (built with `t!` above).
+                    Err(errors
+                        .into_iter()
+                        .map(|msg| atlas_model::ops::OpError {
+                            path: std::path::PathBuf::new(),
+                            kind: atlas_model::ops::OpErrorKind::Msg(msg),
+                        })
+                        .collect())
                 };
                 let _ = tx.send(BgResult::OpComplete {
                     id: op_id,
@@ -459,14 +468,14 @@ impl App {
 /// If `inner` is a directory, creates `dest_path/` and extracts all children.
 /// Returns total bytes written.
 fn extract_entry_recursive(
-    provider: &dyn crate::fs::archive::ArchiveProvider,
+    provider: &dyn atlas_core::fs::archive::ArchiveProvider,
     inner: &std::path::Path,
     dest_path: &std::path::Path,
     cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     errors: &mut Vec<String>,
 ) -> u64 {
-    use crate::fs::archive::bomb_guard::BombGuard;
-    use crate::fs::archive::sanitize::sanitize_inner_path;
+    use atlas_core::fs::archive::bomb_guard::BombGuard;
+    use atlas_core::fs::archive::sanitize::sanitize_inner_path;
     use std::io::Read as _;
 
     if cancel.load(std::sync::atomic::Ordering::Relaxed) {

@@ -11,9 +11,9 @@
 //!   - Focus is claimed by `overlay_focus.rs` → `overlay_focus_target`.
 
 use crate::app::App;
-use crate::state::file_entry::FileKind;
-use crate::state::pane::TabId;
 use crate::ui::icons::file_type_icon;
+use atlas_model::file_entry::FileKind;
+use atlas_model::pane::TabId;
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, Context, MouseButton, Pixels, Point, SharedString, Window};
 use gpui_component::scroll::ScrollableElement;

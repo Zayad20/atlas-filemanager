@@ -96,20 +96,56 @@ pub struct TransferConflictState {
     pub per_item: Option<Vec<Resolution>>,
 }
 
+/// Typed cause of a per-item failure. The UI translates each variant
+/// (`op_error_text`); core never bakes user-facing prose into errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpErrorKind {
+    /// Source or destination no longer exists.
+    Gone,
+    PermissionDenied,
+    /// Locked by another process (sharing/lock violation).
+    InUse,
+    DiskFull,
+    PathTooLong,
+    NetworkUnreachable,
+    /// The destination already exists (e.g. restoring over a recreated file).
+    AlreadyExists,
+    /// Copying/moving a folder into itself.
+    SelfNested,
+    /// Overwriting a file with itself.
+    SelfOverwrite,
+    /// The existing destination could not be recycled before replacing it.
+    ReplaceFailed(String),
+    /// A move copied the file but could not remove the source.
+    SourceNotRemoved(String),
+    /// Pre-flight free-space check failed (values pre-formatted, e.g. "1.2 GB").
+    NotEnoughSpace {
+        needed: String,
+        free: String,
+    },
+    /// The engine aborted after too many identical consecutive failures.
+    RepeatedAbort,
+    /// The whole operation was cancelled by the user.
+    Cancelled,
+    /// Fallback: OS detail or an already-localized message.
+    Msg(String),
+}
+
 /// A per-item failure surfaced to the user as its own toast.
 #[derive(Debug, Clone)]
 pub struct OpError {
     pub path: PathBuf,
-    pub message: String,
+    pub kind: OpErrorKind,
 }
 
+// Log-only formatting (tracing); user-facing text comes from the UI translator.
 impl std::fmt::Display for OpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = self.path.file_name().map_or_else(
             || self.path.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
         );
-        write!(f, "{name}: {}", self.message)
+        write!(f, "{name}: {:?}", self.kind)
     }
 }
 

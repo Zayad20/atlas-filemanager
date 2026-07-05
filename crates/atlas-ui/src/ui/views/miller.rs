@@ -4,18 +4,15 @@
 use super::should_suppress_loading;
 use crate::app::App;
 use crate::input::action::Action;
-use crate::state::file_entry::{FileEntry, FileKind};
-use crate::state::pane::TabId;
-use crate::state::tab::LoadState;
-use crate::ui::drag_hover::{
-    drag_hover_recorder_with_drop, DragHoverCommand, DragHoverDropCommand, DragHoverId,
-    DragHoverKind,
-};
+use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
 use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::root::{ctrl_scroll, zone_recorder, DraggedFiles};
-use crate::util::display::display_name;
+use atlas_core::util::display::display_name;
+use atlas_model::file_entry::{FileEntry, FileKind};
+use atlas_model::pane::TabId;
+use atlas_model::tab::LoadState;
 use gpui::prelude::*;
 use gpui::{
     div, px, uniform_list, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window,
@@ -172,27 +169,37 @@ impl App {
                             .child(title),
                     )
                     .child(body);
-                
+
                 if let Some(col_path) = col_loc {
                     let mv = view.clone();
                     let cpv = view.clone();
                     let dest_internal = col_path.clone();
                     let dest_external = col_path.clone();
-                    let hover_id = crate::ui::drag_hover::DragHoverId::Folder(pane_id, col_path.clone());
+                    let hover_id =
+                        crate::ui::drag_hover::DragHoverId::Folder(pane_id, col_path.clone());
                     col_container = col_container
-                        .drag_over::<crate::ui::root::DraggedFiles>(|s, _, _, _| s.bg(crate::ui::glass::glass_fill().opacity(0.1)))
+                        .drag_over::<crate::ui::root::DraggedFiles>(|s, _, _, _| {
+                            s.bg(crate::ui::glass::glass_fill().opacity(0.1))
+                        })
                         .on_prepaint(crate::ui::drag_hover::drag_hover_recorder_with_drop(
                             hover_id,
                             crate::ui::drag_hover::DragHoverKind::Folder,
-                            crate::ui::drag_hover::DragHoverCommand::NavigatePathIn(pane_id, col_path.clone()),
-                            crate::ui::drag_hover::DragHoverDropCommand::TransferTo(col_path.clone()),
+                            crate::ui::drag_hover::DragHoverCommand::NavigatePathIn(
+                                pane_id,
+                                col_path.clone(),
+                            ),
+                            crate::ui::drag_hover::DragHoverDropCommand::TransferTo(
+                                col_path.clone(),
+                            ),
                             &view,
                         ))
                         .on_drop::<crate::ui::root::DraggedFiles>(move |d, _window, cx| {
                             let paths = d.paths.clone();
                             mv.update(cx, |this, cx| {
                                 this.execute_drag_hover_drop_command(
-                                    crate::ui::drag_hover::DragHoverDropCommand::TransferTo(dest_internal.clone()),
+                                    crate::ui::drag_hover::DragHoverDropCommand::TransferTo(
+                                        dest_internal.clone(),
+                                    ),
                                     paths,
                                     true,
                                 );
@@ -204,7 +211,9 @@ impl App {
                             let paths = paths.paths().to_vec();
                             cpv.update(cx, |this, cx| {
                                 this.execute_drag_hover_drop_command(
-                                    crate::ui::drag_hover::DragHoverDropCommand::TransferTo(dest_external.clone()),
+                                    crate::ui::drag_hover::DragHoverDropCommand::TransferTo(
+                                        dest_external.clone(),
+                                    ),
                                     paths,
                                     false,
                                 );
@@ -213,9 +222,8 @@ impl App {
                             cx.stop_propagation();
                         });
                 }
-                
-                columns.push(col_container.into_any_element());
 
+                columns.push(col_container.into_any_element());
             }
         }
 
@@ -230,8 +238,10 @@ impl App {
             .on_mouse_down(MouseButton::Left, {
                 let v = rubber_view.clone();
                 move |ev, _window, cx| {
-                    let (pos, additive) =
-                        (ev.position, ev.modifiers.control || ev.modifiers.platform);
+                    let (pos, additive) = (
+                        ev.position,
+                        ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift,
+                    );
                     v.update(cx, |this, _| this.begin_rubber(pane_id, pos, additive));
                 }
             })
@@ -356,32 +366,31 @@ fn render_miller_row(
         )
         .child(div().flex_1().min_w(px(0.)).truncate().child(name))
         .child(trailing)
-        .on_drag(
-            crate::ui::drag::file_drag_value(vec![dest.clone()]),
-            {
-                let v = view.clone();
-                let _drag_dest = dest.clone();
-                move |_d, _pos, _window, cx| {
-                    v.update(cx, |this, cx| {
-                        this.process_actions(vec![Action::MillerSelect {
-                            tile: pane_id,
-                            column,
-                            idx,
-                        }]);
-                        this.begin_drag_hover();
-                        cx.notify();
-                    });
-                    #[cfg(windows)]
-                    {
-                        cx.new(|_| crate::ui::root::DragNoop)
-                    }
-                    #[cfg(not(windows))]
-                    {
-                        cx.new(|_| crate::ui::root::DraggedFiles { paths: vec![drag_dest.clone()] })
-                    }
+        .on_drag(crate::ui::drag::file_drag_value(vec![dest.clone()]), {
+            let v = view.clone();
+            let _drag_dest = dest.clone();
+            move |_d, _pos, _window, cx| {
+                v.update(cx, |this, cx| {
+                    this.process_actions(vec![Action::MillerSelect {
+                        tile: pane_id,
+                        column,
+                        idx,
+                    }]);
+                    this.begin_drag_hover();
+                    cx.notify();
+                });
+                #[cfg(windows)]
+                {
+                    cx.new(|_| crate::ui::root::DragNoop)
                 }
-            },
-        )
+                #[cfg(not(windows))]
+                {
+                    cx.new(|_| crate::ui::root::DraggedFiles {
+                        paths: vec![drag_dest.clone()],
+                    })
+                }
+            }
+        })
         .on_click(move |ev, _window, cx| {
             let activate = ev.click_count() >= 2;
             v.update(cx, |this, cx| {
@@ -402,42 +411,7 @@ fn render_miller_row(
             });
         });
     if is_dir {
-        let hover_id = DragHoverId::Folder(pane_id, dest.clone());
-        let dest_internal = dest.clone();
-        let dest_external = dest.clone();
-        let mv = view.clone();
-        let cpv = view.clone();
-        row = row
-            .drag_over::<DraggedFiles>(|s, _, _, _| s.opacity(0.6))
-            .on_prepaint(drag_hover_recorder_with_drop(
-                hover_id,
-                DragHoverKind::Folder,
-                DragHoverCommand::NavigatePathIn(pane_id, dest.clone()),
-                DragHoverDropCommand::TransferTo(dest.clone()),
-                view,
-            ))
-            .on_drop::<DraggedFiles>(move |d, _window, cx| {
-                let paths = d.paths.clone();
-                mv.update(cx, |this, cx| {
-                    this.execute_drag_hover_drop_command(
-                        DragHoverDropCommand::TransferTo(dest_internal.clone()),
-                        paths,
-                        true,
-                    );
-                    cx.notify();
-                });
-            })
-            .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
-                let paths = paths.paths().to_vec();
-                cpv.update(cx, |this, cx| {
-                    this.execute_drag_hover_drop_command(
-                        DragHoverDropCommand::TransferTo(dest_external.clone()),
-                        paths,
-                        false,
-                    );
-                    cx.notify();
-                });
-            });
+        row = crate::ui::views::folder_drop_target(row, view, pane_id, dest);
     }
     row.into_any_element()
 }

@@ -10,11 +10,11 @@ use gpui::prelude::*;
 use gpui::{Entity, Window};
 
 use crate::app::App;
-use crate::state::pane::TabId;
 #[cfg(windows)]
 use crate::ui::root::DragNoop;
 #[cfg(not(windows))]
 use crate::ui::root::DraggedFiles;
+use atlas_model::pane::TabId;
 
 /// The view entity gpui renders as the drag ghost. On Windows the OLE path owns
 /// the cursor, so we hand gpui an invisible [`DragNoop`]; elsewhere gpui paints
@@ -120,7 +120,10 @@ fn build_file_drag_handler(
         #[cfg(not(windows))]
         {
             let _ = archive_items;
-            let urls: Vec<String> = paths.iter().map(|p| format!("file://{}", p.display())).collect();
+            let urls: Vec<String> = paths
+                .iter()
+                .map(|p| format!("file://{}", p.display()))
+                .collect();
             _window.start_urilist_drag(urls);
             cx.new(|_| DraggedFiles { paths })
         }

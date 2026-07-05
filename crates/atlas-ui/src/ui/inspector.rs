@@ -17,18 +17,18 @@
 
 use crate::app::App;
 use crate::input::action::Action;
-use crate::state::file_entry::FileKind;
-use crate::state::layout_tree::TileId;
-use crate::state::preview_cache::{
-    MultiPreviewState, PreviewRequest, PreviewResult, DIR_PREVIEW_LIMIT,
-};
-use crate::state::profiles::PreviewFeature;
-use crate::state::settings::ViewMode;
-use crate::state::tab::TabState;
 use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill, layer_color, GlassExt};
 use crate::ui::icons::{file_type_icon, icon, AtlasIcon};
 use crate::ui::root::DraggedFiles;
-use crate::util::display::{format_date, format_size};
+use atlas_core::util::display::{format_date, format_size};
+use atlas_model::file_entry::FileKind;
+use atlas_model::layout_tree::TileId;
+use atlas_model::preview_cache::{
+    MultiPreviewState, PreviewRequest, PreviewResult, DIR_PREVIEW_LIMIT,
+};
+use atlas_model::profiles::PreviewFeature;
+use atlas_model::settings::ViewMode;
+use atlas_model::tab::TabState;
 use gpui::prelude::*;
 use gpui::SharedString;
 use gpui::{
@@ -150,7 +150,6 @@ impl App {
             editing: prefs.edit_mode,
             line_numbers: prefs.show_line_numbers,
             ln_needs_sync: false,
-            lang: gpui::SharedString::from(lang.to_string()),
             _sub: sub,
         });
         true
@@ -164,12 +163,10 @@ impl App {
     pub(crate) fn sync_active_preview_gpui(&mut self) {
         let tab = self.state.focused_tile;
         if !self.preview_visible_for_focused() {
-            self.pending_preview = None;
             return;
         }
         let request = self.state.active_preview_request();
         let Some(request) = request else {
-            self.pending_preview = None;
             self.state.clear_preview(tab);
             return;
         };
@@ -190,12 +187,10 @@ impl App {
             return;
         }
 
-        // The egui path debounced via `ctx.request_repaint_after`; under gpui a render
-        // only happens when state changed (selection/nav already called `cx.notify()`),
-        // so we kick the load immediately. Superseded loads are discarded on arrival
-        // (`BgResult::PreviewReady` checks `preview.paths`), so fast arrow-key scrolling
-        // is still safe. (`pending_preview` / `PREVIEW_DEBOUNCE` remain used by the
-        // legacy egui `sync_active_preview` path.)
+        // A render only happens when state changed (selection/nav already called
+        // `cx.notify()`), so we kick the load immediately. Superseded loads are
+        // discarded on arrival (`BgResult::PreviewReady` checks `preview.paths`),
+        // so fast arrow-key scrolling is still safe.
         match request {
             PreviewRequest::Single(path) => self.load_preview_gpui(tab, path),
             PreviewRequest::ArchiveSingle { archive, inner } => {
@@ -240,7 +235,7 @@ impl App {
             .and_then(|e| e.to_str())
             .and_then(|ext| self.ext_registry.previewer_for(ext));
         if let Some(cmd) = previewer {
-            crate::ext::runner::run_preview(&self.rt, tx, cmd, tab, path);
+            atlas_core::ext::runner::run_preview(&self.rt, tx, cmd, tab, path);
         } else if let Some((extension, missing)) = path
             .extension()
             .and_then(|e| e.to_str())
@@ -255,12 +250,14 @@ impl App {
                 let retry_path = path.clone();
                 let tool = request.tool.name.clone();
                 self.rt.spawn(async move {
-                    let result =
-                        crate::ext::marketplace::install_tool(request.provider_dir, request.tool)
-                            .await
-                            .map(|_| ())
-                            .map_err(|e| e.to_string());
-                    let _ = tx2.send(crate::state::app_state::BgResult::ExtToolInstalled {
+                    let result = atlas_core::ext::marketplace::install_tool(
+                        request.provider_dir,
+                        request.tool,
+                    )
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
+                    let _ = tx2.send(atlas_model::app_state::BgResult::ExtToolInstalled {
                         tool,
                         tab,
                         path: retry_path,
@@ -281,10 +278,10 @@ impl App {
             } else {
                 format!("{extension} needs {tools}. Update Atlas Runtime Tools.")
             });
-            let _ = tx.send(crate::state::app_state::BgResult::PreviewReady { tab, path, result });
+            let _ = tx.send(atlas_model::app_state::BgResult::PreviewReady { tab, path, result });
         } else {
             self.rt.spawn(async move {
-                crate::fs::preview::load_preview(tab, path, tx).await;
+                atlas_core::fs::preview::load_preview(tab, path, tx).await;
             });
         }
     }
@@ -305,14 +302,14 @@ impl App {
         self.preview_textures.remove(&tab);
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            crate::fs::preview::load_archive_preview(tab, archive, inner, tx).await;
+            atlas_core::fs::preview::load_archive_preview(tab, archive, inner, tx).await;
         });
     }
 
     fn load_multi_preview_gpui(
         &mut self,
         tab: TileId,
-        key: crate::state::preview_cache::MultiPreviewKey,
+        key: atlas_model::preview_cache::MultiPreviewKey,
         paths: Vec<PathBuf>,
     ) {
         if self
@@ -339,7 +336,7 @@ impl App {
             let tx = self.tx.clone();
             let key = key.clone();
             self.rt.spawn(async move {
-                crate::fs::preview::load_multi_thumbnail(tab, key, index, path, tx).await;
+                atlas_core::fs::preview::load_multi_thumbnail(tab, key, index, path, tx).await;
             });
         }
     }
@@ -582,7 +579,7 @@ impl App {
         // ── Preview body ─────────────────────────────────────────────────────
         col = col.child(self.render_preview_body(muted, danger, box_w, box_h, window, cx));
 
-        // ── Tags + "Añadir tag" (all file types, single selection) ───────────
+        // Tags + add-tag action (all file types, single selection).
         if let Some(ref path) = single_path {
             col = col.child(self.render_inspector_tags(path, muted, cx));
             col = col.child(self.render_tag_section(vec![path.clone()], muted, cx));
@@ -768,7 +765,7 @@ impl App {
         }
         // Intersection: tags present in every path's tag list.
         let first_ids = self.state.tag_cache.tags_of(&paths[0]).to_vec();
-        let shared: Vec<crate::state::tag_cache::TagId> = first_ids
+        let shared: Vec<atlas_model::tag_cache::TagId> = first_ids
             .into_iter()
             .filter(|id| {
                 paths[1..]
@@ -879,7 +876,7 @@ impl App {
             .into_any_element()
     }
 
-    /// Renders the "Añadir tag" button for any file type / multiselect.
+    /// Renders the add-tag button for any file type / multiselect.
     fn render_tag_section(
         &mut self,
         paths: Vec<PathBuf>,
@@ -1797,7 +1794,7 @@ impl App {
             );
         }
 
-        // ── Tags shared by the selection + "Añadir tag" ─────────────────────
+        // Tags shared by the selection + add-tag action.
         let paths = self.selected_paths();
         col = col.child(self.render_multi_tags(&paths, muted, cx));
         col = col.child(self.render_tag_section(paths, muted, cx));
@@ -1951,7 +1948,7 @@ pub struct SelectedEntry {
 }
 
 fn selection_summary(tab_state: &TabState, view_mode: &ViewMode) -> SelectionSummary {
-    use crate::state::file_entry::FileEntry;
+    use atlas_model::file_entry::FileEntry;
 
     let entries: Vec<&FileEntry> = if view_mode == &ViewMode::Miller {
         tab_state
@@ -1984,7 +1981,7 @@ fn selection_summary(tab_state: &TabState, view_mode: &ViewMode) -> SelectionSum
         if entry
             .extension
             .as_deref()
-            .is_some_and(crate::state::preview_cache::is_image_ext)
+            .is_some_and(atlas_model::preview_cache::is_image_ext)
         {
             s.image_count += 1;
         }

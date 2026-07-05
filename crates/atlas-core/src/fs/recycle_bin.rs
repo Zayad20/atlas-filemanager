@@ -1,5 +1,8 @@
+use atlas_model::app_state::BgResult;
 use atlas_model::file_entry::{FileEntry, FileKind, RecycleBinInfo, SortColumn, SortDir};
-use std::path::PathBuf;
+use atlas_model::ops::{OpError, OpErrorKind};
+use atlas_model::pane::TabId;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub async fn list_recycle_bin(sort_col: SortColumn, sort_dir: SortDir) -> Vec<FileEntry> {
@@ -56,7 +59,10 @@ fn list_sync(sort_col: &SortColumn, sort_dir: &SortDir) -> Vec<FileEntry> {
                 size: Some(meta.original_size),
                 modified: Some(meta.deleted_at),
                 extension,
-                display_size: String::new(), display_date: String::new(), display_type: String::new(), _is_hidden: false,
+                display_size: String::new(),
+                display_date: String::new(),
+                display_type: String::new(),
+                _is_hidden: false,
                 _is_symlink: false,
                 archive_root: None,
                 recycle_info: Some(RecycleBinInfo {
@@ -135,6 +141,132 @@ pub async fn restore(
         Ok(())
     })
     .await?
+}
+
+/// Restore a batch of recycled items (`$R` file, `$I` metadata, original path)
+/// back to their original locations, reporting per-item failures via `OpComplete`.
+pub async fn restore_items(
+    items: Vec<(PathBuf, PathBuf, PathBuf)>,
+    op_id: u64,
+    tx: flume::Sender<BgResult>,
+    affected_tabs: Vec<TabId>,
+) {
+    let mut errors: Vec<OpError> = Vec::new();
+    for (r_path, i_path, original_path) in items {
+        if original_path.exists() {
+            errors.push(OpError {
+                path: original_path,
+                kind: OpErrorKind::AlreadyExists,
+            });
+            continue;
+        }
+        if let Err(e) = restore(r_path, i_path, original_path.clone()).await {
+            let kind = e.downcast_ref::<std::io::Error>().map_or_else(
+                || OpErrorKind::Msg(e.to_string()),
+                super::transfer::io_error_kind,
+            );
+            errors.push(OpError {
+                path: original_path,
+                kind,
+            });
+        }
+    }
+    let result = if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    };
+    let _ = tx.send(BgResult::OpComplete {
+        id: op_id,
+        result,
+        affected_tabs,
+    });
+}
+
+/// Permanently delete a batch of recycled items (both the `$R` payload and the
+/// `$I` metadata file). Reports per-item failures via `OpComplete`.
+pub async fn purge_items(
+    items: Vec<(PathBuf, PathBuf)>,
+    op_id: u64,
+    tx: flume::Sender<BgResult>,
+    affected_tabs: Vec<TabId>,
+) {
+    let result = tokio::task::spawn_blocking(move || {
+        let mut errors: Vec<OpError> = Vec::new();
+        for (r_path, i_path) in items {
+            if let Err(e) = remove_r_file(&r_path) {
+                errors.push(OpError {
+                    path: r_path,
+                    kind: super::transfer::io_error_kind(&e),
+                });
+                continue;
+            }
+            let _ = std::fs::remove_file(&i_path);
+        }
+        errors
+    })
+    .await
+    .unwrap_or_default();
+    let result = if result.is_empty() {
+        Ok(())
+    } else {
+        Err(result)
+    };
+    let _ = tx.send(BgResult::OpComplete {
+        id: op_id,
+        result,
+        affected_tabs,
+    });
+}
+
+/// Empty every accessible recycle bin: delete all `$R` payloads and their `$I`
+/// metadata. Reports per-item failures via `OpComplete`.
+pub async fn empty_bins(op_id: u64, tx: flume::Sender<BgResult>, affected_tabs: Vec<TabId>) {
+    let errors = tokio::task::spawn_blocking(|| {
+        let mut errors: Vec<OpError> = Vec::new();
+        for rb_dir in accessible_bin_dirs() {
+            let Ok(rd) = std::fs::read_dir(&rb_dir) else {
+                continue;
+            };
+            for entry in rd.flatten() {
+                let path = entry.path();
+                let fname = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if !(fname.starts_with("$R") || fname.starts_with("$I")) {
+                    continue;
+                }
+                if let Err(e) = remove_r_file(&path) {
+                    errors.push(OpError {
+                        path,
+                        kind: super::transfer::io_error_kind(&e),
+                    });
+                }
+            }
+        }
+        errors
+    })
+    .await
+    .unwrap_or_default();
+    let result = if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    };
+    let _ = tx.send(BgResult::OpComplete {
+        id: op_id,
+        result,
+        affected_tabs,
+    });
+}
+
+fn remove_r_file(path: &Path) -> std::io::Result<()> {
+    if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
 }
 
 /// Enumerate all `$Recycle.Bin\<SID>` subdirectories that the current process

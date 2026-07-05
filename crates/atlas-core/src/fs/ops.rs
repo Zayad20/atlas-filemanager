@@ -1,7 +1,7 @@
 use atlas_model::app_state::BgResult;
+use atlas_model::ops::{OpError, OpErrorKind};
 use atlas_model::pane::TabId;
 use std::path::{Path, PathBuf};
-use crate::util::display::display_name;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -17,7 +17,7 @@ pub async fn delete_files(
     affected_tabs: Vec<TabId>,
 ) {
     let total = paths.len() as u64;
-    let mut errors: Vec<String> = Vec::new();
+    let mut errors: Vec<OpError> = Vec::new();
     let mut cancelled = false;
     for (i, path) in paths.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
@@ -33,28 +33,44 @@ pub async fn delete_files(
             current_file: path.clone(),
         });
         if !path.exists() {
-            errors.push(format!("{}: Ya no existe", display_name(path)));
+            errors.push(OpError {
+                path: path.clone(),
+                kind: OpErrorKind::Gone,
+            });
             continue;
         }
         let result = if to_trash {
             let p = path.clone();
-            tokio::task::spawn_blocking(move || trash::delete(&p).map_err(|e| e.to_string()))
-                .await
-                .unwrap_or_else(|e| Err(e.to_string()))
+            tokio::task::spawn_blocking(move || {
+                trash::delete(&p).map_err(|e| OpErrorKind::Msg(e.to_string()))
+            })
+            .await
+            .unwrap_or_else(|e| Err(OpErrorKind::Msg(e.to_string())))
         } else {
-            remove_path(path).await.map_err(|e| e.to_string())
+            remove_path(path).await.map_err(|e| {
+                e.downcast_ref::<std::io::Error>().map_or_else(
+                    || OpErrorKind::Msg(e.to_string()),
+                    super::transfer::io_error_kind,
+                )
+            })
         };
-        if let Err(e) = result {
-            errors.push(format!("{}: {}", display_name(path), e));
+        if let Err(kind) = result {
+            errors.push(OpError {
+                path: path.clone(),
+                kind,
+            });
         }
     }
     if cancelled {
-        errors.push("Eliminación cancelada".to_string());
+        errors.push(OpError {
+            path: PathBuf::new(),
+            kind: OpErrorKind::Cancelled,
+        });
     }
     let result = if errors.is_empty() {
         Ok(())
     } else {
-        Err(errors.join("\n"))
+        Err(errors)
     };
     let _ = tx.send(BgResult::OpComplete {
         id: op_id,
@@ -62,7 +78,6 @@ pub async fn delete_files(
         affected_tabs,
     });
 }
-
 
 pub async fn rename_file(
     from: PathBuf,
@@ -72,11 +87,10 @@ pub async fn rename_file(
     affected_tabs: Vec<TabId>,
 ) {
     let result = tokio::fs::rename(&from, &to).await.map_err(|e| {
-        format!(
-            "{}: {}",
-            display_name(&from),
-            super::transfer::friendly_io_detail(&e)
-        )
+        vec![OpError {
+            path: from.clone(),
+            kind: super::transfer::io_error_kind(&e),
+        }]
     });
     let _ = tx.send(BgResult::OpComplete {
         id: op_id,
@@ -92,11 +106,10 @@ pub async fn create_dir(
     affected_tabs: Vec<TabId>,
 ) {
     let result = tokio::fs::create_dir_all(&path).await.map_err(|e| {
-        format!(
-            "{}: {}",
-            display_name(&path),
-            super::transfer::friendly_io_detail(&e)
-        )
+        vec![OpError {
+            path: path.clone(),
+            kind: super::transfer::io_error_kind(&e),
+        }]
     });
     let _ = tx.send(BgResult::OpComplete {
         id: op_id,

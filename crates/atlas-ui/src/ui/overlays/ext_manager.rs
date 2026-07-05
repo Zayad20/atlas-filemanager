@@ -11,8 +11,8 @@
 
 use crate::app::ext::ExtAction;
 use crate::app::App;
-use crate::state::ext_state::ExtManagerTab;
 use crate::ui::icons::{icon, AtlasIcon};
+use atlas_model::ext_state::ExtManagerTab;
 use gpui::prelude::*;
 use gpui::AnimationExt;
 use gpui::{div, px, AnyElement, Context, MouseButton, SharedString, Window};
@@ -94,7 +94,7 @@ impl App {
                 .iter()
                 .filter(|e| {
                     !e.manifest.hidden
-                        && e.manifest.kind != crate::state::ext_model::ExtKind::ToolProvider
+                        && e.manifest.kind != atlas_model::ext_model::ExtKind::ToolProvider
                 })
                 .filter(|e| {
                     query_lower.is_empty()

@@ -71,7 +71,12 @@ fn read_exif(path: &Path) -> Vec<(String, String)> {
 /// Returns `(rgba, new_w, new_h)`.
 // reason: affine + bilinear math is clearer as plain arithmetic; runs once per thumbnail off render thread.
 #[allow(clippy::suboptimal_flops)]
-pub(super) fn rotate_rgba(rgba: &[u8], w: usize, h: usize, angle_deg: f32) -> (Vec<u8>, usize, usize) {
+pub(super) fn rotate_rgba(
+    rgba: &[u8],
+    w: usize,
+    h: usize,
+    angle_deg: f32,
+) -> (Vec<u8>, usize, usize) {
     if w == 0 || h == 0 || rgba.len() < w * h * 4 {
         return (rgba.to_vec(), w, h);
     }

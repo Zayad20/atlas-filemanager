@@ -2,7 +2,7 @@
 //! Framework-neutral layout tree for panes/tabs/splits.
 //!
 //! Replaces `egui_tiles::Tree` so `src/state` carries no UI-framework dependency
-//! (see `the architecture notes`: state must never import the UI). The public surface mirrors
+//! (see `ARCHITECTURE.md`: state must never import the UI). The public surface mirrors
 //! the slice of the `egui_tiles` API the app actually used, so call sites migrate
 //! by swapping the `egui_tiles::` path for `crate::layout_tree::`.
 //!

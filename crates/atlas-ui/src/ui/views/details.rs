@@ -3,19 +3,16 @@
 
 use crate::app::{App, ColResizeState, DetailsColumn};
 use crate::input::action::Action;
-use crate::state::file_entry::{FileEntry, FileKind, SortColumn, SortDir};
-use crate::state::pane::TabId;
-use crate::state::settings::ViewMode;
-use crate::ui::drag_hover::{
-    drag_hover_recorder_with_drop, DragHoverCommand, DragHoverDropCommand, DragHoverId,
-    DragHoverKind,
-};
+use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
 use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::root::{
     ctrl_scroll, pane_bounds_recorder, rect_recorder, zone_recorder, DraggedFiles,
 };
+use atlas_model::file_entry::{FileEntry, FileKind, SortColumn, SortDir};
+use atlas_model::pane::TabId;
+use atlas_model::settings::ViewMode;
 use gpui::prelude::*;
 use gpui::{
     canvas, div, img, point, px, size, uniform_list, AnyElement, Bounds, Context, Corners, Div,
@@ -310,8 +307,10 @@ impl App {
             .on_mouse_down(MouseButton::Left, {
                 let v = rubber_view.clone();
                 move |ev, _window, cx| {
-                    let (pos, additive) =
-                        (ev.position, ev.modifiers.control || ev.modifiers.platform);
+                    let (pos, additive) = (
+                        ev.position,
+                        ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift,
+                    );
                     v.update(cx, |this, cx| {
                         if this.rename_edit.is_some() {
                             this.commit_rename(cx);
@@ -419,12 +418,12 @@ pub(crate) fn format_entries(entries: &mut [FileEntry]) {
             String::new()
         } else {
             e.size
-                .map(crate::util::display::format_size)
+                .map(atlas_core::util::display::format_size)
                 .unwrap_or_default()
         };
         e.display_date = e
             .modified
-            .map(crate::util::display::format_date)
+            .map(atlas_core::util::display::format_date)
             .unwrap_or_default();
         e.display_type = entry_type_label(e);
     }
@@ -1313,47 +1312,18 @@ fn canvas_row(
         });
 
     outer
-        .on_click({
-            let v = v.clone();
-            move |ev, _window, cx| {
-                let m = ev.modifiers();
-                let (shift, ctrl) = (m.shift, m.control || m.platform);
-                v.update(cx, |this, cx| {
-                    if this.rename_edit.is_some() {
-                        this.commit_rename(cx);
-                    }
-                    if ev.click_count() >= 2 {
-                        this.process_actions(vec![Action::Activate {
-                            tile: pane_id,
-                            idx: entry_idx,
-                        }]);
-                    } else {
-                        this.process_actions(vec![Action::Select {
-                            tile: pane_id,
-                            idx: entry_idx,
-                            shift,
-                            ctrl,
-                        }]);
-                    }
-                    cx.notify();
-                });
-            }
-        })
-        .on_mouse_down(MouseButton::Right, {
-            let v = v.clone();
-            move |ev, window, cx| {
-                let pos = ev.position;
-                v.update(cx, |this, cx| {
-                    let paths = this.select_context_menu_paths(pane_id, entry_idx);
-                    this.open_ctx_menu(paths, pos, window, cx);
-                    cx.notify();
-                });
-            }
-        })
+        .on_click(crate::ui::views::on_entry_click(view, pane_id, entry_idx))
+        .on_mouse_down(
+            MouseButton::Right,
+            crate::ui::views::on_entry_ctx_menu(view, pane_id, entry_idx),
+        )
         .when(!selected, |s| {
             let rv = v.clone();
             s.on_mouse_down(MouseButton::Left, move |ev, _window, cx| {
-                let (pos, additive) = (ev.position, ev.modifiers.control || ev.modifiers.platform);
+                let (pos, additive) = (
+                    ev.position,
+                    ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift,
+                );
                 rv.update(cx, |this, cx| {
                     this.begin_rubber(pane_id, pos, additive);
                     cx.notify();
@@ -1376,42 +1346,7 @@ fn canvas_row(
             )
         })
         .when(is_dir, |s| {
-            let dest = entry_path.clone();
-            let hover_id = DragHoverId::Folder(pane_id, dest.clone());
-            let dest_internal = dest.clone();
-            let dest_external = dest.clone();
-            let mv = v.clone();
-            let cpv = v.clone();
-            s.drag_over::<DraggedFiles>(|s, _, _, _| s.opacity(0.6))
-                .on_prepaint(drag_hover_recorder_with_drop(
-                    hover_id,
-                    DragHoverKind::Folder,
-                    DragHoverCommand::NavigatePathIn(pane_id, dest.clone()),
-                    DragHoverDropCommand::TransferTo(dest.clone()),
-                    view,
-                ))
-                .on_drop::<DraggedFiles>(move |d, _window, cx| {
-                    let paths = d.paths.clone();
-                    mv.update(cx, |this, cx| {
-                        this.execute_drag_hover_drop_command(
-                            DragHoverDropCommand::TransferTo(dest_internal.clone()),
-                            paths,
-                            true,
-                        );
-                        cx.notify();
-                    });
-                })
-                .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
-                    let paths = paths.paths().to_vec();
-                    cpv.update(cx, |this, cx| {
-                        this.execute_drag_hover_drop_command(
-                            DragHoverDropCommand::TransferTo(dest_external.clone()),
-                            paths,
-                            false,
-                        );
-                        cx.notify();
-                    });
-                })
+            crate::ui::views::folder_drop_target(s, view, pane_id, entry_path.clone())
         })
         .into_any_element()
 }

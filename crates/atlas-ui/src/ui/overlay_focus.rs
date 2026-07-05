@@ -26,7 +26,7 @@
 //! That's it — `modal_overlay_active` and `sync_overlay_focus` update automatically.
 
 use crate::app::{App, BatchRenameField};
-use crate::state::batch_rename::RenameMode;
+use atlas_model::batch_rename::RenameMode;
 use gpui::{Context, FocusHandle, Focusable, Window};
 use gpui_component::input::{Position, SelectToStartOfLine};
 use gpui_component::WindowExt;
@@ -53,7 +53,7 @@ pub(crate) enum OverlayClaim {
     CloudAdd,
     #[cfg(feature = "cloud")]
     CloudRename,
-    /// Covers show_settings and transfer_conflict — both use a neutral focus handle.
+    /// Covers show_settings, transfer_conflict and properties — all use a neutral focus handle.
     TextlessModal,
     InlineRename,
     SearchFilter,
@@ -106,7 +106,7 @@ impl App {
         if self.state.cloud.renaming_remote_id.is_some() {
             return Some(OverlayClaim::CloudRename);
         }
-        if o.show_settings || o.transfer_conflict.is_some() {
+        if o.show_settings || o.transfer_conflict.is_some() || o.properties.is_some() {
             return Some(OverlayClaim::TextlessModal);
         }
         if self.rename_edit.is_some() {

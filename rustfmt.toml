@@ -1,11 +1,3 @@
 # Formatting rules for Atlas.
-# Several comment/import settings are nightly-only; stable rustfmt enforces the
-# stable subset and leaves these as documented intent for nightly formatting.
 edition = "2021"
-imports_granularity = "Crate"
-group_imports = "StdExternalCrate"
 reorder_imports = true
-wrap_comments = true
-comment_width = 100
-format_code_in_doc_comments = true
-normalize_comments = true

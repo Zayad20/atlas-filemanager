@@ -1,6 +1,6 @@
 use crate::app::App;
-use crate::state::layout_tree::{Tile, TileId};
-use crate::state::location::Location;
+use atlas_model::layout_tree::{Tile, TileId};
+use atlas_model::location::Location;
 use std::path::PathBuf;
 
 /// Controls how `navigate_to` manipulates the history stacks.
@@ -11,8 +11,6 @@ pub(crate) enum NavKind {
     Back,
     /// Caller already popped from forward stack; push current to history.
     Forward,
-    /// Replace current location without touching history (e.g. initial load, refresh).
-    Replace,
 }
 
 impl App {
@@ -24,6 +22,19 @@ impl App {
             None => return,
         };
         self.rubber = None;
+
+        // Per-folder view/sort memory (F3 #14): looked up before the mutable
+        // pane borrow below so it can be applied in the same pass.
+        let restored_view_pref = if let Location::Directory(path) = &loc {
+            use atlas_model::profiles::FolderViewFeature;
+            self.state
+                .profiles
+                .active()
+                .scoped::<FolderViewFeature>()
+                .get(path)
+        } else {
+            None
+        };
 
         // ── 1. History manipulation ──────────────────────────────────────────
         if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id) {
@@ -41,9 +52,13 @@ impl App {
                 NavKind::Forward => {
                     pane.history.push(old);
                 }
-                NavKind::Replace => {}
             }
             pane.location = loc.clone();
+            if let Some(pref) = restored_view_pref {
+                pane.view_mode = pref.view_mode;
+                pane.sort_col = pref.sort_col;
+                pane.sort_dir = pref.sort_dir;
+            }
         }
 
         // ── 2. Watcher lifecycle ─────────────────────────────────────────────
@@ -51,7 +66,7 @@ impl App {
         // drops any lingering watcher for this pane (fixes stale-watcher bug on back).
         match &loc {
             Location::Directory(path) => {
-                if let Ok(handle) = crate::fs::watcher::watch_path(path, self.tx.clone()) {
+                if let Ok(handle) = atlas_core::fs::watcher::watch_path(path, self.tx.clone()) {
                     self.watchers.insert(tab_id, handle);
                 }
             }
@@ -87,6 +102,23 @@ impl App {
         // (a separate PaneSignal entity) keeps the old listing until the async
         // BgResult arrives — the "route changes but view doesn't" desync.
         self.dirty_panes.insert(tab_id);
+    }
+
+    /// Persist a per-folder view/sort pref (F3 #14). No-op when `pref` is `None`
+    /// (non-directory locations don't get remembered).
+    pub(crate) fn save_folder_view_pref(
+        &mut self,
+        pref: Option<(PathBuf, atlas_model::profiles::FolderViewPref)>,
+    ) {
+        let Some((path, pref)) = pref else { return };
+        use atlas_model::profiles::FolderViewFeature;
+        let mut prefs = self.state.profiles.active().scoped::<FolderViewFeature>();
+        prefs.set(path, pref);
+        self.state
+            .profiles
+            .active_mut()
+            .set_scoped::<FolderViewFeature>(&prefs);
+        atlas_core::util::config::save_profiles(&self.state.profiles);
     }
 
     // ── Thin public wrappers ──────────────────────────────────────────────────
@@ -163,8 +195,8 @@ impl App {
         &mut self,
         tab_id: TileId,
         loc: Location,
-        col: crate::state::file_entry::SortColumn,
-        dir: crate::state::file_entry::SortDir,
+        col: atlas_model::file_entry::SortColumn,
+        dir: atlas_model::file_entry::SortDir,
     ) {
         match loc {
             Location::Directory(path) => self.spawn_list_dir(tab_id, path, col, dir),
@@ -174,11 +206,11 @@ impl App {
             Location::Tag(tag) => {
                 let op_id = self.state.next_op_id();
                 let ts = self.state.tab_states.entry(tab_id).or_default();
-                ts.load_state = crate::state::tab::LoadState::Loading;
+                ts.load_state = atlas_model::tab::LoadState::Loading;
                 ts.last_nav_op_id = op_id;
                 let _ = self
                     .tag_db_tx
-                    .send(crate::fs::tag_db::TagDbCmd::QueryPathsForTag(tag));
+                    .send(atlas_core::fs::tag_db::TagDbCmd::QueryPathsForTag(tag));
             }
             Location::RecycleBin => {
                 self.spawn_list_recycle_bin(tab_id, col, dir);

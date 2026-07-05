@@ -2,17 +2,13 @@
 #![allow(clippy::too_many_lines)] // reason: cohesive view renderer kept whole
 
 use crate::app::App;
-use crate::input::action::Action;
-use crate::state::file_entry::{FileEntry, FileKind};
-use crate::state::pane::TabId;
-use crate::ui::drag_hover::{
-    drag_hover_recorder_with_drop, DragHoverCommand, DragHoverDropCommand, DragHoverId,
-    DragHoverKind,
-};
+use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
 use crate::ui::root::{ctrl_scroll, pane_bounds_recorder, rect_recorder, DraggedFiles};
 use crate::ui::views::virtual_grid::AnimatedVirtualGrid;
+use atlas_model::file_entry::{FileEntry, FileKind};
+use atlas_model::pane::TabId;
 use gpui::prelude::*;
 use gpui::{div, img, px, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window};
 use gpui_component::scroll::ScrollableElement;
@@ -154,7 +150,9 @@ impl App {
                     !self.state.settings.disable_animations,
                     move |idx, mut is_animating, window, cx| {
                         let app = list_view.read(cx);
-                        if !app.dock_split_animations.is_empty() || !app.pane_layout_animations.is_empty() {
+                        if !app.dock_split_animations.is_empty()
+                            || !app.pane_layout_animations.is_empty()
+                        {
                             is_animating = true;
                         }
                         let Some(ts) = app.state.tab_states.get(&pane_id) else {
@@ -220,8 +218,10 @@ impl App {
             .on_mouse_down(MouseButton::Left, {
                 let v = rubber_view.clone();
                 move |ev, _window, cx| {
-                    let (pos, additive) =
-                        (ev.position, ev.modifiers.control || ev.modifiers.platform);
+                    let (pos, additive) = (
+                        ev.position,
+                        ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift,
+                    );
                     v.update(cx, |this, cx| {
                         if this.rename_edit.is_some() {
                             this.commit_rename(cx);
@@ -445,7 +445,6 @@ fn render_cell(
     window: &mut Window,
 ) -> AnyElement {
     let name = entry.name.clone();
-    let v = view.clone();
     let font_size = window.rem_size() * 0.75;
     v_flex()
         .id(SharedString::from(format!(
@@ -515,45 +514,14 @@ fn render_cell(
                 .into_any_element(),
         })
         .when(!is_animating, |s| {
-            s.on_click(move |ev, _window, cx| {
-                let m = ev.modifiers();
-                let shift = m.shift;
-                let ctrl = m.control || m.platform;
-                let activate = ev.click_count() >= 2;
-                v.update(cx, |this, cx| {
-                    if this.rename_edit.is_some() {
-                        this.commit_rename(cx);
-                    }
-                    if activate {
-                        this.process_actions(vec![Action::Activate {
-                            tile: pane_id,
-                            idx: entry_idx,
-                        }]);
-                    } else {
-                        this.process_actions(vec![Action::Select {
-                            tile: pane_id,
-                            idx: entry_idx,
-                            shift,
-                            ctrl,
-                        }]);
-                    }
-                    cx.notify();
-                });
-            })
-            .on_mouse_down(MouseButton::Right, {
-                let rv = view.clone();
-                move |ev, window, cx| {
-                    let pos = ev.position;
-                    rv.update(cx, |this, cx| {
-                        let paths = this.select_context_menu_paths(pane_id, entry_idx);
-                        this.open_ctx_menu(paths, pos, window, cx);
-                        cx.notify();
-                    });
-                }
-            })
-            .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
-                cx.stop_propagation();
-            })
+            s.on_click(crate::ui::views::on_entry_click(view, pane_id, entry_idx))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    crate::ui::views::on_entry_ctx_menu(view, pane_id, entry_idx),
+                )
+                .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
+                    cx.stop_propagation();
+                })
         })
         .when(rename_input.is_none() && !is_animating, |s| {
             s.on_drag(
@@ -567,42 +535,7 @@ fn render_cell(
             )
         })
         .when(matches!(entry.kind, FileKind::Dir) && !is_animating, |s| {
-            let dest = entry.path.clone();
-            let hover_id = DragHoverId::Folder(pane_id, dest.clone());
-            let dest_internal = dest.clone();
-            let dest_external = dest.clone();
-            let mv = view.clone();
-            let cpv = view.clone();
-            s.drag_over::<DraggedFiles>(|s, _, _, _| s.opacity(0.6))
-                .on_prepaint(drag_hover_recorder_with_drop(
-                    hover_id,
-                    DragHoverKind::Folder,
-                    DragHoverCommand::NavigatePathIn(pane_id, dest.clone()),
-                    DragHoverDropCommand::TransferTo(dest.clone()),
-                    view,
-                ))
-                .on_drop::<DraggedFiles>(move |d, _window, cx| {
-                    let paths = d.paths.clone();
-                    mv.update(cx, |this, cx| {
-                        this.execute_drag_hover_drop_command(
-                            DragHoverDropCommand::TransferTo(dest_internal.clone()),
-                            paths,
-                            true,
-                        );
-                        cx.notify();
-                    });
-                })
-                .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
-                    let paths = paths.paths().to_vec();
-                    cpv.update(cx, |this, cx| {
-                        this.execute_drag_hover_drop_command(
-                            DragHoverDropCommand::TransferTo(dest_external.clone()),
-                            paths,
-                            false,
-                        );
-                        cx.notify();
-                    });
-                })
+            crate::ui::views::folder_drop_target(s, view, pane_id, entry.path.clone())
         })
         .into_any_element()
 }

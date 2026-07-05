@@ -8,19 +8,13 @@
 use crate::app::nav::NavKind;
 use crate::app::App as AtlasApp;
 use crate::input::action::Action;
-use crate::state::file_entry::FileKind;
-use crate::state::location::Location;
-use crate::state::profiles::{SectionKind, SidebarSection};
-use crate::state::tag_cache::TagId;
 use crate::ui::drag::{file_drag_value, DragView};
 use crate::ui::drag_hover::{
     drag_hover_recorder, drag_hover_recorder_with_drop, sidebar_scroll_recorder, DragHoverCommand,
     DragHoverDropCommand, DragHoverId, DragHoverKind,
 };
 use crate::ui::glass::{glass_chip_fill, glass_fill, layer_color, GlassExt};
-use crate::ui::icons::{
-    atlas_logo, file_type_icon, icon, is_windows_theme, theme_icon, AtlasIcon,
-};
+use crate::ui::icons::{atlas_logo, file_type_icon, icon, is_windows_theme, theme_icon, AtlasIcon};
 use crate::ui::root::DraggedFiles;
 #[cfg(all(feature = "cloud", windows))]
 use crate::InstallWinFspForRemote;
@@ -30,6 +24,10 @@ use crate::{
     SidebarHideSection, SidebarMoveSectionDown, SidebarMoveSectionUp, SidebarNewGlobalTag,
     SidebarNewProfileTag, SidebarResetSections, SidebarToggleSection,
 };
+use atlas_model::file_entry::FileKind;
+use atlas_model::location::Location;
+use atlas_model::profiles::{SectionKind, SidebarSection};
+use atlas_model::tag_cache::TagId;
 use gpui::prelude::*;
 use gpui::{
     auto, div, hsla, img, point, px, relative, Anchor, AnyElement, App, Context, Entity,
@@ -940,9 +938,11 @@ impl Render for SidebarPanel {
                         if let Some(app) = this.app.upgrade() {
                             let id = action.id.clone();
                             app.update(cx, |app, _cx| {
-                                let _ = app.cloud_tx.send(crate::cloud::CloudCmd::InstallWinFsp {
-                                    retry_id: Some(id),
-                                });
+                                let _ =
+                                    app.cloud_tx
+                                        .send(atlas_core::cloud::CloudCmd::InstallWinFsp {
+                                            retry_id: Some(id),
+                                        });
                             });
                         }
                     },
@@ -1088,7 +1088,7 @@ impl Render for SidebarPanel {
 
 fn sidebar_drop_zone(
     app: &Entity<AtlasApp>,
-    staged: Vec<crate::state::app_state::StagedDrop>,
+    staged: Vec<atlas_model::app_state::StagedDrop>,
     selected: HashSet<PathBuf>,
     current_path: Option<PathBuf>,
     accent: Hsla,
@@ -1163,7 +1163,7 @@ fn sidebar_drop_zone(
         .overflow_hidden()
         .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, window, cx| {
             cx.stop_propagation();
-            let additive = ev.modifiers.control || ev.modifiers.platform;
+            let additive = ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift;
             let pos = window.mouse_position();
             app_start_rubber.update(cx, |this, cx| {
                 this.begin_dropzone_rubber(pos, additive);
@@ -1558,7 +1558,7 @@ fn sidebar_drop_drag_paths(app: &AtlasApp, path: &std::path::Path) -> Vec<PathBu
 }
 
 fn place_sidebar_drop_zone(app: &mut AtlasApp, dest: PathBuf) {
-    use crate::state::ops::{ConflictPolicy, TransferKind, TransferOrigin, TransferRequest};
+    use atlas_model::ops::{ConflictPolicy, TransferKind, TransferOrigin, TransferRequest};
 
     let staged = std::mem::take(&mut app.state.sidebar_drop_zone);
     app.dropzone_selected.clear();
@@ -1797,7 +1797,7 @@ fn render_collapsed_sections(
                 }
             }
             SectionKind::Drives => {
-                let drives = crate::fs::mounts::list_drives();
+                let drives = atlas_core::fs::mounts::list_drives();
                 if !drives.is_empty() && before {
                     col = col.child(collapsed_divider());
                 }
@@ -2099,7 +2099,7 @@ fn collapsed_tag_row(
 
 #[allow(clippy::too_many_arguments)]
 fn collapsed_drive_row(
-    drive: crate::fs::mounts::DriveInfo,
+    drive: atlas_core::fs::mounts::DriveInfo,
     shell_tex: Option<Arc<gpui::RenderImage>>,
     app: &Entity<AtlasApp>,
     hover: Hsla,
@@ -2349,7 +2349,7 @@ fn render_section_body(
             }
         }
         SectionKind::Drives => {
-            let drives = crate::fs::mounts::list_drives();
+            let drives = atlas_core::fs::mounts::list_drives();
             if drives.is_empty() {
                 col = col.child(empty_row(
                     rust_i18n::t!("sidebar_no_drives").to_string(),
@@ -2541,7 +2541,7 @@ fn tag_row(
 /// (>90%). Taller than a `nav_row` to fit the label + bar (the Figma mock had no bars).
 #[allow(clippy::too_many_arguments)]
 fn drive_row(
-    drive: crate::fs::mounts::DriveInfo,
+    drive: atlas_core::fs::mounts::DriveInfo,
     shell_tex: Option<Arc<gpui::RenderImage>>,
     app: &Entity<AtlasApp>,
     hover: Hsla,

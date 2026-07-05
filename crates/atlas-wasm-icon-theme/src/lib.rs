@@ -23,7 +23,7 @@ fn payload_theme_id(payload: &str) -> Option<String> {
         .then(|| payload.trim_matches('"').to_string())
 }
 
-// Vinculamos la función del Host definida en el manager de Rust
+// Bind the host function exposed by the Rust manager.
 #[extism_pdk::host_fn]
 extern "ExtismHost" {
     fn host_show_quick_pick(options_json: String) -> String;
@@ -35,7 +35,7 @@ pub fn execute_command(input: String) -> FnResult<String> {
 
     match query.command_id.as_str() {
         "icon-manager.select-theme" => {
-            // Llamamos al Host para que dibuje la interfaz gráfica (la Command Palette)
+            // Ask the host to render the command-palette picker.
             let themes = serde_json::to_string(&vec!["Material Dark", "Material Light", "Ocean"])?;
             let user_choice = unsafe { host_show_quick_pick(themes)? };
             return Ok(format!("Tema actualizado a: {}", user_choice));
@@ -59,14 +59,14 @@ pub fn execute_command(input: String) -> FnResult<String> {
                 choice
             };
 
-            // 1. Llamar a la API de Open VSX
+            // 1. Call the Open VSX API.
             let api_url = format!("https://open-vsx.org/api/{}/latest", ext_id);
             let req = extism_pdk::HttpRequest::new(&api_url);
             let res = extism_pdk::http::request::<()>(&req, None)?;
 
             let json_body: serde_json::Value = serde_json::from_slice(&res.body())?;
 
-            // 2. Extraer el link al archivo .vsix
+            // 2. Extract the .vsix download URL.
             let download_url = json_body
                 .get("files")
                 .and_then(|f| f.get("download"))
@@ -78,16 +78,16 @@ pub fn execute_command(input: String) -> FnResult<String> {
                     ))
                 })?;
 
-            // 3. Descargar el archivo .vsix
+            // 3. Download the .vsix archive.
             let vsix_req = extism_pdk::HttpRequest::new(download_url);
             let vsix_res = extism_pdk::http::request::<()>(&vsix_req, None)?;
 
-            // 4. Guardarlo en el disco duro aislado (proveido por el Host vía WASI)
+            // 4. Save it into the WASI-isolated filesystem provided by the host.
             let vsix_path = format!("/ext/{}.vsix", ext_id.replace('/', "_"));
             let mut file = File::create(&vsix_path)?;
             file.write_all(&vsix_res.body())?;
 
-            // 5. Descomprimir el .vsix (que es un zip) en un directorio
+            // 5. Extract the .vsix file, which is a zip archive.
             let out_dir = format!("/ext/{}", ext_id.replace('/', "_"));
             std::fs::create_dir_all(&out_dir).ok();
 
@@ -95,7 +95,9 @@ pub fn execute_command(input: String) -> FnResult<String> {
             let mut archive = ZipArchive::new(file)?;
 
             for i in 0..archive.len() {
-                let Ok(mut file) = archive.by_index(i) else { continue };
+                let Ok(mut file) = archive.by_index(i) else {
+                    continue;
+                };
                 let outpath = match file.enclosed_name() {
                     Some(path) => format!("{}/{}", out_dir, path.to_string_lossy()),
                     None => continue,
@@ -112,7 +114,7 @@ pub fn execute_command(input: String) -> FnResult<String> {
                 }
             }
 
-            // 6. Analizar el package.json para descubrir los sub-temas
+            // 6. Parse package.json to discover icon subthemes.
             let pkg_json_path = format!("{}/extension/package.json", out_dir);
             let mut pkg_file = File::open(&pkg_json_path)?;
             let mut pkg_contents = String::new();
@@ -142,7 +144,7 @@ pub fn execute_command(input: String) -> FnResult<String> {
                 return Ok("No se encontraron iconThemes en package.json".to_string());
             }
 
-            // 7. Preguntar al usuario qué sub-tema quiere si hay varios
+            // 7. Ask which subtheme to use when there are multiple choices.
             let selected_label = if available_themes.len() > 1 {
                 let options_json = serde_json::to_string(&available_themes)?;
                 let choice = unsafe { host_show_quick_pick(options_json)? };
@@ -160,7 +162,7 @@ pub fn execute_command(input: String) -> FnResult<String> {
                 .trim_start_matches("./");
             let theme_json_path = format!("{}/extension/{}", out_dir, rel_path);
 
-            // Calculamos el directorio relativo dentro del zip para poder construir el path absoluto del host
+            // Compute the relative directory inside the zip so host paths can be rebuilt.
             let host_theme_dir = format!(
                 "{}/{}/extension/{}",
                 query.host_dir,
@@ -171,14 +173,13 @@ pub fn execute_command(input: String) -> FnResult<String> {
                     .to_string_lossy()
             );
 
-            // 8. Leer el JSON del tema de iconos de VSCode
+            // 8. Read the VS Code icon-theme JSON.
             let mut tfile = File::open(&theme_json_path)?;
             let mut tcontents = String::new();
             tfile.read_to_string(&mut tcontents)?;
 
-            // Ignorar comentarios en JSON (común en VSCode themes) antes de parsear si es necesario,
-            // pero serde_json puede fallar. Reemplazamos los bloque y de linea temporalmente de forma rustica.
-            // Para simplificar, asumimos JSON limpio o le quitamos los comentarios básicos.
+            // VS Code themes often use line comments. Strip simple comment lines before
+            // parsing; this intentionally does not try to be a full JSONC parser.
             let clean_json = tcontents
                 .lines()
                 .filter(|l| !l.trim_start().starts_with("//"))
@@ -201,10 +202,10 @@ pub fn execute_command(input: String) -> FnResult<String> {
                                 if let Some(icon_path) =
                                     def.get("iconPath").and_then(|p| p.as_str())
                                 {
-                                    // Limpiar icon_path y resolverlo a ruta absoluta del Host
+                                    // Normalize icon_path and resolve it to a host path.
                                     let clean_ipath = icon_path.trim_start_matches("./");
-                                    // Limpiamos los "../" para rutas simples asumiendo que los iconos están al lado o en subcarpetas
-                                    // No es un path resolve perfecto pero sirve para la mayoría de temas.
+                                    // Keep path resolution simple; most themes keep icons
+                                    // next to the theme file or in child directories.
                                     let absolute_path =
                                         format!("{}/{}", host_theme_dir, clean_ipath);
                                     host_mappings.insert(
@@ -218,7 +219,7 @@ pub fn execute_command(input: String) -> FnResult<String> {
                 }
             }
 
-            // 9. Guardar theme_mappings.json para el host
+            // 9. Save theme_mappings.json for the host.
             let mut mappings_file = File::create("/ext/theme_mappings.json")?;
             mappings_file.write_all(
                 serde_json::Value::Object(host_mappings)
@@ -229,7 +230,7 @@ pub fn execute_command(input: String) -> FnResult<String> {
             return Ok(format!("Tema '{}' activado exitosamente.", selected_label));
         }
         "icon-manager.get-theme-mappings" => {
-            // Un comando directo para pedir los mapeos JSON desde el UI si fuera necesario
+            // Direct command for requesting JSON mappings from the UI if needed.
             let mappings = serde_json::json!({
                 "rs": "rust.svg",
                 "js": "javascript.svg"

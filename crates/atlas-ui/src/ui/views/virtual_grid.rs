@@ -5,20 +5,20 @@ use std::time::{Duration, Instant};
 /// An experimental Virtual Grid for GPUI that supports FLIP animations.
 /// An experimental Virtual Grid for GPUI that supports FLIP animations.
 ///
-/// # THE GOAL (El Objetivo)
+/// # THE GOAL
 /// We want a buttery smooth user experience where resizing the window or changing
 /// the zoom scale of the grid causes the items to smoothly slide into their new
 /// positions, even if they wrap to the next line.
 ///
-/// # THE PROBLEM (El Problema con `uniform_list`)
+/// # THE PROBLEM
 /// Currently, `Grid` and `Details` views use `gpui::uniform_list`. This list chunks
 /// items into `Row` components. When the width shrinks, an item drops to a different
 /// row index. Because GPUI's layout engine hashes the parent tree to generate the
 /// `GlobalElementId`, changing rows completely destroys the item's `GlobalElementId`.
 /// As a result, GPUI's built-in `with_animation` state is lost, the old bounds are
-/// discarded, and the item "snaps" (se ve "choppy") instead of smoothly interpolating.
+/// discarded, and the item snaps instead of smoothly interpolating.
 ///
-/// # THE SOLUTION (La Solución: AnimatedVirtualGrid)
+/// # THE SOLUTION
 /// This custom `AnimatedVirtualGrid` element implements a FLIP (First, Last, Invert, Play)
 /// animation system at the lowest GPUI layout level.
 ///
@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 /// 4. **Translation (`paint()`)**: We use `window.with_element_offset(delta)` over a 250ms
 ///    easing curve to visually slide the item into place.
 ///
-/// # TASKS FOR NEXT SESSION (Instrucciones de Implementación)
+/// # TASKS FOR NEXT SESSION
 /// - [ ] Implement `request_layout` to compute the total scrollable height:
 ///       `total_height = ceil(item_count / cols) * item_size.height`
 /// - [ ] Implement `prepaint` to map `scroll_offset` + `viewport_height` into a visible
@@ -160,9 +160,7 @@ impl Element for AnimatedVirtualGrid {
         let item_width = f32::from(self.item_size.width) + f32::from(self.item_spacing.width);
 
         let scroll_y = self.scroll_offset.max(0.0);
-        let viewport_height = self
-            .viewport_height
-            .max(item_height);
+        let viewport_height = self.viewport_height.max(item_height);
 
         let start_y = scroll_y;
         let end_y = start_y + viewport_height;

@@ -3,6 +3,8 @@
 build*.txt
 *_out.txt
 *.bak
+*.orig
+*.rej
 # Vendored binaries (not committed; distributed separately or resolved at runtime)
 crates/atlas-core/vendor/unrar-bin/
 .env
@@ -21,6 +23,16 @@ vendor/**/.next/
 
 # Profiling artifacts (dhat, perf captures)
 dhat-*.json
+
+# Scratch/test archives used during local development
+test.zip
+test2.rar
+test_arc/
+scratch_*.py
+test_*.rs
+
+# Internal/stale diagnostics; translate and move into docs/ before publishing.
+docs/diagnostics/
 
 # Unrelated local checkouts / generated side projects
 website/

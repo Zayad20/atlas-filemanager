@@ -1,8 +1,8 @@
 use crate::app::App;
 use crate::input::action::Action;
-use crate::state::file_entry::FileKind;
-use crate::state::layout_tree::Tile;
-use crate::state::settings::ViewMode;
+use atlas_model::file_entry::FileKind;
+use atlas_model::layout_tree::Tile;
+use atlas_model::settings::ViewMode;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -21,10 +21,6 @@ impl App {
     }
 
     #[inline]
-    pub(crate) fn process_action(&mut self, action: Action) {
-        self.process_actions([action]);
-    }
-
     pub(crate) fn process_actions(&mut self, actions: impl IntoIterator<Item = Action>) {
         for action in actions {
             match action {
@@ -87,7 +83,7 @@ impl App {
                 Action::ToggleSidebarCollapsed => {
                     self.state.settings.sidebar_collapsed = !self.state.settings.sidebar_collapsed;
                     self.sidebar_width_dirty = true;
-                    crate::util::config::save_settings(&self.state.settings);
+                    atlas_core::util::config::save_settings(&self.state.settings);
                 }
                 Action::OpenSettings => {
                     self.state.overlay.show_settings = true;
@@ -182,7 +178,7 @@ impl App {
                         if self.goto_index_root.as_ref() != Some(&(root.clone(), false)) {
                             self.nucleo.reset();
                             let injector = self.nucleo.injector();
-                            crate::fs::index::build_index(root.clone(), injector);
+                            atlas_core::fs::index::build_index(root.clone(), injector);
                             self.goto_index_root = Some((root, false));
                         }
                     }
@@ -205,19 +201,10 @@ impl App {
                     } else {
                         pinned.push(id);
                     }
-                    crate::util::config::save_profiles(&self.state.profiles);
+                    atlas_core::util::config::save_profiles(&self.state.profiles);
                 }
                 Action::StartCommandShortcutCapture(id) => {
                     self.start_command_shortcut_capture(id);
-                }
-                Action::CancelCommandShortcutCapture => {
-                    self.cancel_command_shortcut_capture();
-                }
-                Action::SetCommandShortcut { id, keystroke } => {
-                    self.set_command_shortcut(id, keystroke);
-                }
-                Action::RemoveCommandShortcut(id) => {
-                    self.remove_command_shortcut(id);
                 }
                 Action::OpenSearchInPlace => {
                     let tile = self.state.focused_tile;
@@ -234,7 +221,7 @@ impl App {
                     let tile = self.state.focused_tile;
                     if let Some(ts) = self.state.tab_states.get_mut(&tile) {
                         ts.search.recursive = !ts.search.recursive;
-                        ts.search.status = crate::state::tab::SearchStatus::Idle;
+                        ts.search.status = atlas_model::tab::SearchStatus::Idle;
                         ts.search.error = None;
                         ts.search.focus = true;
                     }
@@ -347,14 +334,6 @@ impl App {
                     }
                     self.state.focused_tile = tile;
                 }
-                Action::ClearSelection(tile) => {
-                    if let Some(ts) = self.state.tab_states.get_mut(&tile) {
-                        ts.selection.selected.clear();
-                        ts.selection.keyboard_cursor = None;
-                        ts.selection.selection_anchor = None;
-                    }
-                    self.state.focused_tile = tile;
-                }
                 Action::Activate { tile, idx } => {
                     let entry = self
                         .state
@@ -380,7 +359,7 @@ impl App {
                                         #[allow(clippy::disallowed_methods)]
                                         // reason: inside spawn_blocking
                                         let _ = std::fs::create_dir_all(&dest_dir);
-                                        if let Some(p) = crate::fs::archive::open(&archive) {
+                                        if let Some(p) = atlas_core::fs::archive::open(&archive) {
                                             let _ = p.extract_to(&path, &dest);
                                         }
                                         let _ = open::that(&dest);
@@ -391,7 +370,7 @@ impl App {
                         } else if kind == FileKind::Dir {
                             self.navigate(tile, path);
                         } else {
-                            let is_archive = crate::fs::archive::is_archive_path(&path);
+                            let is_archive = atlas_core::fs::archive::is_archive_path(&path);
                             if is_archive {
                                 self.navigate_into_archive(tile, path, std::path::PathBuf::new());
                             } else {
@@ -411,6 +390,7 @@ impl App {
                     }
                 }
                 Action::SetSort { col, dir } => {
+                    let mut folder_pref_write = None;
                     if let Some(Tile::Pane(pane)) =
                         self.state.pane_tree.tiles.get_mut(self.state.focused_tile)
                     {
@@ -419,8 +399,19 @@ impl App {
                         let loc = pane.location.clone();
                         let sort_col = pane.sort_col.clone();
                         let sort_dir = pane.sort_dir.clone();
+                        if let atlas_model::location::Location::Directory(path) = &loc {
+                            folder_pref_write = Some((
+                                path.clone(),
+                                atlas_model::profiles::FolderViewPref {
+                                    view_mode: pane.view_mode.clone(),
+                                    sort_col: sort_col.clone(),
+                                    sort_dir: sort_dir.clone(),
+                                },
+                            ));
+                        }
                         self.dispatch_list(self.state.focused_tile, loc, sort_col, sort_dir);
                     }
+                    self.save_folder_view_pref(folder_pref_write);
                 }
                 Action::Open(paths) => {
                     #[cfg(feature = "cloud")]
@@ -450,7 +441,29 @@ impl App {
                     }
                     self.set_clipboard(paths, true);
                 }
+                Action::CompressToZip(paths) => {
+                    self.compress_to_zip(paths);
+                }
+                Action::RestoreSelectedFromRecycleBin => {
+                    self.restore_selected_from_recycle_bin();
+                }
+                Action::PurgeSelectedFromRecycleBin => {
+                    self.purge_selected_from_recycle_bin();
+                }
+                Action::EmptyRecycleBin => {
+                    self.empty_recycle_bin();
+                }
                 Action::Delete { paths, to_trash } => {
+                    // In a recycle-bin listing the paths are `$R` payloads: deleting
+                    // them directly would orphan their `$I` metadata (and re-trashing
+                    // makes no sense) — purge the pair instead.
+                    if self
+                        .tab_data_for(self.state.focused_tile)
+                        .is_some_and(|t| t.location == atlas_model::location::Location::RecycleBin)
+                    {
+                        self.purge_selected_from_recycle_bin();
+                        continue;
+                    }
                     #[cfg(feature = "cloud")]
                     if let Some((remote_id, current_path)) = self.focused_remote_tab() {
                         let tile = self.state.focused_tile;
@@ -464,17 +477,19 @@ impl App {
                                     .get(&tile)
                                     .and_then(|ts| ts.entries.iter().find(|e| e.path == *p))
                                     .is_some_and(|e| {
-                                        matches!(e.kind, crate::state::file_entry::FileKind::Dir)
+                                        matches!(e.kind, atlas_model::file_entry::FileKind::Dir)
                                     });
                                 (path_str, is_dir)
                             })
                             .collect();
                         if !entries.is_empty() {
-                            let _ = self.cloud_tx.send(crate::cloud::CloudCmd::DeleteRemote {
-                                id: remote_id,
-                                entries,
-                                parent: current_path,
-                            });
+                            let _ = self
+                                .cloud_tx
+                                .send(atlas_core::cloud::CloudCmd::DeleteRemote {
+                                    id: remote_id,
+                                    entries,
+                                    parent: current_path,
+                                });
                         }
                         continue;
                     }
@@ -485,14 +500,14 @@ impl App {
                     if let Some((remote_id, current_path)) = self.focused_remote_tab() {
                         let from_str = from.to_string_lossy().replace('\\', "/");
                         let to_str = to.to_string_lossy().replace('\\', "/");
-                        let _ = self
-                            .cloud_tx
-                            .send(crate::cloud::CloudCmd::RenameRemoteEntry {
-                                id: remote_id,
-                                from: from_str,
-                                to: to_str,
-                                parent: current_path,
-                            });
+                        let _ =
+                            self.cloud_tx
+                                .send(atlas_core::cloud::CloudCmd::RenameRemoteEntry {
+                                    id: remote_id,
+                                    from: from_str,
+                                    to: to_str,
+                                    parent: current_path,
+                                });
                         continue;
                     }
                     self.rename_file(from, to);
@@ -506,11 +521,13 @@ impl App {
                         } else {
                             format!("{}/{}", parent_str.trim_end_matches('/'), name)
                         };
-                        let _ = self.cloud_tx.send(crate::cloud::CloudCmd::MkdirRemote {
-                            id: remote_id,
-                            path: folder_path,
-                            parent: current_path,
-                        });
+                        let _ = self
+                            .cloud_tx
+                            .send(atlas_core::cloud::CloudCmd::MkdirRemote {
+                                id: remote_id,
+                                path: folder_path,
+                                parent: current_path,
+                            });
                         continue;
                     }
                     let path = parent.join(&name);
@@ -523,19 +540,50 @@ impl App {
                 Action::OpenTerminal { dir } => {
                     #[cfg(target_os = "linux")]
                     {
-                        let _ = std::process::Command::new("xdg-terminal").current_dir(&dir).spawn()
-                            .or_else(|_| std::process::Command::new("gnome-terminal").arg("--working-directory").arg(&dir).spawn())
-                            .or_else(|_| std::process::Command::new("alacritty").arg("--working-directory").arg(&dir).spawn())
-                            .or_else(|_| std::process::Command::new("kitty").arg("--directory").arg(&dir).spawn())
-                            .or_else(|_| std::process::Command::new("konsole").arg("--workdir").arg(&dir).spawn());
+                        let _ = std::process::Command::new("xdg-terminal")
+                            .current_dir(&dir)
+                            .spawn()
+                            .or_else(|_| {
+                                std::process::Command::new("gnome-terminal")
+                                    .arg("--working-directory")
+                                    .arg(&dir)
+                                    .spawn()
+                            })
+                            .or_else(|_| {
+                                std::process::Command::new("alacritty")
+                                    .arg("--working-directory")
+                                    .arg(&dir)
+                                    .spawn()
+                            })
+                            .or_else(|_| {
+                                std::process::Command::new("kitty")
+                                    .arg("--directory")
+                                    .arg(&dir)
+                                    .spawn()
+                            })
+                            .or_else(|_| {
+                                std::process::Command::new("konsole")
+                                    .arg("--workdir")
+                                    .arg(&dir)
+                                    .spawn()
+                            });
                     }
                     #[cfg(target_os = "windows")]
                     {
-                        let _ = std::process::Command::new("cmd").arg("/c").arg("start").arg("cmd").current_dir(&dir).spawn();
+                        let _ = std::process::Command::new("cmd")
+                            .arg("/c")
+                            .arg("start")
+                            .arg("cmd")
+                            .current_dir(&dir)
+                            .spawn();
                     }
                     #[cfg(target_os = "macos")]
                     {
-                        let _ = std::process::Command::new("open").arg("-a").arg("Terminal").arg(&dir).spawn();
+                        let _ = std::process::Command::new("open")
+                            .arg("-a")
+                            .arg("Terminal")
+                            .arg(&dir)
+                            .spawn();
                     }
                 }
                 Action::Paste { dest } => {
@@ -578,10 +626,10 @@ impl App {
                 // gpui drop handlers: `Move` carries an internal drag,
                 // `CopyTo` external paths dropped onto the window.
                 Action::Move { paths, dest } => {
-                    self.move_files(paths, dest, crate::state::ops::TransferOrigin::DndInternal);
+                    self.move_files(paths, dest, atlas_model::ops::TransferOrigin::DndInternal);
                 }
                 Action::CopyTo { paths, dest } => {
-                    self.copy_files(paths, dest, crate::state::ops::TransferOrigin::DndExternal);
+                    self.copy_files(paths, dest, atlas_model::ops::TransferOrigin::DndExternal);
                 }
                 Action::Undo => self.undo(),
                 Action::Redo => self.redo(),
@@ -602,15 +650,13 @@ impl App {
                     if !paths.is_empty() {
                         self.rename_edit = None;
                         self.state.batch_rename =
-                            Some(crate::state::batch_rename::BatchRenameState::new(paths));
+                            Some(atlas_model::batch_rename::BatchRenameState::new(paths));
                         // Fresh native inputs for this session.
                         self.batch_pattern_input = None;
                         self.batch_replacement_input = None;
                         self.batch_rename_field = crate::app::BatchRenameField::Pattern;
                     }
                 }
-                Action::SplitHorizontal(pane_id) => self.split_pane(pane_id, false),
-                Action::SplitVertical(pane_id) => self.split_pane(pane_id, true),
                 Action::SplitHorizontalFocused => {
                     let tabs_id = self
                         .state
@@ -627,7 +673,6 @@ impl App {
                         .unwrap_or(self.state.focused_tile);
                     self.split_pane(tabs_id, true);
                 }
-                Action::ClosePane(pane_id) => self.close_pane(pane_id),
                 Action::CloseFocusedPane => {
                     let tabs_id = self
                         .state
@@ -655,10 +700,10 @@ impl App {
                         .is_some_and(|c| c.location == loc);
                     if !already {
                         if let Some(ts) = self.state.tab_states.get_mut(&tile) {
-                            ts.miller = crate::state::tab::MillerState::default();
+                            ts.miller = atlas_model::tab::MillerState::default();
                             ts.miller
                                 .columns
-                                .push(crate::state::tab::MillerColumn::new(loc.clone()));
+                                .push(atlas_model::tab::MillerColumn::new(loc.clone()));
                         }
                         self.spawn_miller_list(tile, loc);
                     }
@@ -682,19 +727,6 @@ impl App {
                         }
                     }
                 }
-                Action::MillerFocusColumn { tile, column } => {
-                    if let Some(ts) = self.state.tab_states.get_mut(&tile) {
-                        if let Some(col) = ts.miller.columns.get_mut(column) {
-                            if col.selection.selected.is_empty() && !col.entries.is_empty() {
-                                col.selection.selected.insert(0);
-                                col.selection.keyboard_cursor = Some(0);
-                            }
-                            ts.miller.focused = column;
-                            ts.selection.scroll_to_selected = true;
-                        }
-                    }
-                    self.state.focused_tile = tile;
-                }
                 Action::FocusNextPane => {
                     let panes = self.state.all_pane_tile_ids();
                     if panes.len() > 1 {
@@ -710,9 +742,21 @@ impl App {
                 }
                 Action::SetViewMode(mode) => {
                     let tab = self.state.focused_tile;
+                    let mut folder_pref_write = None;
                     if let Some(data) = self.state.active_tab_data_mut() {
                         data.view_mode = mode.clone();
+                        if let atlas_model::location::Location::Directory(path) = &data.location {
+                            folder_pref_write = Some((
+                                path.clone(),
+                                atlas_model::profiles::FolderViewPref {
+                                    view_mode: mode.clone(),
+                                    sort_col: data.sort_col.clone(),
+                                    sort_dir: data.sort_dir.clone(),
+                                },
+                            ));
+                        }
                     }
+                    self.save_folder_view_pref(folder_pref_write);
                     // Leaving Miller can leave the canonical entries empty (Miller keeps
                     // its data in its own columns); reload so the other views render.
                     if mode != ViewMode::Miller {
@@ -783,12 +827,12 @@ impl App {
                 }
                 Action::ResetSidebarSections => {
                     self.state.profiles.active_mut().sidebar_sections =
-                        crate::state::profiles::default_sections();
+                        atlas_model::profiles::default_sections();
                 }
                 Action::RemoveBookmark(idx) => {
                     if idx < self.state.profiles.active().bookmarks.len() {
                         self.state.profiles.active_mut().bookmarks.remove(idx);
-                        crate::util::config::save_profiles(&self.state.profiles);
+                        atlas_core::util::config::save_profiles(&self.state.profiles);
                     }
                 }
                 Action::AddBookmark { name, path } => {
@@ -796,20 +840,22 @@ impl App {
                     if let Some(existing) = bookmarks.iter_mut().find(|b| b.path == path) {
                         existing.name = name;
                     } else {
-                        bookmarks.push(crate::state::profiles::Bookmark { name, path });
+                        bookmarks.push(atlas_model::profiles::Bookmark { name, path });
                     }
-                    crate::util::config::save_profiles(&self.state.profiles);
+                    atlas_core::util::config::save_profiles(&self.state.profiles);
                 }
                 Action::CreateTag {
                     name,
                     color,
                     profile,
                 } => {
-                    let _ = self.tag_db_tx.send(crate::fs::tag_db::TagDbCmd::CreateTag {
-                        name,
-                        color,
-                        profile,
-                    });
+                    let _ = self
+                        .tag_db_tx
+                        .send(atlas_core::fs::tag_db::TagDbCmd::CreateTag {
+                            name,
+                            color,
+                            profile,
+                        });
                 }
                 Action::RenameTag { tag, name } => {
                     if let Some(def) = self.state.tag_cache.defs.iter_mut().find(|d| d.id == tag) {
@@ -817,7 +863,7 @@ impl App {
                     }
                     let _ = self
                         .tag_db_tx
-                        .send(crate::fs::tag_db::TagDbCmd::RenameTag { tag, name });
+                        .send(atlas_core::fs::tag_db::TagDbCmd::RenameTag { tag, name });
                 }
                 Action::OpenCreateTagOverlay { global } => {
                     self.state.profile_ui.creating_tag = true;
@@ -825,7 +871,7 @@ impl App {
                     self.state.profile_ui.editing_tag = None;
                     self.state.profile_ui.new_tag_global = global;
                     self.state.profile_ui.new_tag_name.clear();
-                    self.state.profile_ui.new_tag_color = crate::state::profiles::PRESET_COLORS[0];
+                    self.state.profile_ui.new_tag_color = atlas_model::profiles::PRESET_COLORS[0];
                 }
                 Action::OpenRenameTagOverlay {
                     tag,
@@ -854,42 +900,42 @@ impl App {
                     }
                     let _ = self
                         .tag_db_tx
-                        .send(crate::fs::tag_db::TagDbCmd::DeleteTag(tag));
+                        .send(atlas_core::fs::tag_db::TagDbCmd::DeleteTag(tag));
                 }
                 Action::AssignTagToFiles { tag, paths } => {
                     self.state.tag_cache.assign_local(tag, &paths);
                     let _ = self
                         .tag_db_tx
-                        .send(crate::fs::tag_db::TagDbCmd::AssignTag { tag, paths });
+                        .send(atlas_core::fs::tag_db::TagDbCmd::AssignTag { tag, paths });
                     let _ = self
                         .tag_db_tx
-                        .send(crate::fs::tag_db::TagDbCmd::QueryPathsForTag(tag));
+                        .send(atlas_core::fs::tag_db::TagDbCmd::QueryPathsForTag(tag));
                 }
                 Action::UnassignTagFromFiles { tag, paths } => {
                     self.state.tag_cache.unassign_local(tag, &paths);
                     let _ = self
                         .tag_db_tx
-                        .send(crate::fs::tag_db::TagDbCmd::UnassignTag { tag, paths });
+                        .send(atlas_core::fs::tag_db::TagDbCmd::UnassignTag { tag, paths });
                     let _ = self
                         .tag_db_tx
-                        .send(crate::fs::tag_db::TagDbCmd::QueryPathsForTag(tag));
+                        .send(atlas_core::fs::tag_db::TagDbCmd::QueryPathsForTag(tag));
                 }
                 Action::OpenTagResults { pane, tag } => self.open_tag_results(pane, tag),
                 Action::ZoomIn => {
                     self.state.settings.global_zoom =
                         (self.state.settings.global_zoom * 1.1).min(3.0);
-                    crate::util::config::save_settings(&self.state.settings);
+                    atlas_core::util::config::save_settings(&self.state.settings);
                     self.theme_dirty = true;
                 }
                 Action::ZoomOut => {
                     self.state.settings.global_zoom =
                         (self.state.settings.global_zoom / 1.1).max(0.5);
-                    crate::util::config::save_settings(&self.state.settings);
+                    atlas_core::util::config::save_settings(&self.state.settings);
                     self.theme_dirty = true;
                 }
                 Action::ZoomReset => {
                     self.state.settings.global_zoom = 1.0;
-                    crate::util::config::save_settings(&self.state.settings);
+                    atlas_core::util::config::save_settings(&self.state.settings);
                     self.theme_dirty = true;
                 }
                 Action::MountDevice(dev) => self.mount_device(dev),
@@ -930,7 +976,7 @@ impl App {
                     }
                 }
                 Action::TogglePreviewEditMode => {
-                    use crate::state::profiles::PreviewFeature;
+                    use atlas_model::profiles::PreviewFeature;
                     let mut prefs = self.state.profiles.active().scoped::<PreviewFeature>();
                     prefs.edit_mode = !prefs.edit_mode;
                     // Update the live editor state; the render uses editor.editing.
@@ -941,10 +987,10 @@ impl App {
                         .profiles
                         .active_mut()
                         .set_scoped::<PreviewFeature>(&prefs);
-                    crate::util::config::save_profiles(&self.state.profiles);
+                    atlas_core::util::config::save_profiles(&self.state.profiles);
                 }
                 Action::TogglePreviewLineNumbers => {
-                    use crate::state::profiles::PreviewFeature;
+                    use atlas_model::profiles::PreviewFeature;
                     let mut prefs = self.state.profiles.active().scoped::<PreviewFeature>();
                     prefs.show_line_numbers = !prefs.show_line_numbers;
                     // Mark the live editor so render_text_preview syncs InputState.
@@ -956,7 +1002,7 @@ impl App {
                         .profiles
                         .active_mut()
                         .set_scoped::<PreviewFeature>(&prefs);
-                    crate::util::config::save_profiles(&self.state.profiles);
+                    atlas_core::util::config::save_profiles(&self.state.profiles);
                 }
                 Action::PreviewZoomIn => {
                     let tab = self.state.focused_tile;
@@ -981,13 +1027,13 @@ impl App {
 }
 
 impl App {
-    pub(crate) fn close_search_in_place(&mut self, tile: crate::state::layout_tree::TileId) {
+    pub(crate) fn close_search_in_place(&mut self, tile: atlas_model::layout_tree::TileId) {
         self.restore_search_original_entries(tile);
         if let Some(ts) = self.state.tab_states.get_mut(&tile) {
             ts.search.active = false;
             ts.search.focus = false;
             ts.search.query.clear();
-            ts.search.status = crate::state::tab::SearchStatus::Idle;
+            ts.search.status = atlas_model::tab::SearchStatus::Idle;
             ts.search.error = None;
             ts.filter.clear();
             ts.visible_valid = false;
@@ -996,7 +1042,7 @@ impl App {
         self.search_inputs.remove(&tile);
     }
 
-    pub(crate) fn refresh_search_in_place(&mut self, tile: crate::state::layout_tree::TileId) {
+    pub(crate) fn refresh_search_in_place(&mut self, tile: atlas_model::layout_tree::TileId) {
         let Some((query, recursive)) = self.state.tab_states.get(&tile).map(|ts| {
             (
                 ts.search.query.trim().to_string(),
@@ -1011,7 +1057,7 @@ impl App {
             if let Some(ts) = self.state.tab_states.get_mut(&tile) {
                 ts.filter.clear();
                 ts.visible_valid = false;
-                ts.search.status = crate::state::tab::SearchStatus::Idle;
+                ts.search.status = atlas_model::tab::SearchStatus::Idle;
                 ts.search.error = None;
                 ts.selection.clear();
             }
@@ -1024,7 +1070,7 @@ impl App {
                 ts.filter.clone_from(&query);
                 ts.visible_valid = false;
                 select_first_visible(ts);
-                ts.search.status = crate::state::tab::SearchStatus::Ready;
+                ts.search.status = atlas_model::tab::SearchStatus::Ready;
                 ts.search.error = None;
             }
             return;
@@ -1045,7 +1091,7 @@ impl App {
                 ts.search.original_entries = Some(ts.entries.clone());
             }
             ts.search.generation = ts.search.generation.wrapping_add(1);
-            ts.search.status = crate::state::tab::SearchStatus::Searching;
+            ts.search.status = atlas_model::tab::SearchStatus::Searching;
             ts.search.error = None;
             ts.filter.clear();
             ts.visible_valid = false;
@@ -1054,16 +1100,16 @@ impl App {
 
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            match crate::search::name::search_names_recursive(root, query, show_hidden).await {
+            match atlas_core::search::name::search_names_recursive(root, query, show_hidden).await {
                 Ok(entries) => {
-                    let _ = tx.send(crate::state::app_state::BgResult::SearchInPlaceResults {
+                    let _ = tx.send(atlas_model::app_state::BgResult::SearchInPlaceResults {
                         tab: tile,
                         gen: generation,
                         entries,
                     });
                 }
                 Err(err) => {
-                    let _ = tx.send(crate::state::app_state::BgResult::SearchInPlaceError {
+                    let _ = tx.send(atlas_model::app_state::BgResult::SearchInPlaceError {
                         tab: tile,
                         gen: generation,
                         error: err.to_string(),
@@ -1073,7 +1119,7 @@ impl App {
         });
     }
 
-    fn restore_search_original_entries(&mut self, tile: crate::state::layout_tree::TileId) {
+    fn restore_search_original_entries(&mut self, tile: atlas_model::layout_tree::TileId) {
         let Some(ts) = self.state.tab_states.get_mut(&tile) else {
             return;
         };
@@ -1083,7 +1129,7 @@ impl App {
     }
 }
 
-fn select_first_visible(ts: &mut crate::state::tab::TabState) {
+fn select_first_visible(ts: &mut atlas_model::tab::TabState) {
     let first = ts.visible_indices().first().copied();
     ts.selection.clear();
     if let Some(idx) = first {

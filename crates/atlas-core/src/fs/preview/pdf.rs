@@ -21,7 +21,16 @@ fn preview_pdf(path: &Path, pdftoppm: &Path) -> PreviewResult {
         std::env::temp_dir().join(format!("atlas-pdf-preview-{}", uuid::Uuid::new_v4()));
     let png_path = output_prefix.with_extension("png");
     let output = match Command::new(pdftoppm)
-        .args(["-f", "1", "-l", "1", "-scale-to", MAX_PDF_PREVIEW_EDGE, "-png", "-singlefile"])
+        .args([
+            "-f",
+            "1",
+            "-l",
+            "1",
+            "-scale-to",
+            MAX_PDF_PREVIEW_EDGE,
+            "-png",
+            "-singlefile",
+        ])
         .arg(path)
         .arg(&output_prefix)
         .output()

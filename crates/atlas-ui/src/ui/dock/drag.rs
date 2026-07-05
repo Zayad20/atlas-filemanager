@@ -1,8 +1,8 @@
 use gpui::prelude::*;
-use gpui::{px, Context, Render, Window, div, Styled};
-use gpui_component::{ActiveTheme as _};
+use gpui::{div, px, Context, Render, Styled, Window};
+use gpui_component::ActiveTheme as _;
 
-use crate::state::layout_tree::TileId;
+use atlas_model::layout_tree::TileId;
 
 #[derive(Clone)]
 pub(crate) struct TabDrag {
@@ -38,5 +38,9 @@ pub(crate) fn tab_drag_entity(
     size: Option<gpui::Size<gpui::Pixels>>,
     cx: &mut gpui::App,
 ) -> gpui::Entity<TabDrag> {
-    cx.new(|_| TabDrag { pane_id, content, size })
+    cx.new(|_| TabDrag {
+        pane_id,
+        content,
+        size,
+    })
 }

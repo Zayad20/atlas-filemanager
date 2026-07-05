@@ -80,7 +80,7 @@ impl App {
             rust_i18n::t!("tag_scope_profile").to_string()
         };
 
-        let color_buttons = crate::state::profiles::PRESET_COLORS
+        let color_buttons = atlas_model::profiles::PRESET_COLORS
             .iter()
             .enumerate()
             .map(|(idx, color)| {

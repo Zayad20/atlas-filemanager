@@ -7,11 +7,10 @@
 
 use atlas_model::app_state::BgResult;
 use atlas_model::ops::{
-    ConflictItem, ConflictPolicy, OpError, Resolution, TransferKind, TransferOrigin,
+    ConflictItem, ConflictPolicy, OpError, OpErrorKind, Resolution, TransferKind, TransferOrigin,
     TransferReport, TransferRequest,
 };
 use atlas_model::pane::TabId;
-use crate::util::display::display_name;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -94,34 +93,34 @@ fn ext_path(p: &Path) -> PathBuf {
 // Error mapping
 // ---------------------------------------------------------------------------
 
-/// Map an `io::Error` to a short, user-facing Spanish message.
-pub fn friendly_io_detail(io: &std::io::Error) -> String {
+/// Map an `io::Error` to a typed cause the UI can translate.
+pub fn io_error_kind(io: &std::io::Error) -> OpErrorKind {
     if let Some(code) = io.raw_os_error() {
         match code {
-            5 => return "Permiso denegado".into(),
+            5 => return OpErrorKind::PermissionDenied,
             // ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION
-            32 | 33 => return "Está en uso por otro programa".into(),
+            32 | 33 => return OpErrorKind::InUse,
             // ERROR_DISK_FULL / ERROR_HANDLE_DISK_FULL
-            112 | 39 => return "No hay espacio en disco".into(),
+            112 | 39 => return OpErrorKind::DiskFull,
             // ERROR_FILENAME_EXCED_RANGE / ERROR_BUFFER_OVERFLOW
-            206 | 111 => return "La ruta es demasiado larga".into(),
+            206 | 111 => return OpErrorKind::PathTooLong,
             // ERROR_BAD_NETPATH / ERROR_UNEXP_NET_ERR / ERROR_NETNAME_DELETED /
             // ERROR_BAD_NET_NAME / ERROR_NETWORK_UNREACHABLE
-            53 | 59 | 64 | 67 | 1231 => return "No se puede acceder a la ubicación de red".into(),
+            53 | 59 | 64 | 67 | 1231 => return OpErrorKind::NetworkUnreachable,
             _ => {}
         }
     }
     match io.kind() {
-        std::io::ErrorKind::PermissionDenied => "Permiso denegado".into(),
-        std::io::ErrorKind::NotFound => "Ya no existe".into(),
-        _ => io.to_string(),
+        std::io::ErrorKind::PermissionDenied => OpErrorKind::PermissionDenied,
+        std::io::ErrorKind::NotFound => OpErrorKind::Gone,
+        _ => OpErrorKind::Msg(io.to_string()),
     }
 }
 
 fn op_error(path: &Path, io: &std::io::Error) -> OpError {
     OpError {
         path: path.to_path_buf(),
-        message: friendly_io_detail(io),
+        kind: io_error_kind(io),
     }
 }
 
@@ -129,26 +128,35 @@ fn op_error(path: &Path, io: &std::io::Error) -> OpError {
 // Filename validation (shared by rename inline, create folder, batch rename)
 // ---------------------------------------------------------------------------
 
-/// Validate a bare file/folder name for Windows. Returns a user-facing error.
-pub fn validate_filename(name: &str) -> Result<(), String> {
+/// Typed filename-validation failure; the UI translates each variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FilenameError {
+    Empty,
+    InvalidChar(char),
+    TrailingDotOrSpace,
+    Reserved(String),
+}
+
+/// Validate a bare file/folder name for Windows.
+pub fn validate_filename(name: &str) -> Result<(), FilenameError> {
     const RESERVED: [&str; 22] = [
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
         "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
     if name.trim().is_empty() {
-        return Err("El nombre no puede estar vacío".into());
+        return Err(FilenameError::Empty);
     }
     if let Some(bad) = name.chars().find(|c| {
         matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || (*c as u32) < 32
     }) {
-        return Err(format!("El nombre contiene un carácter no válido: «{bad}»"));
+        return Err(FilenameError::InvalidChar(bad));
     }
     if name.ends_with('.') || name.ends_with(' ') {
-        return Err("El nombre no puede terminar en punto o espacio".into());
+        return Err(FilenameError::TrailingDotOrSpace);
     }
     let base = name.split('.').next().unwrap_or("").to_ascii_uppercase();
     if RESERVED.contains(&base.as_str()) {
-        return Err(format!("«{base}» es un nombre reservado de Windows"));
+        return Err(FilenameError::Reserved(base));
     }
     Ok(())
 }
@@ -162,8 +170,9 @@ pub struct ValidationOutcome {
     pub valid: Vec<PathBuf>,
     /// Per-item failures to surface as toasts; the rest of the transfer continues.
     pub errors: Vec<OpError>,
-    /// A request-level failure (bad destination); nothing can run.
-    pub fatal: Option<String>,
+    /// A request-level failure: the destination folder no longer exists;
+    /// nothing can run. Holds the missing destination for the UI to name.
+    pub fatal: Option<PathBuf>,
 }
 
 /// Pre-flight checks shared by every entry point (paste, drag-and-drop, menu, undo).
@@ -174,24 +183,21 @@ pub fn validate(req: &TransferRequest) -> ValidationOutcome {
         fatal: None,
     };
     if !req.dest.is_dir() {
-        out.fatal = Some(format!(
-            "La carpeta de destino «{}» ya no existe",
-            display_name(&req.dest)
-        ));
+        out.fatal = Some(req.dest.clone());
         return out;
     }
     for src in &req.sources {
         if !src.exists() {
             out.errors.push(OpError {
                 path: src.clone(),
-                message: "Ya no existe".into(),
+                kind: OpErrorKind::Gone,
             });
             continue;
         }
         if paths_equal_ci(src, &req.dest) || starts_with_ci(&req.dest, src) {
             out.errors.push(OpError {
                 path: src.clone(),
-                message: "No puedes copiar o mover una carpeta dentro de sí misma".into(),
+                kind: OpErrorKind::SelfNested,
             });
             continue;
         }
@@ -477,7 +483,7 @@ async fn copy_recursive(src: &Path, dst: &Path, ctx: &mut TransferCtx) -> FileOu
             if let Err(e) = trash_path(dst).await {
                 ctx.errors.push(OpError {
                     path: dst.to_path_buf(),
-                    message: format!("No se pudo reemplazar: {e}"),
+                    kind: OpErrorKind::ReplaceFailed(e.to_string()),
                 });
                 return FileOutcome::Done;
             }
@@ -516,7 +522,7 @@ async fn copy_recursive(src: &Path, dst: &Path, ctx: &mut TransferCtx) -> FileOu
             if paths_equal_ci(src, dst) {
                 ctx.errors.push(OpError {
                     path: src.to_path_buf(),
-                    message: "No puedes sobrescribir un archivo consigo mismo".into(),
+                    kind: OpErrorKind::SelfOverwrite,
                 });
                 return FileOutcome::Done;
             }
@@ -524,7 +530,7 @@ async fn copy_recursive(src: &Path, dst: &Path, ctx: &mut TransferCtx) -> FileOu
             if let Err(e) = trash_path(dst).await {
                 ctx.errors.push(OpError {
                     path: dst.to_path_buf(),
-                    message: format!("No se pudo reemplazar: {e}"),
+                    kind: OpErrorKind::ReplaceFailed(e.to_string()),
                 });
                 return FileOutcome::Done;
             }
@@ -577,11 +583,10 @@ pub async fn execute(
             if needed > free {
                 report.errors.push(OpError {
                     path: pairs.first().map(|p| p.dst.clone()).unwrap_or_default(),
-                    message: format!(
-                        "No hay suficiente espacio en disco (se necesitan {}, quedan {})",
-                        crate::util::display::format_size(needed),
-                        crate::util::display::format_size(free)
-                    ),
+                    kind: OpErrorKind::NotEnoughSpace {
+                        needed: crate::util::display::format_size(needed),
+                        free: crate::util::display::format_size(free),
+                    },
                 });
                 let _ = tx.send(BgResult::TransferComplete {
                     id: op_id,
@@ -609,7 +614,7 @@ pub async fn execute(
         errors: Vec::new(),
     };
 
-    let mut repeated: (String, usize) = (String::new(), 0);
+    let mut repeated: (OpErrorKind, usize) = (OpErrorKind::Msg(String::new()), 0);
 
     'pairs: for pair in &pairs {
         if ctx.cancelled() {
@@ -622,7 +627,7 @@ pub async fn execute(
         if !src.exists() {
             report.errors.push(OpError {
                 path: src.clone(),
-                message: "Ya no existe".into(),
+                kind: OpErrorKind::Gone,
             });
             continue;
         }
@@ -646,7 +651,7 @@ pub async fn execute(
                     } else if let Err(e) = trash_path(&dst).await {
                         report.errors.push(OpError {
                             path: dst.clone(),
-                            message: format!("No se pudo reemplazar: {e}"),
+                            kind: OpErrorKind::ReplaceFailed(e.to_string()),
                         });
                         continue;
                     }
@@ -691,10 +696,7 @@ pub async fn execute(
                                     Ok(()) => report.completed.push((src.clone(), dst.clone())),
                                     Err(e) => ctx.errors.push(OpError {
                                         path: src.clone(),
-                                        message: format!(
-                                            "Se copió, pero no se pudo eliminar el origen: {}",
-                                            friendly_io_detail(&e)
-                                        ),
+                                        kind: OpErrorKind::SourceNotRemoved(e.to_string()),
                                     }),
                                 }
                             }
@@ -715,10 +717,7 @@ pub async fn execute(
                             Ok(()) => report.completed.push((src.clone(), dst.clone())),
                             Err(e) => ctx.errors.push(OpError {
                                 path: src.clone(),
-                                message: format!(
-                                    "Se copió, pero no se pudo eliminar el origen: {}",
-                                    friendly_io_detail(&e)
-                                ),
+                                kind: OpErrorKind::SourceNotRemoved(e.to_string()),
                             }),
                         }
                     } else {
@@ -731,18 +730,18 @@ pub async fn execute(
         // Anti-spam: a dead destination fails every remaining item the same way.
         if let Some(last) = ctx.errors.last() {
             if ctx.errors.len() > errors_before {
-                if last.message == repeated.0 {
+                if last.kind == repeated.0 {
                     repeated.1 += 1;
                     if repeated.1 >= MAX_REPEATED_ERRORS {
                         report.errors.append(&mut ctx.errors);
                         report.errors.push(OpError {
                             path: dst.clone(),
-                            message: "Operación abortada tras errores repetidos".into(),
+                            kind: OpErrorKind::RepeatedAbort,
                         });
                         break 'pairs;
                     }
                 } else {
-                    repeated = (last.message.clone(), 1);
+                    repeated = (last.kind.clone(), 1);
                 }
             }
         }
@@ -813,7 +812,7 @@ mod tests {
         assert!(out.valid.is_empty());
         assert_eq!(out.errors.len(), 1);
         assert_eq!(out.errors[0].path, gone);
-        assert!(out.errors[0].message.contains("Ya no existe"));
+        assert_eq!(out.errors[0].kind, OpErrorKind::Gone);
     }
 
     #[test]
@@ -838,7 +837,7 @@ mod tests {
         let out = validate(&req(vec![dir.clone()], &inner, TransferKind::Move));
         assert!(out.valid.is_empty());
         assert_eq!(out.errors.len(), 1);
-        assert!(out.errors[0].message.contains("dentro de sí misma"));
+        assert_eq!(out.errors[0].kind, OpErrorKind::SelfNested);
     }
 
     #[test]
@@ -1079,9 +1078,9 @@ mod tests {
         let report = run(pairs, TransferKind::Copy, not_cancelled()).await;
         assert_eq!(report.errors.len(), 1);
         assert!(
-            report.errors[0].message.contains("en uso"),
-            "got: {}",
-            report.errors[0].message
+            matches!(report.errors[0].kind, OpErrorKind::InUse),
+            "got: {:?}",
+            report.errors[0].kind
         );
     }
 

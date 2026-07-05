@@ -1,20 +1,19 @@
-#![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
 //! App-side glue for the cloud extension: routes `CloudAction`s to the worker,
 //! applies `BgResult`s to `CloudState`, and handles Access-mode remote browsing.
 
-use crate::state::layout_tree::{Tile, TileId};
+use atlas_model::layout_tree::{Tile, TileId};
 use std::path::PathBuf;
 
 use crate::app::App;
-use crate::cloud::{
+use atlas_core::cloud::{
     AccessKind, CloudCmd, CloudRemote, RemoteId, RemoteKind, RemoteStatus, TransferId,
 };
-use crate::state::app_state::BgResult;
-use crate::state::cloud_state::AddRemoteKind;
-use crate::state::location::Location;
-use crate::state::pane::TabData;
-use crate::state::settings::ViewMode;
-use crate::state::tab::LoadState;
+use atlas_model::app_state::BgResult;
+use atlas_model::cloud_state::AddRemoteKind;
+use atlas_model::location::Location;
+use atlas_model::pane::TabData;
+use atlas_model::settings::ViewMode;
+use atlas_model::tab::LoadState;
 
 /// Parse a remote tab's sentinel path (`remote:<id>` or `remote:<id>/<sub>`) into
 /// `(id, remote_relative_dir)`. Real local destinations are absolute (`/…`) so
@@ -59,7 +58,7 @@ impl App {
         match action {
             CloudAction::ShowAddDialog(show) => {
                 if show {
-                    self.state.cloud.add_form = crate::state::cloud_state::AddRemoteForm::default();
+                    self.state.cloud.add_form = atlas_model::cloud_state::AddRemoteForm::default();
                 }
                 self.state.cloud.show_add_dialog = show;
             }
@@ -78,7 +77,7 @@ impl App {
             }
             CloudAction::OpenAccess(id) => self.open_remote_access(id),
             CloudAction::OpenMount(id) => {
-                let mount = crate::cloud::mount_point_for(&id);
+                let mount = atlas_core::cloud::mount_point_for(&id);
                 if mount.is_dir() {
                     self.navigate(self.state.focused_tile, mount);
                 }
@@ -292,7 +291,7 @@ impl App {
     /// best-effort: the daemon lives on a never-joined runtime thread, so its
     /// `Drop` won't run at process exit — we unmount and kill the PID directly.
     pub(crate) fn cleanup_cloud_on_exit(&self) {
-        use crate::cloud::RemoteStatus;
+        use atlas_core::cloud::RemoteStatus;
         for r in &self.state.cloud.remotes {
             if let RemoteStatus::Mounted(_path) = &r.status {
                 // Windows: WinFsp FUSE mounts are cleaned up when the rclone daemon
@@ -317,7 +316,8 @@ impl App {
                 }
             }
         }
-        let pid = crate::cloud::rclone::sidecar::RCD_PID.load(std::sync::atomic::Ordering::SeqCst);
+        let pid =
+            atlas_core::cloud::rclone::sidecar::RCD_PID.load(std::sync::atomic::Ordering::SeqCst);
         if pid != 0 {
             #[cfg(windows)]
             let _ = std::process::Command::new("taskkill")
@@ -431,7 +431,7 @@ impl App {
                     .map(|e| {
                         (
                             e.path.clone(),
-                            matches!(e.kind, crate::state::file_entry::FileKind::Dir),
+                            matches!(e.kind, atlas_model::file_entry::FileKind::Dir),
                         )
                     })
                     .collect()
@@ -468,7 +468,7 @@ impl App {
     /// Used by `Action::Activate` which carries the tile id explicitly.
     pub(crate) fn open_remote_paths_for(
         &mut self,
-        tile: crate::state::layout_tree::TileId,
+        tile: atlas_model::layout_tree::TileId,
         paths: &[PathBuf],
     ) -> bool {
         let Some(Location::Remote { id, .. }) =
@@ -476,7 +476,7 @@ impl App {
         else {
             return false;
         };
-        let dest_dir = crate::cloud::downloads_dir();
+        let dest_dir = atlas_core::cloud::downloads_dir();
         for path in paths {
             let remote_path = path.to_string_lossy().into_owned();
             let name = path
@@ -591,7 +591,7 @@ impl App {
                 // Re-use the rclone download progress indicator for WinFsp.
                 let _ = self
                     .tx
-                    .send(crate::state::app_state::BgResult::CloudRcloneProgress { done, total });
+                    .send(atlas_model::app_state::BgResult::CloudRcloneProgress { done, total });
             }
             #[cfg(windows)]
             BgResult::WinFspInstalled { retry_id } => {

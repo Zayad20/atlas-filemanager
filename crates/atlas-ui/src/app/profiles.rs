@@ -1,6 +1,6 @@
 use crate::app::App;
-use crate::state::layout_tree::{Tile, Tree};
-use crate::state::pane::TabData;
+use atlas_model::layout_tree::{Tile, Tree};
+use atlas_model::pane::TabData;
 use std::path::PathBuf;
 
 impl App {
@@ -60,11 +60,10 @@ impl App {
         self.state.pane_tree = new_tree;
         // The Dock caches FilePanels keyed by TileId; without advancing the layout
         // revision `ensure_dock` would keep rendering the previous profile's panes
-        // (now dangling tile ids → "Carpeta vacía" / blank). Force a center rebuild.
+        // (now dangling tile ids -> "Empty folder" / blank). Force a center rebuild.
         self.layout_revision += 1;
         self.state.tab_states.clear();
         self.state.preview.clear_all();
-        self.pending_preview = None;
 
         let pane_ids = self.state.all_pane_tile_ids();
         if let Some(&first) = pane_ids.first() {
@@ -90,12 +89,12 @@ impl App {
             };
             let op_id = self.state.next_op_id();
             let ts = self.state.tab_states.entry(tile_id).or_default();
-            ts.load_state = crate::state::tab::LoadState::Loading;
+            ts.load_state = atlas_model::tab::LoadState::Loading;
             ts.last_nav_op_id = op_id;
 
             let tx_clone = self.tx.clone();
             self.rt.spawn(async move {
-                match crate::fs::list::list_dir(
+                match atlas_core::fs::list::list_dir(
                     &path,
                     show_hidden,
                     sort_col,
@@ -106,14 +105,14 @@ impl App {
                 {
                     Ok(mut entries) => {
                         crate::ui::views::details::format_entries(&mut entries);
-                        let _ = tx_clone.send(crate::state::app_state::BgResult::DirListed {
+                        let _ = tx_clone.send(atlas_model::app_state::BgResult::DirListed {
                             tab: tile_id,
                             op_id,
                             entries,
                         });
                     }
                     Err(e) => {
-                        let _ = tx_clone.send(crate::state::app_state::BgResult::DirListError {
+                        let _ = tx_clone.send(atlas_model::app_state::BgResult::DirListError {
                             tab: tile_id,
                             op_id,
                             error: e.to_string(),
@@ -125,8 +124,8 @@ impl App {
 
         // Persist the swap immediately so a crash before window close keeps the
         // active profile and its restored view/layout.
-        crate::util::config::save_profiles(&self.state.profiles);
-        crate::util::config::save_settings(&self.state.settings);
+        atlas_core::util::config::save_profiles(&self.state.profiles);
+        atlas_core::util::config::save_settings(&self.state.settings);
     }
 
     /// Create a new profile seeded from the *current* view/layout and theme, then
@@ -139,7 +138,7 @@ impl App {
         } else {
             name.trim().to_string()
         };
-        let mut profile = crate::state::profiles::Profile::new(name);
+        let mut profile = atlas_model::profiles::Profile::new(name);
         // Inherit the current look so a new profile doesn't snap to hard defaults.
         profile.workspace = self.state.settings.workspace();
         profile.theme = self.state.profiles.active().theme.clone();
@@ -210,7 +209,7 @@ impl App {
             return;
         };
         profile.name = trimmed.to_string();
-        crate::util::config::save_profiles(&self.state.profiles);
+        atlas_core::util::config::save_profiles(&self.state.profiles);
     }
 
     pub(crate) fn delete_active_profile(&mut self) {
@@ -248,9 +247,9 @@ impl App {
             }
         }
         self.state.profile_ui.confirming_delete_profile = None;
-        crate::util::config::save_profiles(&self.state.profiles);
+        atlas_core::util::config::save_profiles(&self.state.profiles);
         if was_active {
-            crate::util::config::save_settings(&self.state.settings);
+            atlas_core::util::config::save_settings(&self.state.settings);
         } else {
             self.layout_revision += 1;
         }
@@ -260,7 +259,7 @@ impl App {
 /// Per-profile Details-view column preferences (widths + visual order).
 /// Blueprint: same pattern as `IconSelection`.
 pub(crate) struct DetailsColumns;
-impl crate::state::profiles::ProfileScoped for DetailsColumns {
+impl atlas_model::profiles::ProfileScoped for DetailsColumns {
     const KEY: &'static str = "details_columns";
     type State = crate::app::DetailsColumnPrefs;
 }
@@ -277,7 +276,7 @@ impl App {
             .profiles
             .active_mut()
             .set_scoped::<DetailsColumns>(&prefs);
-        crate::util::config::save_profiles(&self.state.profiles);
+        atlas_core::util::config::save_profiles(&self.state.profiles);
     }
 }
 
@@ -290,7 +289,7 @@ impl App {
 /// other "persist this per profile" feature should copy.
 pub(crate) struct IconSelection;
 
-impl crate::state::profiles::ProfileScoped for IconSelection {
+impl atlas_model::profiles::ProfileScoped for IconSelection {
     const KEY: &'static str = "icons";
     type State = std::collections::HashMap<String, String>;
 }
@@ -332,7 +331,7 @@ impl App {
             .profiles
             .active_mut()
             .set_scoped::<IconSelection>(&map);
-        crate::util::config::save_profiles(&self.state.profiles);
+        atlas_core::util::config::save_profiles(&self.state.profiles);
         self.apply_profile_icons();
     }
 
@@ -366,6 +365,6 @@ impl App {
             .unwrap_or_default();
         vars.insert(key.to_string(), value);
         self.state.profiles.active_mut().prefs.set(&ns, &vars);
-        crate::util::config::save_profiles(&self.state.profiles);
+        atlas_core::util::config::save_profiles(&self.state.profiles);
     }
 }

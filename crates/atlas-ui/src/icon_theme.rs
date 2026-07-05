@@ -163,8 +163,8 @@ fn resolve_svg_path(
 
 /// Cache key for a directory entry: `"/"` for folders, lowercase ext or `""`
 /// for files without an extension.
-pub fn icon_key(kind: &crate::state::file_entry::FileKind, ext: Option<&str>) -> String {
-    use crate::state::file_entry::FileKind;
+pub fn icon_key(kind: &atlas_model::file_entry::FileKind, ext: Option<&str>) -> String {
+    use atlas_model::file_entry::FileKind;
     match kind {
         FileKind::Dir => "/".to_string(),
         FileKind::File | FileKind::Symlink => ext.unwrap_or("").to_ascii_lowercase(),
@@ -172,8 +172,8 @@ pub fn icon_key(kind: &crate::state::file_entry::FileKind, ext: Option<&str>) ->
 }
 
 /// Collect the set of unique icon cache keys present in a file listing.
-pub fn collect_keys(entries: &[crate::state::file_entry::FileEntry]) -> Vec<String> {
-    use crate::state::file_entry::FileKind;
+pub fn collect_keys(entries: &[atlas_model::file_entry::FileEntry]) -> Vec<String> {
+    use atlas_model::file_entry::FileKind;
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Always pre-warm the generic file icon.
     seen.insert(String::new());

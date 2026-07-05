@@ -21,7 +21,11 @@ use tokio::process::{Child, Command};
 pub type DownloadProgress = Box<dyn Fn(u64, u64) + Send + Sync>;
 
 fn rclone_bin_name() -> &'static str {
-    if cfg!(windows) { "rclone.exe" } else { "rclone" }
+    if cfg!(windows) {
+        "rclone.exe"
+    } else {
+        "rclone"
+    }
 }
 
 /// Map the host platform to rclone's `<os>-<arch>` asset suffix. Covers every

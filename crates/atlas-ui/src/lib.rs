@@ -3,25 +3,12 @@
 //! `atlas-model` (state); the binary (`src/main.rs`) is a thin launcher over
 //! [`run`].
 //!
-//! FASE J: moved here from the binary's `src/{app,ui,input,state,fs,cloud,ext,
-//! search,util}`. The `state`/`fs`/`cloud`/`ext`/`search`/`util` modules are the
-//! same re-export shims as before, so existing `crate::state::…`, `crate::fs::…`
-//! paths inside the moved files keep resolving unchanged.
-
 // reason: gpui's actions! macro derives PartialEq (not Eq) on every action struct.
 #![allow(clippy::derive_partial_eq_without_eq)]
 
 rust_i18n::i18n!("locales", fallback = "en");
 
-// Re-export shims (kept crate-internal so moved files' `crate::…` paths resolve).
-#[cfg(feature = "cloud")]
-mod cloud;
-mod ext;
-mod fs;
 mod input;
-mod search;
-mod state;
-mod util;
 
 pub mod app;
 pub mod assets;
@@ -153,9 +140,13 @@ pub struct SidebarResetSections;
 
 /// Launch the gpui application. The caller owns the tokio runtime and passes its
 /// handle in; gpui drives the UI on the calling (main) thread.
-pub fn run(handle: tokio::runtime::Handle, app_started: Instant, on_quit: Option<Box<dyn FnOnce() + 'static>>) {
+pub fn run(
+    handle: tokio::runtime::Handle,
+    app_started: Instant,
+    on_quit: Option<Box<dyn FnOnce() + 'static>>,
+) {
     let run_started = Instant::now();
-    let settings = crate::util::config::load_settings();
+    let settings = atlas_core::util::config::load_settings();
     let lang = settings
         .language
         .clone()

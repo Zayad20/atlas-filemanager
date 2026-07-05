@@ -1,11 +1,11 @@
 //! Searchable tag-picker overlay for the inspector preview.
 //!
-//! Opened via `Action::OpenTagPicker` when the user clicks the "Añadir tag" button
+//! Opened via `Action::OpenTagPicker` when the user clicks the add-tag button
 //! below an image in the inspector. Renders as an absolutely-positioned panel anchored
 //! to the button, with a search input that filters existing tags.
 //!
 //! - Existing tags: shown as rows with a color swatch. Clicking assigns the tag.
-//! - "Crear tag «X»" appears at the bottom when the query has no match; clicking it
+//! - A create-tag row appears at the bottom when the query has no match; clicking it
 //!   dispatches `Action::CreateTag` (which opens the create-tag modal pre-seeded).
 //!
 //! Follows the exact structural pattern of `type_filter_menu.rs`:
@@ -100,13 +100,13 @@ impl App {
         let profile_name = self.state.profiles.active().name.clone();
 
         // Paths currently known to have tags (for checkmark display).
-        let first_path_tags: Vec<crate::state::tag_cache::TagId> = paths
+        let first_path_tags: Vec<atlas_model::tag_cache::TagId> = paths
             .first()
             .map(|p| self.state.tag_cache.tags_of(p).to_vec())
             .unwrap_or_default();
 
         // Collect matching tags.
-        let visible_tags: Vec<(crate::state::tag_cache::TagId, String, [u8; 3], bool)> = self
+        let visible_tags: Vec<(atlas_model::tag_cache::TagId, String, [u8; 3], bool)> = self
             .state
             .tag_cache
             .visible_defs(&profile_name)
@@ -199,20 +199,21 @@ impl App {
                             if assigned {
                                 // Toggle off: unassign.
                                 this.state.tag_cache.unassign_local(tag_id, &paths_c);
-                                let _ =
-                                    this.tag_db_tx
-                                        .send(crate::fs::tag_db::TagDbCmd::UnassignTag {
-                                            tag: tag_id,
-                                            paths: paths_c.clone(),
-                                        });
+                                let _ = this.tag_db_tx.send(
+                                    atlas_core::fs::tag_db::TagDbCmd::UnassignTag {
+                                        tag: tag_id,
+                                        paths: paths_c.clone(),
+                                    },
+                                );
                             } else {
                                 // Toggle on: assign.
                                 this.state.tag_cache.assign_local(tag_id, &paths_c);
-                                let _ =
-                                    this.tag_db_tx.send(crate::fs::tag_db::TagDbCmd::AssignTag {
+                                let _ = this.tag_db_tx.send(
+                                    atlas_core::fs::tag_db::TagDbCmd::AssignTag {
                                         tag: tag_id,
                                         paths: paths_c.clone(),
-                                    });
+                                    },
+                                );
                             }
                             this.close_tag_picker(cx);
                         });

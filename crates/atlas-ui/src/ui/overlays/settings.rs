@@ -3,8 +3,8 @@
 
 use crate::app::App;
 use crate::input::action::Action;
-use crate::state::settings::{InspectorPlacement, ViewMode};
 use crate::ui::motion;
+use atlas_model::settings::{InspectorPlacement, ViewMode};
 use gpui::prelude::*;
 use gpui::AnimationExt;
 use gpui::{div, px, AnyElement, Context, Entity, MouseButton, SharedString};
@@ -234,8 +234,8 @@ impl App {
                             app.state.settings.font_family = pick;
                             app.state.profiles.active_mut().workspace =
                                 app.state.settings.workspace();
-                            crate::util::config::save_profiles(&app.state.profiles);
-                            crate::util::config::save_settings(&app.state.settings);
+                            atlas_core::util::config::save_profiles(&app.state.profiles);
+                            atlas_core::util::config::save_settings(&app.state.settings);
                             cx.notify();
                         });
                     })
@@ -291,7 +291,7 @@ impl App {
                                             view.update(cx, |app, cx| {
                                                 let mut settings = app.state.settings.clone();
                                                 settings.language = None;
-                                                crate::util::config::save_settings(&settings);
+                                                atlas_core::util::config::save_settings(&settings);
                                                 app.state.settings = settings;
                                                 rust_i18n::set_locale("en"); // auto fallback for now
                                                 cx.notify();
@@ -315,7 +315,7 @@ impl App {
                                             view.update(cx, |app, cx| {
                                                 let mut settings = app.state.settings.clone();
                                                 settings.language = Some("en".to_string());
-                                                crate::util::config::save_settings(&settings);
+                                                atlas_core::util::config::save_settings(&settings);
                                                 app.state.settings = settings;
                                                 rust_i18n::set_locale("en");
                                                 cx.notify();
@@ -339,7 +339,7 @@ impl App {
                                             view.update(cx, |app, cx| {
                                                 let mut settings = app.state.settings.clone();
                                                 settings.language = Some("es".to_string());
-                                                crate::util::config::save_settings(&settings);
+                                                atlas_core::util::config::save_settings(&settings);
                                                 app.state.settings = settings;
                                                 rust_i18n::set_locale("es");
                                                 cx.notify();
@@ -428,7 +428,7 @@ impl App {
                 "set-eco-mode",
                 |app| {
                     app.state.settings.eco_mode = !app.state.settings.eco_mode;
-                    crate::util::config::save_settings(&app.state.settings);
+                    atlas_core::util::config::save_settings(&app.state.settings);
                 },
                 view.clone(),
             ))
@@ -535,8 +535,8 @@ impl App {
                     // Re-apply so the glass swap + window backdrop flip happen this frame
                     // (root.rs consumes `theme_dirty` before reading colors).
                     app.theme_dirty = true;
-                    crate::util::config::save_profiles(&app.state.profiles);
-                    crate::util::config::save_settings(&app.state.settings);
+                    atlas_core::util::config::save_profiles(&app.state.profiles);
+                    atlas_core::util::config::save_settings(&app.state.settings);
                 },
                 view.clone(),
             ))
@@ -754,5 +754,5 @@ impl App {
 fn set_scroll_smoothness(app: &mut App, delta: f32) {
     app.state.settings.scroll_smoothness =
         (app.state.settings.scroll_smoothness + delta).clamp(0.0, 1.0);
-    crate::util::config::save_settings(&app.state.settings);
+    atlas_core::util::config::save_settings(&app.state.settings);
 }

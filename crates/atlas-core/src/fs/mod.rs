@@ -4,6 +4,7 @@ pub mod mounts;
 pub mod tag_db;
 pub mod udisks;
 
+pub mod compress;
 pub mod ops;
 pub mod transfer;
 

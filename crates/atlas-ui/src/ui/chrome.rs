@@ -3,9 +3,6 @@
 
 use crate::app::App;
 use crate::input::action::Action;
-use crate::state::location::Location;
-use crate::state::pane::TabId;
-use crate::state::settings::ViewMode;
 use crate::ui::drag_hover::{
     drag_hover_recorder, drag_hover_recorder_with_drop, DragHoverCommand, DragHoverDropCommand,
     DragHoverId, DragHoverKind,
@@ -16,6 +13,9 @@ use crate::ui::glass::{
 use crate::ui::icons::{is_windows_theme, theme_icon, AtlasIcon};
 use crate::ui::search_shell::search_icon;
 use crate::ui::tooltips::shortcut_tooltip;
+use atlas_model::location::Location;
+use atlas_model::pane::TabId;
+use atlas_model::settings::ViewMode;
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window};
 use gpui_component::button::ButtonVariants as _;
@@ -102,9 +102,7 @@ impl App {
                 .as_archive()
                 .map(|(archive, inner)| (archive.to_path_buf(), inner.to_path_buf()))
         });
-        let pane_path = self
-            .tab_data_for(pane_id)
-            .map(|t| t.location.display_path());
+        let pane_location = self.tab_data_for(pane_id).map(|t| t.location.clone());
         let (can_back, can_forward, up_location, recent_locations, bookmark_target) = self
             .tab_data_for(pane_id)
             .map(|t| {
@@ -112,7 +110,10 @@ impl App {
                     !t.history.is_empty(),
                     !t.history_forward.is_empty(),
                     t.location.ascend(),
-                    self.recent_locations_for_pane(pane_id),
+                    self.recent_locations_for_pane(pane_id)
+                        .into_iter()
+                        .map(|loc| (self.resolved_location_label(&loc), loc))
+                        .collect::<Vec<_>>(),
                     self.bookmark_target_for_pane(pane_id),
                 )
             })
@@ -135,8 +136,22 @@ impl App {
                 .into_any_element(),
             )
         } else {
-            pane_path.as_ref().map(|p| {
-                breadcrumb(view, pane_id, p, fg, muted, border, windows_theme).into_any_element()
+            pane_location.as_ref().map(|location| match location {
+                Location::Directory(p) => {
+                    breadcrumb(view, pane_id, p, fg, muted, border, windows_theme)
+                        .into_any_element()
+                }
+                // Virtual locations (tag results, recycle bin, remotes) have no
+                // filesystem ancestors to climb — show a static labelled crumb
+                // instead of a clickable path that would navigate nowhere.
+                other => h_flex()
+                    .min_w(px(0.))
+                    .gap_1()
+                    .items_center()
+                    .text_color(fg)
+                    .child(crate::ui::icons::icon(location_icon(other), 13.0, muted))
+                    .child(div().truncate().child(self.resolved_location_label(other)))
+                    .into_any_element(),
             })
         };
         let button_hover = layer_color(border, 0.04, 0.42);
@@ -226,6 +241,20 @@ impl App {
             )
             .children(crumbs)
             .into_any_element()
+    }
+
+    /// User-facing label for a location: tag names resolved from the tag cache
+    /// and the recycle bin localized (never the `tag:N` sentinel path).
+    pub(crate) fn resolved_location_label(&self, location: &Location) -> SharedString {
+        match location {
+            Location::Tag(id) => self
+                .state
+                .tag_cache
+                .def(*id)
+                .map_or_else(|| location_label(location), |def| def.name.clone().into()),
+            Location::RecycleBin => rust_i18n::t!("sidebar_recycle_bin").into_owned().into(),
+            _ => location_label(location),
+        }
     }
 
     fn recent_locations_for_pane(&self, pane_id: TabId) -> Vec<Location> {
@@ -370,7 +399,7 @@ impl App {
         // "!" (with the error in its own right) on failure.
         let status_text = if error.is_some() {
             Some("!".to_string())
-        } else if status == crate::state::tab::SearchStatus::Searching {
+        } else if status == atlas_model::tab::SearchStatus::Searching {
             Some("…".to_string())
         } else if filtering {
             Some(format!("{count}"))
@@ -755,7 +784,7 @@ fn nav_button(
     enabled: bool,
     action: Action,
     view: Entity<App>,
-    recent: Vec<Location>,
+    recent: Vec<(SharedString, Location)>,
     up_location: Option<Location>,
     bookmark: Option<BookmarkTarget>,
     icon_color: Hsla,
@@ -896,7 +925,7 @@ fn nav_context_menu(
     mut menu: PopupMenu,
     pane_id: TabId,
     view: Entity<App>,
-    recent: Vec<Location>,
+    recent: Vec<(SharedString, Location)>,
     up_location: Option<Location>,
     bookmark: Option<BookmarkTarget>,
 ) -> PopupMenu {
@@ -904,8 +933,7 @@ fn nav_context_menu(
         menu = menu.label(rust_i18n::t!("no_recent_history"));
     } else {
         menu = menu.label(rust_i18n::t!("recent_places"));
-        for location in recent.into_iter().take(6) {
-            let label = location_label(&location);
+        for (label, location) in recent.into_iter().take(6) {
             let icon_name = location_icon(&location);
             let item_view = view.clone();
             menu = menu.item(

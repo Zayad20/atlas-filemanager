@@ -14,7 +14,7 @@ const TOAST_WRAP_COLS: usize = 58;
 const TOAST_MAX_BODY_H: f32 = 140.;
 
 impl App {
-    /// Toasts para errores de operaciones de archivo (bottom-right, sin backdrop).
+    /// File-operation error toasts (bottom-right, no backdrop).
     pub(crate) fn render_op_errors(
         &mut self,
         window: &mut Window,

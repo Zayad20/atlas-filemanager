@@ -1,12 +1,61 @@
 use crate::app::App;
-use crate::fs::transfer::{self, TransferPair};
-use crate::state::layout_tree::{Tile, TileId};
-use crate::state::ops::{
+use atlas_core::fs::transfer::{self, TransferPair};
+use atlas_model::layout_tree::{Tile, TileId};
+use atlas_model::ops::{
     ConflictPolicy, Resolution, TransferConflictState, TransferKind, TransferOrigin,
     TransferRequest,
 };
-use crate::state::undo::UndoEntry;
+use atlas_model::undo::UndoEntry;
 use std::path::PathBuf;
+
+/// Translate a typed per-item failure into user-facing text ("name: detail").
+pub(crate) fn op_error_text(err: &atlas_model::ops::OpError) -> String {
+    use atlas_model::ops::OpErrorKind as K;
+    let detail = match &err.kind {
+        K::Gone => rust_i18n::t!("op_err_gone").into_owned(),
+        K::PermissionDenied => rust_i18n::t!("op_err_permission").into_owned(),
+        K::InUse => rust_i18n::t!("op_err_in_use").into_owned(),
+        K::DiskFull => rust_i18n::t!("op_err_disk_full").into_owned(),
+        K::PathTooLong => rust_i18n::t!("op_err_path_too_long").into_owned(),
+        K::NetworkUnreachable => rust_i18n::t!("op_err_network").into_owned(),
+        K::AlreadyExists => rust_i18n::t!("op_err_already_exists").into_owned(),
+        K::SelfNested => rust_i18n::t!("op_err_self_nested").into_owned(),
+        K::SelfOverwrite => rust_i18n::t!("op_err_self_overwrite").into_owned(),
+        K::ReplaceFailed(d) => rust_i18n::t!("op_err_replace_failed", detail = d).into_owned(),
+        K::SourceNotRemoved(d) => {
+            rust_i18n::t!("op_err_source_not_removed", detail = d).into_owned()
+        }
+        K::NotEnoughSpace { needed, free } => {
+            rust_i18n::t!("op_err_disk_space", needed = needed, free = free).into_owned()
+        }
+        K::RepeatedAbort => rust_i18n::t!("op_err_repeated_abort").into_owned(),
+        K::Cancelled => rust_i18n::t!("op_cancelled").into_owned(),
+        K::Msg(s) => s.clone(),
+    };
+    let name = err
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if name.is_empty() {
+        detail
+    } else {
+        format!("{name}: {detail}")
+    }
+}
+
+/// Translate a typed filename-validation failure into user-facing text.
+pub(crate) fn filename_error_text(err: &transfer::FilenameError) -> String {
+    use atlas_core::fs::transfer::FilenameError as F;
+    match err {
+        F::Empty => rust_i18n::t!("filename_err_empty").into_owned(),
+        F::InvalidChar(c) => {
+            rust_i18n::t!("filename_err_invalid_char", ch = c.to_string()).into_owned()
+        }
+        F::TrailingDotOrSpace => rust_i18n::t!("filename_err_trailing").into_owned(),
+        F::Reserved(name) => rust_i18n::t!("filename_err_reserved", name = name).into_owned(),
+    }
+}
 
 impl App {
     pub(crate) fn affected_tabs_for_path(&self, path: &PathBuf) -> Vec<TileId> {
@@ -49,11 +98,17 @@ impl App {
     pub(crate) fn request_transfer(&mut self, req: TransferRequest) {
         let outcome = transfer::validate(&req);
         if let Some(fatal) = outcome.fatal {
-            self.toast_error(fatal);
+            self.toast_error(
+                rust_i18n::t!(
+                    "op_err_dest_gone",
+                    name = fatal.file_name().unwrap_or_default().to_string_lossy()
+                )
+                .into_owned(),
+            );
             return;
         }
         for err in &outcome.errors {
-            self.toast_error(err.to_string());
+            self.toast_error(op_error_text(err));
         }
         if outcome.valid.is_empty() {
             return;
@@ -169,7 +224,7 @@ impl App {
                 self.toast_error(rust_i18n::t!("err_clipboard", e = e).to_string());
             }
         }
-        self.state.ops.clipboard = Some(crate::state::ops::ClipboardState {
+        self.state.ops.clipboard = Some(atlas_model::ops::ClipboardState {
             paths,
             is_cut,
             remote_id,
@@ -285,14 +340,133 @@ impl App {
             .start_op_labeled(paths.len(), rust_i18n::t!("op_deleting").to_string());
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            crate::fs::ops::delete_files(paths, to_trash, op_id, tx, cancel, affected).await;
+            atlas_core::fs::ops::delete_files(paths, to_trash, op_id, tx, cancel, affected).await;
+        });
+    }
+
+    /// Compress `paths` into a new zip in their parent directory, named after
+    /// the first item ("photos.zip", uniqued to "photos (1).zip" on collision).
+    pub(crate) fn compress_to_zip(&mut self, paths: Vec<PathBuf>) {
+        let Some(first) = paths.first() else {
+            return;
+        };
+        let Some(parent) = first.parent().map(std::path::Path::to_path_buf) else {
+            return;
+        };
+        let stem = first.file_stem().map_or_else(
+            || "archive".to_string(),
+            |s| s.to_string_lossy().into_owned(),
+        );
+        let dest = transfer::unique_target(&parent, std::ffi::OsStr::new(&format!("{stem}.zip")));
+        let affected = self.affected_tabs_for_path(&dest);
+        let (op_id, cancel) = self
+            .state
+            .ops
+            .start_op_labeled(paths.len(), rust_i18n::t!("op_compressing").to_string());
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            atlas_core::fs::compress::compress_to_zip(paths, dest, op_id, tx, cancel, affected)
+                .await;
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Recycle Bin operations
+    // -----------------------------------------------------------------------
+
+    /// Panes currently showing the recycle bin (refreshed after every bin op).
+    fn recycle_bin_tabs(&self) -> Vec<TileId> {
+        self.state
+            .pane_tree
+            .tiles
+            .iter()
+            .filter_map(|(id, tile)| match tile {
+                Tile::Pane(p) if p.location == atlas_model::location::Location::RecycleBin => {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `(recycled $R, $I metadata, original path)` for each selected entry of the
+    /// focused pane. Empty when the focused pane is not a recycle-bin listing.
+    fn selected_recycle_items(&self) -> Vec<(PathBuf, PathBuf, PathBuf)> {
+        let tile = self.state.focused_tile;
+        let Some(ts) = self.state.tab_states.get(&tile) else {
+            return Vec::new();
+        };
+        ts.selection
+            .selected
+            .iter()
+            .filter_map(|&i| ts.entries.get(i))
+            .filter_map(|e| {
+                e.recycle_info.as_ref().map(|info| {
+                    (
+                        e.path.clone(),
+                        info.i_file.clone(),
+                        info.original_path.clone(),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn restore_selected_from_recycle_bin(&mut self) {
+        let items = self.selected_recycle_items();
+        if items.is_empty() {
+            return;
+        }
+        let mut affected: Vec<TileId> = self.recycle_bin_tabs();
+        for (_, _, original) in &items {
+            affected.extend(self.affected_tabs_for_path(original));
+        }
+        let (op_id, _cancel) = self
+            .state
+            .ops
+            .start_op_labeled(items.len(), rust_i18n::t!("op_restoring").to_string());
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            atlas_core::fs::recycle_bin::restore_items(items, op_id, tx, affected).await;
+        });
+    }
+
+    pub(crate) fn purge_selected_from_recycle_bin(&mut self) {
+        let items: Vec<(PathBuf, PathBuf)> = self
+            .selected_recycle_items()
+            .into_iter()
+            .map(|(r, i, _)| (r, i))
+            .collect();
+        if items.is_empty() {
+            return;
+        }
+        let affected = self.recycle_bin_tabs();
+        let (op_id, _cancel) = self
+            .state
+            .ops
+            .start_op_labeled(items.len(), rust_i18n::t!("op_deleting").to_string());
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            atlas_core::fs::recycle_bin::purge_items(items, op_id, tx, affected).await;
+        });
+    }
+
+    pub(crate) fn empty_recycle_bin(&mut self) {
+        let affected = self.recycle_bin_tabs();
+        let (op_id, _cancel) = self
+            .state
+            .ops
+            .start_op_labeled(1, rust_i18n::t!("op_emptying_bin").to_string());
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            atlas_core::fs::recycle_bin::empty_bins(op_id, tx, affected).await;
         });
     }
 
     pub(crate) fn rename_file(&mut self, from: PathBuf, to: PathBuf) {
         if let Some(name) = to.file_name().map(|n| n.to_string_lossy().into_owned()) {
             if let Err(e) = transfer::validate_filename(&name) {
-                self.toast_error(e);
+                self.toast_error(filename_error_text(&e));
                 return;
             }
         }
@@ -315,7 +489,7 @@ impl App {
         // Keep any tags attached to the renamed path (and its subtree).
         let _ = self
             .tag_db_tx
-            .send(crate::fs::tag_db::TagDbCmd::RenamePath {
+            .send(atlas_core::fs::tag_db::TagDbCmd::RenamePath {
                 old: from.clone(),
                 new: to.clone(),
             });
@@ -323,14 +497,14 @@ impl App {
         let affected = self.affected_tabs_for_path(&from);
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            crate::fs::ops::rename_file(from, to, op_id, tx, affected).await;
+            atlas_core::fs::ops::rename_file(from, to, op_id, tx, affected).await;
         });
     }
 
     pub(crate) fn create_dir(&mut self, path: PathBuf) {
         if let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) {
             if let Err(e) = transfer::validate_filename(&name) {
-                self.toast_error(e);
+                self.toast_error(filename_error_text(&e));
                 return;
             }
         }
@@ -348,7 +522,7 @@ impl App {
         let affected = self.affected_tabs_for_path(&path);
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            crate::fs::ops::create_dir(path, op_id, tx, affected).await;
+            atlas_core::fs::ops::create_dir(path, op_id, tx, affected).await;
         });
     }
 
@@ -367,7 +541,7 @@ impl App {
                     let tx = self.tx.clone();
                     // Reverse: rename 'to' back to 'from'
                     self.rt.spawn(async move {
-                        crate::fs::ops::rename_file(to, from, op_id, tx, affected).await;
+                        atlas_core::fs::ops::rename_file(to, from, op_id, tx, affected).await;
                     });
                 }
                 UndoEntry::Move { pairs } => {
@@ -400,7 +574,7 @@ impl App {
                     let from = from.clone();
                     let to = to.clone();
                     self.rt.spawn(async move {
-                        crate::fs::ops::rename_file(from, to, op_id, tx, affected).await;
+                        atlas_core::fs::ops::rename_file(from, to, op_id, tx, affected).await;
                     });
                 }
             }

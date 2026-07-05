@@ -133,7 +133,11 @@ impl AtlasCmd {
             Self::Trash => Some("delete"),
             Self::DeletePerm => Some("shift-delete"),
             Self::SelectAll => Some("ctrl-a"),
-            Self::Restore | Self::Properties | Self::NewFolder | Self::NewFile | Self::OpenTerminal => None,
+            Self::Restore
+            | Self::Properties
+            | Self::NewFolder
+            | Self::NewFile
+            | Self::OpenTerminal => None,
         }
     }
 }
@@ -249,7 +253,7 @@ impl App {
         let is_recycle_bin = self
             .state
             .active_tab_data()
-            .is_some_and(|t| matches!(t.location, crate::state::location::Location::RecycleBin));
+            .is_some_and(|t| matches!(t.location, atlas_model::location::Location::RecycleBin));
 
         #[cfg(windows)]
         let loading = {
@@ -390,7 +394,7 @@ impl App {
         let is_recycle_bin = self
             .state
             .active_tab_data()
-            .is_some_and(|t| matches!(t.location, crate::state::location::Location::RecycleBin));
+            .is_some_and(|t| matches!(t.location, atlas_model::location::Location::RecycleBin));
         let atlas_items = if state.background {
             ATLAS_ITEMS_BACKGROUND
         } else if is_recycle_bin {
@@ -970,7 +974,7 @@ impl App {
                 }
             }
             AtlasCmd::Restore => {
-                self.restore_selected_from_recycle_bin(cx);
+                self.restore_selected_from_recycle_bin();
             }
             AtlasCmd::Properties => {
                 let paths = if menu_paths.is_empty() {
@@ -978,9 +982,14 @@ impl App {
                 } else {
                     menu_paths.clone()
                 };
+                #[cfg(windows)]
                 if let Some(path) = paths.into_iter().next() {
                     show_properties(&path);
                 }
+                // No native "properties" verb outside Windows — use our own
+                // themed overlay instead (F3 #15).
+                #[cfg(not(windows))]
+                self.open_properties(paths);
             }
             AtlasCmd::SelectAll => {
                 self.process_actions(vec![Action::SelectAll]);
@@ -1090,60 +1099,6 @@ impl App {
             expanded: HashSet::new(),
             background: true,
             ext_cmds: vec![],
-        });
-        cx.notify();
-    }
-
-    fn restore_selected_from_recycle_bin(&mut self, cx: &mut Context<Self>) {
-        let entries: Vec<(PathBuf, PathBuf, PathBuf)> = self
-            .state
-            .active_tab_state()
-            .map(|ts| {
-                ts.selection
-                    .selected
-                    .iter()
-                    .filter_map(|&i| ts.entries.get(i))
-                    .filter_map(|e| {
-                        e.recycle_info
-                            .as_ref()
-                            .map(|ri| (e.path.clone(), ri.i_file.clone(), ri.original_path.clone()))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        if entries.is_empty() {
-            return;
-        }
-
-        let tab_id = self.state.focused_tile;
-        let tx = self.tx.clone();
-        let op_id = self.state.next_op_id();
-        if let Some(ts) = self.state.tab_states.get_mut(&tab_id) {
-            ts.load_state = crate::state::tab::LoadState::Loading;
-            ts.last_nav_op_id = op_id;
-        }
-
-        self.rt.spawn(async move {
-            for (r_path, i_path, original_path) in entries {
-                if let Err(e) =
-                    atlas_core::fs::recycle_bin::restore(r_path, i_path, original_path).await
-                {
-                    tracing::warn!("restore failed: {e}");
-                }
-            }
-            // Refresh the recycle bin listing after restore.
-            let mut entries = atlas_core::fs::recycle_bin::list_recycle_bin(
-                Default::default(),
-                Default::default(),
-            )
-            .await;
-            crate::ui::views::details::format_entries(&mut entries);
-            let _ = tx.send(crate::state::app_state::BgResult::DirListed {
-                tab: tab_id,
-                op_id,
-                entries,
-            });
         });
         cx.notify();
     }
@@ -1269,7 +1224,7 @@ fn show_properties(path: &std::path::Path) {
 /// Rank `titles` against `query` (best first). Standalone so it doesn't need the
 /// `App` borrow held by `ctx_menu_rows`.
 fn rank_titles(query: &str, titles: &[String]) -> Vec<usize> {
-    let mut scorer = crate::search::fuzzy::FuzzyScorer::new();
+    let mut scorer = atlas_core::search::fuzzy::FuzzyScorer::new();
     scorer.rank(query, titles.iter().map(|s| s.as_str()))
 }
 

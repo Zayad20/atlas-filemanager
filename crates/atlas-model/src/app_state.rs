@@ -91,7 +91,8 @@ pub enum BgResult {
     },
     OpComplete {
         id: u64,
-        result: Result<(), String>,
+        /// Per-item failures; a user cancel is one `OpErrorKind::Cancelled` entry.
+        result: Result<(), Vec<crate::ops::OpError>>,
         affected_tabs: Vec<TabId>,
     },
     /// A paste target wrote `Performed DropEffect` onto our clipboard data
@@ -261,7 +262,10 @@ impl AppState {
         }
         match self.pane_tree.tiles.get(container_id) {
             Some(Tile::Container(Container::Tabs(tabs))) => tabs.children.contains(&pane_id),
-            Some(Tile::Container(Container::Linear(linear))) => linear.children.iter().any(|c| self.container_contains_pane(*c, pane_id)),
+            Some(Tile::Container(Container::Linear(linear))) => linear
+                .children
+                .iter()
+                .any(|c| self.container_contains_pane(*c, pane_id)),
             _ => false,
         }
     }
@@ -562,7 +566,10 @@ mod tests {
             kind: FileKind::File,
             size: Some(1),
             modified: None,
-            display_size: String::new(), display_date: String::new(), display_type: String::new(), _is_hidden: false,
+            display_size: String::new(),
+            display_date: String::new(),
+            display_type: String::new(),
+            _is_hidden: false,
             _is_symlink: false,
             archive_root: None,
             recycle_info: None,
@@ -594,11 +601,7 @@ mod tests {
     fn mixed_selection_schedules_only_image_thumbnails() {
         let (mut state, tile) = AppState::new(Settings::default());
         let tab = state.tab_states.get_mut(&tile).unwrap();
-        tab.set_entries(vec![
-            entry("photo.png"),
-            entry("notes.txt"),
-            entry("other.jpg"),
-        ].into());
+        tab.set_entries(vec![entry("photo.png"), entry("notes.txt"), entry("other.jpg")].into());
         tab.selection.selected.extend([0, 1, 2]);
 
         let Some(PreviewRequest::Multiple { paths, .. }) = state.active_preview_request() else {

@@ -1,4 +1,4 @@
-//! FASE4 (optimización) — Downscaled grid thumbnails.
+//! Downscaled grid thumbnails.
 //!
 //! The Grid view used to paint image cells with `img(path)`, which makes gpui decode
 //! every file at full resolution and keep a full-size GPU texture — brutal for a
@@ -9,8 +9,8 @@
 //! actually builds ask for a thumbnail.
 
 use crate::app::App;
-use crate::state::app_state::BgResult;
 use crate::ui::inspector::rgba_to_render_image;
+use atlas_model::app_state::BgResult;
 use gpui::RenderImage;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -61,7 +61,11 @@ impl App {
         let wanted = self.thumb_wanted.clone();
         self.rt.spawn(async move {
             if let Ok(bg) = tokio::task::spawn_blocking(move || {
-                if !wanted.lock().unwrap_or_else(|p| p.into_inner()).contains(&path) {
+                if !wanted
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .contains(&path)
+                {
                     return BgResult::GridThumbnailSkipped { path };
                 }
                 decode_thumbnail(&path, THUMB_MAX_EDGE)
@@ -103,7 +107,7 @@ impl App {
         self.rt.spawn(async move {
             let report = path.clone();
             let result = tokio::task::spawn_blocking(move || {
-                crate::ext::runner::run_thumbnail(&path, &run_tmpl, &tools, THUMB_MAX_EDGE)
+                atlas_core::ext::runner::run_thumbnail(&path, &run_tmpl, &tools, THUMB_MAX_EDGE)
             })
             .await
             .ok()

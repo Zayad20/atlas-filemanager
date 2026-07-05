@@ -1,4 +1,4 @@
-use crate::state::file_entry::FileKind;
+use atlas_model::file_entry::FileKind;
 use gpui::{div, img, px, svg, AnyElement, Hsla, IntoElement, ParentElement, Styled};
 
 #[inline]
@@ -204,7 +204,12 @@ pub(crate) fn windows_icon(kind: AtlasIcon, size: f32, color: Hsla) -> AnyElemen
 
 /// Render either a Windows Fluent icon or an SVG icon based on the active theme.
 #[inline]
-pub(crate) fn theme_icon(kind: AtlasIcon, size: f32, color: Hsla, windows_theme: bool) -> AnyElement {
+pub(crate) fn theme_icon(
+    kind: AtlasIcon,
+    size: f32,
+    color: Hsla,
+    windows_theme: bool,
+) -> AnyElement {
     if windows_theme {
         windows_icon(kind, size, color)
     } else {

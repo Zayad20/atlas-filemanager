@@ -3,8 +3,8 @@ use gpui::{div, px, AnyElement, Entity, MouseButton};
 use gpui_component::ActiveTheme as _;
 
 use crate::app::{App, DockResizeState};
-use crate::state::layout_tree::LinearDir;
-use crate::state::layout_tree::TileId;
+use atlas_model::layout_tree::LinearDir;
+use atlas_model::layout_tree::TileId;
 
 pub(crate) fn splitter(
     container: TileId,
@@ -34,8 +34,8 @@ pub(crate) fn splitter(
             let Some(bounds) = this.dock_linear_bounds.get(&container).copied() else {
                 return;
             };
-            let Some(crate::state::layout_tree::Tile::Container(
-                crate::state::layout_tree::Container::Linear(linear),
+            let Some(atlas_model::layout_tree::Tile::Container(
+                atlas_model::layout_tree::Container::Linear(linear),
             )) = this.state.pane_tree.tiles.get(container)
             else {
                 return;

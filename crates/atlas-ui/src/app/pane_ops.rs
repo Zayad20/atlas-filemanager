@@ -1,11 +1,10 @@
-#![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
 use crate::app::{App, DockSplitAnimation, PaneAnimation, PaneAnimationKind};
-use crate::state::layout_tree::{Container, LinearDir, Tile, TileId};
-use crate::state::location::Location;
-use crate::state::pane::TabData;
-use crate::state::settings::ViewMode;
-use crate::state::tab::{LoadState, TabState};
-use crate::state::tag_cache::TagId;
+use atlas_model::layout_tree::{Container, LinearDir, Tile, TileId};
+use atlas_model::location::Location;
+use atlas_model::pane::TabData;
+use atlas_model::settings::ViewMode;
+use atlas_model::tab::{LoadState, TabState};
+use atlas_model::tag_cache::TagId;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -14,23 +13,25 @@ impl App {
     pub(crate) fn animate_pane_drag(&mut self, pane_id: TileId, is_starting: bool) {
         if let Some(tabs_id) = self.state.find_tabs_container(pane_id) {
             if let Some(parent_id) = self.state.find_parent_of(tabs_id) {
-                if let Some(Tile::Container(Container::Linear(linear))) = self.state.pane_tree.tiles.get(parent_id) {
+                if let Some(Tile::Container(Container::Linear(linear))) =
+                    self.state.pane_tree.tiles.get(parent_id)
+                {
                     if let Some(pos) = linear.children.iter().position(|c| *c == tabs_id) {
                         let mut current_shares = linear.shares.clone();
                         if let Some(anim) = self.dock_split_animations.get(&parent_id) {
                             current_shares = anim.shares();
                         }
-                        
+
                         let mut target_shares = linear.shares.clone();
                         if is_starting {
                             target_shares[pos] = 0.0;
                         }
-                        
+
                         // We do not mutate `linear.shares` here! We only create the animation.
                         // The render pass will dynamically override the target share to 0.0 while dragging.
-                        
+
                         crate::app::normalize_split_shares(&mut target_shares);
-                        
+
                         let anim = DockSplitAnimation {
                             started: Instant::now(),
                             from: current_shares,
@@ -403,58 +404,6 @@ impl App {
         }
     }
 
-    /// Pop the MRU history to find the best pane to focus after closing
-    /// `closing_pane_id`. Skips dead entries and the pane being closed.
-    fn pop_mru_focus(&mut self, closing_pane_id: TileId) -> Option<TileId> {
-        let live: HashSet<TileId> = self.state.all_pane_tile_ids().into_iter().collect();
-        while let Some(id) = self.focus_history.pop_back() {
-            if id != closing_pane_id && live.contains(&id) {
-                return Some(id);
-            }
-        }
-        None
-    }
-
-    /// Choose which pane should receive focus after `closing_tabs_id` is removed.
-    /// First tries MRU history (VS-Code-style "previous pane"), then falls back to
-    /// the layout sibling before the closed container.
-    fn find_focus_after_close(&mut self, closing_tabs_id: TileId) -> Option<TileId> {
-        // Collect panes in the closing container so we can skip them in history.
-        let closing_panes: HashSet<TileId> = match self.state.pane_tree.tiles.get(closing_tabs_id) {
-            Some(Tile::Container(Container::Tabs(t))) => t.children.iter().copied().collect(),
-            _ => HashSet::new(),
-        };
-
-        // Walk MRU history backwards until a live pane outside the closing set.
-        let live: HashSet<TileId> = self.state.all_pane_tile_ids().into_iter().collect();
-        while let Some(&id) = self.focus_history.back() {
-            if closing_panes.contains(&id) || !live.contains(&id) {
-                self.focus_history.pop_back();
-            } else {
-                self.focus_history.pop_back();
-                return Some(id);
-            }
-        }
-
-        // Fallback: sibling before/after in parent Linear container.
-        let parent_id = self.state.find_parent_of(closing_tabs_id)?;
-        let siblings = match self.state.pane_tree.tiles.get(parent_id)? {
-            Tile::Container(Container::Linear(l)) => l.children.clone(),
-            _ => return None,
-        };
-        let pos = siblings.iter().position(|id| *id == closing_tabs_id)?;
-        let target_id = if pos > 0 {
-            siblings[pos - 1]
-        } else {
-            *siblings.get(pos + 1)?
-        };
-        match self.state.pane_tree.tiles.get(target_id)? {
-            Tile::Container(Container::Tabs(t)) => t.active,
-            Tile::Pane(_) => Some(target_id),
-            _ => None,
-        }
-    }
-
     pub(crate) fn new_tab(&mut self, pane_id: TileId) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         self.open_new_tab(pane_id, home);
@@ -538,7 +487,7 @@ impl App {
             }
             let _ = self
                 .tag_db_tx
-                .send(crate::fs::tag_db::TagDbCmd::QueryPathsForTag(tag));
+                .send(atlas_core::fs::tag_db::TagDbCmd::QueryPathsForTag(tag));
         }
     }
 
@@ -749,11 +698,6 @@ impl App {
             .insert(linear, DockSplitAnimation::new(vec![1.0, 1.0], 1));
     }
 
-    pub(crate) fn remove_pane_from_tree(&mut self, pane_id: TileId) {
-        self.remove_pane_from_tree_without_reconcile(pane_id);
-        self.reconcile_tree_state();
-    }
-
     pub(crate) fn remove_panes_from_tree(&mut self, panes: &[TileId]) {
         let tiles_before = self.state.pane_tree.tiles.iter().count();
         crate::perf::event(|| {
@@ -951,8 +895,9 @@ impl App {
                         linear.children.insert(insert_at, new_tabs);
                         linear.shares.insert(insert_at, new_share);
                         crate::app::normalize_split_shares(&mut linear.shares);
-                        
-                        let anim = DockSplitAnimation::opening(from, linear.shares.clone(), insert_at);
+
+                        let anim =
+                            DockSplitAnimation::opening(from, linear.shares.clone(), insert_at);
                         self.dock_split_animations.insert(parent_id, anim);
                         return;
                     }
@@ -969,11 +914,15 @@ impl App {
             LinearDir::Horizontal => self.state.pane_tree.tiles.insert_horizontal_tile(children),
             LinearDir::Vertical => self.state.pane_tree.tiles.insert_vertical_tile(children),
         };
-        
+
         let _insert_at = if before { 0 } else { 1 };
         let anim = DockSplitAnimation {
             started: Instant::now(),
-            from: if before { vec![0.0, 1.0] } else { vec![1.0, 0.0] },
+            from: if before {
+                vec![0.0, 1.0]
+            } else {
+                vec![1.0, 0.0]
+            },
             to: vec![0.5, 0.5],
             closing: false,
         };
@@ -1020,10 +969,16 @@ impl App {
         self.reconcile_tree_state();
     }
 
-    pub(crate) fn start_alt_resize(&mut self, pane_id: TileId, pos: gpui::Point<gpui::Pixels>) {
-        use crate::state::layout_tree::{Container, Tile};
-        let Some(bounds) = self.pane_layout_bounds.get(&pane_id).copied() else { return; };
-        
+    pub(crate) fn start_alt_resize(
+        &mut self,
+        pane_id: TileId,
+        pos: gpui::Point<gpui::Pixels>,
+    ) {
+        use atlas_model::layout_tree::{Container, Tile};
+        let Some(bounds) = self.pane_layout_bounds.get(&pane_id).copied() else {
+            return;
+        };
+
         // Find nearest linear parent
         let mut current = pane_id;
         let mut target_linear = None;
@@ -1039,7 +994,9 @@ impl App {
                             }
                         }
                         Container::Linear(linear) => {
-                            if let Some(idx) = linear.children.iter().position(|child| *child == current) {
+                            if let Some(idx) =
+                                linear.children.iter().position(|child| *child == current)
+                            {
                                 found_parent = Some((*id, Some((idx, linear.clone()))));
                                 break;
                             }
@@ -1047,7 +1004,7 @@ impl App {
                     }
                 }
             }
-            
+
             match found_parent {
                 Some((parent_id, Some((idx, linear)))) => {
                     target_linear = Some((parent_id, idx, linear));
@@ -1061,45 +1018,59 @@ impl App {
                 }
             }
         }
-        
-        let Some((container_id, child_idx, linear)) = target_linear else { return; };
-        let Some(container_bounds) = self.dock_linear_bounds.get(&container_id).copied() else { return; };
-        
+
+        let Some((container_id, child_idx, linear)) = target_linear else {
+            return;
+        };
+        let Some(container_bounds) = self.dock_linear_bounds.get(&container_id).copied() else {
+            return;
+        };
+
         let (dir, start_pos, span_px) = match linear.dir {
-            crate::state::layout_tree::LinearDir::Horizontal => (
-                crate::state::layout_tree::LinearDir::Horizontal,
+            atlas_model::layout_tree::LinearDir::Horizontal => (
+                atlas_model::layout_tree::LinearDir::Horizontal,
                 pos.x.into(),
                 container_bounds.size.width.into(),
             ),
-            crate::state::layout_tree::LinearDir::Vertical => (
-                crate::state::layout_tree::LinearDir::Vertical,
+            atlas_model::layout_tree::LinearDir::Vertical => (
+                atlas_model::layout_tree::LinearDir::Vertical,
                 pos.y.into(),
                 container_bounds.size.height.into(),
             ),
         };
-        
+
         let num_children = linear.children.len();
-        if num_children < 2 { return; }
-        
+        if num_children < 2 {
+            return;
+        }
+
         let divider = if child_idx == 0 {
             0
         } else if child_idx == num_children - 1 {
             child_idx - 1
         } else {
             match linear.dir {
-                crate::state::layout_tree::LinearDir::Horizontal => {
+                atlas_model::layout_tree::LinearDir::Horizontal => {
                     let d_left = (pos.x - bounds.left()).abs();
                     let d_right = (pos.x - bounds.right()).abs();
-                    if d_left < d_right { child_idx - 1 } else { child_idx }
+                    if d_left < d_right {
+                        child_idx - 1
+                    } else {
+                        child_idx
+                    }
                 }
-                crate::state::layout_tree::LinearDir::Vertical => {
+                atlas_model::layout_tree::LinearDir::Vertical => {
                     let d_top = (pos.y - bounds.top()).abs();
                     let d_bottom = (pos.y - bounds.bottom()).abs();
-                    if d_top < d_bottom { child_idx - 1 } else { child_idx }
+                    if d_top < d_bottom {
+                        child_idx - 1
+                    } else {
+                        child_idx
+                    }
                 }
             }
         };
-        
+
         self.dock_resize = Some(crate::app::DockResizeState {
             container: container_id,
             divider,

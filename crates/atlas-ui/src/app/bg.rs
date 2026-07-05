@@ -1,14 +1,14 @@
 //! Per-frame background drains: bg-result channel, palette close tick, DnD queue.
 #![allow(clippy::too_many_lines)] // reason: cohesive startup/drain kept whole
 
-use crate::state::layout_tree::{Tile, TileId};
+use atlas_model::layout_tree::{Tile, TileId};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
 use super::*;
-use crate::state::app_state::BgResult;
-use crate::state::preview_cache::ImageData;
-use crate::state::tab::LoadState;
+use atlas_model::app_state::BgResult;
+use atlas_model::preview_cache::ImageData;
+use atlas_model::tab::LoadState;
 
 /// Return value from `process_bg_results`: tracks what needs re-rendering
 /// without holding a `Context` reference. Callers apply notifications after
@@ -42,17 +42,17 @@ impl App {
         if let Some(since) = self.inactive_since {
             if since.elapsed() > std::time::Duration::from_secs(5) && !self.eco_cleared {
                 self.eco_cleared = true;
-                
+
                 // Evict large GPU caches
                 self.preview_textures.clear();
                 self.multi_textures.clear();
                 self.thumb_textures.clear();
-                
+
                 // Shrink FS allocations
                 for tab in self.state.tab_states.values_mut() {
                     tab.entries = tab.entries.clone().into();
                 }
-                
+
                 tracing::info!("eco_mode: Inactive for 5s. Evicted buffers & ran shrink_to_fit.");
             }
         }
@@ -143,7 +143,7 @@ impl App {
     pub(crate) fn drain_dnd_queue(&mut self) -> bool {
         use crate::dnd::windows::DndEvent;
         use crate::input::action::Action;
-        use crate::state::ops::{ConflictPolicy, TransferKind, TransferOrigin, TransferRequest};
+        use atlas_model::ops::{ConflictPolicy, TransferKind, TransferOrigin, TransferRequest};
 
         let Some(dnd) = &self.dnd else { return false };
         let events = {
@@ -599,7 +599,7 @@ impl App {
                         {
                             ts.set_entries(entries.into());
                             ts.filter.clear();
-                            ts.search.status = crate::state::tab::SearchStatus::Ready;
+                            ts.search.status = atlas_model::tab::SearchStatus::Ready;
                             ts.search.error = None;
                             ts.selection.clear();
                             if !ts.entries.is_empty() {
@@ -616,7 +616,7 @@ impl App {
                 BgResult::SearchInPlaceError { tab, gen, error } => {
                     if let Some(ts) = self.state.tab_states.get_mut(&tab) {
                         if ts.search.generation == gen && ts.search.active {
-                            ts.search.status = crate::state::tab::SearchStatus::Error;
+                            ts.search.status = atlas_model::tab::SearchStatus::Error;
                             ts.search.error = Some(error);
                         }
                     }
@@ -628,11 +628,10 @@ impl App {
                     affected_tabs,
                 } => {
                     self.state.ops.active_ops.remove(&id);
-                    if let Err(e) = result {
-                        tracing::error!("Background operation failed: {}", e);
-                        // Multi-line payloads are one error per item; toast each.
-                        for line in e.lines().filter(|l| !l.trim().is_empty()) {
-                            self.toast_error(line.to_string());
+                    if let Err(errors) = result {
+                        for err in &errors {
+                            tracing::error!("Background operation failed: {}", err);
+                            self.toast_error(crate::app::ops::op_error_text(err));
                         }
                     }
                     self.refresh_tabs(affected_tabs);
@@ -679,48 +678,48 @@ impl App {
                     self.state.ops.active_ops.remove(&id);
                     for err in &report.errors {
                         tracing::error!("transfer: {}", err);
-                        self.toast_error(err.to_string());
+                        self.toast_error(crate::app::ops::op_error_text(err));
                     }
                     // Files cut in another app and pasted here: report the move
                     // back so the source clears its cut state — only when
                     // everything actually moved.
                     #[cfg(windows)]
-                    if origin == crate::state::ops::TransferOrigin::PasteExternalCut
+                    if origin == atlas_model::ops::TransferOrigin::PasteExternalCut
                         && report.errors.is_empty()
                         && !report.completed.is_empty()
                     {
                         crate::dnd::windows::ole_clipboard::acknowledge_external_cut();
                     }
                     if report.cancelled {
-                        self.toast_error(format!(
-                            "Operación cancelada ({} completados)",
-                            report.completed.len()
-                        ));
+                        self.toast_error(
+                            rust_i18n::t!("op_cancelled_partial", done = report.completed.len())
+                                .into_owned(),
+                        );
                     }
                     if !report.completed.is_empty() {
                         // Tags follow files moved within the app (real pairs,
                         // so this survives conflict renames).
-                        if kind == crate::state::ops::TransferKind::Move {
+                        if kind == atlas_model::ops::TransferKind::Move {
                             for (src, dst) in &report.completed {
-                                let _ =
-                                    self.tag_db_tx
-                                        .send(crate::fs::tag_db::TagDbCmd::RenamePath {
-                                            old: src.clone(),
-                                            new: dst.clone(),
-                                        });
+                                let _ = self.tag_db_tx.send(
+                                    atlas_core::fs::tag_db::TagDbCmd::RenamePath {
+                                        old: src.clone(),
+                                        new: dst.clone(),
+                                    },
+                                );
                             }
                         }
                         // Undo records what actually happened; undo/redo runs
                         // don't re-record themselves.
-                        if origin != crate::state::ops::TransferOrigin::Undo {
+                        if origin != atlas_model::ops::TransferOrigin::Undo {
                             let entry = match kind {
-                                crate::state::ops::TransferKind::Move => {
-                                    crate::state::undo::UndoEntry::Move {
+                                atlas_model::ops::TransferKind::Move => {
+                                    atlas_model::undo::UndoEntry::Move {
                                         pairs: report.completed.clone(),
                                     }
                                 }
-                                crate::state::ops::TransferKind::Copy => {
-                                    crate::state::undo::UndoEntry::Copy {
+                                atlas_model::ops::TransferKind::Copy => {
+                                    atlas_model::undo::UndoEntry::Copy {
                                         pairs: report.completed.clone(),
                                     }
                                 }
@@ -770,14 +769,14 @@ impl App {
                     }
                 }
                 BgResult::DeviceMounted(path) => {
-                    crate::fs::udisks::invalidate();
+                    atlas_core::fs::udisks::invalidate();
                     self.navigate(self.state.focused_tile, path);
                 }
                 BgResult::DeviceActionFailed(error) => {
                     tracing::warn!("device action failed: {error}");
                 }
                 BgResult::DevicesChanged => {
-                    crate::fs::udisks::invalidate();
+                    atlas_core::fs::udisks::invalidate();
                 }
                 BgResult::ExtCommandDone {
                     ext_id,
@@ -840,7 +839,7 @@ impl App {
                     Err(error) => {
                         self.state.preview.results.insert(
                             tab,
-                            crate::state::preview_cache::PreviewResult::Error(format!(
+                            atlas_model::preview_cache::PreviewResult::Error(format!(
                                 "Could not install {}: {}",
                                 crate::ui::inspector::tool_label(&tool),
                                 error
@@ -852,9 +851,15 @@ impl App {
                 BgResult::AppUpdateAvailable { version, url } => {
                     self.toast_info(format!("Atlas {version} is available: {url}"));
                 }
-                BgResult::ExtRegistryFetched(_)
-                | BgResult::ExtRemoteInstalled { .. }
-                | BgResult::ExtLocalInstalled(_) => {}
+                BgResult::ExtRegistryFetched(result) => {
+                    self.handle_ext_registry_fetched(result);
+                }
+                BgResult::ExtRemoteInstalled { id, result } => {
+                    self.handle_ext_remote_installed(id, result);
+                }
+                BgResult::ExtLocalInstalled(result) => {
+                    self.handle_ext_local_installed(result);
+                }
                 #[cfg(feature = "cloud")]
                 other => self.handle_cloud_bg(other),
             }

@@ -7,12 +7,12 @@ use gpui_component::{h_flex, v_flex, ActiveTheme as _, ElementExt as _};
 
 use crate::app::{App, PaneAnimation, PaneAnimationKind};
 use crate::input::action::Action;
-use crate::state::layout_tree::{Container, LinearDir, Tile, TileId};
 use crate::ui::dock::drag::{tab_drag_entity, TabDrag};
 use crate::ui::glass::{backdrop_tint, glass_chip_fill, glass_fill, GlassExt};
 use crate::ui::icons::{icon, is_windows_theme, theme_icon, AtlasIcon};
 use crate::ui::pane_panel::FilePanel;
-use crate::util::display::display_name;
+use atlas_core::util::display::display_name;
+use atlas_model::layout_tree::{Container, LinearDir, Tile, TileId};
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug)]
@@ -27,10 +27,10 @@ enum TabMotion {
     Closing(Instant),
 }
 
-/// Un tile tabs-like (tab strip + cuerpo) hospedado en su propio entity para poder
-/// embederse con `AnyView::cached` (patrón Zed `dock.rs:1185`: el Pane completo se
-/// cachea, tab bar incluida). El render delega en `App::render_tabs_like`; la
-/// invalidación la decide el skeleton vía fingerprint (`render_cached_tabs`).
+/// Tabs-like tile (tab strip + body) hosted in its own entity so it can be embedded
+/// with `AnyView::cached` (Zed's `dock.rs:1185` pattern: the whole pane, including
+/// the tab bar, is cached). Rendering delegates to `App::render_tabs_like`;
+/// invalidation is decided by the skeleton fingerprint in `render_cached_tabs`.
 pub(crate) struct PaneTabsView {
     app: gpui::WeakEntity<App>,
     tile: TileId,
@@ -130,7 +130,8 @@ impl App {
 
         // Poda de views/fingerprints de tiles que ya no existen (split/close/dnd).
         let tiles = &self.state.pane_tree.tiles;
-        self.pane_tabs_cache.retain(|id, _| tiles.get(*id).is_some());
+        self.pane_tabs_cache
+            .retain(|id, _| tiles.get(*id).is_some());
         self.pane_tabs_fp.retain(|id, _| tiles.get(*id).is_some());
 
         self.state
@@ -172,11 +173,19 @@ impl App {
                     container_bounds.map(|b| f32::from(b.size.height))
                 };
 
-                let mut row = if exact_span.is_some() { div().relative() } else { if linear.dir == LinearDir::Horizontal { h_flex() } else { v_flex() } }
-                    .size_full()
-                    .min_w(px(0.))
-                    .min_h(px(0.));
-                    
+                let mut row = if exact_span.is_some() {
+                    div().relative()
+                } else {
+                    if linear.dir == LinearDir::Horizontal {
+                        h_flex()
+                    } else {
+                        v_flex()
+                    }
+                }
+                .size_full()
+                .min_w(px(0.))
+                .min_h(px(0.));
+
                 if exact_span.is_none() {
                     row = row.items_stretch();
                 }
@@ -198,7 +207,7 @@ impl App {
                 } else {
                     vec![1.0; children.len()]
                 };
-                
+
                 let view = cx.entity();
                 let num_splitters = children.len().saturating_sub(1);
                 let splitter_size = 5.0; // from resize.rs splitter thickness
@@ -206,9 +215,10 @@ impl App {
 
                 for (ix, (child_id, child, intro)) in children.into_iter().enumerate() {
                     let share = shares[ix].max(0.01);
-                    
+
                     if ix > 0 {
-                        let splitter_el = crate::ui::dock::resize::splitter(id, ix - 1, linear.dir, &view, cx);
+                        let splitter_el =
+                            crate::ui::dock::resize::splitter(id, ix - 1, linear.dir, &view, cx);
                         if exact_span.is_some() {
                             let mut s_div = div().absolute();
                             if linear.dir == LinearDir::Horizontal {
@@ -231,20 +241,38 @@ impl App {
                     };
 
                     let mut pane_div = div().size_full().min_w(px(0.)).min_h(px(0.));
-                    
+
                     if let Some(span) = child_span {
                         pane_div = pane_div.absolute();
                         if linear.dir == LinearDir::Horizontal {
-                            pane_div = pane_div.left(px(current_offset)).top_0().bottom_0().w(px(span));
+                            pane_div = pane_div
+                                .left(px(current_offset))
+                                .top_0()
+                                .bottom_0()
+                                .w(px(span));
                         } else {
-                            pane_div = pane_div.top(px(current_offset)).left_0().right_0().h(px(span));
+                            pane_div = pane_div
+                                .top(px(current_offset))
+                                .left_0()
+                                .right_0()
+                                .h(px(span));
                         }
                         current_offset += span;
                     } else {
                         pane_div = pane_div.flex_grow(share).flex_basis(px(0.));
                     }
-                    
-                    row = row.child(pane_div.child(self.render_split_intro(child_id, child, intro)));
+
+                    // A closing pane whose span has already collapsed paints no content:
+                    // this avoids the 0.01-share sliver between seam animation end
+                    // (~170ms), fade end (~250ms), and unmount (~200ms).
+                    let collapsed_closing = matches!(intro, Some(SplitMotion::Closing(_)))
+                        && child_span.is_some_and(|s| s <= 6.0);
+                    let content = if collapsed_closing {
+                        div().size_full().into_any_element()
+                    } else {
+                        self.render_split_intro(child_id, child, intro)
+                    };
+                    row = row.child(pane_div.child(content));
                 }
 
                 let view = cx.entity();
@@ -349,12 +377,12 @@ impl App {
         // shortcut (perf.log: 40-54ms frames at 10+ panes). Past a small count, snap to
         // the final layout (open still fades via PaneAnimation, close via the pop anim).
         // heuristic cap; raise if paint per pane gets cheap enough.
-        // El gate por hermanos no cubre árboles binarios anidados (2 hijos por
-        // container × 21 panes): el seam animado desplaza los bounds de todo el
-        // subárbol downstream cada frame e invalida sus PaneTabsView cacheados.
-        // Con muchos panes totales, asentar el layout en 1 frame (el fade del
-        // pane nuevo/cerrado sigue dando la sensación de animación).
-        if anim.to.len() > 4 || self.file_panel_cache.len() > 8 {
+        // Gate by total pane count: animation-frame cost is rebuilding every pane
+        // whose bounds changed (measured in release: ~17ms with 10-14 panes, ~28ms
+        // with 20+). The older sibling-count gate penalized same-direction splits
+        // even with few panes; the real cost depends on total invalidated panes.
+        let max_animated_panes = if cfg!(debug_assertions) { 8 } else { 12 };
+        if self.file_panel_cache.len() > max_animated_panes {
             self.dock_split_animations.remove(&id);
             return final_shares;
         }
@@ -372,10 +400,10 @@ impl App {
         shares
     }
 
-    /// Embebe el tile tabs-like como `PaneTabsView` cacheado. El fingerprint captura
-    /// todo el estado que `render_tabs_like`/`render_tab_strip` leen; si no cambió,
-    /// el view no se notifica y gpui recicla layout+hitboxes+paint del frame anterior
-    /// (el chrome del pane cuesta 1 nodo taffy).
+    /// Embed the tabs-like tile as a cached `PaneTabsView`. The fingerprint captures
+    /// every bit of state read by `render_tabs_like`/`render_tab_strip`; if it did not
+    /// change, the view is not notified and GPUI reuses the previous layout, hitboxes,
+    /// and paint (pane chrome costs one Taffy node).
     fn render_cached_tabs(
         &mut self,
         id: TileId,
@@ -435,8 +463,8 @@ impl App {
                 hash_instant(&mut h, anim.started);
             }
         }
-        // Estado global que cambia el chrome: tema, glass, overlay alt (alt-drag
-        // drag), y drag activo (zonas de drop del cuerpo).
+        // Global state that changes chrome: theme, glass, Alt overlay for alt-drag
+        // drag, and active drag state for body drop zones.
         self.state.profiles.active().theme.hash(&mut h);
         self.state.settings.mica.hash(&mut h);
         self.state.settings.disable_animations.hash(&mut h);
@@ -468,10 +496,10 @@ impl App {
         let content = active
             .map(|id| {
                 if self.should_render_pane_body(id) {
-                    // Patrón Zed (pane_group.rs:554): pane cacheado como AnyView. Si el
-                    // pane no fue notificado y sus bounds no cambiaron, gpui recicla su
-                    // layout, hitboxes y primitivas del frame anterior — el pane cuesta
-                    // 1 nodo taffy en vez de ~250.
+                    // Zed pattern (pane_group.rs:554): pane cached as AnyView. If the
+                    // pane was not notified and its bounds did not change, GPUI reuses
+                    // the previous layout, hitboxes, and primitives: one Taffy node
+                    // instead of roughly 250.
                     gpui::AnyView::from(self.get_or_make_file_panel(id, cx))
                         .cached(gpui::StyleRefinement::default().size_full())
                         .into_any_element()

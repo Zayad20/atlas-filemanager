@@ -9,7 +9,7 @@ pub(super) fn preview_audio(path: &Path) -> PreviewResult {
 
     let tagged = match lofty::read_from_path(path) {
         Ok(t) => t,
-        Err(e) => return PreviewResult::Error(format!("No se pudo leer el audio: {e}")),
+        Err(e) => return PreviewResult::Error(format!("Could not read audio: {e}")),
     };
     let props = tagged.properties();
     let duration_secs = props.duration().as_secs();

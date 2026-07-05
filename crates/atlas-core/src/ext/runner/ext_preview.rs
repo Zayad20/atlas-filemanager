@@ -59,10 +59,10 @@ pub(crate) fn run_declarative_preview(cmd: &CommandRef, input: &Path) -> Preview
     let Some((program, args)) = argv.split_first() else {
         return PreviewResult::Error("Preview extension has no command".into());
     };
-    let program = cmd
-        .tools
-        .get(program)
-        .map_or_else(|| std::path::PathBuf::from(program), std::path::PathBuf::clone);
+    let program = cmd.tools.get(program).map_or_else(
+        || std::path::PathBuf::from(program),
+        std::path::PathBuf::clone,
+    );
     let ran = std::process::Command::new(program).args(args).output();
     let result = match ran {
         Ok(out) if out.status.success() => match cmd.command.output {

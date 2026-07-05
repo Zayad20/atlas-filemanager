@@ -11,7 +11,7 @@ use std::sync::Arc;
 use gpui::RenderImage;
 
 use crate::icon_theme::{icon_key, IconState};
-use crate::state::file_entry::FileKind;
+use atlas_model::file_entry::FileKind;
 
 use super::App;
 

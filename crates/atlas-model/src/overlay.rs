@@ -1,5 +1,7 @@
 #![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
 use crate::ops::TransferConflictState;
+use std::path::PathBuf;
+use std::time::SystemTime;
 
 /// Shared state for the fuzzy palettes (goto bar, command palette, ext palette):
 /// query text, the highlighted row, and a scroll-into-view request.
@@ -29,6 +31,28 @@ impl FuzzyOverlayState {
     }
 }
 
+/// A single filesystem item's stat data for the [`PropertiesState`] overlay.
+/// Read once (synchronously) when the overlay opens — not kept live.
+#[derive(Debug, Clone)]
+pub struct PropertyRow {
+    pub name: String,
+    pub path: PathBuf,
+    pub kind: crate::file_entry::FileKind,
+    pub size: Option<u64>,
+    pub created: Option<SystemTime>,
+    pub modified: Option<SystemTime>,
+    pub readonly: bool,
+    pub is_symlink: bool,
+}
+
+/// Cross-platform "Properties" overlay state (F3 #15) — the non-Windows
+/// counterpart to the native shell Properties dialog. Rows are stat'd up front
+/// so the overlay doesn't touch the filesystem on every render.
+#[derive(Debug, Clone, Default)]
+pub struct PropertiesState {
+    pub rows: Vec<PropertyRow>,
+}
+
 #[derive(Default)]
 pub struct OverlayState {
     pub show_goto_bar: bool,
@@ -47,4 +71,6 @@ pub struct OverlayState {
     pub renaming_profile: bool,
     /// File-operation errors to show to the user as dismissible toasts.
     pub op_errors: std::collections::VecDeque<String>,
+    /// Cross-platform "Properties" overlay (F3 #15). `None` when closed.
+    pub properties: Option<PropertiesState>,
 }

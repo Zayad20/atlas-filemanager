@@ -12,11 +12,11 @@
 
 use crate::app::{App as AtlasApp, PaneAnimation, PaneSignal};
 use crate::input::action::Action;
-use crate::state::pane::TabId;
 use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::motion;
 use crate::ui::tooltips::shortcut_tooltip;
-use crate::util::display::display_name;
+use atlas_core::util::display::display_name;
+use atlas_model::pane::TabId;
 use gpui::prelude::*;
 use gpui::{
     div, px, AnimationExt, AnyView, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
@@ -111,22 +111,24 @@ impl Panel for FilePanel {
                 } else {
                     app.pane_animation_for(self.pane_id)
                 };
-                
+
                 let active_theme = app.state.profiles.active().theme.as_str();
                 let windows_theme = crate::ui::icons::is_windows_theme(active_theme);
-                
+
                 let tab_data = app.tab_data_for(self.pane_id);
-                let path = tab_data.as_ref().and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()));
+                let path = tab_data
+                    .as_ref()
+                    .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()));
                 let label = tab_data
                     .map(|t| display_name(&t.location.display_path()))
                     .unwrap_or_else(|| rust_i18n::t!("fallback_tab_title").to_string());
-                
+
                 let tex = if windows_theme {
                     path.as_ref().and_then(|p| app.grid_thumbnail(p))
                 } else {
                     None
                 };
-                
+
                 (label, anim, tex)
             })
             .unwrap_or_else(|| (rust_i18n::t!("fallback_tab_title").to_string(), None, None));
@@ -143,9 +145,7 @@ impl Panel for FilePanel {
             .min_w(px(0.))
             .items_center()
             .gap(px(8.))
-            .when_some(tex, |s, tex| {
-                s.child(gpui::img(tex).size(px(16.0)))
-            })
+            .when_some(tex, |s, tex| s.child(gpui::img(tex).size(px(16.0))))
             .child(
                 div()
                     .flex_1()
@@ -281,8 +281,12 @@ impl Render for FilePanel {
                 let content = AnyView::from(self.content.clone())
                     .cached(StyleRefinement::default().v_flex().size_full());
                 let bounds_app = self.app.clone();
-                let panel = div().size_full().relative().overflow_hidden().child(content).on_prepaint(
-                    move |bounds, _window, cx| {
+                let panel = div()
+                    .size_full()
+                    .relative()
+                    .overflow_hidden()
+                    .child(content)
+                    .on_prepaint(move |bounds, _window, cx| {
                         if let Some(app) = bounds_app.upgrade() {
                             app.update(cx, |app, _cx| {
                                 if app.state.tab_states.contains_key(&pane_id) {
@@ -290,8 +294,7 @@ impl Render for FilePanel {
                                 }
                             });
                         }
-                    },
-                );
+                    });
 
                 if let Some(animation) = animation {
                     panel
