@@ -5,8 +5,9 @@ build*.txt
 *.bak
 *.orig
 *.rej
-# Vendored binaries (not committed; distributed separately or resolved at runtime)
-crates/atlas-core/vendor/unrar-bin/
+# Local vendored-binary scratch; keep the embedded UnRAR binary tracked.
+crates/atlas-core/vendor/unrar-bin/*
+!crates/atlas-core/vendor/unrar-bin/UnRAR.exe
 .env
 
 # Local logs and stray Windows device-name files
