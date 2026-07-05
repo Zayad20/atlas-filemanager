@@ -29,7 +29,7 @@ test.zip
 test2.rar
 test_arc/
 scratch_*.py
-test_*.rs
+/test_*.rs
 
 # Internal/stale diagnostics; translate and move into docs/ before publishing.
 docs/diagnostics/
