@@ -434,7 +434,7 @@ impl App {
                         
                         let ellipsis_s = if name_s.width() > name_col_w {
                             let ellipsis: SharedString = "…".into();
-                            let e_run = TextRun { len: 1, font: font_c.clone(), color: name_color, background_color: None, underline: None, strikethrough: None };
+                            let e_run = TextRun { len: ellipsis.len(), font: font_c.clone(), color: name_color, background_color: None, underline: None, strikethrough: None };
                             let es = ts.shape_line(ellipsis, font_size, &[e_run], None);
                             let cutoff = (name_col_w - es.width()).max(px(0.));
                             let split_idx = name_s.index_for_x(cutoff).unwrap_or(0);
