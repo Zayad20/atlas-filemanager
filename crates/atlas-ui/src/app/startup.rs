@@ -442,6 +442,7 @@ impl App {
             space_lens: HashMap::new(),
             pane_tabs_cache: HashMap::new(),
             pane_tabs_fp: HashMap::new(),
+            pane_tabs_bounds: HashMap::new(),
             sidebar_panel: None,
             dock_host: None,
             focus_history: std::collections::VecDeque::new(),

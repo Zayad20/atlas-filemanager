@@ -140,6 +140,7 @@ pub struct App {
     /// changes, so unchanged pane chrome is reused wholesale.
     pub(crate) pane_tabs_cache: HashMap<TileId, Entity<crate::ui::dock::render::PaneTabsView>>,
     pub(crate) pane_tabs_fp: HashMap<TileId, u64>,
+    pub(crate) pane_tabs_bounds: HashMap<TileId, gpui::Bounds<gpui::Pixels>>,
     pub(crate) sidebar_panel: Option<Entity<crate::ui::sidebar::SidebarPanel>>,
     /// The dock tree hosted in its own view (see `ui::dock_host`). Split/close/drag
     /// animations call `request_animation_frame`, which notifies the *current* view;

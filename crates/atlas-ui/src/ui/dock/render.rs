@@ -56,6 +56,15 @@ fn split_child_span(share: f32, share_sum: f32, available: f32, child_count: usi
     }
 }
 
+fn frozen_tabs_size(
+    split_animating: bool,
+    stable_size: Option<gpui::Size<gpui::Pixels>>,
+) -> Option<gpui::Size<gpui::Pixels>> {
+    stable_size.filter(|size| {
+        split_animating && f32::from(size.width) > 1.0 && f32::from(size.height) > 1.0
+    })
+}
+
 /// Tabs-like tile (tab strip + body) hosted in its own entity so it can be embedded
 /// with `AnyView::cached` (Zed's `dock.rs:1185` pattern: the whole pane, including
 /// the tab bar, is cached). Rendering delegates to `App::render_tabs_like`;
@@ -162,6 +171,8 @@ impl App {
         self.pane_tabs_cache
             .retain(|id, _| tiles.get(*id).is_some());
         self.pane_tabs_fp.retain(|id, _| tiles.get(*id).is_some());
+        self.pane_tabs_bounds
+            .retain(|id, _| tiles.get(*id).is_some());
 
         let root = self.state.pane_tree.root;
         let content = root
@@ -670,8 +681,31 @@ impl App {
         if self.pane_tabs_fp.insert(id, fp) != Some(fp) {
             view.update(cx, |_, cx| cx.notify());
         }
-        gpui::AnyView::from(view)
-            .cached(gpui::StyleRefinement::default().size_full())
+        let frozen_size = frozen_tabs_size(
+            !self.dock_split_animations.is_empty(),
+            self.pane_tabs_bounds.get(&id).map(|bounds| bounds.size),
+        );
+        let mut style = gpui::StyleRefinement::default();
+        style = if let Some(size) = frozen_size {
+            style.w(size.width).h(size.height)
+        } else {
+            style.size_full()
+        };
+
+        let app = cx.entity();
+        div()
+            .size_full()
+            .overflow_hidden()
+            .child(gpui::AnyView::from(view).cached(style))
+            .on_prepaint(move |bounds, _window, cx| {
+                app.update(cx, |this, _cx| {
+                    if this.dock_split_animations.is_empty()
+                        && this.state.pane_tree.tiles.get(id).is_some()
+                    {
+                        this.pane_tabs_bounds.insert(id, bounds);
+                    }
+                });
+            })
             .into_any_element()
     }
 
@@ -1330,4 +1364,20 @@ mod tests {
         assert_eq!(split_child_span(1.0, 0.0, 90.0, 3), 30.0);
     }
 
+    #[test]
+    fn freezes_tabs_size_only_during_split_animation() {
+        let size = gpui::size(px(320.0), px(180.0));
+
+        assert_eq!(frozen_tabs_size(true, Some(size)), Some(size));
+        assert_eq!(frozen_tabs_size(false, Some(size)), None);
+        assert_eq!(frozen_tabs_size(true, None), None);
+        assert_eq!(
+            frozen_tabs_size(true, Some(gpui::size(px(1.0), px(180.0)))),
+            None
+        );
+        assert_eq!(
+            frozen_tabs_size(true, Some(gpui::size(px(320.0), px(1.0)))),
+            None
+        );
+    }
 }
