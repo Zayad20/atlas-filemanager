@@ -211,12 +211,7 @@ impl App {
         }
 
         let view = cx.entity();
-        let mut host = div()
-            .relative()
-            .size_full()
-            .min_w(px(0.))
-            .min_h(px(0.))
-            .overflow_hidden();
+        let mut host = div().absolute().inset_0().overflow_hidden();
 
         for pane in panes {
             let content = if pane.rect.w <= 4.0 || pane.rect.h <= 4.0 {
