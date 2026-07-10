@@ -48,12 +48,17 @@ pub enum ExtAction {
     InstallRemote {
         id: String,
         download_url: String,
+        sha256: String,
     },
 }
 
 impl App {
     pub(crate) fn reload_ext_registry(&mut self) {
         self.ext_registry = atlas_core::ext::Registry::load(&self.state.ext.enabled);
+        #[cfg(feature = "cloud")]
+        if self.ext_registry.has_sidebar_section("cloud") {
+            self.state.profiles.ensure_cloud_section();
+        }
     }
 
     pub(crate) fn handle_ext_action(&mut self, action: ExtAction) {
@@ -85,11 +90,27 @@ impl App {
                 self.state.ext.pending = None;
             }
             ExtAction::SetEnabled { id, enabled } => {
+                #[cfg(feature = "cloud")]
+                if id == "cloud" && !enabled {
+                    let (reply, done) = std::sync::mpsc::channel();
+                    let _ = self
+                        .cloud_tx
+                        .send(atlas_core::cloud::CloudCmd::StopProvider { reply });
+                    let _ = done.recv_timeout(std::time::Duration::from_secs(5));
+                }
                 self.state.ext.enabled.insert(id, enabled);
                 self.reload_ext_registry();
             }
             ExtAction::Install => self.install_extension(),
             ExtAction::Uninstall(id) => {
+                #[cfg(feature = "cloud")]
+                if id == "cloud" {
+                    let (reply, done) = std::sync::mpsc::channel();
+                    let _ = self
+                        .cloud_tx
+                        .send(atlas_core::cloud::CloudCmd::StopProvider { reply });
+                    let _ = done.recv_timeout(std::time::Duration::from_secs(5));
+                }
                 if let Err(e) = atlas_core::ext::install::uninstall(&id) {
                     self.state.ext.last_error = Some(e.to_string());
                 } else {
@@ -128,15 +149,20 @@ impl App {
                     let _ = tx.send(atlas_model::app_state::BgResult::ExtRegistryFetched(result));
                 });
             }
-            ExtAction::InstallRemote { id, download_url } => {
+            ExtAction::InstallRemote {
+                id,
+                download_url,
+                sha256,
+            } => {
                 self.state.ext.installing.insert(id.clone());
                 self.state.ext.last_error = None;
                 let tx = self.tx.clone();
                 self.rt.spawn(async move {
                     let result = async {
-                        let zip_path = atlas_core::ext::marketplace::download_zip(&download_url)
-                            .await
-                            .map_err(|e| e.to_string())?;
+                        let zip_path =
+                            atlas_core::ext::marketplace::download_zip(&download_url, &sha256)
+                                .await
+                                .map_err(|e| e.to_string())?;
                         atlas_core::ext::install::install_zip(&zip_path)
                             .map_err(|e| e.to_string())?;
                         // Clean up temp zip.

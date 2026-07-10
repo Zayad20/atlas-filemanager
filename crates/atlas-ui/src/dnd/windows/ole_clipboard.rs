@@ -6,7 +6,7 @@
 //!
 //! Cut semantics follow the shell protocol: when another app pastes our cut it
 //! writes `Performed DropEffect` via `SetData` — the data object forwards that
-//! to the App ([`BgResult::ClipboardPerformed`]) which trashes the sources
+//! to the App ([`BgResult::ClipboardPerformed`]) which removes the sources
 //! (unoptimized move) or just invalidates the clipboard (optimized move).
 #![allow(unsafe_code)]
 // reason: OLE clipboard and HGLOBAL access are inherently unsafe Win32 calls.
@@ -156,6 +156,7 @@ pub fn set_clipboard_files(
     cut: bool,
     tx: flume::Sender<BgResult>,
 ) -> Result<(), String> {
+    let paths = atlas_core::fs::paths::normalize_wsl_unc_paths(paths.to_vec());
     let effect = if cut {
         DROPEFFECT_MOVE
     } else {
@@ -164,14 +165,14 @@ pub fn set_clipboard_files(
     let extras = if cut {
         Vec::new()
     } else {
-        image_format_entries(paths)
+        image_format_entries(&paths)
     };
     let obj = AtlasDataObject::with_extras(
-        paths,
+        &paths,
         effect,
         Arc::new(AtomicU32::new(0)),
         extras,
-        Some((tx, paths.to_vec())),
+        Some((tx, paths.clone())),
     )
     .ok_or_else(|| "no se pudo preparar el contenido".to_string())?;
     unsafe { OleSetClipboard(&obj) }.map_err(|e| e.message())
@@ -189,7 +190,7 @@ pub struct ClipboardContents {
 pub fn get_clipboard_files() -> Option<ClipboardContents> {
     unsafe {
         let obj = OleGetClipboard().ok()?;
-        let paths = read_cf_hdrop(&obj);
+        let paths = atlas_core::fs::paths::normalize_wsl_unc_paths(read_cf_hdrop(&obj));
         if paths.is_empty() {
             return None;
         }

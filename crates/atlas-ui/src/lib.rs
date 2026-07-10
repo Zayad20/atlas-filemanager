@@ -138,12 +138,29 @@ pub struct SidebarMoveSectionDown {
 #[action(namespace = atlas, no_json)]
 pub struct SidebarResetSections;
 
+#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
+#[action(namespace = atlas, no_json)]
+pub struct OpenSpaceLensForPath {
+    pub path: std::path::PathBuf,
+}
+
+#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
+#[action(namespace = atlas, no_json)]
+pub struct OpenPropertiesForPath {
+    pub path: std::path::PathBuf,
+}
+
+#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
+#[action(namespace = atlas, no_json)]
+pub struct OpenThisPcProperties;
+
 /// Launch the gpui application. The caller owns the tokio runtime and passes its
 /// handle in; gpui drives the UI on the calling (main) thread.
 pub fn run(
     handle: tokio::runtime::Handle,
     app_started: Instant,
     on_quit: Option<Box<dyn FnOnce() + 'static>>,
+    initial_paths: Vec<std::path::PathBuf>,
 ) {
     let run_started = Instant::now();
     let settings = atlas_core::util::config::load_settings();
@@ -229,9 +246,8 @@ pub fn run(
             KeyBinding::new("ctrl-tab", NextTab, Some("Atlas")),
             KeyBinding::new("ctrl-shift-tab", PrevTab, Some("Atlas")),
             // FASE D: overlays / panels / toggles.
-            KeyBinding::new("ctrl-shift-p", OpenPalette, Some("Atlas")),
             KeyBinding::new("ctrl-f", OpenSearchInPlace, Some("Atlas")),
-            KeyBinding::new("space", TogglePreviewExpanded, Some("Atlas")),
+            KeyBinding::new("space", ToggleInspector, Some("Atlas")),
             KeyBinding::new("escape", CloseOverlays, Some("Atlas")),
             // FASE D: pane structure.
             KeyBinding::new("alt-tab", FocusNextPane, Some("Atlas")),
@@ -252,15 +268,11 @@ pub fn run(
             cx.quit();
         });
 
-        // Desktop blur via GPUI's `WindowBackgroundAppearance::Blurred`, matching
-        // Zed themes with `background.appearance = "blurred"`. It only composites
-        // when the content tree stays translucent: the active theme's `background`
-        // supplies the tint and the root paints no opaque layer.
         let window_options = WindowOptions {
             titlebar: Some(TitleBar::title_bar_options()),
             window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
+            window_background: WindowBackgroundAppearance::Opaque,
             window_min_size: Some(size(px(900.), px(560.))),
-            window_background: WindowBackgroundAppearance::Blurred,
             ..Default::default()
         };
 
@@ -274,8 +286,18 @@ pub fn run(
                     "startup: window callback"
                 );
                 window.set_window_title("Atlas");
-                let view =
-                    cx.new(|cx| app::App::new(handle, app_settings, app_started, window, cx));
+                let initial_paths = initial_paths.clone();
+                let view = cx.new(|cx| {
+                    app::App::new(handle, app_settings, app_started, initial_paths, window, cx)
+                });
+                // Autosave: persist settings/session/profiles when the app is
+                // about to quit, gated by the user's autosave-session setting.
+                let weak_app = view.downgrade();
+                cx.on_app_quit(move |cx| {
+                    weak_app.update(cx, |app, _cx| app.save_on_quit()).ok();
+                    std::future::ready(())
+                })
+                .detach();
                 // The top-level window view must be `Root` (mount point for
                 // gpui-component overlays, modals and notifications).
                 cx.new(|cx| Root::new(view, window, cx))

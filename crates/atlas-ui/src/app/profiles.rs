@@ -87,6 +87,9 @@ impl App {
                 Some(p) => p.to_path_buf(),
                 None => continue,
             };
+            if let Ok(watcher) = atlas_core::fs::watcher::watch_path(&path, self.tx.clone()) {
+                self.watchers.insert(tile_id, watcher);
+            }
             let op_id = self.state.next_op_id();
             let ts = self.state.tab_states.entry(tile_id).or_default();
             ts.load_state = atlas_model::tab::LoadState::Loading;

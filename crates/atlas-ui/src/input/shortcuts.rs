@@ -1,5 +1,6 @@
 use crate::app::App;
-use crate::input::action::Action;
+use crate::input::action::{Action, SelectionMove};
+use crate::input::commands::{command_remappable, default_command_shortcut, COMMANDS};
 use atlas_model::profiles::ProfileScoped;
 use atlas_model::settings::ViewMode;
 use gpui::{Context, KeyDownEvent, KeybindingKeystroke, Keystroke, Window};
@@ -18,30 +19,6 @@ impl ProfileScoped for CommandShortcuts {
     type State = CommandShortcutPrefs;
 }
 
-const COMMAND_SHORTCUTS: &[(&str, &str)] = &[
-    ("tab.new", "ctrl-t"),
-    ("tab.close", "ctrl-w"),
-    ("pane.split-h", "ctrl-shift-s"),
-    ("pane.split-v", "ctrl-alt-s"),
-    ("pane.close", "ctrl-shift-w"),
-    ("nav.back", "alt-left"),
-    ("nav.forward", "alt-right"),
-    ("nav.goto", "ctrl-k"),
-    ("view.hidden", "ctrl-."),
-    ("view.inspector", "ctrl-i"),
-    ("view.sidebar", "ctrl-b"),
-    ("view.zoom-in", "ctrl-="),
-    ("view.zoom-out", "ctrl--"),
-    ("view.zoom-reset", "ctrl-0"),
-    ("edit.select-all", "ctrl-a"),
-    ("edit.undo", "ctrl-z"),
-    ("edit.redo", "ctrl-shift-z"),
-    ("files.trash", "delete"),
-    ("files.delete", "shift-delete"),
-    ("ext.manager", "ctrl-shift-x"),
-    ("sys.settings", "ctrl-,"),
-];
-
 const RESERVED_STATIC_SHORTCUTS: &[&str] = &[
     "ctrl-q",
     "up",
@@ -56,7 +33,6 @@ const RESERVED_STATIC_SHORTCUTS: &[&str] = &[
     "f2",
     "ctrl-tab",
     "ctrl-shift-tab",
-    "ctrl-shift-p",
     "ctrl-f",
     "space",
     "escape",
@@ -69,16 +45,6 @@ const RESERVED_STATIC_SHORTCUTS: &[&str] = &[
     "ctrl-x",
     "ctrl-v",
 ];
-
-pub(crate) fn default_command_shortcut(command_id: &str) -> Option<&'static str> {
-    COMMAND_SHORTCUTS
-        .iter()
-        .find_map(|(id, key)| (*id == command_id).then_some(*key))
-}
-
-pub(crate) fn has_default_command_shortcut(command_id: &str) -> bool {
-    default_command_shortcut(command_id).is_some()
-}
 
 impl App {
     pub(crate) fn handle_global_command_shortcut_key(
@@ -130,7 +96,7 @@ impl App {
     }
 
     pub(crate) fn start_command_shortcut_capture(&mut self, command_id: String) {
-        if has_default_command_shortcut(&command_id) {
+        if command_remappable(&command_id) {
             self.command_shortcut_capture = Some(command_id);
         }
     }
@@ -140,7 +106,7 @@ impl App {
     }
 
     pub(crate) fn set_command_shortcut(&mut self, command_id: String, keystroke: String) {
-        if !has_default_command_shortcut(&command_id) || Keystroke::parse(&keystroke).is_err() {
+        if !command_remappable(&command_id) || Keystroke::parse(&keystroke).is_err() {
             return;
         }
         if reserved_static_shortcut(&keystroke) {
@@ -150,13 +116,13 @@ impl App {
         }
 
         let mut prefs = self.state.profiles.active().scoped::<CommandShortcuts>();
-        for (other_id, _) in COMMAND_SHORTCUTS {
-            if *other_id != command_id
+        for other in COMMANDS.iter().filter(|command| command.remappable) {
+            if other.id != command_id
                 && self
-                    .command_shortcut_string(other_id)
+                    .command_shortcut_string(other.id)
                     .is_some_and(|keys| keys == keystroke)
             {
-                prefs.bindings.insert((*other_id).to_string(), None);
+                prefs.bindings.insert(other.id.to_string(), None);
             }
         }
         prefs.bindings.insert(command_id, Some(keystroke));
@@ -169,7 +135,7 @@ impl App {
     }
 
     pub(crate) fn remove_command_shortcut(&mut self, command_id: String) {
-        if !has_default_command_shortcut(&command_id) {
+        if !command_remappable(&command_id) {
             return;
         }
         let mut prefs = self.state.profiles.active().scoped::<CommandShortcuts>();
@@ -196,8 +162,8 @@ impl App {
             return false;
         }
 
-        for (command_id, _) in COMMAND_SHORTCUTS {
-            let Some(keys) = self.command_shortcut_string(command_id) else {
+        for command in COMMANDS.iter().filter(|command| command.remappable) {
+            let Some(keys) = self.command_shortcut_string(command.id) else {
                 continue;
             };
             let Ok(target) = Keystroke::parse(&keys) else {
@@ -205,7 +171,7 @@ impl App {
             };
             let target = KeybindingKeystroke::from_keystroke(target);
             if ev.keystroke.should_match(&target) {
-                if let Some(action) = self.action_for_command_shortcut(command_id) {
+                if let Some(action) = self.action_for_command_shortcut(command.id) {
                     self.process_actions(vec![action]);
                 }
                 return true;
@@ -217,18 +183,44 @@ impl App {
 
     fn action_for_command_shortcut(&self, command_id: &str) -> Option<Action> {
         let focused = self.state.focused_tile;
+        let active_location = self.state.active_tab_data().map(|tab| &tab.location);
+        let archive_focused =
+            active_location.is_some_and(atlas_model::location::Location::is_archive);
+        let recycle_focused = active_location
+            .is_some_and(|location| *location == atlas_model::location::Location::RecycleBin);
         match command_id {
             "tab.new" => Some(Action::NewTabFocused),
             "tab.close" => Some(Action::CloseFocusedTab),
+            "tab.next" => Some(Action::FocusNextTab),
+            "tab.previous" => Some(Action::FocusPreviousTab),
+            "tab.move-left" => Some(Action::MoveFocusedTabLeft),
+            "tab.move-right" => Some(Action::MoveFocusedTabRight),
+            "tab.1" => Some(Action::FocusTabIndex(0)),
+            "tab.2" => Some(Action::FocusTabIndex(1)),
+            "tab.3" => Some(Action::FocusTabIndex(2)),
+            "tab.4" => Some(Action::FocusTabIndex(3)),
+            "tab.5" => Some(Action::FocusTabIndex(4)),
+            "tab.6" => Some(Action::FocusTabIndex(5)),
+            "tab.7" => Some(Action::FocusTabIndex(6)),
+            "tab.8" => Some(Action::FocusTabIndex(7)),
+            "tab.9" => Some(Action::FocusTabIndex(8)),
             "pane.split-h" => Some(Action::SplitHorizontalFocused),
             "pane.split-v" => Some(Action::SplitVerticalFocused),
             "pane.close" => Some(Action::CloseFocusedPane),
             "nav.back" => Some(Action::NavigateBack(focused)),
             "nav.forward" => Some(Action::NavigateForward(focused)),
+            "nav.parent" => Some(Action::NavigateUp(focused)),
             "nav.goto" => Some(Action::OpenGotoBar),
+            "nav.refresh" => Some(Action::Refresh(focused)),
+            #[cfg(target_os = "windows")]
+            "nav.recycle-bin" => Some(Action::NavigateLocation {
+                tab: focused,
+                location: atlas_model::location::Location::RecycleBin,
+            }),
             "view.hidden" => Some(Action::ToggleHidden),
             "view.inspector" => Some(Action::ToggleInspector),
             "view.sidebar" => Some(Action::ToggleSidebar),
+            "view.sidebar-collapse" => Some(Action::ToggleSidebarCollapsed),
             "view.details" => Some(Action::SetViewMode(ViewMode::Details)),
             "view.grid" => Some(Action::SetViewMode(ViewMode::Grid)),
             "view.list" => Some(Action::SetViewMode(ViewMode::List)),
@@ -236,18 +228,108 @@ impl App {
             "view.zoom-in" => Some(Action::ZoomIn),
             "view.zoom-out" => Some(Action::ZoomOut),
             "view.zoom-reset" => Some(Action::ZoomReset),
+            "view.content-zoom-in" => Some(Action::PaneContentZoomIn),
+            "view.content-zoom-out" => Some(Action::PaneContentZoomOut),
+            "folder.toggle-folders-first" => Some(Action::ToggleFoldersFirstFocused),
+            "folder.toggle-files" => Some(Action::ToggleShowFilesFocused),
+            "folder.toggle-folders" => Some(Action::ToggleShowFoldersFocused),
+            "folder.search" => Some(Action::OpenSearchInPlace),
+            "folder.search-subfolders" => Some(Action::ToggleSearchInSubfolders),
+            "selection.previous" => Some(Action::MoveSelection {
+                target: SelectionMove::Previous,
+                extend: false,
+            }),
+            "selection.next" => Some(Action::MoveSelection {
+                target: SelectionMove::Next,
+                extend: false,
+            }),
+            "selection.first" => Some(Action::MoveSelection {
+                target: SelectionMove::First,
+                extend: false,
+            }),
+            "selection.last" => Some(Action::MoveSelection {
+                target: SelectionMove::Last,
+                extend: false,
+            }),
+            "selection.page-up" => Some(Action::MoveSelection {
+                target: SelectionMove::PageUp,
+                extend: false,
+            }),
+            "selection.page-down" => Some(Action::MoveSelection {
+                target: SelectionMove::PageDown,
+                extend: false,
+            }),
+            "selection.extend-previous" => Some(Action::MoveSelection {
+                target: SelectionMove::Previous,
+                extend: true,
+            }),
+            "selection.extend-next" => Some(Action::MoveSelection {
+                target: SelectionMove::Next,
+                extend: true,
+            }),
+            "selection.extend-first" => Some(Action::MoveSelection {
+                target: SelectionMove::First,
+                extend: true,
+            }),
+            "selection.extend-last" => Some(Action::MoveSelection {
+                target: SelectionMove::Last,
+                extend: true,
+            }),
+            "selection.extend-page-up" => Some(Action::MoveSelection {
+                target: SelectionMove::PageUp,
+                extend: true,
+            }),
+            "selection.extend-page-down" => Some(Action::MoveSelection {
+                target: SelectionMove::PageDown,
+                extend: true,
+            }),
+            "selection.open" => Some(Action::OpenCursor),
             "edit.select-all" => Some(Action::SelectAll),
+            "edit.invert" => Some(Action::InvertSelection),
             "edit.undo" => Some(Action::Undo),
             "edit.redo" => Some(Action::Redo),
-            "files.trash" => Some(Action::Delete {
-                paths: self.selected_paths(),
-                to_trash: true,
-            }),
-            "files.delete" => Some(Action::Delete {
-                paths: self.selected_paths(),
-                to_trash: false,
-            }),
+            "edit.batch-rename" => Some(Action::OpenBatchRename),
+            "files.rename" if !archive_focused => Some(Action::RenameFocused),
+            "files.create-folder" if !archive_focused => Some(Action::CreateFolderFocused),
+            "files.create-file" if !archive_focused => Some(Action::CreateFileFocused),
+            "files.trash" if !archive_focused => {
+                let paths = self.selected_paths();
+                (!paths.is_empty()).then_some(Action::Delete {
+                    paths,
+                    to_trash: true,
+                })
+            }
+            "files.delete" if !archive_focused => {
+                let paths = self.selected_paths();
+                (!paths.is_empty()).then_some(Action::Delete {
+                    paths,
+                    to_trash: false,
+                })
+            }
+            "files.compress" if !archive_focused => {
+                let paths = self.selected_paths();
+                (!paths.is_empty()).then_some(Action::CompressToZip(paths))
+            }
+            "files.open-dirs-in-tabs" if !archive_focused => {
+                Some(Action::OpenSelectedDirsInNewTabs)
+            }
+            "files.open-in-window" if !archive_focused => Some(Action::OpenSelectedInNewWindow),
+            "files.open-dir-right-split" if !archive_focused => {
+                Some(Action::OpenSelectedDirInRightSplit)
+            }
+            "files.open-dir-bottom-split" if !archive_focused => {
+                Some(Action::OpenSelectedDirInBottomSplit)
+            }
+            "recycle.restore" if recycle_focused => Some(Action::RestoreSelectedFromRecycleBin),
+            "recycle.purge" if recycle_focused => Some(Action::PurgeSelectedFromRecycleBin),
+            "recycle.empty" => Some(Action::EmptyRecycleBin),
+            "profile.new" => Some(Action::CreateProfile(String::new())),
+            "profile.rename" => Some(Action::OpenRenameProfile),
+            "profile.delete" => {
+                (self.state.profiles.profiles.len() > 1).then_some(Action::DeleteActiveProfile)
+            }
             "ext.manager" => Some(Action::OpenExtManager),
+            "sys.palette" => Some(Action::OpenPalette),
             "sys.settings" => Some(Action::OpenSettings),
             _ => None,
         }
@@ -268,6 +350,7 @@ impl App {
             || self.rename_edit.is_some()
             || self.ctx_menu.is_some()
             || self.type_filter_menu.is_some()
+            || self.breadcrumb_menu.is_some()
             || self.size_filter_menu.is_some()
             || self.tag_picker_menu.is_some()
             || self.state.ext.show_manager
@@ -294,4 +377,20 @@ fn reserved_static_shortcut(keystroke: &str) -> bool {
             .map(KeybindingKeystroke::from_keystroke)
             .is_ok_and(|target| source.should_match(&target))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reserved_shortcuts_reject_static_input_bindings() {
+        assert!(reserved_static_shortcut("ctrl-c"));
+        assert!(reserved_static_shortcut("escape"));
+    }
+
+    #[test]
+    fn non_reserved_shortcuts_are_allowed() {
+        assert!(!reserved_static_shortcut("ctrl-alt-1"));
+    }
 }

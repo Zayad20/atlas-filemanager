@@ -14,13 +14,40 @@ pub(crate) enum NavKind {
 }
 
 impl App {
+    pub(crate) fn recent_folders(&self) -> Vec<PathBuf> {
+        use atlas_model::profiles::RecentFoldersFeature;
+        self.state
+            .profiles
+            .active()
+            .scoped::<RecentFoldersFeature>()
+    }
+
+    fn push_recent_folder(&mut self, path: &std::path::Path) {
+        use atlas_model::profiles::RecentFoldersFeature;
+        let mut recent = self
+            .state
+            .profiles
+            .active()
+            .scoped::<RecentFoldersFeature>();
+        recent.retain(|p| p != path);
+        recent.push(path.to_path_buf());
+        if recent.len() > 50 {
+            recent.remove(0);
+        }
+        self.state
+            .profiles
+            .active_mut()
+            .set_scoped::<RecentFoldersFeature>(&recent);
+    }
+
     /// Single entry point for all navigation. Handles history, watcher lifecycle,
     /// recent folders, begin_navigation, focused_tile, and spawn_list.
-    pub(crate) fn navigate_to(&mut self, tab_id: TileId, loc: Location, kind: NavKind) {
+    pub(crate) fn navigate_to(&mut self, tab_id: TileId, mut loc: Location, kind: NavKind) {
         let tab_id = match self.resolve_pane(tab_id) {
             Some(id) => id,
             None => return,
         };
+        atlas_core::fs::paths::normalize_wsl_location_path(&mut loc);
         self.rubber = None;
 
         // Per-folder view/sort memory (F3 #14): looked up before the mutable
@@ -77,15 +104,15 @@ impl App {
 
         // ── 3. Recent folders (Directory only) ──────────────────────────────
         if let Location::Directory(path) = &loc {
-            let recent = &mut self.state.settings.recent_folders;
-            recent.retain(|p| p != path);
-            recent.push(path.clone());
-            if recent.len() > 50 {
-                recent.remove(0);
-            }
+            self.push_recent_folder(path);
         }
 
         // ── 4. Begin navigation ──────────────────────────────────────────────
+        let had_entries = self
+            .state
+            .tab_states
+            .get(&tab_id)
+            .is_some_and(|ts| !ts.entries.is_empty());
         if let Some(ts) = self.state.tab_states.get_mut(&tab_id) {
             ts.begin_navigation();
         }
@@ -93,15 +120,40 @@ impl App {
         // filter to the new directory through the bottom-bar value sync.
         self.search_inputs.remove(&tab_id);
 
-        // ── 5. Focused tile + listing ────────────────────────────────────────
+        // ── 5. Stale drag geometry ───────────────────────────────────────────
+        // Navigating mid-drag (spring-load) leaves this pane's row-level hover
+        // targets and OLE zone dest pointing at the *previous* listing — a drop
+        // would route to a folder that is no longer on screen. Prune the row
+        // targets (the next prepaint re-registers fresh ones; meanwhile the
+        // pane-bounds fallback reads the live location) and rewrite the OLE
+        // zone dest in place, since the nested DoDragDrop loop may resolve a
+        // drop before the next frame recommits zones.
+        if self.drag_hover_maybe_active() {
+            self.pending_drag_hover_targets.retain(|target| {
+                !matches!(&target.id,
+                    crate::ui::drag_hover::DragHoverId::Folder(pane, _) if *pane == tab_id)
+            });
+            self.row_rects.remove(&tab_id);
+            #[cfg(windows)]
+            if let Some(dnd) = &self.dnd {
+                if let Ok(mut zones) = dnd.zones.lock() {
+                    match loc.fs_dir() {
+                        Some(dir) => zones.set_dest_for_pane(tab_id.0, dir.to_path_buf()),
+                        None => zones.remove_pane(tab_id.0),
+                    }
+                }
+            }
+        }
+
+        // ── 6. Focused tile + listing ────────────────────────────────────────
         self.state.focused_tile = tab_id;
         self.spawn_list(tab_id, loc);
-        // No `cx` here: mark the pane dirty so `flush_dirty_panes` (called from
-        // drop handlers / the drag-hover tick) repaints the file view in lockstep
-        // with the route. Without this the chrome shows the new path but the pane
-        // (a separate PaneSignal entity) keeps the old listing until the async
-        // BgResult arrives — the "route changes but view doesn't" desync.
-        self.dirty_panes.insert(tab_id);
+        // Keep an already-painted pane mounted until BgResult atomically replaces
+        // it. Repainting the empty begin_navigation state caused a visible flash.
+        // New/empty panes still need their initial loading state painted.
+        if !had_entries {
+            self.dirty_panes.insert(tab_id);
+        }
     }
 
     /// Persist a per-folder view/sort pref (F3 #14). No-op when `pref` is `None`
@@ -113,6 +165,9 @@ impl App {
         let Some((path, pref)) = pref else { return };
         use atlas_model::profiles::FolderViewFeature;
         let mut prefs = self.state.profiles.active().scoped::<FolderViewFeature>();
+        if prefs.get(&path).as_ref() == Some(&pref) {
+            return;
+        }
         prefs.set(path, pref);
         self.state
             .profiles

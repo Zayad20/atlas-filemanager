@@ -5,15 +5,26 @@ use crate::app::App;
 use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
-use crate::ui::root::{ctrl_scroll, pane_bounds_recorder, rect_recorder, DraggedFiles};
+use crate::ui::root::{ctrl_scroll, pane_bounds_recorder, rect_recorder};
 use crate::ui::views::virtual_grid::AnimatedVirtualGrid;
 use atlas_model::file_entry::{FileEntry, FileKind};
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
-use gpui::{div, img, px, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window};
+use gpui::{
+    div, img, px, AbsoluteLength, AnyElement, Context, Entity, Hsla, MouseButton, SharedString,
+    Window,
+};
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::{v_flex, ActiveTheme, ElementExt};
+use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt};
 use std::ops::Range;
+
+pub(crate) const GRID_GAP: f32 = 8.0;
+pub(crate) const GRID_PAD: f32 = 0.0;
+pub(crate) const GRID_ICON_AREA: f32 = 0.72;
+pub(crate) const GRID_PREVIEW_MAX: f32 = 0.70;
+pub(crate) const GRID_TEXTURE_ICON_MAX: f32 = 0.66;
+pub(crate) const GRID_BUILTIN_ICON: f32 = 0.54;
+pub(crate) const GRID_LABEL_H: f32 = 32.0;
 
 impl App {
     /// Icons (Grid) view: a virtualized grid of fixed-size cells. Column count is
@@ -28,7 +39,7 @@ impl App {
         crate::perf::count("render.view.grid");
         let view = cx.entity();
         let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
-        let (fg, accent, accent_fg, hover, muted, header_bg) = {
+        let (fg, accent, accent_fg, hover, muted, border, header_bg) = {
             let t = cx.theme();
             (
                 t.foreground,
@@ -36,6 +47,7 @@ impl App {
                 t.accent_foreground,
                 t.list_active,
                 t.muted_foreground,
+                t.border,
                 if figma_glass {
                     glass_header_fill()
                 } else {
@@ -44,16 +56,22 @@ impl App {
             )
         };
         let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, header_bg);
+        // `thumb` stays in rem units (same meaning as before the zoom refactor) —
+        // it flows into `render_cell`/`FileIcon::element`, which resolve it via
+        // `rem_px()`. The virtualization math below runs against real measured
+        // pixels (pane_w, scroll offsets), so it needs its own scaled copy.
         let thumb = self
             .tab_data_for(pane_id)
             .map_or(128.0, |t| t.thumbnail_size);
+        let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
+        let thumb_px = thumb * zoom_scale;
         let count = self
             .state
             .tab_states
             .get_mut(&pane_id)
             .map_or(0, |ts| ts.visible_indices().len());
-        const GRID_GAP: f32 = 8.0;
-        const GRID_PAD: f32 = 0.0;
+        let grid_gap_px = GRID_GAP * zoom_scale;
+        let grid_pad_px = GRID_PAD * zoom_scale;
         // Use the width captured by on_prepaint from the previous frame. This
         // reflects the real pane size and adapts to preview panels and splitter
         // drags. Fall back to a viewport estimate on the very first frame before
@@ -65,9 +83,10 @@ impl App {
             .map(|ts| ts.last_pane_width)
             .filter(|&w| w > 1.0)
             .unwrap_or_else(|| (f32::from(window.viewport_size().width) - 217.0).max(0.0));
-        let inner_avail = (pane_w - 2.0 * GRID_PAD).max(thumb);
+        let inner_avail = (pane_w - 2.0 * grid_pad_px).max(thumb_px);
         // n*(thumb+GAP) - GAP = inner_avail  →  n = ⌊(inner_avail + GAP) / (thumb + GAP)⌋
-        let cols = (((inner_avail + GRID_GAP) / (thumb + GRID_GAP)).floor() as usize).max(1);
+        let cols =
+            (((inner_avail + grid_gap_px) / (thumb_px + grid_gap_px)).floor() as usize).max(1);
         let _perf = crate::perf::span_detail("grid.render", || {
             format!(
                 "pane={} count={count} cols={cols} thumb={thumb:.1} pane_w={pane_w:.1}",
@@ -80,6 +99,12 @@ impl App {
         let scroll = self.scroll_handle_for(pane_id);
         let base_scroll = scroll.0.borrow().base_handle.clone();
 
+        let animate_grid_reflow = !self.state.settings.disable_animations
+            && !self.suppress_window_resize_animations()
+            && self.dock_split_animations.is_empty()
+            && self.pane_layout_animations.is_empty()
+            && self.file_panel_cache.len() <= if cfg!(debug_assertions) { 4 } else { 6 };
+
         let inner = if count == 0 {
             let msg = self.empty_pane_message(pane_id, rust_i18n::t!("empty_folder").into_owned());
             v_flex()
@@ -87,6 +112,10 @@ impl App {
                 .items_center()
                 .justify_center()
                 .text_color(muted)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    crate::ui::views::on_pane_rubber_mouse_down(&view, pane_id),
+                )
                 .children(msg)
                 .into_any_element()
         } else {
@@ -99,13 +128,13 @@ impl App {
                     f32::from(window.viewport_size().height)
                 }
             };
-            let cell_h = thumb * 0.62 + 32.0;
-            let pitch = cell_h + GRID_GAP;
+            let cell_h_px = thumb_px * GRID_ICON_AREA + GRID_LABEL_H * zoom_scale;
+            let pitch = cell_h_px + grid_gap_px;
             let rows = count.div_ceil(cols);
             let content_h = if rows == 0 {
                 0.0
             } else {
-                rows as f32 * pitch - GRID_GAP
+                rows as f32 * pitch - grid_gap_px
             };
             let max_scroll = (content_h - viewport_h).max(0.0);
             if scroll_y > max_scroll {
@@ -129,25 +158,28 @@ impl App {
                 .size_full()
                 .overflow_y_scroll()
                 .track_scroll(&base_scroll)
-                .on_scroll_wheel(move |ev, _window, cx| {
-                    ctrl_scroll(ev, pane_id, &inner_scroll_view, cx);
-                    cx.stop_propagation();
+                .on_mouse_down(
+                    MouseButton::Left,
+                    crate::ui::views::on_pane_rubber_mouse_down(&view, pane_id),
+                )
+                .on_scroll_wheel(move |ev, window, cx| {
+                    ctrl_scroll(ev, pane_id, &inner_scroll_view, window, cx);
                 })
                 .child(AnimatedVirtualGrid::new(
                     SharedString::from(format!("anim-grid-{}", pane_id.0)),
                     count,
                     cols,
                     gpui::Size {
-                        width: gpui::px(thumb),
-                        height: gpui::px(cell_h),
+                        width: gpui::px(thumb_px),
+                        height: gpui::px(cell_h_px),
                     },
                     gpui::Size {
-                        width: gpui::px(GRID_GAP),
-                        height: gpui::px(GRID_GAP),
+                        width: gpui::px(grid_gap_px),
+                        height: gpui::px(grid_gap_px),
                     },
                     scroll_y,
                     viewport_h,
-                    !self.state.settings.disable_animations,
+                    animate_grid_reflow,
                     move |idx, mut is_animating, window, cx| {
                         let app = list_view.read(cx);
                         if !app.dock_split_animations.is_empty()
@@ -191,10 +223,12 @@ impl App {
                             accent,
                             accent_fg,
                             hover,
+                            border,
                             flashing,
                             record_rects,
                             rename_input,
                             is_animating,
+                            crate::ui::views::rename::dim_other_entry(app, pane_id, entry_idx),
                             window,
                         );
                         cell
@@ -204,121 +238,64 @@ impl App {
         };
 
         let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
-        let focus_view = view.clone();
-        let rubber_view = view.clone();
         let prepaint_view = view.clone();
         let bounds_view = view.clone();
-        let scroll_view = view;
-        v_flex()
-            .id(SharedString::from(format!("pane-{}", pane_id.0)))
-            .size_full()
-            .overflow_hidden()
-            .min_w(gpui::px(0.))
-            .min_h(gpui::px(0.))
-            .on_mouse_down(MouseButton::Left, {
-                let v = rubber_view.clone();
-                move |ev, _window, cx| {
-                    let (pos, additive) = (
-                        ev.position,
-                        ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift,
-                    );
-                    v.update(cx, |this, cx| {
-                        if this.rename_edit.is_some() {
-                            this.commit_rename(cx);
-                        }
-                        this.begin_rubber(pane_id, pos, additive);
-                        cx.notify();
-                    });
-                }
-            })
-            .on_mouse_down(MouseButton::Right, {
-                let v = rubber_view.clone();
-                move |ev, window, cx| {
-                    let pos = ev.position;
-                    v.update(cx, |this, cx| {
-                        if let Some(path) = this
-                            .tab_data_for(pane_id)
-                            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
-                        {
-                            this.open_background_ctx_menu(Some(path), pos, window, cx);
-                            cx.notify();
-                        }
-                    });
-                }
-            })
-            .on_drop::<DraggedFiles>({
-                let v = rubber_view.clone();
-                move |d, _window, cx| {
-                    let paths = d.paths.clone();
-                    v.update(cx, |this, cx| {
-                        this.drop_files_on_pane(pane_id, paths, false);
-                        cx.notify();
-                    });
-                }
-            })
-            .on_drop::<gpui::ExternalPaths>({
-                let v = rubber_view;
-                move |paths, _window, cx| {
-                    let paths = paths.paths().to_vec();
-                    v.update(cx, |this, cx| {
-                        this.drop_files_on_pane(pane_id, paths, true);
-                        cx.notify();
-                    });
-                }
-            })
-            .on_click(move |_ev, _window, cx| {
-                focus_view.update(cx, |this, cx| {
-                    this.push_focus_history();
-                    this.state.focused_tile = pane_id;
-                    cx.notify();
-                });
-            })
-            .on_scroll_wheel(move |ev, _window, cx| ctrl_scroll(ev, pane_id, &scroll_view, cx))
-            // Capture the real pane pixel width every frame so the next frame's
-            // column calculation uses the actual container size (handles preview
-            // panel open/close and splitter drags, not just window resize).
-            .on_prepaint(move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {
-                crate::perf::count("prepaint.grid_pane");
-                let new_w = f32::from(bounds.size.width);
-                prepaint_view.update(cx, |this, cx| {
-                    if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
-                        if (ts.last_pane_width - new_w).abs() > 0.5 {
-                            let old_w = ts.last_pane_width;
-                            crate::perf::event(|| {
-                                format!(
-                                    "grid.width pane={} old={old_w:.1} new={new_w:.1}",
-                                    pane_id.0
-                                )
-                            });
-                            ts.last_pane_width = new_w;
-                            cx.notify();
-                        }
+        let pane_view = view;
+        crate::ui::views::pane_background_interactions(
+            v_flex()
+                .id(SharedString::from(format!("pane-{}", pane_id.0)))
+                .size_full()
+                .overflow_hidden()
+                .min_w(gpui::px(0.))
+                .min_h(gpui::px(0.)),
+            &pane_view,
+            pane_id,
+        )
+        // Capture the real pane pixel width every frame so the next frame's
+        // column calculation uses the actual container size (handles preview
+        // panel open/close and splitter drags, not just window resize).
+        .on_prepaint(move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {
+            crate::perf::count("prepaint.grid_pane");
+            let new_w = f32::from(bounds.size.width);
+            prepaint_view.update(cx, |this, cx| {
+                if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
+                    if (ts.last_pane_width - new_w).abs() > 0.5 {
+                        let old_w = ts.last_pane_width;
+                        crate::perf::event(|| {
+                            format!(
+                                "grid.width pane={} old={old_w:.1} new={new_w:.1}",
+                                pane_id.0
+                            )
+                        });
+                        ts.last_pane_width = new_w;
+                        this.notify_pane(pane_id, cx);
                     }
-                    // FASE F: register this pane's bounds for OLE drop routing.
-                    this.push_pane_zone(pane_id, bounds);
-                });
-            })
-            .child(crumb_strip)
-            .child(
-                div()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .relative()
-                    .when(figma_glass, |s| s.bg(glass_fill()))
-                    .rounded_bl(px(12.0))
-                    .rounded_br(px(12.0))
-                    .on_prepaint(pane_bounds_recorder(pane_id, &bounds_view))
-                    .child(inner)
-                    .child(filter_pill)
-                    .child(controls_pill)
-                    .vertical_scrollbar(&base_scroll),
-            )
-            .into_any_element()
+                }
+                // FASE F: register this pane's bounds for OLE drop routing.
+                this.push_pane_zone(pane_id, bounds);
+            });
+        })
+        .child(crumb_strip)
+        .child(
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .relative()
+                .when(figma_glass, |s| s.bg(glass_fill()))
+                .rounded_bl(px(12.0))
+                .rounded_br(px(12.0))
+                .on_prepaint(pane_bounds_recorder(pane_id, &bounds_view))
+                .child(inner)
+                .child(filter_pill)
+                .child(controls_pill)
+                .vertical_scrollbar(&base_scroll),
+        )
+        .into_any_element()
     }
 
     fn prepare_grid_visible(&mut self, pane_id: TabId, range: Range<usize>) {
         let windows_theme = crate::ui::icons::is_windows_theme(&self.state.profiles.active().theme);
-        let (to_request, to_request_ext, to_request_shell, all_visible) = {
+        let (to_request, to_request_ext, to_request_shell, request_folder_icon, all_visible) = {
             let Some(ts) = self.state.tab_states.get(&pane_id) else {
                 return;
             };
@@ -330,6 +307,7 @@ impl App {
             )> = Vec::new();
             // Windows: non-native-image files routed through IShellItemImageFactory.
             let mut shell_paths: Vec<(std::path::PathBuf, bool)> = Vec::new();
+            let mut request_folder_icon = false;
             let mut all_visible = Vec::new();
             for vi in range {
                 let Some(&entry_idx) = ts.visible.get(vi) else {
@@ -339,20 +317,25 @@ impl App {
                     continue;
                 };
                 let thumbable = is_thumbnailable(entry);
-                let not_thumbable_file = !thumbable && entry.kind == FileKind::File;
-                let windows_folder = windows_theme && entry.kind == FileKind::Dir;
+                let shell_thumbable = windows_theme
+                    && !thumbable
+                    && entry.kind == FileKind::File
+                    && entry
+                        .extension
+                        .as_deref()
+                        .is_some_and(is_windows_shell_thumbnail_ext);
+                request_folder_icon |= windows_theme && entry.kind == FileKind::Dir;
 
-                // On Windows all non-native-image files use the Shell thumbnail cache
-                // (IShellItemImageFactory) — covers video, RAW, HEIC, PDF, etc. with
-                // zero processes spawned and persistent cross-session caching.
-                // On other platforms keep the existing extension thumbnailer (ffmpeg).
+                // Ask Shell only for types likely to have real thumbnails. Generic file
+                // and folder icons stay builtin/theme icons; per-path Shell calls are too
+                // expensive in huge dirs like C:\Windows\WinSxS.
                 #[cfg(target_os = "windows")]
-                let use_shell = not_thumbable_file || windows_folder;
+                let use_shell = shell_thumbable;
                 #[cfg(not(target_os = "windows"))]
                 let use_shell = false;
 
                 #[cfg(not(target_os = "windows"))]
-                let ext_cmd = if not_thumbable_file {
+                let ext_cmd = if !thumbable && entry.kind == FileKind::File {
                     entry.extension.as_deref().and_then(|ext| {
                         self.ext_registry
                             .thumbnailer_for(ext)
@@ -376,18 +359,22 @@ impl App {
                 if thumbable {
                     imgs.push(entry.path.clone());
                 } else if use_shell {
-                    shell_paths.push((entry.path.clone(), windows_folder));
+                    shell_paths.push((entry.path.clone(), false));
                 } else if let Some((run, tools)) = ext_cmd {
                     exts.push((entry.path.clone(), run, tools));
                 }
             }
-            (imgs, exts, shell_paths, all_visible)
+            (imgs, exts, shell_paths, request_folder_icon, all_visible)
         };
 
         {
             let mut wanted = self.thumb_wanted.lock().unwrap();
             wanted.clear();
             wanted.extend(all_visible);
+        }
+        #[cfg(target_os = "windows")]
+        if request_folder_icon {
+            self.request_shell_folder_icon();
         }
         for path in to_request {
             self.request_thumbnail(&path);
@@ -400,7 +387,7 @@ impl App {
             if allow_icon {
                 self.request_shell_thumbnail_or_icon(&path);
             } else {
-                self.request_shell_thumbnail(&path);
+                self.request_visible_shell_thumbnail(&path);
             }
         }
         // On non-Windows to_request_shell is always empty; drop it to avoid unused warning.
@@ -422,6 +409,39 @@ fn is_thumbnailable(entry: &FileEntry) -> bool {
     matches!(entry.kind, FileKind::File) && entry.extension.as_deref().is_some_and(is_image_ext)
 }
 
+/// File types where asking Windows Shell for a real thumbnail is worth the COM call.
+/// Generic type icons are cheaper as builtins/theme icons and must not be requested per path.
+fn is_windows_shell_thumbnail_ext(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "3fr"
+            | "arw"
+            | "avif"
+            | "cr2"
+            | "cr3"
+            | "crw"
+            | "dng"
+            | "heic"
+            | "heif"
+            | "iiq"
+            | "mov"
+            | "mp4"
+            | "m4v"
+            | "mkv"
+            | "nef"
+            | "orf"
+            | "pdf"
+            | "pef"
+            | "psd"
+            | "raf"
+            | "rw2"
+            | "srw"
+            | "tga"
+            | "webm"
+            | "wmv"
+    )
+}
+
 /// One grid cell: thumbnail (or a scaled glyph fallback while it loads / for
 /// non-images) + truncated name, fixed to the thumbnail size. The texture is a
 /// cached, downscaled `RenderImage` (see `ui::thumbs`) — never a full-res decode.
@@ -438,10 +458,12 @@ fn render_cell(
     accent: Hsla,
     accent_fg: Hsla,
     hover: Hsla,
+    border: Hsla,
     flashing: bool,
     record_rects: bool,
     rename_input: Option<gpui::Entity<gpui_component::input::InputState>>,
     is_animating: bool,
+    dimmed: bool,
     window: &mut Window,
 ) -> AnyElement {
     let name = entry.name.clone();
@@ -454,11 +476,12 @@ fn render_cell(
         .when(record_rects && !is_animating, |s| {
             s.on_prepaint(rect_recorder(pane_id, entry_idx, view))
         })
-        .w(px(cell_w))
+        .w(crate::ui::rem_px(cell_w))
         .p_1()
         .gap_1()
         .items_center()
         .rounded_md()
+        .when(dimmed, |s| s.opacity(0.45))
         .cursor_pointer()
         .when(selected && rename_input.is_none(), |s| {
             s.bg(accent).text_color(accent_fg)
@@ -469,49 +492,80 @@ fn render_cell(
         })
         .child({
             let area = div()
-                .h(px(thumb * 0.62))
+                .h(crate::ui::rem_px(thumb * GRID_ICON_AREA))
                 .flex()
                 .items_center()
                 .justify_center();
             match file_icon {
-                FileIcon::PreviewTexture(tex) => area.child(
-                    img(tex)
-                        .max_h(px(thumb * 0.6))
-                        .max_w(px(thumb))
-                        .rounded_sm(),
-                ),
+                FileIcon::PreviewTexture(tex) => {
+                    let natural = tex.size(0);
+                    let natural_w = (i32::from(natural.width).max(1)) as f32;
+                    let natural_h = (i32::from(natural.height).max(1)) as f32;
+                    let scale = (thumb / natural_w)
+                        .min((thumb * GRID_PREVIEW_MAX) / natural_h)
+                        .min(1.0);
+                    let render_w = natural_w * scale;
+                    let render_h = natural_h * scale;
+                    area.child(
+                        div()
+                            .w(crate::ui::rem_px(render_w))
+                            .h(crate::ui::rem_px(render_h))
+                            .rounded(px(crate::ui::RADIUS))
+                            .border_1()
+                            .border_color(border.opacity(0.55))
+                            .overflow_hidden()
+                            .child(img(tex).size_full()),
+                    )
+                }
                 FileIcon::IconTexture(tex) => area.child(
                     img(tex)
-                        .max_h(px(thumb * 0.56))
-                        .max_w(px(thumb * 0.56))
+                        .max_h(crate::ui::rem_px(thumb * GRID_TEXTURE_ICON_MAX))
+                        .max_w(crate::ui::rem_px(thumb * GRID_TEXTURE_ICON_MAX))
                         .flex_none(),
                 ),
-                FileIcon::Builtin { kind, extension } => {
-                    area.child(FileIcon::Builtin { kind, extension }.element(thumb * 0.42, accent))
-                }
+                FileIcon::Builtin { kind, extension } => area.child(
+                    FileIcon::Builtin { kind, extension }
+                        .element(thumb * GRID_BUILTIN_ICON, accent),
+                ),
             }
         })
-        .child(match &rename_input {
-            Some(input) => div()
-                .w(px(crate::ui::views::rename::input_width(
-                    &name, cell_w, font_size, window,
-                )))
-                .h(px(crate::ui::views::rename::INLINE_INPUT_H))
-                .text_xs()
-                .child(crate::ui::views::rename::input_element(
-                    input,
-                    view,
-                    crate::ui::views::rename::INLINE_INPUT_H,
-                    font_size,
-                ))
-                .into_any_element(),
-            None => div()
+        .child({
+            // The plain (non-editing) name is `.text_xs()`-sized, i.e. it uses
+            // `font_size` (already `rem_size * 0.75`), not the ambient default.
+            // The rename `Input` widget paints its single line pinned to the top
+            // of its own box rather than centering it (unlike plain text), so
+            // giving it the "right" height alone isn't enough — wrapping both
+            // branches in the same fixed-height, real-flex-centered row is what
+            // actually keeps the glyphs lined up between editing/not-editing.
+            let line_h = window
+                .text_style()
+                .line_height
+                .to_pixels(AbsoluteLength::Pixels(font_size), window.rem_size());
+            h_flex()
                 .w_full()
-                .text_center()
-                .text_xs()
-                .truncate()
-                .child(name)
-                .into_any_element(),
+                .h(line_h)
+                .items_center()
+                .justify_center()
+                .child(match &rename_input {
+                    Some(input) => div()
+                        .w(px(crate::ui::views::rename::input_width(
+                            &name,
+                            cell_w * f32::from(window.rem_size()) / crate::ui::BASE_PX,
+                            font_size,
+                            window,
+                        )))
+                        .child(crate::ui::views::rename::input_element(
+                            input, view, line_h, font_size, window,
+                        ))
+                        .into_any_element(),
+                    None => div()
+                        .w_full()
+                        .text_center()
+                        .text_xs()
+                        .truncate()
+                        .child(name)
+                        .into_any_element(),
+                })
         })
         .when(!is_animating, |s| {
             s.on_click(crate::ui::views::on_entry_click(view, pane_id, entry_idx))
@@ -533,6 +587,24 @@ fn render_cell(
                     entry.path.clone(),
                 ),
             )
+        })
+        .tooltip({
+            let tip_name = entry.name.clone();
+            let tip_path = entry.path.clone();
+            let is_dir = matches!(entry.kind, FileKind::Dir);
+            let size = entry.size;
+            let modified = entry.modified;
+            move |window, cx| {
+                crate::ui::tooltips::entry_hover_tooltip(
+                    tip_name.clone(),
+                    tip_path.clone(),
+                    is_dir,
+                    size,
+                    modified,
+                    window,
+                    cx,
+                )
+            }
         })
         .when(matches!(entry.kind, FileKind::Dir) && !is_animating, |s| {
             crate::ui::views::folder_drop_target(s, view, pane_id, entry.path.clone())

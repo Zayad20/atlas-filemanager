@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -7,6 +8,10 @@ use crate::undo::UndoStack;
 
 pub struct ClipboardState {
     pub paths: Vec<PathBuf>,
+    /// Optional destination names, parallel to `paths`.
+    /// Used when the source path's real filename is not the user-visible name
+    /// (Windows recycle bin `$R...` payloads).
+    pub target_names: Option<Vec<OsString>>,
     pub is_cut: bool,
     /// Set when the paths come from a remote tab (remote-relative paths, not local).
     /// `None` = local filesystem paths.
@@ -63,6 +68,8 @@ pub enum ConflictPolicy {
 #[derive(Debug, Clone)]
 pub struct TransferRequest {
     pub sources: Vec<PathBuf>,
+    /// Optional destination names, parallel to `sources`.
+    pub target_names: Option<Vec<OsString>>,
     pub dest: PathBuf,
     pub kind: TransferKind,
     pub policy: ConflictPolicy,
@@ -74,6 +81,8 @@ pub struct TransferRequest {
 #[derive(Debug, Clone)]
 pub struct ConflictItem {
     pub source: PathBuf,
+    /// Name the incoming item should have under the destination.
+    pub target_name: OsString,
     /// The pre-existing entry at the destination that `source` collides with.
     pub existing: PathBuf,
     pub is_dir: bool,
@@ -89,11 +98,13 @@ pub struct ConflictItem {
 pub struct TransferConflictState {
     pub request: TransferRequest,
     pub conflicts: Vec<ConflictItem>,
-    /// Sources with no collision; transferred as-is once the user confirms.
-    pub clean: Vec<PathBuf>,
+    /// Sources with no collision plus their destination names.
+    pub clean: Vec<(PathBuf, OsString)>,
     /// `Some` while the dialog is in "decide one by one" mode: the pending
     /// choice for each conflict, parallel to `conflicts`.
     pub per_item: Option<Vec<Resolution>>,
+    /// Keyboard-highlighted footer action. `0` is the safe default action.
+    pub selected_action: usize,
 }
 
 /// Typed cause of a per-item failure. The UI translates each variant
@@ -102,6 +113,8 @@ pub struct TransferConflictState {
 pub enum OpErrorKind {
     /// Source or destination no longer exists.
     Gone,
+    /// The target filesystem does not expose an OS trash/recycle bin.
+    TrashUnsupported,
     PermissionDenied,
     /// Locked by another process (sharing/lock violation).
     InUse,

@@ -142,6 +142,14 @@ const UNRAR_EXE: &[u8] = include_bytes!("../../../vendor/unrar-bin/UnRAR.exe");
 /// Unpacks the natively bundled UnRAR.exe to the temporary directory,
 /// guaranteeing zero dependencies for the client.
 fn unrar_exe_path() -> PathBuf {
+    if let Some(bundled) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("UnRAR.exe")))
+        .filter(|path| path.is_file())
+    {
+        return bundled;
+    }
+
     let mut temp = std::env::temp_dir();
     temp.push("atlas_unrar_bundled.exe");
 

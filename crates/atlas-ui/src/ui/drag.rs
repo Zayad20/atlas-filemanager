@@ -73,6 +73,41 @@ fn build_file_drag_handler(
                 return cx.new(|_| DraggedFiles { paths: Vec::new() });
             }
         }
+        // Recycle Bin rows carry mangled `$R` payload paths and remote rows carry
+        // virtual paths — an OS drag would ship garbage. Block at the source.
+        {
+            use atlas_model::location::Location;
+            let source_pane = item.map(|(pane, _)| pane);
+            let blocked_key = {
+                let app = view.read(&*cx);
+                let pane = source_pane.unwrap_or(app.state.focused_tile);
+                match app.tab_data_for(pane).map(|t| &t.location) {
+                    Some(Location::RecycleBin) => Some("dnd_recycle_drag_blocked"),
+                    #[cfg(feature = "cloud")]
+                    Some(Location::Remote { .. }) => Some("dnd_remote_drag_blocked"),
+                    _ => None,
+                }
+            };
+            if let Some(key) = blocked_key {
+                view.update(cx, |app, cx| {
+                    let msg = if key == "dnd_recycle_drag_blocked" {
+                        rust_i18n::t!("dnd_recycle_drag_blocked")
+                    } else {
+                        rust_i18n::t!("dnd_remote_drag_blocked")
+                    };
+                    app.toast_error(msg.into_owned());
+                    cx.notify();
+                });
+                #[cfg(windows)]
+                {
+                    return cx.new(|_| DragNoop);
+                }
+                #[cfg(not(windows))]
+                {
+                    return cx.new(|_| DraggedFiles { paths: Vec::new() });
+                }
+            }
+        }
         view.update(cx, |app, cx| {
             if let Some((pane, idx)) = item {
                 app.ensure_drag_selection(pane, idx);
@@ -96,11 +131,18 @@ fn build_file_drag_handler(
                     }
                 }
             }
-            let p = app.state.selected_paths();
-            let p = if p.is_empty() {
-                vec![anchor.clone()]
+            // Archive tabs: entry paths are virtual (nothing on disk) — passing
+            // them as real paths would raise one "path does not exist" error per
+            // selected item. The extraction drag rides on `arc` alone.
+            let p = if arc.is_some() {
+                Vec::new()
             } else {
-                p
+                let p = app.state.selected_paths();
+                if p.is_empty() {
+                    vec![anchor.clone()]
+                } else {
+                    p
+                }
             };
             (p, arc)
         };

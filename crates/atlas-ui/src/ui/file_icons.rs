@@ -27,9 +27,10 @@ pub(crate) enum FileIcon {
 impl FileIcon {
     pub(crate) fn element(self, size: f32, _color: Hsla) -> AnyElement {
         match self {
-            Self::PreviewTexture(tex) | Self::IconTexture(tex) => {
-                img(tex).size(gpui::px(size)).flex_none().into_any_element()
-            }
+            Self::PreviewTexture(tex) | Self::IconTexture(tex) => img(tex)
+                .size(crate::ui::rem_px(size))
+                .flex_none()
+                .into_any_element(),
             Self::Builtin { kind, extension } => file_type_icon(&kind, extension.as_deref(), size),
         }
     }
@@ -69,6 +70,12 @@ impl App {
         if let Some(tex) = self.grid_thumbnail(path) {
             return FileIcon::PreviewTexture(tex);
         }
+        #[cfg(target_os = "windows")]
+        if matches!(kind, FileKind::Dir) && is_windows_theme(&self.state.profiles.active().theme) {
+            if let Some(tex) = self.shell_folder_icon() {
+                return FileIcon::IconTexture(tex);
+            }
+        }
         if let Some(tex) = self.icon_tex_for_entry(kind, extension) {
             return FileIcon::IconTexture(tex);
         }
@@ -85,7 +92,11 @@ impl App {
     pub(crate) fn maybe_request_file_icon(&mut self, file: &FileIconRef) {
         #[cfg(target_os = "windows")]
         if is_windows_theme(&self.state.profiles.active().theme) {
-            self.request_shell_thumbnail_or_icon(&file.path);
+            if matches!(file.kind, FileKind::Dir) {
+                self.request_shell_folder_icon();
+            } else {
+                self.request_shell_thumbnail_or_icon(&file.path);
+            }
         }
     }
 }

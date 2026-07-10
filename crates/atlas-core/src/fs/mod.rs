@@ -1,6 +1,7 @@
 pub mod index;
 pub mod list;
 pub mod mounts;
+pub mod paths;
 pub mod tag_db;
 pub mod udisks;
 

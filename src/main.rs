@@ -48,5 +48,6 @@ fn main() {
     #[cfg(not(feature = "dhat-heap"))]
     let on_quit = None;
 
-    atlas_ui::run(handle, app_started, on_quit);
+    let initial_paths = std::env::args_os().skip(1).map(Into::into).collect();
+    atlas_ui::run(handle, app_started, on_quit, initial_paths);
 }

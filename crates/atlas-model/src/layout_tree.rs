@@ -121,6 +121,10 @@ impl<Pane> Tiles<Pane> {
         self.map.iter()
     }
 
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&TileId, &mut Tile<Pane>)> {
+        self.map.iter_mut()
+    }
+
     pub fn insert_pane(&mut self, pane: Pane) -> TileId {
         let id = self.alloc_id();
         self.map.insert(id, Tile::Pane(pane));

@@ -5,13 +5,13 @@ use crate::ui::drag_hover::{
     drag_hover_recorder_with_drop, DragHoverCommand, DragHoverDropCommand, DragHoverId,
     DragHoverKind,
 };
-use crate::ui::root::DraggedFiles;
+use crate::ui::root::{ctrl_scroll, DraggedFiles};
 use atlas_model::layout_tree::Tile;
 use atlas_model::location::Location;
 use atlas_model::pane::TabId;
 use atlas_model::tab::LoadState;
 use gpui::prelude::*;
-use gpui::{ClickEvent, Div, Entity, Stateful, Window};
+use gpui::{ClickEvent, Div, Entity, MouseButton, MouseDownEvent, Stateful, Window};
 use gpui_component::ElementExt;
 use std::path::PathBuf;
 
@@ -20,6 +20,7 @@ pub mod grid;
 pub mod list;
 pub mod miller;
 mod rename;
+pub mod space_lens;
 pub mod virtual_grid;
 
 /// Shared entry click handler: double-click activates, single click selects
@@ -57,6 +58,27 @@ pub(super) fn on_entry_click(
     }
 }
 
+pub(super) fn on_pane_rubber_mouse_down(
+    view: &Entity<App>,
+    pane_id: TabId,
+) -> impl Fn(&MouseDownEvent, &mut Window, &mut gpui::App) + 'static {
+    let rubber_view = view.clone();
+    move |ev, _window, cx| {
+        let (pos, additive) = (
+            ev.position,
+            ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift,
+        );
+        rubber_view.update(cx, |this, cx| {
+            if this.rename_edit.is_some() {
+                this.commit_rename(cx);
+            }
+            this.begin_rubber(pane_id, pos, additive);
+            cx.notify();
+        });
+        cx.stop_propagation();
+    }
+}
+
 /// Shared right-click handler: select the target (keeping multi-selection when
 /// clicked inside it) and open the shell context menu at the cursor.
 pub(super) fn on_entry_ctx_menu(
@@ -68,10 +90,12 @@ pub(super) fn on_entry_ctx_menu(
     move |ev, window, cx| {
         let pos = ev.position;
         v.update(cx, |this, cx| {
+            this.activate_tab(pane_id);
             let paths = this.select_context_menu_paths(pane_id, entry_idx);
             this.open_ctx_menu(paths, pos, window, cx);
             cx.notify();
         });
+        cx.stop_propagation();
     }
 }
 
@@ -121,6 +145,60 @@ pub(super) fn folder_drop_target(
         })
 }
 
+/// Shared empty-space / background interactions for a pane container, applied
+/// identically by every view renderer (grid, list, details, miller):
+/// - Left mousedown: commit any in-flight rename, start rubber-band selection
+///   (no-op in Miller; a plain click with no drag clears the selection).
+/// - Right mousedown: background context menu for filesystem locations.
+/// - Drops on empty space: routed through `drop_files_on_pane` (which handles
+///   Directory/Tag/RecycleBin/Archive/Remote semantics centrally).
+/// - Click: focus the pane. Scroll: ctrl-wheel zoom.
+pub(super) fn pane_background_interactions(
+    el: Stateful<Div>,
+    view: &Entity<App>,
+    pane_id: TabId,
+) -> Stateful<Div> {
+    let menu_view = view.clone();
+    let drop_view = view.clone();
+    let drop_ext_view = view.clone();
+    let focus_view = view.clone();
+    let scroll_view = view.clone();
+    el.on_mouse_down(MouseButton::Left, on_pane_rubber_mouse_down(view, pane_id))
+        .on_mouse_down(MouseButton::Right, move |ev, window, cx| {
+            let pos = ev.position;
+            menu_view.update(cx, |this, cx| {
+                if let Some(path) = this
+                    .tab_data_for(pane_id)
+                    .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
+                {
+                    this.open_background_ctx_menu(Some(path), pos, window, cx);
+                    cx.notify();
+                }
+            });
+        })
+        .on_drop::<DraggedFiles>(move |d, _window, cx| {
+            let paths = d.paths.clone();
+            drop_view.update(cx, |this, cx| {
+                this.drop_files_on_pane(pane_id, paths, false);
+                cx.notify();
+            });
+        })
+        .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
+            let paths = paths.paths().to_vec();
+            drop_ext_view.update(cx, |this, cx| {
+                this.drop_files_on_pane(pane_id, paths, true);
+                cx.notify();
+            });
+        })
+        .on_click(move |_ev, _window, cx| {
+            focus_view.update(cx, |this, cx| {
+                this.activate_tab(pane_id);
+                cx.notify();
+            });
+        })
+        .on_scroll_wheel(move |ev, window, cx| ctrl_scroll(ev, pane_id, &scroll_view, window, cx))
+}
+
 pub(super) fn should_suppress_loading(location: &Location) -> bool {
     matches!(location, Location::Directory(_))
 }
@@ -146,7 +224,11 @@ impl App {
                     .is_some_and(should_suppress_loading);
                 (!local_dir).then(|| rust_i18n::t!("miller_loading").into_owned())
             }
-            Some(LoadState::Error(_)) => Some(rust_i18n::t!("miller_error").into_owned()),
+            Some(LoadState::Error(error)) => Some(if error.is_empty() {
+                rust_i18n::t!("miller_error").into_owned()
+            } else {
+                error.clone()
+            }),
             _ => Some(empty_message),
         }
     }

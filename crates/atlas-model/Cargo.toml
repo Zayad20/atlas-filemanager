@@ -5,7 +5,7 @@ edition = "2021"
 license = "AGPL-3.0-or-later"
 
 [features]
-# Cloud request/result models (gated to mirror the binary's `cloud` feature).
+# Virtual location request/result models used by the provider host.
 cloud = []
 
 [dependencies]

@@ -1,5 +1,5 @@
 use atlas_model::file_entry::FileKind;
-use gpui::{div, img, px, svg, AnyElement, Hsla, IntoElement, ParentElement, Styled};
+use gpui::{div, img, svg, AnyElement, Hsla, IntoElement, ParentElement, Styled};
 
 #[inline]
 pub(crate) fn is_windows_theme(name: &str) -> bool {
@@ -71,6 +71,10 @@ pub(crate) enum AtlasIcon {
     ClockCounterClockwise,
     Trash,
     Tag,
+    GlobeSimple,
+    DiscordLogo,
+    Lifebuoy,
+    TerminalWindow,
     BookmarkSimple,
     X,
     Minus,
@@ -145,6 +149,10 @@ impl AtlasIcon {
             Self::ClockCounterClockwise => "icons/ph/clock-counter-clockwise.svg",
             Self::Trash => "icons/ph/trash.svg",
             Self::Tag => "icons/ph/tag.svg",
+            Self::GlobeSimple => "icons/ph/globe-simple.svg",
+            Self::DiscordLogo => "icons/ph/discord-logo.svg",
+            Self::Lifebuoy => "icons/ph/lifebuoy.svg",
+            Self::TerminalWindow => "icons/ph/terminal-window.svg",
             Self::BookmarkSimple => "icons/ph/bookmark-simple.svg",
             Self::X => "icons/ph/x.svg",
             Self::Minus => "icons/ph/minus.svg",
@@ -181,7 +189,7 @@ impl FileTypeIcon {
 pub(crate) fn icon(kind: AtlasIcon, size: f32, color: Hsla) -> AnyElement {
     svg()
         .path(kind.path())
-        .size(px(size))
+        .size(crate::ui::rem_px(size))
         .flex_none()
         .text_color(color)
         .into_any_element()
@@ -190,13 +198,13 @@ pub(crate) fn icon(kind: AtlasIcon, size: f32, color: Hsla) -> AnyElement {
 #[inline]
 pub(crate) fn windows_icon(kind: AtlasIcon, size: f32, color: Hsla) -> AnyElement {
     div()
-        .size(px(size))
+        .size(crate::ui::rem_px(size))
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
         .font_family("Segoe Fluent Icons")
-        .text_size(px(size))
+        .text_size(crate::ui::rem_px(size))
         .text_color(color)
         .child(windows_icon_glyph(kind))
         .into_any_element()
@@ -210,7 +218,7 @@ pub(crate) fn theme_icon(
     color: Hsla,
     windows_theme: bool,
 ) -> AnyElement {
-    if windows_theme {
+    if windows_theme && !matches!(kind, AtlasIcon::TerminalWindow) {
         windows_icon(kind, size, color)
     } else {
         icon(kind, size, color)
@@ -269,6 +277,10 @@ fn windows_icon_glyph(kind: AtlasIcon) -> &'static str {
         AtlasIcon::TreeStructure => "\u{E8B7}",
         AtlasIcon::ClockCounterClockwise => "\u{E81C}",
         AtlasIcon::Tag => "\u{E8EC}",
+        AtlasIcon::GlobeSimple => "\u{E774}",
+        AtlasIcon::DiscordLogo => "\u{E8F2}",
+        AtlasIcon::Lifebuoy => "\u{E789}",
+        AtlasIcon::TerminalWindow => "\u{E756}",
         AtlasIcon::Minus => "\u{E738}",
         AtlasIcon::Square => "\u{E739}",
         AtlasIcon::TrayArrowDown => "\u{E896}",
@@ -278,7 +290,7 @@ fn windows_icon_glyph(kind: AtlasIcon) -> &'static str {
 #[inline]
 pub(crate) fn atlas_logo(size: f32) -> AnyElement {
     img("icons/atlas-logo.png")
-        .size(px(size))
+        .size(crate::ui::rem_px(size))
         .flex_none()
         .into_any_element()
 }
@@ -290,8 +302,8 @@ pub(crate) fn atlas_logo(size: f32) -> AnyElement {
 #[inline]
 pub(crate) fn file_type_icon(kind: &FileKind, extension: Option<&str>, size: f32) -> AnyElement {
     img(file_type_icon_kind(kind, extension).path())
-        .w(px(size))
-        .h(px(size))
+        .w(crate::ui::rem_px(size))
+        .h(crate::ui::rem_px(size))
         .flex_none()
         .into_any_element()
 }

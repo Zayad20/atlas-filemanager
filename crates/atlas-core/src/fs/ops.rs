@@ -39,6 +39,13 @@ pub async fn delete_files(
             });
             continue;
         }
+        if to_trash && crate::fs::paths::wsl_distro_name(path).is_some() {
+            errors.push(OpError {
+                path: path.clone(),
+                kind: OpErrorKind::TrashUnsupported,
+            });
+            continue;
+        }
         let result = if to_trash {
             let p = path.clone();
             tokio::task::spawn_blocking(move || {
@@ -105,12 +112,37 @@ pub async fn create_dir(
     tx: flume::Sender<BgResult>,
     affected_tabs: Vec<TabId>,
 ) {
-    let result = tokio::fs::create_dir_all(&path).await.map_err(|e| {
+    let result = tokio::fs::create_dir(&path).await.map_err(|e| {
         vec![OpError {
             path: path.clone(),
             kind: super::transfer::io_error_kind(&e),
         }]
     });
+    let _ = tx.send(BgResult::OpComplete {
+        id: op_id,
+        result,
+        affected_tabs,
+    });
+}
+
+pub async fn create_file(
+    path: PathBuf,
+    op_id: u64,
+    tx: flume::Sender<BgResult>,
+    affected_tabs: Vec<TabId>,
+) {
+    let result = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .await
+        .map(|_| ())
+        .map_err(|e| {
+            vec![OpError {
+                path: path.clone(),
+                kind: super::transfer::io_error_kind(&e),
+            }]
+        });
     let _ = tx.send(BgResult::OpComplete {
         id: op_id,
         result,

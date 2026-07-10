@@ -20,6 +20,7 @@ pub mod overlay;
 pub mod pane;
 pub mod preview_cache;
 pub mod profiles;
+pub mod provider_protocol;
 pub mod settings;
 pub mod tab;
 pub mod tag_cache;

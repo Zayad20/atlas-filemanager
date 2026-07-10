@@ -1,4 +1,4 @@
-#[cfg(feature = "perf-log")]
+#[cfg(any(feature = "perf-log", feature = "tracy"))]
 mod imp {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -42,6 +42,9 @@ mod imp {
     }
 
     pub(crate) fn next_frame() -> u64 {
+        #[cfg(feature = "tracy")]
+        tracy_client::frame_mark();
+
         if config().enabled {
             FRAME.fetch_add(1, Ordering::Relaxed) + 1
         } else {
@@ -101,18 +104,31 @@ mod imp {
     }
 
     pub(crate) fn span(name: &'static str) -> Option<Span> {
-        config().enabled.then(|| Span {
+        (cfg!(feature = "tracy") || config().enabled).then(|| Span {
             name,
             detail: None,
             start: Instant::now(),
+            #[cfg(feature = "tracy")]
+            _tracy: tracy_client::Client::start().span_alloc(Some(name), name, file!(), line!(), 0),
         })
     }
 
     pub(crate) fn span_detail(name: &'static str, detail: impl FnOnce() -> String) -> Option<Span> {
-        config().enabled.then(|| Span {
-            name,
-            detail: Some(detail()),
-            start: Instant::now(),
+        (cfg!(feature = "tracy") || config().enabled).then(|| {
+            let detail = config().enabled.then(detail);
+            Span {
+                name,
+                detail,
+                start: Instant::now(),
+                #[cfg(feature = "tracy")]
+                _tracy: tracy_client::Client::start().span_alloc(
+                    Some(name),
+                    name,
+                    file!(),
+                    line!(),
+                    0,
+                ),
+            }
         })
     }
 
@@ -131,6 +147,8 @@ mod imp {
         name: &'static str,
         detail: Option<String>,
         start: Instant,
+        #[cfg(feature = "tracy")]
+        _tracy: tracy_client::Span,
     }
 
     impl Drop for Span {
@@ -160,35 +178,35 @@ mod imp {
     }
 }
 
-#[cfg(feature = "perf-log")]
+#[cfg(any(feature = "perf-log", feature = "tracy"))]
 pub(crate) use imp::*;
 
-#[cfg(not(feature = "perf-log"))]
+#[cfg(not(any(feature = "perf-log", feature = "tracy")))]
 pub(crate) fn next_frame() -> u64 {
     0
 }
 
-#[cfg(not(feature = "perf-log"))]
+#[cfg(not(any(feature = "perf-log", feature = "tracy")))]
 pub(crate) fn count(_name: &'static str) {}
 
-#[cfg(not(feature = "perf-log"))]
+#[cfg(not(any(feature = "perf-log", feature = "tracy")))]
 pub(crate) fn count_by(_name: &'static str, _amount: u64) {}
 
-#[cfg(not(feature = "perf-log"))]
+#[cfg(not(any(feature = "perf-log", feature = "tracy")))]
 pub(crate) fn frame_summary(_frame: u64, _detail: impl FnOnce() -> String) {}
 
-#[cfg(not(feature = "perf-log"))]
+#[cfg(not(any(feature = "perf-log", feature = "tracy")))]
 pub(crate) fn span(_name: &'static str) -> Option<Span> {
     None
 }
 
-#[cfg(not(feature = "perf-log"))]
+#[cfg(not(any(feature = "perf-log", feature = "tracy")))]
 pub(crate) fn span_detail(_name: &'static str, _detail: impl FnOnce() -> String) -> Option<Span> {
     None
 }
 
-#[cfg(not(feature = "perf-log"))]
+#[cfg(not(any(feature = "perf-log", feature = "tracy")))]
 pub(crate) fn event(_detail: impl FnOnce() -> String) {}
 
-#[cfg(not(feature = "perf-log"))]
+#[cfg(not(any(feature = "perf-log", feature = "tracy")))]
 pub(crate) struct Span;

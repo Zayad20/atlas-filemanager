@@ -1,8 +1,9 @@
 //! Remote marketplace client — fetches the R2 registry and downloads extension
 //! zips for installation. The actual install step delegates to `ext::install`.
 
-use anyhow::Result;
+use anyhow::{ensure, Result};
 use atlas_model::ext_model::{RemoteRegistry, ToolSpec};
+use sha2::{Digest, Sha256};
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
@@ -17,12 +18,17 @@ pub async fn fetch_registry() -> Result<RemoteRegistry> {
 
 /// Download a zip from `download_url` to a temporary file, returning the path.
 /// The caller is responsible for deleting the file after installation.
-pub async fn download_zip(download_url: &str) -> Result<PathBuf> {
+pub async fn download_zip(download_url: &str, expected_sha256: &str) -> Result<PathBuf> {
+    ensure!(
+        !expected_sha256.is_empty(),
+        "extension has no SHA-256 digest"
+    );
     let bytes = reqwest::get(download_url)
         .await?
         .error_for_status()?
         .bytes()
         .await?;
+    verify_sha256(&bytes, expected_sha256)?;
 
     let mut tmp = tempfile::NamedTempFile::new()?;
     tmp.write_all(&bytes)?;
@@ -41,11 +47,17 @@ pub async fn download_icon(url: &str, dest: &std::path::Path) -> Result<()> {
 }
 
 pub async fn install_tool(provider_dir: PathBuf, tool: ToolSpec) -> Result<PathBuf> {
+    ensure!(
+        !tool.sha256.is_empty(),
+        "tool {} has no SHA-256 digest",
+        tool.name
+    );
     let bytes = reqwest::get(&tool.download_url)
         .await?
         .error_for_status()?
         .bytes()
         .await?;
+    verify_sha256(&bytes, &tool.sha256)?;
     let dest = provider_dir.join(&tool.path);
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
@@ -58,6 +70,15 @@ pub async fn install_tool(provider_dir: PathBuf, tool: ToolSpec) -> Result<PathB
         other => anyhow::bail!("unsupported tool archive format: {other}"),
     }
     Ok(dest)
+}
+
+fn verify_sha256(bytes: &[u8], expected: &str) -> Result<()> {
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    ensure!(
+        actual.eq_ignore_ascii_case(expected.trim()),
+        "SHA-256 mismatch: expected {expected}, got {actual}"
+    );
+    Ok(())
 }
 
 fn extract_zip_file(bytes: &[u8], archive_path: &str, dest: &Path) -> Result<()> {
@@ -170,6 +191,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn verifies_sha256_before_installing() {
+        let digest = format!("{:x}", Sha256::digest(b"atlas"));
+        assert!(verify_sha256(b"atlas", &digest.to_uppercase()).is_ok());
+        assert!(verify_sha256(b"tampered", &digest).is_err());
+    }
+
+    #[test]
     fn archive_entry_matches_nested_tool_path() {
         assert!(archive_entry_matches(
             "poppler-26.02.0/Library/bin/pdftoppm.exe",
@@ -208,6 +236,7 @@ mod tests {
             archive_path: "bin/ffmpeg.exe".into(),
             archive_format: "zip".into(),
             signature_url: String::new(),
+            sha256: String::new(),
         };
 
         let installed = install_tool(provider_dir.clone(), tool).await.unwrap();
@@ -238,6 +267,7 @@ mod tests {
             archive_path: "magick.exe".into(),
             archive_format: "7z".into(),
             signature_url: String::new(),
+            sha256: String::new(),
         };
 
         let installed = install_tool(provider_dir.clone(), tool).await.unwrap();

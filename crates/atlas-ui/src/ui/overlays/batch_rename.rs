@@ -7,6 +7,7 @@ use atlas_model::batch_rename::{RenameIssue, RenameMode};
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, Context, Entity, KeyDownEvent, MouseButton, SharedString, Window};
 use gpui_component::{h_flex, input::InputState, v_flex, ActiveTheme};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 impl App {
@@ -83,6 +84,13 @@ impl App {
         let issues = batch.issues();
         let blocking = batch.has_blocking_issues();
         let danger = gpui::hsla(0.0, 0.75, 0.55, 1.0);
+        let sources: HashSet<PathBuf> = previews.iter().map(|(path, _)| path.clone()).collect();
+        let mut target_counts: HashMap<PathBuf, usize> = HashMap::new();
+        for (path, new_name) in &previews {
+            if let Some(parent) = path.parent() {
+                *target_counts.entry(parent.join(new_name)).or_insert(0) += 1;
+            }
+        }
 
         let mode_button =
             |label: &str, button_mode: RenameMode, selected: bool, view: Entity<Self>| {
@@ -140,9 +148,28 @@ impl App {
                 } else {
                     muted
                 };
+                let target = path.parent().map(|parent| parent.join(new_name));
                 let marker = match issue {
                     RenameIssue::Invalid => rust_i18n::t!("batch_invalid_name").to_string(),
-                    RenameIssue::Collision => rust_i18n::t!("batch_collision").to_string(),
+                    RenameIssue::Collision => {
+                        if let Some(target) = target {
+                            let target_name = target
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| new_name.clone());
+                            if target_counts.get(&target).copied().unwrap_or(0) > 1 {
+                                rust_i18n::t!("batch_collision_duplicate", name = target_name)
+                                    .to_string()
+                            } else if target.exists() && !sources.contains(&target) {
+                                rust_i18n::t!("batch_collision_with", name = target_name)
+                                    .to_string()
+                            } else {
+                                rust_i18n::t!("batch_collision").to_string()
+                            }
+                        } else {
+                            rust_i18n::t!("batch_collision").to_string()
+                        }
+                    }
                     RenameIssue::Ok => String::new(),
                 };
                 h_flex()

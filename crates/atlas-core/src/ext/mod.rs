@@ -1,5 +1,5 @@
 //! Extension system: manifest-described extensions (declarative command tools or
-//! JSON-RPC sidecars) discovered at runtime, plus compiled-in builtins (cloud).
+//! JSON-lines provider sidecars) discovered at runtime.
 //!
 //! Users install extensions into the extensions directory (from a `.zip`/folder),
 //! enable/disable them, and their contributions — commands in the palette and the
@@ -8,6 +8,7 @@
 pub mod install;
 pub mod manifest;
 pub mod marketplace;
+pub mod provider_sidecar;
 pub mod registry;
 pub mod runner;
 
@@ -19,4 +20,3 @@ use std::path::PathBuf;
 pub fn extensions_dir() -> PathBuf {
     crate::util::config::data_dir().join("extensions")
 }
-pub mod wasm_manager;

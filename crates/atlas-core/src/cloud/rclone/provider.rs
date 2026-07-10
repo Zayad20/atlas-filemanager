@@ -1,10 +1,10 @@
 //! [`CloudProvider`] implementation backed by a running rclone daemon.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::rc_api::RcClient;
 use crate::cloud::provider::{Capabilities, CloudProvider, ProgressSink, RemoteEntry};
@@ -12,6 +12,20 @@ use crate::cloud::provider::{Capabilities, CloudProvider, ProgressSink, RemoteEn
 pub struct RcloneProvider {
     rc: RcClient,
     cache_dir: PathBuf,
+}
+
+/// True for `\\server\share` style paths (WSL shares, SMB). Never matches on
+/// Unix, where paths can't start with a backslash.
+fn is_unc(p: &Path) -> bool {
+    p.to_string_lossy().starts_with(r"\\")
+}
+
+fn speedup_config() -> Value {
+    json!({
+        "NoCheckDest": true,
+        "MultiThreadCutoff": "64Mi",
+        "MultiThreadStreams": 4,
+    })
 }
 
 impl RcloneProvider {
@@ -34,6 +48,23 @@ impl RcloneProvider {
         ))
     }
 
+    /// Unique staging path inside the cache dir for a transfer whose local end
+    /// is a UNC path rclone can't be trusted with.
+    async fn stage_path(&self, target: &Path) -> anyhow::Result<PathBuf> {
+        let dir = self.cache_dir.join("unc-staging");
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .with_context(|| format!("creating staging dir {}", dir.display()))?;
+        let name = target
+            .file_name()
+            .ok_or_else(|| anyhow!("path has no file name: {}", target.display()))?;
+        Ok(dir.join(format!(
+            "{}-{}",
+            uuid::Uuid::new_v4().simple(),
+            name.to_string_lossy()
+        )))
+    }
+
     /// Drive an async copy job to completion, forwarding byte progress.
     async fn run_copy(
         &self,
@@ -46,7 +77,14 @@ impl RcloneProvider {
         let group = format!("fp-{}", uuid::Uuid::new_v4().simple());
         let job = self
             .rc
-            .copyfile_async(src_fs, src_remote, dst_fs, dst_remote, &group)
+            .copyfile_async(
+                src_fs,
+                src_remote,
+                dst_fs,
+                dst_remote,
+                &group,
+                Some(speedup_config()),
+            )
             .await?;
         loop {
             if let Ok((bytes, total)) = self.rc.core_stats(&job.group).await {
@@ -137,6 +175,50 @@ impl CloudProvider for RcloneProvider {
         if let Some(parent) = dst.parent() {
             tokio::fs::create_dir_all(parent).await.ok();
         }
+        if crate::fs::paths::wsl_unc_parts(dst).is_some() {
+            let (dst_fs, dst_remote) = Self::local_split(dst)?;
+            let started = Instant::now();
+            match self
+                .run_copy(
+                    &format!("{id}:"),
+                    src,
+                    &dst_fs,
+                    &dst_remote,
+                    progress.clone(),
+                )
+                .await
+            {
+                Ok(()) => {
+                    tracing::debug!(
+                        target = %dst.display(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "cloud download used direct WSL copy"
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target = %dst.display(),
+                        error = %e,
+                        "direct WSL download failed; falling back to staging"
+                    );
+                }
+            }
+        }
+        // rclone's local backend chokes on some UNC destinations (WSL shares via
+        // \\wsl.localhost, SMB): stage the download in our cache dir and finish
+        // with a plain filesystem copy, which handles UNC fine.
+        if is_unc(dst) {
+            let staged = self.stage_path(dst).await?;
+            let (dst_fs, dst_remote) = Self::local_split(&staged)?;
+            self.run_copy(&format!("{id}:"), src, &dst_fs, &dst_remote, progress)
+                .await?;
+            tokio::fs::copy(&staged, dst)
+                .await
+                .with_context(|| format!("copying staged download to {}", dst.display()))?;
+            let _ = tokio::fs::remove_file(&staged).await;
+            return Ok(());
+        }
         let (dst_fs, dst_remote) = Self::local_split(dst)?;
         self.run_copy(&format!("{id}:"), src, &dst_fs, &dst_remote, progress)
             .await
@@ -149,6 +231,50 @@ impl CloudProvider for RcloneProvider {
         dst: &str,
         progress: ProgressSink,
     ) -> anyhow::Result<()> {
+        if crate::fs::paths::wsl_unc_parts(src).is_some() {
+            let (src_fs, src_remote) = Self::local_split(src)?;
+            let started = Instant::now();
+            match self
+                .run_copy(
+                    &src_fs,
+                    &src_remote,
+                    &format!("{id}:"),
+                    dst,
+                    progress.clone(),
+                )
+                .await
+            {
+                Ok(()) => {
+                    tracing::debug!(
+                        source = %src.display(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "cloud upload used direct WSL copy"
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        source = %src.display(),
+                        error = %e,
+                        "direct WSL upload failed; falling back to staging"
+                    );
+                }
+            }
+        }
+        // Mirror of the download staging: UNC sources (WSL/SMB) go through the
+        // cache dir so rclone only ever sees plain local paths.
+        if is_unc(src) {
+            let staged = self.stage_path(src).await?;
+            tokio::fs::copy(src, &staged)
+                .await
+                .with_context(|| format!("staging UNC upload source {}", src.display()))?;
+            let (src_fs, src_remote) = Self::local_split(&staged)?;
+            let result = self
+                .run_copy(&src_fs, &src_remote, &format!("{id}:"), dst, progress)
+                .await;
+            let _ = tokio::fs::remove_file(&staged).await;
+            return result;
+        }
         let (src_fs, src_remote) = Self::local_split(src)?;
         self.run_copy(&src_fs, &src_remote, &format!("{id}:"), dst, progress)
             .await
@@ -179,7 +305,10 @@ impl CloudProvider for RcloneProvider {
     async fn copy(&self, id: &str, from: &str, to: &str) -> anyhow::Result<()> {
         let fs = format!("{id}:");
         let group = format!("copy-{}-{}", id, from.len());
-        let job = self.rc.copyfile_async(&fs, from, &fs, to, &group).await?;
+        let job = self
+            .rc
+            .copyfile_async(&fs, from, &fs, to, &group, Some(speedup_config()))
+            .await?;
         // Poll until done (no progress reporting for inline copies).
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -206,6 +335,18 @@ impl CloudProvider for RcloneProvider {
 
     async fn unmount(&self, mount_point: &Path) -> anyhow::Result<()> {
         self.rc.unmount(&mount_point.to_string_lossy()).await
+    }
+
+    async fn install_mount_support(&self, progress: ProgressSink) -> anyhow::Result<()> {
+        #[cfg(windows)]
+        {
+            return super::windows_mount::install_winfsp(move |done, total| {
+                progress(done, total);
+            })
+            .await;
+        }
+        #[cfg(not(windows))]
+        anyhow::bail!("mount support is provided by the operating system")
     }
 }
 

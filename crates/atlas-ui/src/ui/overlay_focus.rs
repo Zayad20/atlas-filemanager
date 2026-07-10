@@ -40,14 +40,17 @@ use gpui_component::WindowExt;
 pub(crate) enum OverlayClaim {
     TagPicker,
     TypeFilter,
+    BreadcrumbMenu,
     SizeFilter,
     CtxMenu,
     GotoBar,
     Commands,
     ExtPalette,
     ExtManager,
+    Settings,
     BatchRename,
     RenamingProfile,
+    GettingStarted,
     CreatingTag,
     #[cfg(feature = "cloud")]
     CloudAdd,
@@ -70,6 +73,9 @@ impl App {
         if self.type_filter_menu.is_some() {
             return Some(OverlayClaim::TypeFilter);
         }
+        if self.breadcrumb_menu.is_some() {
+            return Some(OverlayClaim::BreadcrumbMenu);
+        }
         if self.size_filter_menu.is_some() {
             return Some(OverlayClaim::SizeFilter);
         }
@@ -89,11 +95,17 @@ impl App {
         if self.state.ext.show_manager {
             return Some(OverlayClaim::ExtManager);
         }
+        if o.show_settings {
+            return Some(OverlayClaim::Settings);
+        }
         if self.state.batch_rename.is_some() {
             return Some(OverlayClaim::BatchRename);
         }
         if o.renaming_profile {
             return Some(OverlayClaim::RenamingProfile);
+        }
+        if o.show_getting_started {
+            return Some(OverlayClaim::GettingStarted);
         }
         if self.state.profile_ui.creating_tag {
             return Some(OverlayClaim::CreatingTag);
@@ -106,7 +118,7 @@ impl App {
         if self.state.cloud.renaming_remote_id.is_some() {
             return Some(OverlayClaim::CloudRename);
         }
-        if o.show_settings || o.transfer_conflict.is_some() || o.properties.is_some() {
+        if o.transfer_conflict.is_some() || o.properties.is_some() {
             return Some(OverlayClaim::TextlessModal);
         }
         if self.rename_edit.is_some() {
@@ -172,6 +184,10 @@ impl App {
                 .type_filter_input
                 .as_ref()
                 .map(|i| i.read(cx).focus_handle(cx)),
+            OverlayClaim::BreadcrumbMenu => self
+                .breadcrumb_menu_input
+                .as_ref()
+                .map(|i| i.read(cx).focus_handle(cx)),
             OverlayClaim::SizeFilter => Some(self.overlay_focus(cx)),
             OverlayClaim::CtxMenu => self.ctx_menu_focus(cx),
             OverlayClaim::GotoBar => {
@@ -187,8 +203,16 @@ impl App {
                 Some(input.read(cx).focus_handle(cx))
             }
             OverlayClaim::ExtManager => Some(self.ext_manager_focus_handle(window, cx)),
+            OverlayClaim::Settings => Some(self.settings_focus_handle(window, cx)),
             OverlayClaim::BatchRename => Some(self.batch_focus_handle(window, cx)),
             OverlayClaim::RenamingProfile => Some(self.rename_profile_focus(window, cx)),
+            OverlayClaim::GettingStarted => {
+                if self.state.overlay.getting_started_step == 0 {
+                    Some(self.getting_started_profile_focus(window, cx))
+                } else {
+                    Some(self.overlay_focus(cx))
+                }
+            }
             OverlayClaim::CreatingTag => Some(self.create_tag_focus(window, cx)),
             #[cfg(feature = "cloud")]
             OverlayClaim::CloudAdd => Some(self.cloud_add_focus(window, cx)),
@@ -281,6 +305,26 @@ impl App {
             ));
         }
         if let Some(input) = &self.ext_manager_input {
+            input.read(cx).focus_handle(cx)
+        } else {
+            self.overlay_focus(cx)
+        }
+    }
+
+    pub(crate) fn settings_focus_handle(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> FocusHandle {
+        if self.settings_input.is_none() {
+            self.settings_input = Some(crate::ui::text_input::single_line(
+                window,
+                cx,
+                "Search settings",
+                "",
+            ));
+        }
+        if let Some(input) = &self.settings_input {
             input.read(cx).focus_handle(cx)
         } else {
             self.overlay_focus(cx)

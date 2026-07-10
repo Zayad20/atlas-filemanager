@@ -11,7 +11,6 @@ use atlas_core::cloud::{
 use atlas_model::app_state::BgResult;
 use atlas_model::cloud_state::AddRemoteKind;
 use atlas_model::location::Location;
-use atlas_model::pane::TabData;
 use atlas_model::settings::ViewMode;
 use atlas_model::tab::LoadState;
 
@@ -24,6 +23,18 @@ fn parse_remote_sentinel(dest: &std::path::Path) -> Option<(String, String)> {
     match rest.split_once('/') {
         Some((id, base)) => Some((id.to_string(), base.trim_end_matches('/').to_string())),
         None => Some((rest.to_string(), String::new())),
+    }
+}
+
+/// Build the sentinel `PathBuf` for a remote directory (inverse of
+/// [`parse_remote_sentinel`]). Lets drop/transfer call sites express "this dest
+/// is a remote dir" through the ordinary `PathBuf` plumbing.
+pub(crate) fn remote_sentinel(id: &str, path: &str) -> PathBuf {
+    let path = path.trim_matches('/');
+    if path.is_empty() {
+        PathBuf::from(format!("remote:{id}"))
+    } else {
+        PathBuf::from(format!("remote:{id}/{path}"))
     }
 }
 
@@ -199,27 +210,18 @@ impl App {
         }
     }
 
-    /// Open a new Access-mode tab browsing the remote root.
+    /// Open Access-mode browsing in the focused tab.
     fn open_remote_access(&mut self, id: RemoteId) {
-        let pane_id = self.state.focused_tile;
+        let tab_id = self.state.focused_tile;
         // Miller assumes a navigable local tree; remote browsing is flat-per-dir.
         let view_mode = match self.state.settings.view_mode.clone() {
             ViewMode::Miller => ViewMode::Details,
             other => other,
         };
-        let mut tab_data = TabData::with_view(
-            PathBuf::from(format!("remote:{id}")),
-            view_mode,
-            self.state.settings.thumbnail_size,
-            self.state.settings.show_inspector,
-        );
-        tab_data.location = Location::Remote {
-            id: id.clone(),
-            path: String::new(),
-        };
-        if let Some(new_tile_id) = self.insert_tab(pane_id, tab_data) {
-            self.spawn_list_remote(new_tile_id, id, String::new());
+        if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id) {
+            pane.view_mode = view_mode;
         }
+        self.navigate_remote(tab_id, id, String::new());
     }
 
     /// Re-list a remote tab at `path` (Access-mode directory descent).
@@ -315,18 +317,6 @@ impl App {
                         });
                 }
             }
-        }
-        let pid =
-            atlas_core::cloud::rclone::sidecar::RCD_PID.load(std::sync::atomic::Ordering::SeqCst);
-        if pid != 0 {
-            #[cfg(windows)]
-            let _ = std::process::Command::new("taskkill")
-                .args(["/F", "/PID", &pid.to_string()])
-                .status();
-            #[cfg(not(windows))]
-            let _ = std::process::Command::new("kill")
-                .arg(pid.to_string())
-                .status();
         }
     }
 
@@ -561,8 +551,12 @@ impl App {
                     r.quota = Some((used, total));
                 }
             }
-            BgResult::RemoteChanged { id, path } => {
+            BgResult::RemoteChanged { id, paths } => {
                 // Re-list every Access-mode tab currently showing this remote dir.
+                let paths: std::collections::HashSet<String> = paths
+                    .into_iter()
+                    .map(|p| p.trim_matches('/').to_string())
+                    .collect();
                 let targets: Vec<TileId> = self
                     .state
                     .all_pane_tile_ids()
@@ -571,12 +565,16 @@ impl App {
                         matches!(
                             self.tab_data_for(*tile).map(|td| td.location.clone()),
                             Some(Location::Remote { id: ref rid, path: ref rp })
-                                if *rid == id && *rp == path
+                                if *rid == id && paths.contains(rp.trim_matches('/'))
                         )
                     })
                     .collect();
                 for tile in targets {
-                    self.spawn_list_remote(tile, id.clone(), path.clone());
+                    if let Some(Location::Remote { path, .. }) =
+                        self.tab_data_for(tile).map(|td| td.location.clone())
+                    {
+                        self.spawn_list_remote(tile, id.clone(), path);
+                    }
                 }
             }
             BgResult::TransferUpdate(snapshot) => {
@@ -603,5 +601,24 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_sentinel_round_trips() {
+        assert_eq!(
+            parse_remote_sentinel(&remote_sentinel("gdrive", "")),
+            Some(("gdrive".to_string(), String::new()))
+        );
+        assert_eq!(
+            parse_remote_sentinel(&remote_sentinel("gdrive", "docs/sub/")),
+            Some(("gdrive".to_string(), "docs/sub".to_string()))
+        );
+        // Real local paths never parse as sentinels.
+        assert_eq!(parse_remote_sentinel(std::path::Path::new(r"C:\tmp")), None);
     }
 }

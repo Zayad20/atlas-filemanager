@@ -10,6 +10,34 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 impl App {
+    fn preferred_tab_child(focused: TileId, children: &[TileId]) -> Option<TileId> {
+        children
+            .contains(&focused)
+            .then_some(focused)
+            .or_else(|| children.last().copied())
+    }
+
+    fn adjacent_live_tab_after_closing(&self, tab_id: TileId) -> Option<TileId> {
+        let tabs_id = self.state.find_tabs_container(tab_id)?;
+        let tabs = match self.state.pane_tree.tiles.get(tabs_id) {
+            Some(Tile::Container(Container::Tabs(tabs))) => tabs,
+            _ => return None,
+        };
+        let pos = tabs.children.iter().position(|id| *id == tab_id)?;
+        let is_live = |id: &TileId| *id != tab_id && !self.tab_closing.contains_key(id);
+        tabs.children[..pos]
+            .iter()
+            .rev()
+            .find(|id| is_live(id))
+            .copied()
+            .or_else(|| {
+                tabs.children[pos + 1..]
+                    .iter()
+                    .find(|id| is_live(id))
+                    .copied()
+            })
+    }
+
     pub(crate) fn animate_pane_drag(&mut self, pane_id: TileId, is_starting: bool) {
         if let Some(tabs_id) = self.state.find_tabs_container(pane_id) {
             if let Some(parent_id) = self.state.find_parent_of(tabs_id) {
@@ -95,7 +123,12 @@ impl App {
                     .active
                     .is_some_and(|active| tabs.children.contains(&active));
                 if !active_is_child {
-                    tabs.active = tabs.children.last().copied();
+                    let focused = self.state.focused_tile;
+                    tabs.active = tabs
+                        .children
+                        .contains(&focused)
+                        .then_some(focused)
+                        .or_else(|| tabs.children.last().copied());
                 }
             }
         }
@@ -252,7 +285,7 @@ impl App {
         self.state
             .all_pane_tile_ids()
             .into_iter()
-            .filter(|p| !self.pane_closing.contains_key(p))
+            .filter(|p| !self.pane_closing.contains_key(p) && !self.tab_closing.contains_key(p))
             .count()
     }
 
@@ -260,7 +293,9 @@ impl App {
     /// or already closing, so it must be moved to a survivor.
     fn focus_needs_reassign(&self, closing: &[TileId]) -> bool {
         let f = self.state.focused_tile;
-        closing.contains(&f) || self.pane_closing.contains_key(&f)
+        closing.contains(&f)
+            || self.pane_closing.contains_key(&f)
+            || self.tab_closing.contains_key(&f)
     }
 
     /// Pick a pane to focus once `closing` is gone: a live pane that is neither in
@@ -270,6 +305,7 @@ impl App {
             .iter()
             .copied()
             .chain(self.pane_closing.keys().copied())
+            .chain(self.tab_closing.keys().copied())
             .collect();
         let live: HashSet<TileId> = self
             .state
@@ -465,29 +501,22 @@ impl App {
         }
     }
 
-    /// Open a virtual tab showing every file carrying `tag`. Unlike a directory tab it
-    /// never lists the filesystem — its entries are filled in asynchronously when the
-    /// tag-db worker answers `QueryPathsForTag` (see `populate_tag_tabs`).
+    /// Show every file carrying `tag` in the requested pane.
     pub(crate) fn open_tag_results(&mut self, pane_id: TileId, tag: TagId) {
-        // Miller assumes a navigable directory tree; tag results are a flat set.
-        let view_mode = match self.state.settings.view_mode.clone() {
-            ViewMode::Miller => ViewMode::Details,
-            other => other,
-        };
-        let mut tab_data = TabData::with_view(
-            PathBuf::from(format!("tag:{}", tag.0)),
-            view_mode,
+        self.navigate_to(pane_id, Location::Tag(tag), crate::app::nav::NavKind::Push);
+    }
+
+    pub(crate) fn open_space_lens(&mut self, pane_id: TileId, path: PathBuf) {
+        let tab_data = TabData::with_view(
+            path.clone(),
+            ViewMode::Details,
             self.state.settings.thumbnail_size,
-            self.state.settings.show_inspector,
+            false,
         );
-        tab_data.location = Location::Tag(tag);
         if let Some(new_tile_id) = self.insert_tab(pane_id, tab_data) {
-            if let Some(ts) = self.state.tab_states.get_mut(&new_tile_id) {
-                ts.load_state = LoadState::Loading;
-            }
-            let _ = self
-                .tag_db_tx
-                .send(atlas_core::fs::tag_db::TagDbCmd::QueryPathsForTag(tag));
+            let mut lens = atlas_core::space_lens::SpaceLensState::default();
+            lens.open_for_path(path);
+            self.space_lens.insert(new_tile_id, lens);
         }
     }
 
@@ -558,11 +587,17 @@ impl App {
 
         if let Some(tabs_id) = self.state.find_tabs_container(tab_id) {
             let tab_count = match self.state.pane_tree.tiles.get(tabs_id) {
-                Some(Tile::Container(Container::Tabs(tabs))) => tabs.children.len(),
+                Some(Tile::Container(Container::Tabs(tabs))) => tabs
+                    .children
+                    .iter()
+                    .filter(|id| !self.tab_closing.contains_key(id))
+                    .count(),
                 _ => 0,
             };
             if tab_count > 1 {
-                let next = self.focus_after_closing(&[tab_id]);
+                let next = self
+                    .adjacent_live_tab_after_closing(tab_id)
+                    .or_else(|| self.focus_after_closing(&[tab_id]));
                 if let Some(next) = next {
                     self.state
                         .pane_tree
@@ -739,12 +774,13 @@ impl App {
             crate::perf::span_detail("pane_tree.remove_one", || format!("pane={}", pane_id.0));
         let tabs_id = self.state.find_tabs_container(pane_id);
         if let Some(tabs_id) = tabs_id {
+            let focused = self.state.focused_tile;
             if let Some(Tile::Container(Container::Tabs(tabs))) =
                 self.state.pane_tree.tiles.get_mut(tabs_id)
             {
                 tabs.children.retain(|id| *id != pane_id);
                 if tabs.active == Some(pane_id) {
-                    tabs.active = tabs.children.last().copied();
+                    tabs.active = Self::preferred_tab_child(focused, &tabs.children);
                 }
             }
             let empty_tabs = matches!(
@@ -759,6 +795,7 @@ impl App {
 
         self.state.pane_tree.tiles.remove(pane_id);
         self.state.tab_states.remove(&pane_id);
+        self.space_lens.remove(&pane_id);
         self.watchers.remove(&pane_id);
         self.state.clear_preview(pane_id);
         self.drop_pane_signal(pane_id);
@@ -778,6 +815,7 @@ impl App {
         let Some(parent_id) = self.state.find_parent_of(id) else {
             return;
         };
+        let focused = self.state.focused_tile;
         if let Some(Tile::Container(container)) = self.state.pane_tree.tiles.get_mut(parent_id) {
             match container {
                 Container::Linear(l) => {
@@ -791,7 +829,7 @@ impl App {
                 Container::Tabs(t) => {
                     t.children.retain(|child| *child != id);
                     if t.active == Some(id) {
-                        t.active = t.children.first().copied();
+                        t.active = Self::preferred_tab_child(focused, &t.children);
                     }
                 }
             }

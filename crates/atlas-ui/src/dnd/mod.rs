@@ -70,6 +70,9 @@ impl DropZone {
 pub struct DropZones {
     /// Set to `true` when the OS notifies us of an incoming drag (DragEnter).
     pub drag_active: bool,
+    /// Last drag cursor in logical window coordinates. The OLE modal loop can
+    /// starve the async queue drain, while the paint canvas still ticks.
+    pub cursor: Option<(f32, f32)>,
     zones: Vec<DropZone>,
 }
 
@@ -77,6 +80,24 @@ impl DropZones {
     /// Replace all zones for the current frame. Called from the render path.
     pub fn update(&mut self, zones: Vec<DropZone>) {
         self.zones = zones;
+    }
+
+    /// Rewrite the destination of every zone owned by `pane_id`. Called when a
+    /// pane navigates while an OLE drag is in flight: the committed zones still
+    /// carry the pre-navigation directory, and the nested `DoDragDrop` loop can
+    /// resolve a drop before the next frame recommits fresh zones.
+    pub fn set_dest_for_pane(&mut self, pane_id: u64, dest: PathBuf) {
+        for zone in &mut self.zones {
+            if zone.pane_id == pane_id {
+                zone.dest.clone_from(&dest);
+            }
+        }
+    }
+
+    /// Drop all zones owned by `pane_id` (pane navigated to a location with no
+    /// filesystem directory — tag/recycle/remote — so it can't accept OLE drops).
+    pub fn remove_pane(&mut self, pane_id: u64) {
+        self.zones.retain(|zone| zone.pane_id != pane_id);
     }
 
     pub fn len(&self) -> usize {
@@ -97,11 +118,9 @@ impl DropZones {
 ///
 /// On platforms without volume concepts (SFTP, cloud), returns `Copy`.
 pub fn default_effect_for_paths(sources: &[PathBuf], dest: &PathBuf) -> DropEffect {
-    // Resolve the destination's root (drive letter on Windows, mount point on Linux).
-    let dest_root = volume_root(dest);
     let all_same = sources
         .iter()
-        .all(|s| volume_root(s).as_deref() == dest_root.as_deref());
+        .all(|s| atlas_core::fs::paths::same_volume(s, dest));
     if all_same {
         DropEffect::Move
     } else {
@@ -123,34 +142,29 @@ pub fn effect_with_modifiers(default: DropEffect, ctrl: bool, shift: bool) -> Dr
     }
 }
 
-fn volume_root(path: &PathBuf) -> Option<String> {
-    #[cfg(target_os = "windows")]
-    {
-        // On Windows the volume is the drive prefix ("C:\", "\\Server\Share\").
-        let s = path.to_string_lossy();
-        if s.starts_with(r"\\") {
-            // UNC path — take the server+share components.
-            let parts: Vec<&str> = s[2..].splitn(3, '\\').collect();
-            if parts.len() >= 2 {
-                return Some(format!(r"\\{}\{}", parts[0], parts[1]).to_lowercase());
-            }
-        }
-        // Drive letter path.
-        let prefix: String = s.chars().take(3).collect(); // "C:\"
-        if prefix.len() == 3 && prefix.chars().nth(1) == Some(':') {
-            return Some(prefix.to_lowercase());
-        }
-        None
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wsl_same_distro_moves_by_default() {
+        assert_eq!(
+            default_effect_for_paths(
+                &[PathBuf::from(r"\\wsl$\Ubuntu\home\a")],
+                &PathBuf::from(r"\\wsl.localhost\Ubuntu\tmp")
+            ),
+            DropEffect::Move
+        );
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        // On Unix, use the first two components as a heuristic (mount points).
-        // A proper implementation would call `statvfs(2)`.
-        let mut components = path.components();
-        let _ = components.next(); // /
-        let mount = components
-            .next()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned());
-        mount
+
+    #[test]
+    fn wsl_different_distro_copies_by_default() {
+        assert_eq!(
+            default_effect_for_paths(
+                &[PathBuf::from(r"\\wsl$\Ubuntu\home\a")],
+                &PathBuf::from(r"\\wsl.localhost\Debian\home")
+            ),
+            DropEffect::Copy
+        );
     }
 }

@@ -5,8 +5,7 @@ edition = "2021"
 license = "AGPL-3.0-or-later"
 
 [features]
-# Cloud / rclone integration. Mirrors the binary's `cloud` feature; forwards to the
-# backend + model crates (the cloud HTTP/crypto deps live in `atlas-core`).
+# Host UI for optional virtual-file-provider extensions.
 cloud = ["atlas-core/cloud", "atlas-model/cloud"]
 # RAR archive navigation. Forwards to the core crate where `rar_backend` lives.
 rar = ["atlas-core/rar"]
@@ -14,6 +13,8 @@ rar = ["atlas-core/rar"]
 sevenz = ["atlas-core/sevenz"]
 # Compile perf logging only when diagnosing UI stalls.
 perf-log = []
+# Compile Tracy profiler hooks only in profiling builds.
+tracy = ["dep:tracy-client"]
 
 [dependencies]
 atlas-core.workspace = true
@@ -41,6 +42,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 open = "5"
 rfd = "0.15"
 resvg = "0.45"
+tracy-client = { version = "0.18.4", optional = true, default-features = false, features = ["enable", "only-localhost", "ondemand"] }
 
 [target.'cfg(windows)'.dependencies]
 # Windows OLE drag-and-drop (IDataObject, IDropSource, IDropTarget, DoDragDrop).

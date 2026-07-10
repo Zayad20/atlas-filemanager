@@ -287,6 +287,13 @@ pub fn start_drag_real(hwnd_raw: isize, paths: &[PathBuf], allowed: DROPEFFECT) 
     if performed_val != 0 {
         effect = DROPEFFECT(performed_val);
     }
+    tracing::debug!(
+        allowed = allowed.0,
+        effect = effect.0,
+        performed = performed_val,
+        paths = paths.len(),
+        "dnd drag-out completed"
+    );
 
     if hr.is_err() && hr != windows::Win32::Foundation::DRAGDROP_S_DROP {
         tracing::warn!("DoDragDrop returned unexpected hr: {:?}", hr);

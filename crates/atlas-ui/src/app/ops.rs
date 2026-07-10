@@ -5,6 +5,7 @@ use atlas_model::ops::{
     ConflictPolicy, Resolution, TransferConflictState, TransferKind, TransferOrigin,
     TransferRequest,
 };
+use atlas_model::overlay::{Toast, ToastKind};
 use atlas_model::undo::UndoEntry;
 use std::path::PathBuf;
 
@@ -13,6 +14,7 @@ pub(crate) fn op_error_text(err: &atlas_model::ops::OpError) -> String {
     use atlas_model::ops::OpErrorKind as K;
     let detail = match &err.kind {
         K::Gone => rust_i18n::t!("op_err_gone").into_owned(),
+        K::TrashUnsupported => rust_i18n::t!("op_err_trash_unsupported").into_owned(),
         K::PermissionDenied => rust_i18n::t!("op_err_permission").into_owned(),
         K::InUse => rust_i18n::t!("op_err_in_use").into_owned(),
         K::DiskFull => rust_i18n::t!("op_err_disk_full").into_owned(),
@@ -76,17 +78,24 @@ impl App {
             .collect()
     }
 
-    /// Queue a dismissible error toast (capped to the 5 most recent).
-    pub(crate) fn toast_error(&mut self, msg: String) {
+    fn toast(&mut self, kind: ToastKind, msg: String) {
         if self.state.overlay.op_errors.len() >= 5 {
             self.state.overlay.op_errors.pop_front();
         }
-        self.state.overlay.op_errors.push_back(msg);
+        self.state
+            .overlay
+            .op_errors
+            .push_back(Toast::new(msg, kind));
     }
 
-    /// Queue an informational toast (non-fatal; reuses the same queue for now).
+    /// Queue a dismissible error toast (capped to the 5 most recent).
+    pub(crate) fn toast_error(&mut self, msg: String) {
+        self.toast(ToastKind::Error, msg);
+    }
+
+    /// Queue an informational toast (non-fatal).
     pub(crate) fn toast_info(&mut self, msg: String) {
-        self.toast_error(msg);
+        self.toast(ToastKind::Info, msg);
     }
 
     // -----------------------------------------------------------------------
@@ -96,6 +105,23 @@ impl App {
     /// Single entry point for every copy/move: validates, detects conflicts
     /// (opening the dialog when the policy is `Ask`), then spawns the engine.
     pub(crate) fn request_transfer(&mut self, req: TransferRequest) {
+        // Remote sentinel dest (`remote:<id>/…`): route to the cloud uploader
+        // instead of the local pipeline. Centralized here so every entry point
+        // (paste, DnD, spring-load drops) gets it for free.
+        #[cfg(feature = "cloud")]
+        if self.try_remote_upload(
+            &req.sources,
+            &req.dest,
+            matches!(req.kind, TransferKind::Move),
+        ) {
+            return;
+        }
+        // Never transfer INTO a Recycle Bin folder: `$R` dirs are real on disk,
+        // so validation would happily move payloads next to the `$I` metadata.
+        if atlas_core::fs::paths::is_recycle_bin_path(&req.dest) {
+            self.toast_error(rust_i18n::t!("op_err_dest_recycle").into_owned());
+            return;
+        }
         let outcome = transfer::validate(&req);
         if let Some(fatal) = outcome.fatal {
             self.toast_error(
@@ -108,21 +134,39 @@ impl App {
             return;
         }
         for err in &outcome.errors {
+            if err.kind == atlas_model::ops::OpErrorKind::SelfNested {
+                continue;
+            }
             self.toast_error(op_error_text(err));
         }
         if outcome.valid.is_empty() {
             return;
         }
-        let (conflicts, clean) = transfer::detect_conflicts(&outcome.valid, &req.dest);
+        let target_names = req.target_names.as_ref().map(|names| {
+            outcome
+                .valid
+                .iter()
+                .filter_map(|valid| {
+                    req.sources
+                        .iter()
+                        .position(|source| source == valid)
+                        .and_then(|index| names.get(index).cloned())
+                })
+                .collect::<Vec<_>>()
+        });
+        let (conflicts, clean) =
+            transfer::detect_conflicts(&outcome.valid, target_names.as_deref(), &req.dest);
         if !conflicts.is_empty() && req.policy == ConflictPolicy::Ask {
             self.state.overlay.transfer_conflict = Some(TransferConflictState {
                 request: TransferRequest {
+                    target_names,
                     sources: outcome.valid,
                     ..req
                 },
                 conflicts,
                 clean,
                 per_item: None,
+                selected_action: 0,
             });
             return;
         }
@@ -206,9 +250,28 @@ impl App {
         self.set_clipboard_with_remote(paths, is_cut, None);
     }
 
+    pub(crate) fn set_clipboard_with_names(
+        &mut self,
+        paths: Vec<PathBuf>,
+        target_names: Option<Vec<std::ffi::OsString>>,
+        is_cut: bool,
+    ) {
+        self.set_clipboard_full(paths, target_names, is_cut, None);
+    }
+
     pub(crate) fn set_clipboard_with_remote(
         &mut self,
         paths: Vec<PathBuf>,
+        is_cut: bool,
+        remote_id: Option<String>,
+    ) {
+        self.set_clipboard_full(paths, None, is_cut, remote_id);
+    }
+
+    fn set_clipboard_full(
+        &mut self,
+        paths: Vec<PathBuf>,
+        target_names: Option<Vec<std::ffi::OsString>>,
         is_cut: bool,
         remote_id: Option<String>,
     ) {
@@ -226,6 +289,7 @@ impl App {
         }
         self.state.ops.clipboard = Some(atlas_model::ops::ClipboardState {
             paths,
+            target_names,
             is_cut,
             remote_id,
         });
@@ -239,8 +303,10 @@ impl App {
             match crate::dnd::windows::ole_clipboard::get_clipboard_files() {
                 Some(c) if c.from_atlas => {
                     // Our own content: keep the richer internal cut semantics.
-                    let is_cut = self.state.ops.clipboard.as_ref().is_some_and(|s| s.is_cut);
-                    Some((c.paths, is_cut, TransferOrigin::Paste))
+                    let state = self.state.ops.clipboard.as_ref();
+                    let is_cut = state.is_some_and(|s| s.is_cut);
+                    let target_names = state.and_then(|s| s.target_names.clone());
+                    Some((c.paths, target_names, is_cut, TransferOrigin::Paste))
                 }
                 Some(c) => {
                     let origin = if c.preferred_move {
@@ -248,7 +314,7 @@ impl App {
                     } else {
                         TransferOrigin::Paste
                     };
-                    Some((c.paths, c.preferred_move, origin))
+                    Some((c.paths, None, c.preferred_move, origin))
                 }
                 None => {
                     // No files on the system clipboard (another app replaced
@@ -259,14 +325,16 @@ impl App {
             }
         };
         #[cfg(not(windows))]
-        let source = self
-            .state
-            .ops
-            .clipboard
-            .as_ref()
-            .map(|c| (c.paths.clone(), c.is_cut, TransferOrigin::Paste));
+        let source = self.state.ops.clipboard.as_ref().map(|c| {
+            (
+                c.paths.clone(),
+                c.target_names.clone(),
+                c.is_cut,
+                TransferOrigin::Paste,
+            )
+        });
 
-        let Some((paths, is_cut, origin)) = source else {
+        let Some((paths, target_names, is_cut, origin)) = source else {
             return;
         };
         #[cfg(feature = "cloud")]
@@ -275,6 +343,7 @@ impl App {
         }
         self.request_transfer(TransferRequest {
             sources: paths,
+            target_names,
             dest,
             kind: if is_cut {
                 TransferKind::Move
@@ -298,6 +367,7 @@ impl App {
         }
         self.request_transfer(TransferRequest {
             sources: paths,
+            target_names: None,
             dest,
             kind: TransferKind::Copy,
             policy: ConflictPolicy::Ask,
@@ -318,6 +388,7 @@ impl App {
         }
         self.request_transfer(TransferRequest {
             sources: paths,
+            target_names: None,
             dest,
             kind: TransferKind::Move,
             policy: ConflictPolicy::Ask,
@@ -330,10 +401,13 @@ impl App {
     // -----------------------------------------------------------------------
 
     pub(crate) fn delete_files(&mut self, paths: Vec<PathBuf>, to_trash: bool) {
-        let affected = paths
+        let mut affected: Vec<_> = paths
             .iter()
             .flat_map(|p| self.affected_tabs_for_path(p))
             .collect();
+        if to_trash {
+            affected.extend(self.recycle_bin_tabs());
+        }
         let (op_id, cancel) = self
             .state
             .ops
@@ -523,6 +597,31 @@ impl App {
         let tx = self.tx.clone();
         self.rt.spawn(async move {
             atlas_core::fs::ops::create_dir(path, op_id, tx, affected).await;
+        });
+    }
+
+    pub(crate) fn create_file(&mut self, path: PathBuf) {
+        if let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) {
+            if let Err(e) = transfer::validate_filename(&name) {
+                self.toast_error(filename_error_text(&e));
+                return;
+            }
+        }
+        if path.exists() {
+            self.toast_error(
+                rust_i18n::t!(
+                    "err_collision",
+                    name = path.file_name().unwrap_or_default().to_string_lossy()
+                )
+                .to_string(),
+            );
+            return;
+        }
+        let op_id = self.state.next_op_id();
+        let affected = self.affected_tabs_for_path(&path);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            atlas_core::fs::ops::create_file(path, op_id, tx, affected).await;
         });
     }
 

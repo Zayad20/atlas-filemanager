@@ -13,14 +13,14 @@ use crate::input::action::Action;
 use crate::ui::drag_hover::drag_hover_layer;
 use crate::ui::glass::{backdrop_tint, glass_chrome_fill, glass_sidebar_fill, GlassExt};
 use crate::ui::icons::{icon, is_windows_theme, AtlasIcon};
-use crate::ui::interactions::rubber_layer;
+use crate::ui::interactions::{ctrl_scroll_layer, rubber_layer};
 use atlas_core::util::display::format_size;
 use atlas_model::pane::TabId;
 use atlas_model::settings::ViewMode;
 use gpui::prelude::*;
 use gpui::{
-    div, hsla, px, Context, Entity, MouseButton, MouseDownEvent, NavigationDirection, SharedString,
-    Window, WindowControlArea,
+    div, hsla, px, AnimationExt, Context, Entity, MouseButton, MouseDownEvent, NavigationDirection,
+    SharedString, Window, WindowControlArea,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 use std::path::PathBuf;
@@ -78,6 +78,37 @@ pub(crate) fn rect_recorder(
         crate::perf::count("prepaint.row_rect");
         view.update(cx, |this, _| {
             this.row_rects.entry(pane).or_default().push((idx, bounds));
+        });
+    }
+}
+
+pub(crate) fn miller_rect_recorder(
+    pane: TabId,
+    column: usize,
+    idx: usize,
+    view: &Entity<App>,
+) -> impl Fn(gpui::Bounds<gpui::Pixels>, &mut Window, &mut gpui::App) + 'static {
+    let view = view.clone();
+    move |bounds, _window, cx| {
+        crate::perf::count("prepaint.miller_row_rect");
+        view.update(cx, |this, _| {
+            this.miller_row_rects
+                .entry((pane, column))
+                .or_default()
+                .push((idx, bounds));
+        });
+    }
+}
+
+pub(crate) fn miller_column_bounds_recorder(
+    pane: TabId,
+    column: usize,
+    view: &Entity<App>,
+) -> impl Fn(gpui::Bounds<gpui::Pixels>, &mut Window, &mut gpui::App) + 'static {
+    let view = view.clone();
+    move |bounds, _window, cx| {
+        view.update(cx, |this, _| {
+            this.miller_column_bounds.insert((pane, column), bounds);
         });
     }
 }
@@ -194,6 +225,17 @@ impl Render for App {
                 "startup: first render"
             );
         }
+        let viewport_size = window.viewport_size();
+        if self
+            .last_viewport_size
+            .is_some_and(|last| last != viewport_size)
+        {
+            self.window_resize_suppress_until =
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(180));
+            self.sidebar_width_animation = None;
+        }
+        self.last_viewport_size = Some(viewport_size);
+        let suppress_resize_animations = self.suppress_window_resize_animations();
         // Drain any results that arrived between the 60Hz background loop and this
         // render frame.  The startup loop already calls cx.notify() when dirty; the
         // drain here handles the narrow window where results arrive mid-frame.
@@ -209,6 +251,8 @@ impl Render for App {
         // no geometry until the pane decides to repaint.
         if self.rubber.is_none() && !self.drag_hover_maybe_active() {
             self.row_rects.clear();
+            self.miller_row_rects.clear();
+            self.miller_column_bounds.clear();
             self.pane_view_bounds.clear();
             self.dropzone_rects.clear();
             self.dropzone_bounds = None;
@@ -260,8 +304,57 @@ impl Render for App {
                 self.rename_visual_suppress = None;
             }
         }
+        if let Some((pane, path, select_all)) = self.pending_rename.clone() {
+            let needs_scroll = self
+                .state
+                .tab_states
+                .get(&pane)
+                .is_some_and(|ts| ts.selection.scroll_to_selected);
+            if needs_scroll && self.scroll_selected_into_view(pane, gpui::ScrollStrategy::Center) {
+                if let Some(ts) = self.state.tab_states.get_mut(&pane) {
+                    ts.selection.scroll_to_selected = false;
+                }
+            }
+            let ready = self.state.tab_states.get(&pane).is_some_and(|ts| {
+                if self
+                    .tab_data_for(pane)
+                    .is_some_and(|tab| tab.view_mode == atlas_model::settings::ViewMode::Miller)
+                {
+                    return ts
+                        .miller
+                        .columns
+                        .get(ts.miller.focused)
+                        .and_then(|col| {
+                            col.selection
+                                .keyboard_cursor
+                                .or_else(|| col.selection.selected.iter().copied().next())
+                                .and_then(|idx| col.entries.get(idx))
+                        })
+                        .is_some_and(|entry| entry.path == path);
+                }
+                !ts.selection.scroll_to_selected
+                    && ts
+                        .selection
+                        .keyboard_cursor
+                        .or_else(|| ts.selection.selected.iter().copied().next())
+                        .and_then(|idx| ts.entries.get(idx))
+                        .is_some_and(|entry| entry.path == path)
+            });
+            if ready {
+                self.pending_rename = None;
+                self.state.focused_tile = pane;
+                self.begin_rename(window, cx);
+                if select_all {
+                    if let Some(edit) = self.rename_edit.as_mut() {
+                        let len = edit.input.read(cx).value().chars().count() as u32;
+                        edit.initial_select_chars = Some(len);
+                    }
+                }
+            }
+        }
         // (Rename-profile is now a normal overlay layer rendered by `render_overlays`
         // + focused via the overlay-focus arbiter; no render-time dialog open.)
+        let sidebar_width_dirty = self.sidebar_width_dirty;
         self.sidebar_width_dirty = false;
         let (fg, muted, status_border, root_bg) = {
             let t = cx.theme();
@@ -269,12 +362,9 @@ impl Render for App {
         };
         let active_theme = self.state.profiles.active().theme.as_str();
         let windows_theme = is_windows_theme(active_theme);
-        let windows_glass = active_theme == "Atlas Windows Glass"
-            || (active_theme == "Atlas Windows" && self.state.settings.mica);
+        let windows_glass = active_theme == "Atlas Windows Glass";
         let figma_glass = active_theme == "Atlas Figma Glass";
-        let glass_theme = active_theme.ends_with(" Glass")
-            || active_theme == "Atlas Frost"
-            || self.state.settings.mica;
+        let glass_theme = active_theme.ends_with(" Glass") || active_theme == "Atlas Frost";
         // Most recent background operation, rendered as a floating overlay pill
         // bar with a cancel button. `active_ops` updates via OpProgress events.
         let op_progress = self
@@ -326,7 +416,7 @@ impl Render for App {
             self.ensure_dock_host(cx).into_any_element()
         };
         let sidebar = self.state.settings.show_sidebar.then(|| {
-            let width = if self.state.settings.sidebar_collapsed {
+            let target_width = if self.state.settings.sidebar_collapsed {
                 if windows_theme {
                     64.0
                 } else {
@@ -335,6 +425,32 @@ impl Render for App {
             } else {
                 self.state.settings.sidebar_width
             };
+            if sidebar_width_dirty {
+                match self.sidebar_render_width {
+                    Some(from)
+                        if !self.state.settings.disable_animations
+                            && !suppress_resize_animations
+                            && (from - target_width).abs() > f32::EPSILON =>
+                    {
+                        self.sidebar_width_animation =
+                            Some(crate::app::SidebarWidthAnimation::new(from, target_width));
+                    }
+                    _ => {
+                        self.sidebar_width_animation = None;
+                    }
+                }
+            }
+            let width = match self.sidebar_width_animation {
+                Some(anim) if anim.is_alive() => {
+                    window.request_animation_frame();
+                    anim.width()
+                }
+                _ => {
+                    self.sidebar_width_animation = None;
+                    target_width
+                }
+            };
+            self.sidebar_render_width = Some(width);
             let panel = if let Some(panel) = &self.sidebar_panel {
                 panel.clone()
             } else {
@@ -386,9 +502,9 @@ impl Render for App {
             .then(|| {
                 div()
                     .absolute()
-                    .left(-px(4.))
+                    .left(-px(6.))
                     .top_0()
-                    .w(px(8.))
+                    .w(px(12.))
                     .h_full()
                     .cursor_col_resize()
                     .on_mouse_down(
@@ -405,34 +521,98 @@ impl Render for App {
             });
 
         // FASE5: inspector panel (right of body) + overlay layers (above root).
-        let inspector = if self.preview_visible_for_focused() {
-            crate::perf::count("render.inspector");
-            Some(
-                div()
-                    .h_full()
-                    .child(self.render_inspector(window, cx))
-                    .into_any_element(),
-            )
+        let preview_visible = self.preview_visible_for_focused();
+        let preview_closing = self.preview_panel_closing.is_some_and(|started| {
+            started.elapsed() < std::time::Duration::from_millis(crate::ui::motion::PANEL_MS)
+        });
+        if self.preview_panel_closing.is_some() && !preview_closing {
+            self.preview_panel_closing = None;
+        }
+        if preview_closing {
+            window.request_animation_frame();
+        }
+        let preview_expanded = self
+            .preview_view
+            .get(&self.state.focused_tile)
+            .is_some_and(|v| v.expanded);
+        let preview_should_render = preview_visible || preview_closing;
+        let viewport = window.viewport_size();
+        let inspector_width = if preview_expanded {
+            self.state
+                .settings
+                .inspector_width
+                .max(180.0)
+                .min((f32::from(viewport.width) - 32.0).max(180.0))
         } else {
-            None
+            self.state
+                .settings
+                .inspector_width
+                .max(180.0)
+                .min((f32::from(viewport.width) - 96.0).max(180.0))
         };
-        let inspector_resizer = self.preview_visible_for_focused().then(|| {
-            div()
-                .w(px(1.))
+        let inspector_container = preview_should_render.then(|| {
+            crate::perf::count("render.inspector");
+            let resize_handle =
+                (preview_visible && !preview_expanded && !preview_closing).then(|| {
+                    div()
+                        .absolute()
+                        .left(-px(6.0))
+                        .top_0()
+                        .w(px(12.0))
+                        .h_full()
+                        .cursor_col_resize()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                                this.inspector_resize = Some(crate::app::InspectorResizeState {
+                                    start_x: f32::from(ev.position.x),
+                                    start_width: this.state.settings.inspector_width,
+                                });
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .left(px(5.5))
+                                .top_0()
+                                .w(px(1.0))
+                                .h_full()
+                                .bg(cx.theme().border.opacity(0.7)),
+                        )
+                        .occlude()
+                });
+            let panel = div()
+                .relative()
                 .h_full()
-                .flex_none()
-                .cursor_col_resize()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
-                        this.inspector_resize = Some(crate::app::InspectorResizeState {
-                            start_x: f32::from(ev.position.x),
-                            start_width: this.state.settings.inspector_width,
-                        });
-                        cx.stop_propagation();
-                    }),
-                )
-                .into_any_element()
+                .w(px(inspector_width))
+                .flex_shrink_0()
+                .overflow_hidden()
+                .child(self.render_inspector(window, cx))
+                .children(resize_handle);
+            let panel: gpui::AnyElement = if self.state.settings.disable_animations {
+                panel.into_any_element()
+            } else if suppress_resize_animations {
+                panel.into_any_element()
+            } else {
+                let closing = preview_closing && !preview_visible;
+                panel
+                    .with_animation(
+                        SharedString::from(format!(
+                            "preview-panel-{}-{}",
+                            self.preview_panel_anim_seq, closing
+                        )),
+                        crate::ui::motion::animation(crate::ui::motion::PANEL_MS),
+                        move |this, t| {
+                            let openness = if closing { 1.0 - t } else { t };
+                            this.w(px(inspector_width * openness))
+                                .opacity(openness)
+                                .paint_offset(gpui::point(px(10.0 * (1.0 - openness)), px(0.0)))
+                        },
+                    )
+                    .into_any_element()
+            };
+            panel
         });
         let overlays = {
             crate::perf::count("render.overlays");
@@ -500,38 +680,47 @@ impl Render for App {
             )
             .on_action(cx.listener(|this, _: &crate::NavUp, _w, cx| {
                 this.nav_up(false);
+                this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::NavDown, _w, cx| {
                 this.nav_down(false);
+                this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::ExtendUp, _w, cx| {
                 this.nav_up(true);
+                this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::ExtendDown, _w, cx| {
                 this.nav_down(true);
+                this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::NavHome, _w, cx| {
                 this.nav_home(false);
+                this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::NavEnd, _w, cx| {
                 this.nav_end(false);
+                this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::NavPageUp, _w, cx| {
                 this.nav_page(false, false);
+                this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::NavPageDown, _w, cx| {
                 this.nav_page(true, false);
+                this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::OpenSelected, _w, cx| {
                 this.open_cursor();
+                this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::SelectAllItems, _w, cx| {
@@ -573,19 +762,19 @@ impl Render for App {
             }))
             .on_action(cx.listener(|this, _: &crate::ViewModeDetails, _w, cx| {
                 this.process_actions(vec![Action::SetViewMode(ViewMode::Details)]);
-                cx.notify();
+                this.flush_dirty_panes(cx);
             }))
             .on_action(cx.listener(|this, _: &crate::ViewModeGrid, _w, cx| {
                 this.process_actions(vec![Action::SetViewMode(ViewMode::Grid)]);
-                cx.notify();
+                this.flush_dirty_panes(cx);
             }))
             .on_action(cx.listener(|this, _: &crate::ViewModeList, _w, cx| {
                 this.process_actions(vec![Action::SetViewMode(ViewMode::List)]);
-                cx.notify();
+                this.flush_dirty_panes(cx);
             }))
             .on_action(cx.listener(|this, _: &crate::ViewModeMiller, _w, cx| {
                 this.process_actions(vec![Action::SetViewMode(ViewMode::Miller)]);
-                cx.notify();
+                this.flush_dirty_panes(cx);
             }))
             .on_action(cx.listener(|this, _: &crate::ZoomIn, _w, cx| {
                 this.process_actions(vec![crate::input::action::Action::ZoomIn]);
@@ -606,6 +795,12 @@ impl Render for App {
             .capture_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                 if this.handle_global_command_shortcut_key(ev, window, cx) {
                     cx.stop_propagation();
+                    // Command shortcuts (selection.next/previous/etc.) mutate a pane's
+                    // TabState directly and have no `cx` of their own — without this the
+                    // focused pane's `.cached()` file view never lands in `dirty_views`,
+                    // so keyboard nav appears to "lag" until an unrelated repaint catches
+                    // the accumulated cursor moves up.
+                    this.notify_pane(this.state.focused_tile, cx);
                     cx.notify();
                     return;
                 }
@@ -650,6 +845,7 @@ impl Render for App {
             }))
             .on_action(cx.listener(|this, _: &crate::CloseOverlays, _w, cx| {
                 this.process_actions(vec![Action::CloseOverlays]);
+                this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
             // FASE D: pane structure.
@@ -777,6 +973,15 @@ impl Render for App {
             }))
             .on_action(
                 cx.listener(|this, _: &gpui_component::input::Paste, _w, cx| {
+                    if this
+                        .state
+                        .active_tab_data()
+                        .map_or(false, |t| t.location.is_archive())
+                    {
+                        this.toast_error(rust_i18n::t!("root_paste_archive_error").into());
+                        cx.notify();
+                        return;
+                    }
                     let dest = this.state.active_tab_data().and_then(|t| {
                         // Local tab: use the real filesystem dir.
                         if let Some(p) = t.location.fs_dir() {
@@ -798,7 +1003,7 @@ impl Render for App {
             )
             // Custom title bar: reserve the same vertical space the old Dock shell
             // expected, so panes don't run under the window controls.
-            .child({
+            .children(self.state.settings.show_titlebar.then(|| {
                 let icon_dim = cx.theme().muted_foreground;
                 let is_max = window.is_maximized();
                 h_flex()
@@ -807,7 +1012,17 @@ impl Render for App {
                     .h(px(10.))
                     .items_center()
                     .px(px(4.))
+                    .relative()
                     .window_control_area(WindowControlArea::Drag)
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right(px(78.))
+                            .h(px(22.))
+                            .window_control_area(WindowControlArea::Drag),
+                    )
                     .child(div().flex_1())
                     .child(
                         h_flex()
@@ -825,7 +1040,14 @@ impl Render for App {
                                     .items_center()
                                     .justify_center()
                                     .hover(|s| s.bg(hsla(0., 0., 0.5, 0.10)))
-                                    .window_control_area(WindowControlArea::Min)
+                                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                        window.prevent_default();
+                                        cx.stop_propagation();
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        cx.stop_propagation();
+                                        window.minimize_window();
+                                    })
                                     .child(icon(AtlasIcon::Minus, 7.0, icon_dim)),
                             )
                             // Maximize / Restore
@@ -840,7 +1062,14 @@ impl Render for App {
                                     .items_center()
                                     .justify_center()
                                     .hover(|s| s.bg(hsla(0., 0., 0.5, 0.10)))
-                                    .window_control_area(WindowControlArea::Max)
+                                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                        window.prevent_default();
+                                        cx.stop_propagation();
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        cx.stop_propagation();
+                                        window.zoom_window();
+                                    })
                                     .child(icon(
                                         if is_max {
                                             AtlasIcon::Copy
@@ -863,11 +1092,18 @@ impl Render for App {
                                     .items_center()
                                     .justify_center()
                                     .hover(|s| s.bg(hsla(0., 0.65, 0.42, 0.75)))
-                                    .window_control_area(WindowControlArea::Close)
+                                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                        window.prevent_default();
+                                        cx.stop_propagation();
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        cx.stop_propagation();
+                                        window.remove_window();
+                                    })
                                     .child(icon(AtlasIcon::X, 7.0, icon_dim)),
                             ),
                     )
-            })
+            }))
             .child(
                 h_flex()
                     .flex_1()
@@ -891,9 +1127,7 @@ impl Render for App {
                             .children(sidebar_resizer)
                             .child(center_content),
                     )
-                    .children(inspector_resizer)
-                    // FASE5: inspector panel as the third child of the central row.
-                    .children(inspector),
+                    .children(inspector_container),
             )
             // FASE5: overlay layers (goto bar, palette, settings, paste conflict, …).
             .children(overlays)
@@ -902,6 +1136,7 @@ impl Render for App {
             // FASE C: global rubber-band motor (invisible canvas, registers window-wide
             // mouse move/up listeners that fire even outside the pane hitbox).
             .child(rubber_layer(cx.entity()))
+            .child(ctrl_scroll_layer(cx.entity()))
             .children(self.render_drag_hover_blink(cx))
             .child(drag_hover_layer(cx.entity()))
             // Floating glass search pill (Figma "Window/Search Global"), bottom-center.
@@ -949,11 +1184,14 @@ pub(crate) fn ctrl_scroll(
     ev: &gpui::ScrollWheelEvent,
     pane_id: TabId,
     view: &Entity<App>,
+    window: &mut Window,
     cx: &mut gpui::App,
 ) {
-    if !ev.modifiers.control {
+    if !(ev.modifiers.control || ev.modifiers.platform) {
         return;
     }
+    window.prevent_default();
+    cx.stop_propagation();
     let dy = match ev.delta {
         gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
         gpui::ScrollDelta::Lines(l) => l.y,

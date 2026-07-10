@@ -58,27 +58,71 @@ fn ensure_com_init() {
 /// The caller falls back to the file-type glyph on `None`, matching the
 /// existing behavior for unknown formats.
 pub fn shell_thumbnail(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, usize)> {
-    shell_image(path, max_edge, SIIGBF_THUMBNAILONLY)
+    let (pixels, w, h) = shell_image(path, max_edge, SIIGBF_THUMBNAILONLY)?;
+    Some(trim_black_bars(pixels, w, h, &path.display().to_string()))
 }
 
 /// Extract the best Shell image for a folder: thumbnail/custom icon when Windows
 /// has one, otherwise the Shell icon.
 pub fn shell_thumbnail_or_icon(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, usize)> {
-    let (mut pixels, w, h) = shell_image(path, max_edge, 0)?;
+    let (pixels, w, h) = shell_image_from_parsing_name(&path.to_string_lossy(), max_edge, 0)?;
+    Some(clean_shell_image(pixels, w, h, &path.display().to_string()))
+}
+
+/// Extract the Shell icon for a virtual shell object such as Recycle Bin.
+#[cfg(target_os = "windows")]
+pub fn shell_virtual_icon(parsing_name: &str, max_edge: u32) -> Option<(Vec<u8>, usize, usize)> {
+    let (pixels, w, h) = shell_image_from_parsing_name(parsing_name, max_edge, 0)?;
+    Some(clean_shell_image(pixels, w, h, parsing_name))
+}
+
+fn trim_black_bars(pixels: Vec<u8>, w: usize, h: usize, label: &str) -> (Vec<u8>, usize, usize) {
+    let Some(matte) = corner_matte(&pixels, w, h) else {
+        return (pixels, w, h);
+    };
+    let Some((x, y, visible_w, visible_h)) = non_matte_bbox(&pixels, w, h, matte) else {
+        return (pixels, w, h);
+    };
+    let cropped_w = visible_w * 100 <= w * 96;
+    let cropped_h = visible_h * 100 <= h * 96;
+    if !cropped_w && !cropped_h {
+        return (pixels, w, h);
+    }
+    tracing::debug!(
+        path = %label,
+        width = w,
+        height = h,
+        visible_w,
+        visible_h,
+        "shell thumbnail had matte bars; cropped them"
+    );
+    (
+        crop_rgba(&pixels, w, x, y, visible_w, visible_h),
+        visible_w,
+        visible_h,
+    )
+}
+
+fn clean_shell_image(
+    mut pixels: Vec<u8>,
+    w: usize,
+    h: usize,
+    label: &str,
+) -> (Vec<u8>, usize, usize) {
     if strip_black_shell_matte(&mut pixels, w, h) {
         tracing::debug!(
-            path = %path.display(),
+            path = %label,
             width = w,
             height = h,
             "shell thumbnail had opaque black matte; stripped it"
         );
     }
-    if let Some((visible_w, visible_h)) = visible_bbox_size(&pixels, w, h) {
+    if let Some((x, y, visible_w, visible_h)) = visible_bbox(&pixels, w, h) {
         let tiny_w = visible_w * 3 < w;
         let tiny_h = visible_h * 3 < h;
         if tiny_w && tiny_h {
             tracing::debug!(
-                path = %path.display(),
+                path = %label,
                 width = w,
                 height = h,
                 visible_w,
@@ -86,8 +130,62 @@ pub fn shell_thumbnail_or_icon(path: &Path, max_edge: u32) -> Option<(Vec<u8>, u
                 "shell thumbnail visible content is tiny"
             );
         }
+        if (x > 0 || y > 0 || visible_w < w || visible_h < h) && visible_w * visible_h > 0 {
+            pixels = crop_rgba(&pixels, w, x, y, visible_w, visible_h);
+            return (pixels, visible_w, visible_h);
+        }
     }
-    Some((pixels, w, h))
+    (pixels, w, h)
+}
+
+fn corner_matte(pixels: &[u8], w: usize, h: usize) -> Option<[u8; 3]> {
+    if w == 0 || h == 0 || pixels.len() != w * h * 4 {
+        return None;
+    }
+    let samples = [
+        &pixels[0..4],
+        &pixels[(w - 1) * 4..(w - 1) * 4 + 4],
+        &pixels[(h - 1) * w * 4..(h - 1) * w * 4 + 4],
+        &pixels[((h - 1) * w + w - 1) * 4..((h - 1) * w + w - 1) * 4 + 4],
+    ];
+    let mut r = 0usize;
+    let mut g = 0usize;
+    let mut b = 0usize;
+    for px in samples {
+        if px[3] < 240 {
+            return None;
+        }
+        r += px[0] as usize;
+        g += px[1] as usize;
+        b += px[2] as usize;
+    }
+    Some([(r / 4) as u8, (g / 4) as u8, (b / 4) as u8])
+}
+
+fn non_matte_bbox(
+    pixels: &[u8],
+    w: usize,
+    h: usize,
+    matte: [u8; 3],
+) -> Option<(usize, usize, usize, usize)> {
+    let mut min_x = w;
+    let mut min_y = h;
+    let mut max_x = 0usize;
+    let mut max_y = 0usize;
+    let mut found = false;
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y * w + x) * 4;
+            if !is_matte_pixel(&pixels[idx..idx + 4], matte) {
+                found = true;
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+    found.then_some((min_x, min_y, max_x - min_x + 1, max_y - min_y + 1))
 }
 
 fn strip_black_shell_matte(pixels: &mut [u8], w: usize, h: usize) -> bool {
@@ -136,7 +234,14 @@ fn is_opaque_black(px: &[u8]) -> bool {
     px[3] >= 240 && px[0] <= 8 && px[1] <= 8 && px[2] <= 8
 }
 
-fn visible_bbox_size(pixels: &[u8], w: usize, h: usize) -> Option<(usize, usize)> {
+fn is_matte_pixel(px: &[u8], matte: [u8; 3]) -> bool {
+    px[3] >= 240
+        && px[0].abs_diff(matte[0]) <= 24
+        && px[1].abs_diff(matte[1]) <= 24
+        && px[2].abs_diff(matte[2]) <= 24
+}
+
+fn visible_bbox(pixels: &[u8], w: usize, h: usize) -> Option<(usize, usize, usize, usize)> {
     let mut min_x = w;
     let mut min_y = h;
     let mut max_x = 0usize;
@@ -154,15 +259,32 @@ fn visible_bbox_size(pixels: &[u8], w: usize, h: usize) -> Option<(usize, usize)
             }
         }
     }
-    found.then_some((max_x - min_x + 1, max_y - min_y + 1))
+    found.then_some((min_x, min_y, max_x - min_x + 1, max_y - min_y + 1))
+}
+
+fn crop_rgba(pixels: &[u8], w: usize, x: usize, y: usize, crop_w: usize, crop_h: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(crop_w * crop_h * 4);
+    for row in y..y + crop_h {
+        let start = (row * w + x) * 4;
+        let end = start + crop_w * 4;
+        out.extend_from_slice(&pixels[start..end]);
+    }
+    out
 }
 
 fn shell_image(path: &Path, max_edge: u32, flags: i32) -> Option<(Vec<u8>, usize, usize)> {
+    shell_image_from_parsing_name(&path.to_string_lossy(), max_edge, flags)
+}
+
+fn shell_image_from_parsing_name(
+    parsing_name: &str,
+    max_edge: u32,
+    flags: i32,
+) -> Option<(Vec<u8>, usize, usize)> {
     ensure_com_init();
 
     // Encode path as null-terminated UTF-16 for the Shell API.
-    let wide: Vec<u16> = path
-        .to_string_lossy()
+    let wide: Vec<u16> = parsing_name
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect();

@@ -12,6 +12,11 @@ use crate::settings::{Settings, ViewMode};
 use crate::tab::{LoadState, TabState};
 
 pub enum BgResult {
+    DirListPreview {
+        tab: TabId,
+        op_id: u64,
+        entries: Vec<FileEntry>,
+    },
     DirListed {
         tab: TabId,
         op_id: u64,
@@ -222,7 +227,7 @@ pub enum BgResult {
     #[cfg(feature = "cloud")]
     RemoteChanged {
         id: crate::cloud_model::RemoteId,
-        path: String,
+        paths: Vec<String>,
     },
 }
 
@@ -365,13 +370,15 @@ impl AppState {
             Some(Tile::Pane(p)) if p.view_mode == ViewMode::Miller
         );
         if is_miller {
-            return ts
-                .miller
-                .columns
-                .get(ts.miller.focused)
-                .and_then(|c| c.entries.get(c.primary_selected()?))
-                .map(|e| vec![e.path.clone()])
-                .unwrap_or_default();
+            let Some(col) = ts.miller.columns.get(ts.miller.focused) else {
+                return Vec::new();
+            };
+            let mut selected: Vec<usize> = col.selection.selected.iter().copied().collect();
+            selected.sort_unstable();
+            return selected
+                .into_iter()
+                .filter_map(|i| col.entries.get(i).map(|e| e.path.clone()))
+                .collect();
         }
         let mut selected: Vec<usize> = ts.selection.selected.iter().copied().collect();
         selected.sort_unstable();
@@ -459,7 +466,7 @@ impl AppState {
     }
 
     /// Restore from a persisted tree. Returns (state, `first_pane_to_load`).
-    pub fn from_tree(tree: Tree<TabData>, settings: Settings) -> (Self, TileId) {
+    pub fn from_tree(mut tree: Tree<TabData>, settings: Settings) -> (Self, TileId) {
         // Collect all Pane leaf IDs to initialize tab_states
         let mut tab_states = HashMap::new();
         let mut first_tile = None;
@@ -474,6 +481,7 @@ impl AppState {
         }
 
         let focused = first_tile.unwrap_or(TileId(0));
+        tree.make_active(|id, _| id == focused);
 
         let state = Self::build(tree, focused, tab_states, settings);
         (state, focused)

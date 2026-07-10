@@ -5,13 +5,13 @@ edition = "2021"
 license = "AGPL-3.0-or-later"
 
 [features]
-# Cloud / rclone backend (mirrors the binary's `cloud` feature).
+# Host-side virtual-provider API.
 cloud = [
-    "dep:sha2",
     "dep:async-trait",
-    "dep:futures-util",
     "atlas-model/cloud",
 ]
+# rclone implementation used only by the external Cloud extension.
+cloud-backend = ["cloud", "dep:futures-util"]
 rar = ["dep:unrar"]
 sevenz = ["dep:sevenz-rust2"]
 
@@ -64,13 +64,15 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 
 # --- cloud feature (optional) ---
-sha2 = { version = "0.10", optional = true }
+sha2 = "0.10"
 async-trait = { version = "0.1", optional = true }
 futures-util = { version = "0.3", default-features = false, optional = true }
-extism = "1.0.1"
 sevenz-rust2 = { version = "0.21.0", optional = true }
 tempfile = "3"
 calamine = "0.26"
+
+[target.'cfg(windows)'.dependencies]
+atlas-win-space = { path = "../atlas-win-space" }
 
 [dev-dependencies]
 

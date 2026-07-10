@@ -10,24 +10,19 @@
 //! DockArea drives invalidation. Avoid observing every `App` repaint here: doing so
 //! invalidates every file panel on each app notify and makes window movement stutter.
 
-use crate::app::{App as AtlasApp, PaneAnimation, PaneSignal};
+use crate::app::{App as AtlasApp, PaneSignal};
 use crate::input::action::Action;
 use crate::ui::icons::{icon, AtlasIcon};
-use crate::ui::motion;
 use crate::ui::tooltips::shortcut_tooltip;
 use atlas_core::util::display::display_name;
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
 use gpui::{
-    div, px, AnimationExt, AnyView, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    IntoElement, MouseButton, Render, SharedString, StyleRefinement, WeakEntity, Window,
+    div, px, AnyView, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
+    MouseButton, Render, SharedString, StyleRefinement, WeakEntity, Window,
 };
 use gpui_component::dock::{Panel, PanelEvent, PanelInfo, PanelState};
 use gpui_component::{h_flex, ActiveTheme as _, ElementExt as _, StyledExt as _};
-
-fn animation_key(prefix: &str, pane_id: TabId, animation: PaneAnimation) -> SharedString {
-    motion::keyed(prefix, pane_id.0, (animation.kind, animation.started))
-}
 
 pub struct FilePanel {
     /// Weak handle to the orchestrator that owns `AppState`.
@@ -101,17 +96,11 @@ impl Panel for FilePanel {
     }
 
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (label, animation, tex) = self
+        let (label, tex) = self
             .app
             .upgrade()
             .map(|a| {
                 let app = a.read(cx);
-                let anim = if app.state.settings.disable_animations {
-                    None
-                } else {
-                    app.pane_animation_for(self.pane_id)
-                };
-
                 let active_theme = app.state.profiles.active().theme.as_str();
                 let windows_theme = crate::ui::icons::is_windows_theme(active_theme);
 
@@ -129,16 +118,14 @@ impl Panel for FilePanel {
                     None
                 };
 
-                (label, anim, tex)
+                (label, tex)
             })
-            .unwrap_or_else(|| (rust_i18n::t!("fallback_tab_title").to_string(), None, None));
+            .unwrap_or_else(|| (rust_i18n::t!("fallback_tab_title").to_string(), None));
         let pane_id = self.pane_id;
         let app = self.app.clone();
         let muted = cx.theme().muted_foreground;
         let hover_bg = cx.theme().border.opacity(0.45);
         let danger = cx.theme().danger;
-        let accent = cx.theme().accent;
-
         let title = h_flex()
             .id(SharedString::from(format!("file-tab-label-{}", pane_id.0)))
             .relative()
@@ -188,24 +175,7 @@ impl Panel for FilePanel {
                     }),
             );
 
-        if let Some(animation) = animation {
-            let settle_secs = motion::PANE_SPRING.settle().as_secs_f32();
-            title
-                .with_animation(
-                    animation_key("file-tab-title-intro", pane_id, animation),
-                    motion::linear_anim(motion::PANE_SPRING.settle()),
-                    move |this, t| {
-                        let s = motion::PANE_SPRING.value(t * settle_secs);
-                        let inset = 8.0 * (1.0 - s);
-                        this.opacity(s.clamp(0.0, 1.0))
-                            .ml(px(inset))
-                            .bg(accent.opacity(0.12 * (1.0 - s).clamp(0.0, 1.0)))
-                    },
-                )
-                .into_any_element()
-        } else {
-            title.into_any_element()
-        }
+        title.into_any_element()
     }
 
     fn title_suffix(
@@ -263,21 +233,12 @@ impl Panel for FilePanel {
 }
 
 impl Render for FilePanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let pane_id = self.pane_id;
         crate::perf::count("render.file_panel");
         let _perf = crate::perf::span_detail("file_panel.render", || format!("pane={}", pane_id.0));
         match self.app.upgrade() {
-            Some(app) => {
-                let animation = {
-                    let app = app.read(cx);
-                    (!app.state.settings.disable_animations)
-                        .then(|| app.pane_animation_for(pane_id))
-                        .flatten()
-                        .filter(|animation| {
-                            matches!(animation.kind, crate::app::PaneAnimationKind::NewTab)
-                        })
-                };
+            Some(_app) => {
                 let content = AnyView::from(self.content.clone())
                     .cached(StyleRefinement::default().v_flex().size_full());
                 let bounds_app = self.app.clone();
@@ -296,17 +257,7 @@ impl Render for FilePanel {
                         }
                     });
 
-                if let Some(animation) = animation {
-                    panel
-                        .with_animation(
-                            animation_key("file-pane-motion", pane_id, animation),
-                            motion::animation(motion::PANEL_MS),
-                            |this, t| this.opacity(0.30 + 0.70 * t),
-                        )
-                        .into_any_element()
-                } else {
-                    panel.into_any_element()
-                }
+                panel.into_any_element()
             }
             None => div().into_any_element(),
         }

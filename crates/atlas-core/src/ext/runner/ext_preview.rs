@@ -3,15 +3,8 @@
 
 use std::path::Path;
 
-use atlas_model::preview_cache::{PreviewResult, SlidePreview};
-use serde::Serialize;
-
 use crate::ext::registry::CommandRef;
-
-#[derive(Serialize)]
-pub(crate) struct WasmPayload {
-    pub(crate) paths: Vec<String>,
-}
+use atlas_model::preview_cache::{PreviewResult, SlidePreview};
 
 #[derive(serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -59,10 +52,9 @@ pub(crate) fn run_declarative_preview(cmd: &CommandRef, input: &Path) -> Preview
     let Some((program, args)) = argv.split_first() else {
         return PreviewResult::Error("Preview extension has no command".into());
     };
-    let program = cmd.tools.get(program).map_or_else(
-        || std::path::PathBuf::from(program),
-        std::path::PathBuf::clone,
-    );
+    let Some(program) = super::approved_program(&cmd.tools, program) else {
+        return PreviewResult::Error(format!("preview uses undeclared tool: {program}"));
+    };
     let ran = std::process::Command::new(program).args(args).output();
     let result = match ran {
         Ok(out) if out.status.success() => match cmd.command.output {
@@ -77,25 +69,6 @@ pub(crate) fn run_declarative_preview(cmd: &CommandRef, input: &Path) -> Preview
     };
     let _ = std::fs::remove_file(output);
     result
-}
-
-pub(crate) fn run_wasm_preview(cmd: &CommandRef, input: &Path) -> anyhow::Result<PreviewResult> {
-    let wasm_path = cmd.ext_dir.join("plugin.wasm");
-    let wasm_bytes = std::fs::read(&wasm_path)?;
-    let (tx, _rx) = flume::unbounded();
-    let manager = crate::ext::wasm_manager::WasmPluginManager::new(
-        wasm_bytes,
-        cmd.ext_dir.clone(),
-        tx,
-        cmd.tools.clone(),
-    );
-    let payload = serde_json::json!({
-        "path": input.to_string_lossy(),
-        "extension": input.extension().and_then(|e| e.to_str()).unwrap_or(""),
-        "max_edge": 1600
-    });
-    let json = manager.execute_preview(&payload.to_string())?;
-    ext_preview_from_json(&json).map_err(anyhow::Error::msg)
 }
 
 pub(crate) fn ext_preview_from_json(json: &str) -> Result<PreviewResult, String> {

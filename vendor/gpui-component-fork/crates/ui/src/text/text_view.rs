@@ -45,6 +45,7 @@ pub struct TextView {
     style: StyleRefinement,
     selectable: bool,
     scrollable: bool,
+    scroll_smooth: Option<(f32, f32)>,
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
 }
 
@@ -66,6 +67,7 @@ impl TextView {
             style: StyleRefinement::default(),
             selectable: false,
             scrollable: false,
+            scroll_smooth: None,
             code_block_actions: None,
         }
     }
@@ -81,6 +83,7 @@ impl TextView {
             state: None,
             selectable: false,
             scrollable: false,
+            scroll_smooth: None,
             code_block_actions: None,
         }
     }
@@ -96,6 +99,7 @@ impl TextView {
             state: None,
             selectable: false,
             scrollable: false,
+            scroll_smooth: None,
             code_block_actions: None,
         }
     }
@@ -126,6 +130,12 @@ impl TextView {
     /// This mode is suitable for small content, such as a few lines of text, a label, etc.
     pub fn scrollable(mut self, scrollable: bool) -> Self {
         self.scrollable = scrollable;
+        self
+    }
+
+    /// Configure line-wheel smooth scrolling for scrollable text views.
+    pub fn scroll_smooth(mut self, ease: f32, boost: f32) -> Self {
+        self.scroll_smooth = Some((ease, boost));
         self
     }
 
@@ -211,6 +221,9 @@ impl Element for TextView {
 
         let focus_handle = state.read(cx).focus_handle.clone();
         let list_state = state.read(cx).list_state.clone();
+        if let Some((ease, boost)) = self.scroll_smooth {
+            list_state.set_smooth(ease, boost);
+        }
 
         let mut el = div()
             .key_context("TextView")

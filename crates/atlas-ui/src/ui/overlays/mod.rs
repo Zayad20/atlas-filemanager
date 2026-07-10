@@ -54,7 +54,13 @@ impl App {
             );
         }
         if self.state.overlay.show_settings {
-            layers.push(self.render_settings(cx));
+            layers.push(self.render_settings(window, cx));
+        }
+        if self.state.overlay.show_getting_started {
+            layers.push(self.render_getting_started(window, cx));
+        }
+        if self.state.overlay.getting_started_welcome_since.is_some() {
+            layers.push(self.render_getting_started_welcome(window, cx));
         }
         if self.state.ext.show_manager {
             layers.push(self.render_ext_manager(window, cx));
@@ -92,6 +98,9 @@ impl App {
         // Details type-filter overlay. Painted below the right-click menu.
         if self.type_filter_menu.is_some() {
             layers.push(self.render_type_filter_layer(window, cx));
+        }
+        if self.breadcrumb_menu.is_some() {
+            layers.push(self.render_breadcrumb_menu_layer(window, cx));
         }
         if self.size_filter_menu.is_some() {
             layers.push(self.render_size_filter_layer(window, cx));
@@ -134,7 +143,7 @@ impl App {
         let changed = self.sync_palette_query(kind, &input, cx);
         // In content mode, re-run the background grep whenever the query changes.
         if changed && self.state.profiles.active().search_in_content {
-            self.relaunch_content_search();
+            self.relaunch_content_search(cx);
         }
         let spec = self.goto_spec(cx);
         self.palette_panel(spec, &input, window, cx)
@@ -170,6 +179,7 @@ pub(crate) mod add_cloud;
 mod batch_rename;
 mod create_tag;
 mod ext_manager;
+mod getting_started;
 mod properties;
 mod rename_profile;
 #[cfg(feature = "cloud")]

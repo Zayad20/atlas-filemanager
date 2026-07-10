@@ -40,6 +40,7 @@ pub struct App {
     /// Per-pane virtualized-list scroll handles (UI-side), so keyboard nav can
     /// scroll the cursor into view.
     pub(crate) scroll_handles: HashMap<TileId, UniformListScrollHandle>,
+    pub(crate) miller_scroll_handles: HashMap<(TileId, usize), UniformListScrollHandle>,
     /// Runtime filesystem watcher handles keyed by pane tile. Kept out of
     /// `AppState` so model/state does not depend on `fs`.
     pub(crate) watchers: HashMap<TileId, atlas_core::fs::watcher::WatcherHandle>,
@@ -60,7 +61,10 @@ pub struct App {
     pub(crate) ctx_menu_scroll: gpui::ScrollHandle,
     pub(crate) type_filter_scroll: gpui::ScrollHandle,
     pub(crate) settings_scroll: gpui::ScrollHandle,
+    pub(crate) getting_started_theme_scroll: gpui::ScrollHandle,
     pub(crate) ext_manager_scroll: gpui::ScrollHandle,
+    pub(crate) pane_zoom_sliders: HashMap<TileId, Entity<gpui_component::slider::SliderState>>,
+    pub(crate) pane_zoom_slider_subs: HashMap<TileId, gpui::Subscription>,
     /// Runtime extension registry. Kept out of `AppState` because loading it scans
     /// extension folders and PATH.
     pub(crate) ext_registry: atlas_core::ext::Registry,
@@ -80,6 +84,10 @@ pub struct App {
     // FASE6: per-tab image-preview interaction state (scroll=zoom, drag=pan, Space=expand).
     // Pure UI/interaction state, kept out of `AppState` like the other render caches.
     pub(crate) preview_view: HashMap<TileId, PreviewView>,
+    pub(crate) preview_panel_anim_seq: u64,
+    pub(crate) preview_panel_closing: Option<Instant>,
+    pub(crate) last_viewport_size: Option<gpui::Size<gpui::Pixels>>,
+    pub(crate) window_resize_suppress_until: Option<Instant>,
     // Transient: last cursor position while panning the preview image.
     pub(crate) preview_drag: Option<gpui::Point<gpui::Pixels>>,
     /// Code/text editor state for the currently focused tab's preview. `None` when the
@@ -92,6 +100,7 @@ pub struct App {
     pub(crate) tag_picker_input: Option<Entity<InputState>>,
     /// Subscription that notifies on input changes so the tag picker repaints.
     pub(crate) tag_picker_sub: Option<gpui::Subscription>,
+    pub(crate) _rubber_escape_sub: Option<gpui::Subscription>,
     /// Scroll handle for the tag-picker list.
     pub(crate) tag_picker_scroll: gpui::ScrollHandle,
     // Keyboard focus for the active overlay (fuzzy bars / modals capture keys here).
@@ -124,6 +133,7 @@ pub struct App {
     /// `rebuild_dock_center` calls keeps gpui animation state alive on existing panes
     /// so they don't flash when a new split or close restructures the layout.
     pub(crate) file_panel_cache: HashMap<TileId, Entity<crate::ui::pane_panel::FilePanel>>,
+    pub(crate) space_lens: HashMap<TileId, atlas_core::space_lens::SpaceLensState>,
     /// One `PaneTabsView` (tab strip + body) per tabs-like tile, embedded through
     /// `AnyView::cached` (the same pattern Zed uses). Fingerprint invalidation lets
     /// `render_tree` recalculate `pane_tabs_fp` and notify the view only when it
@@ -179,6 +189,8 @@ pub struct App {
     // the active drag intersects its rectangle against them to drive the selection.
     pub(crate) rubber: Option<RubberDrag>,
     pub(crate) row_rects: HashMap<TileId, Vec<(usize, gpui::Bounds<gpui::Pixels>)>>,
+    pub(crate) miller_row_rects: HashMap<(TileId, usize), Vec<(usize, gpui::Bounds<gpui::Pixels>)>>,
+    pub(crate) miller_column_bounds: HashMap<(TileId, usize), gpui::Bounds<gpui::Pixels>>,
     pub(crate) dropzone_selected: HashSet<PathBuf>,
     pub(crate) dropzone_rects: Vec<(PathBuf, gpui::Bounds<gpui::Pixels>)>,
     pub(crate) dropzone_bounds: Option<gpui::Bounds<gpui::Pixels>>,
@@ -189,6 +201,7 @@ pub struct App {
     // the COM vtable can resolve drop positions to the correct pane directory.
     // Kept unconditional so the helper fn compiles on all platforms without cfg noise.
     pub(crate) pending_pane_zones: Vec<crate::dnd::DropZone>,
+    pub(crate) pending_rename: Option<(TileId, PathBuf, bool)>,
     // Native single-line inputs (gpui-component) for the overlays. Created lazily on
     // open, cleared to `None` on close so each open starts empty. Holding the `Entity`
     // here lets the renderer read `.value()` each frame as the source of truth.
@@ -200,9 +213,12 @@ pub struct App {
     pub(crate) batch_replacement_input: Option<Entity<InputState>>,
     /// Native input backing the rename-active-profile dialog.
     pub(crate) rename_profile_input: Option<Entity<InputState>>,
+    pub(crate) getting_started_profile_input: Option<Entity<InputState>>,
     /// Native input backing create/rename tag.
     pub(crate) create_tag_input: Option<Entity<InputState>>,
     pub(crate) renaming_profile_idx: Option<usize>,
+    pub(crate) settings_input: Option<Entity<InputState>>,
+    pub(crate) settings_section: usize,
     pub(crate) ext_manager_input: Option<Entity<InputState>>,
     /// Inputs for the add-remote dialog; created on open, cleared on close.
     #[cfg(feature = "cloud")]
@@ -224,10 +240,13 @@ pub struct App {
     /// which `process_actions` lacks). Starts `true` so the restored profile theme
     /// is applied on first paint.
     pub(crate) theme_dirty: bool,
+    pub(crate) theme_preview_before: Option<String>,
     /// When set, the next render applies `settings.sidebar_width` to the left dock
     /// (per-profile sidebar width). Starts `true` so the restored width is applied
     /// once the dock exists; set again by `switch_profile`.
     pub(crate) sidebar_width_dirty: bool,
+    pub(crate) sidebar_render_width: Option<f32>,
+    pub(crate) sidebar_width_animation: Option<SidebarWidthAnimation>,
 
     // ── Windows OLE drag-and-drop ──────────────────────────────────────────
     // Raw HWND value (isize). Extracted once in App::new from gpui's
@@ -260,6 +279,7 @@ pub struct App {
     pub(crate) ctx_menu_sub: Option<gpui::Subscription>,
     // Monotonic id: stale `Built` events from a previous open are ignored.
     pub(crate) ctx_menu_seq: u64,
+    pub(crate) suppress_next_shell_ctx_menu: bool,
     /// When `NewFolder` is invoked, stores (tile, path) so the FS-watcher result
     /// can auto-select that entry once it appears in the listing.
     pub(crate) pending_select: Option<(TileId, PathBuf)>,
@@ -290,6 +310,12 @@ pub struct App {
     pub(crate) type_filter_input: Option<Entity<InputState>>,
     /// Subscription that notifies on input changes so the overlay repaints.
     pub(crate) type_filter_sub: Option<gpui::Subscription>,
+    /// State for the open breadcrumb-chevron overlay. `None` when closed.
+    pub(crate) breadcrumb_menu: Option<crate::ui::breadcrumb_menu::BreadcrumbMenuState>,
+    /// Search input inside the breadcrumb-chevron overlay.
+    pub(crate) breadcrumb_menu_input: Option<Entity<InputState>>,
+    /// Subscription that notifies on input changes so the overlay repaints.
+    pub(crate) breadcrumb_menu_sub: Option<gpui::Subscription>,
     // ── Details size-filter overlay ───────────────────────────────────────
     /// State for the open size-filter overlay. `None` when closed.
     pub(crate) size_filter_menu: Option<crate::ui::size_filter_menu::SizeFilterMenuState>,
@@ -353,6 +379,35 @@ impl PaneAnimation {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SidebarWidthAnimation {
+    pub(crate) from: f32,
+    pub(crate) to: f32,
+    pub(crate) started: Instant,
+}
+
+impl SidebarWidthAnimation {
+    const TTL: Duration = Duration::from_millis(crate::ui::motion::PANEL_MS);
+
+    pub(crate) fn new(from: f32, to: f32) -> Self {
+        Self {
+            from,
+            to,
+            started: Instant::now(),
+        }
+    }
+
+    pub(crate) fn width(self) -> f32 {
+        let t = (self.started.elapsed().as_secs_f32() / Self::TTL.as_secs_f32()).min(1.0);
+        let e = crate::ui::motion::ease_out_quart(t);
+        self.from + (self.to - self.from) * e
+    }
+
+    pub(crate) fn is_alive(self) -> bool {
+        self.started.elapsed() < Self::TTL
+    }
+}
+
 /// Marker for a pane mid layout transition. The FLIP offsets themselves now
 /// live in the gpui paint-offset patch; this only tracks liveness.
 #[derive(Clone, Copy, Debug)]
@@ -381,7 +436,7 @@ impl DockSplitAnimation {
     // elapsed_ms=160). Con 260ms el pane cerrado quedaba colgado ~150ms como
     // astilla de 0.01 share antes del desmontaje (PANE_CLOSE_FINALIZE es alias
     // de esta constante) — el "segundo movimiento fuera de tiempo" al cerrar.
-    pub(crate) const DURATION: Duration = Duration::from_millis(170);
+    pub(crate) const DURATION: Duration = Duration::from_millis(150);
 
     pub(crate) fn new(to: Vec<f32>, inserted_ix: usize) -> Self {
         if to.is_empty() {
@@ -718,8 +773,10 @@ pub struct RenameEdit {
 /// In-flight rubber-band selection.
 pub struct RubberDrag {
     pub(crate) target: RubberTarget,
+    pub(crate) target_bounds: gpui::Bounds<gpui::Pixels>,
     pub(crate) origin: gpui::Point<gpui::Pixels>,
     pub(crate) current: gpui::Point<gpui::Pixels>,
+    pub(crate) content_origin: gpui::Point<gpui::Pixels>,
     /// Selection before the drag began (kept when Ctrl/Cmd makes the drag additive).
     pub(crate) base: HashSet<usize>,
     pub(crate) dropzone_base: HashSet<PathBuf>,
@@ -732,6 +789,7 @@ pub struct RubberDrag {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RubberTarget {
     Pane(TileId),
+    MillerColumn(TileId, usize),
     Dropzone,
 }
 
@@ -862,6 +920,11 @@ impl App {
             .filter(|animation| animation.is_alive())
     }
 
+    pub(crate) fn suppress_window_resize_animations(&self) -> bool {
+        self.window_resize_suppress_until
+            .is_some_and(|until| Instant::now() < until)
+    }
+
     pub(crate) fn prune_pane_animations(&mut self) {
         self.pane_animations
             .retain(|_, animation| animation.is_alive());
@@ -880,7 +943,7 @@ impl App {
     /// (Re)launch the goto bar's content search for the current query + directory.
     /// Cancels any in-flight search, bumps the generation so its stale results are
     /// ignored, and spawns a fresh grep that streams matches back via `tx`.
-    pub(crate) fn relaunch_content_search(&mut self) {
+    pub(crate) fn relaunch_content_search(&mut self, cx: &mut gpui::Context<Self>) {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
         if let Some(c) = self.content_cancel.take() {
@@ -901,12 +964,21 @@ impl App {
         self.content_cancel = Some(cancel.clone());
         let gen = self.content_gen;
         let tx = self.tx.clone();
-        atlas_core::search::content::search_content(root, query, cancel, move |path| {
-            let _ = tx.send(BgResult::ContentResults {
-                gen,
-                paths: vec![path],
+        cx.spawn(async move |this, cx| {
+            smol::Timer::after(Duration::from_millis(150)).await;
+            let _ = this.update(cx, |app, _| {
+                if app.content_gen != gen {
+                    return;
+                }
+                atlas_core::search::content::search_content(root, query, cancel, move |path| {
+                    let _ = tx.send(BgResult::ContentResults {
+                        gen,
+                        paths: vec![path],
+                    });
+                });
             });
-        });
+        })
+        .detach();
     }
 
     /// Start an OS (OLE) drag of `paths` / archive items, with stale-source
@@ -1011,11 +1083,19 @@ impl App {
                 let sort_dir = tab_data.sort_dir.clone();
                 self.dispatch_list(tab_id, loc, sort_col, sort_dir);
             }
+            // Miller cascades hold their own listings; without this they'd show
+            // pre-operation contents until the next manual re-init.
+            self.refresh_miller_columns(tab_id);
         }
     }
 
     /// Paths currently selected in the focused tab (for clipboard / delete shortcuts).
     pub(crate) fn selected_paths(&self) -> Vec<PathBuf> {
+        // Miller view keeps its selection per column; the flat `tab.selection`
+        // below would be stale (whatever was selected before switching views).
+        if let Some(paths) = self.miller_focused_selection_paths() {
+            return paths;
+        }
         self.state
             .active_tab_state()
             .map(|tab| {
@@ -1027,6 +1107,36 @@ impl App {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    pub(crate) fn selected_paths_with_target_names(
+        &self,
+    ) -> (Vec<PathBuf>, Option<Vec<std::ffi::OsString>>) {
+        // Miller columns never list recycle-bin payloads, so no target names.
+        if let Some(paths) = self.miller_focused_selection_paths() {
+            return (paths, None);
+        }
+        let Some(tab) = self.state.active_tab_state() else {
+            return (Vec::new(), None);
+        };
+        let entries: Vec<_> = tab
+            .selection
+            .selected
+            .iter()
+            .filter_map(|idx| tab.entries.get(*idx))
+            .collect();
+        let paths = entries.iter().map(|entry| entry.path.clone()).collect();
+        let names: Option<Vec<_>> = entries
+            .iter()
+            .map(|entry| {
+                entry
+                    .recycle_info
+                    .as_ref()
+                    .and_then(|info| info.original_path.file_name())
+                    .map(std::ffi::OsStr::to_os_string)
+            })
+            .collect();
+        (paths, names)
     }
 
     /// Get-or-create the virtualized-list scroll handle for a pane.
@@ -1043,6 +1153,11 @@ impl App {
     /// maps `(current_pos, len)` to the new visible position. `extend` grows the
     /// selection from the anchor (Shift); otherwise it becomes a single selection.
     fn nav_apply(&mut self, target: impl Fn(usize, usize) -> usize, extend: bool) {
+        // Miller view: move the cursor inside the focused column instead of the
+        // hidden flat listing. (extend/Shift ignored there — single selection.)
+        if self.miller_nav_apply(&target) {
+            return;
+        }
         let tile = self.state.focused_tile;
         let next_pos = {
             let Some(ts) = self.state.tab_states.get_mut(&tile) else {
@@ -1124,14 +1239,45 @@ impl App {
         );
     }
 
-    /// Open (or navigate into) the item under the keyboard cursor.
+    pub(crate) fn select_first_visible(&mut self, tile: TileId) {
+        let Some(ts) = self.state.tab_states.get_mut(&tile) else {
+            return;
+        };
+        ts.selection.clear();
+        let Some(&idx) = ts.visible_indices().first() else {
+            return;
+        };
+        ts.selection.selected.insert(idx);
+        ts.selection.keyboard_cursor = Some(idx);
+        ts.selection.selection_anchor = Some(idx);
+        ts.selection.last_clicked_index = Some(idx);
+        ts.selection.scroll_to_selected = true;
+    }
+
+    /// Open (or navigate into) the item under the keyboard cursor. With more than
+    /// one item selected, open every selected item instead of just the cursor —
+    /// matches Explorer's Enter-on-multi-select behavior (each launches with its
+    /// default app / folders open in a new window) rather than silently dropping
+    /// the rest of the selection.
     pub(crate) fn open_cursor(&mut self) {
+        if self.miller_open_cursor() {
+            return;
+        }
         let tile = self.state.focused_tile;
-        let idx = self.state.tab_states.get(&tile).and_then(|ts| {
-            ts.selection
-                .keyboard_cursor
-                .or_else(|| ts.selection.selected.iter().next().copied())
-        });
+        let Some(ts) = self.state.tab_states.get(&tile) else {
+            return;
+        };
+        if ts.selection.selected.len() > 1 {
+            let paths = self.selected_paths();
+            if !paths.is_empty() {
+                self.spawn_open_files(paths);
+            }
+            return;
+        }
+        let idx = ts
+            .selection
+            .keyboard_cursor
+            .or_else(|| ts.selection.selected.iter().next().copied());
         if let Some(idx) = idx {
             self.process_actions(vec![crate::input::action::Action::Activate { tile, idx }]);
         }
@@ -1161,7 +1307,7 @@ impl App {
         self.activate_tab(children[np]);
     }
 
-    /// Persist all UI state to disk. Called on window close.
+    /// Persist all UI state to disk.
     pub fn save(&self) {
         save_settings(&self.state.settings);
         save_session(&self.state.pane_tree);
@@ -1169,6 +1315,15 @@ impl App {
         atlas_core::util::config::save_ext_enabled(&self.state.ext.enabled);
         #[cfg(feature = "cloud")]
         atlas_core::util::config::save_cloud_remotes(&self.state.cloud.remotes);
+    }
+
+    /// Called when the window is about to close. Persists everything only if
+    /// autosave is on; a disabled toggle means the user wants the last manual/
+    /// theme-triggered save to stick instead of silently overwriting it on exit.
+    pub fn save_on_quit(&self) {
+        if self.state.settings.autosave_session {
+            self.save();
+        }
     }
 
     #[cfg(feature = "cloud")]

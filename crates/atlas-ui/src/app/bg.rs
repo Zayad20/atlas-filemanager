@@ -2,8 +2,10 @@
 #![allow(clippy::too_many_lines)] // reason: cohesive startup/drain kept whole
 
 use atlas_model::layout_tree::{Tile, TileId};
+use atlas_model::overlay::{Toast, ToastKind};
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use super::*;
 use atlas_model::app_state::BgResult;
@@ -134,6 +136,12 @@ impl App {
         !done.is_empty()
     }
 
+    pub(crate) fn tick_toasts(&mut self) -> bool {
+        let before = self.state.overlay.op_errors.len();
+        self.state.overlay.op_errors.retain(toast_alive);
+        before != self.state.overlay.op_errors.len()
+    }
+
     /// Apply every queued background result to state. Returns `true` if at least
     /// one result was processed (i.e. a repaint is warranted).
     /// Drain the Windows OLE drop-target action queue and route payloads to
@@ -162,10 +170,14 @@ impl App {
                 DndEvent::DropIn(p) => p,
                 DndEvent::DragOutMoved { paths } => {
                     // Drag out of Atlas accepted as MOVE by the target: the
-                    // sources go to the trash (recoverable). Files already gone
-                    // surface as visible toasts via delete_files.
+                    // target copied/moved the data; remove only sources that
+                    // still exist. Already-gone paths mean the target optimized
+                    // the move itself.
                     had = true;
-                    self.delete_files(paths, true);
+                    let existing: Vec<_> = paths.into_iter().filter(|p| p.exists()).collect();
+                    if !existing.is_empty() {
+                        self.delete_files(existing, false);
+                    }
                     continue;
                 }
                 DndEvent::Error(msg) => {
@@ -301,6 +313,7 @@ impl App {
             self.clear_committed_dropzone_drag(&p.paths);
             actions.push(Action::Transfer(TransferRequest {
                 sources: p.paths,
+                target_names: None,
                 dest,
                 kind: if vol_effect.is_move() {
                     TransferKind::Move
@@ -417,6 +430,18 @@ impl App {
         };
         for result in results {
             match result {
+                BgResult::DirListPreview {
+                    tab,
+                    op_id,
+                    entries,
+                } => {
+                    if let Some(ts) = self.state.tab_states.get_mut(&tab) {
+                        if op_id == ts.last_nav_op_id && ts.entries.is_empty() {
+                            ts.set_entries(entries.into());
+                            info.notify_panes.push(tab);
+                        }
+                    }
+                }
                 BgResult::DirListed {
                     tab,
                     op_id,
@@ -472,6 +497,38 @@ impl App {
                                 .and_then(|p| ts.entries.iter().position(|e| e.path == p));
                             ts.selection.selection_anchor = ts.selection.keyboard_cursor;
                             ts.selection.last_clicked_index = ts.selection.keyboard_cursor;
+                            if self
+                                .pending_select
+                                .as_ref()
+                                .is_some_and(|(pending_tab, _)| *pending_tab == tab)
+                            {
+                                if let Some((_, pending_path)) = self.pending_select.as_ref() {
+                                    if let Some(idx) =
+                                        ts.entries.iter().position(|e| e.path == *pending_path)
+                                    {
+                                        self.pending_select = None;
+                                        ts.selection.selected.clear();
+                                        ts.selection.selected.insert(idx);
+                                        ts.selection.keyboard_cursor = Some(idx);
+                                        ts.selection.selection_anchor = Some(idx);
+                                        ts.selection.last_clicked_index = Some(idx);
+                                        ts.selection.scroll_to_selected = true;
+                                    }
+                                }
+                            }
+                            // Fresh navigation (not a watcher refresh) landed with no
+                            // selection (no preserved path, no pending_select match) →
+                            // select the first entry so a folder is never entered "blind".
+                            if armed_appear
+                                && ts.selection.selected.is_empty()
+                                && !ts.entries.is_empty()
+                            {
+                                ts.selection.selected.insert(0);
+                                ts.selection.keyboard_cursor = Some(0);
+                                ts.selection.selection_anchor = Some(0);
+                                ts.selection.last_clicked_index = Some(0);
+                                ts.selection.scroll_to_selected = true;
+                            }
                         }
                     }
                     // Borrow of tab_states released — safe to request icons.
@@ -509,6 +566,7 @@ impl App {
                     info.notify_panes.push(tab);
                 }
                 BgResult::DirListError { tab, op_id, error } => {
+                    tracing::warn!(tab = tab.0, op_id, %error, "directory listing failed");
                     if let Some(ts) = self.state.tab_states.get_mut(&tab) {
                         if op_id == ts.last_nav_op_id {
                             ts.load_state = LoadState::Error(error);
@@ -538,6 +596,24 @@ impl App {
                                 self.spawn_list_dir(tile_id, path, col, dir);
                             }
                         }
+                    }
+                    // Miller cascades: re-list any column showing the changed dir.
+                    // only the pane root is watched, so deep-column
+                    // changes from *external* programs still go unseen — per-column
+                    // watchers if that ever matters.
+                    let mut miller_refresh = Vec::new();
+                    for (&tid, ts) in &self.state.tab_states {
+                        for col in &ts.miller.columns {
+                            let Some(dir) = col.location.fs_dir() else {
+                                continue;
+                            };
+                            if Some(dir) == parent.as_deref() || dir == changed_path.as_path() {
+                                miller_refresh.push((tid, col.location.clone()));
+                            }
+                        }
+                    }
+                    for (tid, loc) in miller_refresh {
+                        self.spawn_miller_list(tid, loc);
                     }
                 }
                 BgResult::PreviewReady { tab, path, result } => {
@@ -601,14 +677,7 @@ impl App {
                             ts.filter.clear();
                             ts.search.status = atlas_model::tab::SearchStatus::Ready;
                             ts.search.error = None;
-                            ts.selection.clear();
-                            if !ts.entries.is_empty() {
-                                ts.selection.selected.insert(0);
-                                ts.selection.keyboard_cursor = Some(0);
-                                ts.selection.selection_anchor = Some(0);
-                                ts.selection.last_clicked_index = Some(0);
-                                ts.selection.scroll_to_selected = true;
-                            }
+                            self.select_first_visible(tab);
                         }
                     }
                     info.notify_panes.push(tab);
@@ -653,7 +722,7 @@ impl App {
                                 let existing: Vec<_> =
                                     paths.iter().filter(|p| p.exists()).cloned().collect();
                                 if !existing.is_empty() {
-                                    self.delete_files(existing, true);
+                                    self.delete_files(existing, false);
                                 }
                             }
                             self.state.ops.clipboard = None;
@@ -865,5 +934,36 @@ impl App {
             }
         }
         info
+    }
+}
+
+fn toast_alive(toast: &Toast) -> bool {
+    toast.created_at.elapsed() < toast_ttl(toast.kind)
+}
+
+fn toast_ttl(kind: ToastKind) -> Duration {
+    match kind {
+        ToastKind::Info => Duration::from_secs(4),
+        ToastKind::Error => Duration::from_secs(10),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{toast_alive, Toast, ToastKind};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn toast_lifetimes_match_kind() {
+        assert!(!toast_alive(&Toast {
+            message: String::new(),
+            kind: ToastKind::Info,
+            created_at: Instant::now() - Duration::from_secs(5),
+        }));
+        assert!(toast_alive(&Toast {
+            message: String::new(),
+            kind: ToastKind::Error,
+            created_at: Instant::now() - Duration::from_secs(5),
+        }));
     }
 }

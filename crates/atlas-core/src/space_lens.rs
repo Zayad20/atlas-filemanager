@@ -132,6 +132,46 @@ fn scan_path(
     scan_generation: Arc<AtomicU64>,
     tx: flume::Sender<ScanSnapshot>,
 ) {
+    #[cfg(target_os = "windows")]
+    {
+        let result = atlas_win_space::scan_ntfs(
+            &root,
+            || scan_generation.load(Ordering::Relaxed) != scan_id,
+            |items, scanned_bytes, scanned_entries, error_count, finished| {
+                let keyed = items
+                    .into_iter()
+                    .map(|item| {
+                        let item = SpaceItem {
+                            path: item.path,
+                            name: item.name,
+                            is_dir: item.is_dir,
+                            size: item.size,
+                        };
+                        (item.path.clone(), item)
+                    })
+                    .collect();
+                send_snapshot(
+                    &tx,
+                    scan_id,
+                    &keyed,
+                    scanned_bytes,
+                    scanned_entries,
+                    error_count,
+                    finished,
+                )
+            },
+        );
+        match result {
+            Ok(()) => return,
+            Err(atlas_win_space::ScanError::Unsupported) if !is_windows_volume_root(&root) => {}
+            Err(_) => {
+                let empty = HashMap::new();
+                let _ = send_snapshot(&tx, scan_id, &empty, 0, 0, 1, true);
+                return;
+            }
+        }
+    }
+
     let threads = std::thread::available_parallelism()
         .map_or(1, usize::from)
         .min(MAX_SCAN_THREADS);
@@ -217,6 +257,16 @@ fn scan_path(
             true,
         );
     }
+}
+
+#[cfg(target_os = "windows")]
+fn is_windows_volume_root(path: &Path) -> bool {
+    let s = path.as_os_str().to_string_lossy();
+    let bytes = s.as_bytes();
+    bytes.len() == 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
 }
 
 fn send_snapshot(

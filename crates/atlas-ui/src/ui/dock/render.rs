@@ -13,6 +13,7 @@ use crate::ui::icons::{icon, is_windows_theme, theme_icon, AtlasIcon};
 use crate::ui::pane_panel::FilePanel;
 use atlas_core::util::display::display_name;
 use atlas_model::layout_tree::{Container, LinearDir, Tile, TileId};
+use atlas_model::location::Location;
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug)]
@@ -79,7 +80,7 @@ fn split_drop_zone(kind: AtlasIcon) -> gpui::Div {
                 .justify_center()
                 .child(
                     div()
-                        .size(px(58.))
+                        .size(crate::ui::rem_px(58.))
                         .rounded(px(10.))
                         .border_1()
                         .border_color(gpui::hsla(0.58, 0.84, 0.58, 0.78))
@@ -381,8 +382,11 @@ impl App {
         // whose bounds changed (measured in release: ~17ms with 10-14 panes, ~28ms
         // with 20+). The older sibling-count gate penalized same-direction splits
         // even with few panes; the real cost depends on total invalidated panes.
-        let max_animated_panes = if cfg!(debug_assertions) { 8 } else { 12 };
-        if self.file_panel_cache.len() > max_animated_panes {
+        let max_animated_panes = if cfg!(debug_assertions) { 4 } else { 6 };
+        let max_animated_siblings = if cfg!(debug_assertions) { 6 } else { 8 };
+        if self.file_panel_cache.len() > max_animated_panes
+            || final_shares.len() > max_animated_siblings
+        {
             self.dock_split_animations.remove(&id);
             return final_shares;
         }
@@ -463,15 +467,22 @@ impl App {
                 hash_instant(&mut h, anim.started);
             }
         }
-        // Global state that changes chrome: theme, glass, Alt overlay for alt-drag
+        // Global state that changes chrome, Alt overlay for alt-drag
         // drag, and active drag state for body drop zones.
         self.state.profiles.active().theme.hash(&mut h);
-        self.state.settings.mica.hash(&mut h);
         self.state.settings.disable_animations.hash(&mut h);
+        self.state.settings.dim_inactive_panes.hash(&mut h);
+        if self.state.settings.dim_inactive_panes {
+            self.state.focused_tile.0.hash(&mut h);
+        }
         window.modifiers().alt.hash(&mut h);
         cx.has_active_drag().hash(&mut h);
         self.state.dragging_pane.map(|p| p.0).hash(&mut h);
         self.state.drag_pending.hash(&mut h);
+        self.rename_edit
+            .as_ref()
+            .map(|edit| edit.pane.0)
+            .hash(&mut h);
         h.finish()
     }
 
@@ -516,15 +527,15 @@ impl App {
         };
         let active_theme = self.state.profiles.active().theme.as_str();
         let figma_glass = active_theme == "Atlas Figma Glass";
-        let windows_glass = active_theme == "Atlas Windows Glass"
-            || (active_theme == "Atlas Windows" && self.state.settings.mica);
+        let windows_glass = active_theme == "Atlas Windows Glass";
+        let glass_theme = active_theme.ends_with(" Glass") || active_theme == "Atlas Frost";
         let panel_bg = if figma_glass {
             glass_fill()
         } else if windows_glass {
             cx.theme().secondary
         } else if is_windows_theme(active_theme) {
             gpui::hsla(0., 0., 1., 0.20)
-        } else if self.state.settings.mica {
+        } else if glass_theme {
             backdrop_tint(cx.theme().secondary, 0.06)
         } else {
             backdrop_tint(cx.theme().secondary, 0.24)
@@ -535,6 +546,10 @@ impl App {
             .min_w(px(0.))
             .min_h(px(0.))
             .overflow_hidden()
+            .when(
+                self.state.settings.dim_inactive_panes && self.state.focused_tile != active_id,
+                |s| s.opacity(0.65),
+            )
             .when(figma_glass, |s| s.glass_surface(panel_bg))
             .when(!figma_glass, |s| {
                 s.rounded(cx.theme().radius_lg)
@@ -636,13 +651,13 @@ impl App {
         let accent = cx.theme().accent;
         let active_theme = self.state.profiles.active().theme.as_str();
         let figma_glass = active_theme == "Atlas Figma Glass";
-        let windows_glass = active_theme == "Atlas Windows Glass"
-            || (active_theme == "Atlas Windows" && self.state.settings.mica);
+        let windows_glass = active_theme == "Atlas Windows Glass";
+        let glass_theme = active_theme.ends_with(" Glass") || active_theme == "Atlas Frost";
         let tab_bar_bg = if figma_glass {
             glass_fill()
         } else if windows_glass {
             cx.theme().tab_bar
-        } else if self.state.settings.mica {
+        } else if glass_theme {
             backdrop_tint(cx.theme().tab_bar, 0.06)
         } else {
             backdrop_tint(cx.theme().tab_bar, 0.16)
@@ -651,7 +666,7 @@ impl App {
             glass_chip_fill()
         } else if windows_glass {
             cx.theme().tab_active
-        } else if self.state.settings.mica {
+        } else if glass_theme {
             backdrop_tint(cx.theme().tab_active, 0.12)
         } else {
             backdrop_tint(cx.theme().tab_active, 0.22)
@@ -673,10 +688,10 @@ impl App {
         let close_icon = if windows_theme { 11.0 } else { 10.0 };
         let app = cx.entity();
         let mut strip = h_flex()
-            .h(px(strip_h))
+            .h(crate::ui::rem_px(strip_h))
             .min_w(px(0.))
             .items_center()
-            .gap(px(4.))
+            .gap(crate::ui::rem_px(4.))
             .px_2()
             .bg(tab_bar_bg)
             .rounded_tl(px(12.0))
@@ -685,21 +700,52 @@ impl App {
             .border_color(border.opacity(0.42));
 
         for pane_id in children {
-            let (label, path) = self
+            let (label, path, tag_color, is_recycle_bin) = self
                 .tab_data_for(pane_id)
                 .map(|t| {
+                    let is_recycle_bin = t.location == Location::RecycleBin;
+                    let tag_color = match &t.location {
+                        Location::Tag(id) => Some(
+                            self.state
+                                .tag_cache
+                                .def(*id)
+                                .map_or([128, 128, 128], |def| def.color),
+                        ),
+                        _ => None,
+                    };
+                    let label = match &t.location {
+                        Location::Tag(id) => self.state.tag_cache.def(*id).map_or_else(
+                            || display_name(&t.location.display_path()),
+                            |def| def.name.to_string(),
+                        ),
+                        _ => display_name(&t.location.display_path()),
+                    };
                     (
-                        display_name(&t.location.display_path()),
+                        label,
                         t.location.fs_dir().map(|p| p.to_path_buf()),
+                        tag_color,
+                        is_recycle_bin,
                     )
                 })
-                .unwrap_or_else(|| (rust_i18n::t!("fallback_tab_title").to_string(), None));
+                .unwrap_or_else(|| {
+                    (
+                        rust_i18n::t!("fallback_tab_title").to_string(),
+                        None,
+                        None,
+                        false,
+                    )
+                });
 
             let tex = if windows_theme {
-                path.as_ref().and_then(|p| self.grid_thumbnail(p))
+                if is_recycle_bin {
+                    self.shell_recycle_bin_icon()
+                } else {
+                    path.as_ref().and_then(|p| self.grid_thumbnail(p))
+                }
             } else {
                 None
             };
+            let request_recycle_icon = windows_theme && is_recycle_bin && tex.is_none();
             let is_active = Some(pane_id) == active;
             let animation = (!self.state.settings.disable_animations)
                 .then(|| self.pane_animation_for(pane_id))
@@ -712,34 +758,38 @@ impl App {
             };
             let activate_app = app.clone();
             let close_app = app.clone();
-            let tab_glow = motion.map(|motion| {
-                let (key, color) = match motion {
-                    TabMotion::Opening(started) => (("open", started), accent),
-                    TabMotion::Closing(started) => (("close", started), cx.theme().danger),
-                };
-                div()
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .bottom_0()
-                    .h(px(2.))
-                    .rounded(px(2.))
-                    .bg(color)
-                    .with_animation(
-                        crate::ui::motion::keyed("custom-tab-glow", pane_id.0, key),
-                        crate::ui::motion::animation(crate::ui::motion::PANEL_MS),
-                        move |this, t| this.opacity((1.0 - t).clamp(0.0, 1.0)),
-                    )
-            });
+            let tab_glow = match motion {
+                Some(TabMotion::Opening(started)) => Some(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .h(crate::ui::rem_px(2.))
+                        .rounded(px(2.))
+                        .bg(accent)
+                        .with_animation(
+                            crate::ui::motion::keyed(
+                                "custom-tab-glow",
+                                pane_id.0,
+                                ("open", started),
+                            ),
+                            crate::ui::motion::animation(crate::ui::motion::PANEL_MS),
+                            move |this, t| this.opacity((1.0 - t).clamp(0.0, 1.0)),
+                        ),
+                ),
+                _ => None,
+            };
             let tab = h_flex()
                 .id(SharedString::from(format!("custom-tab-{}", pane_id.0)))
                 .relative()
-                .max_w(px(tab_max_w))
-                .min_w(px(tab_min_w))
-                .h(px(tab_h))
+                .max_w(crate::ui::rem_px(tab_max_w))
+                .min_w(crate::ui::rem_px(tab_min_w))
+                .h(crate::ui::rem_px(tab_h))
                 .items_center()
-                .gap(px(tab_gap))
+                .gap(crate::ui::rem_px(tab_gap))
                 .px_3()
+                .overflow_hidden()
                 .rounded(cx.theme().radius)
                 .cursor_pointer()
                 .bg(if is_active {
@@ -811,7 +861,31 @@ impl App {
                         &app,
                     ))
                 })
-                .when_some(tex, |s, tex| s.child(gpui::img(tex).size(px(16.0))))
+                .when(request_recycle_icon, |s| {
+                    let icon_app = app.clone();
+                    s.on_prepaint(move |_bounds, _window, cx| {
+                        icon_app.update(cx, |this, _cx| {
+                            this.request_shell_recycle_bin_icon();
+                        });
+                    })
+                })
+                .when_some(tex, |s, tex| {
+                    s.child(gpui::img(tex).size(crate::ui::rem_px(16.0)))
+                })
+                .when_some(tag_color, |s, color| {
+                    let rgb = gpui::rgb(
+                        (u32::from(color[0]) << 16)
+                            | (u32::from(color[1]) << 8)
+                            | u32::from(color[2]),
+                    );
+                    s.child(
+                        div()
+                            .flex_none()
+                            .size(crate::ui::rem_px(9.))
+                            .rounded_full()
+                            .bg(rgb),
+                    )
+                })
                 .child(
                     div()
                         .flex_1()
@@ -823,7 +897,7 @@ impl App {
                 )
                 .child(
                     div()
-                        .size(px(close_size))
+                        .size(crate::ui::rem_px(close_size))
                         .rounded(px(5.))
                         .flex()
                         .items_center()
@@ -850,8 +924,18 @@ impl App {
                     crate::ui::motion::animation(crate::ui::motion::PANEL_MS),
                     move |this, t| {
                         let visible = if closing { 1.0 - t } else { t };
-                        this.opacity(0.20 + 0.80 * visible)
-                            .paint_offset(gpui::point(px(0.), px(3.0 * (1.0 - visible))))
+                        let this = this.opacity(0.20 + 0.80 * visible);
+                        let x_offset = if closing {
+                            px(8.0 * t)
+                        } else {
+                            px(8.0 * (1.0 - visible))
+                        };
+                        this.w(crate::ui::rem_px(tab_min_w * visible))
+                            .min_w(crate::ui::rem_px(tab_min_w * visible))
+                            .max_w(crate::ui::rem_px(tab_max_w * visible))
+                            .gap(crate::ui::rem_px(tab_gap * visible))
+                            .px(crate::ui::rem_px(12.0 * visible))
+                            .paint_offset(gpui::point(x_offset, px(0.)))
                     },
                 )
                 .into_any_element()
@@ -866,7 +950,7 @@ impl App {
             strip = strip.child(
                 div()
                     .id(SharedString::from(format!("custom-tab-new-{}", anchor.0)))
-                    .size(px(if windows_theme { 32.0 } else { 24.0 }))
+                    .size(crate::ui::rem_px(if windows_theme { 32.0 } else { 24.0 }))
                     .rounded(px(6.))
                     .flex()
                     .items_center()

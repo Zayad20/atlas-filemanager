@@ -75,7 +75,9 @@ pub fn save_settings(settings: &Settings) {
 }
 
 pub fn load_session() -> Option<atlas_model::layout_tree::Tree<TabData>> {
-    read_opt("session.json")
+    let mut tree = read_opt("session.json")?;
+    normalize_session_wsl_paths(&mut tree);
+    Some(tree)
 }
 
 pub fn save_session(tree: &atlas_model::layout_tree::Tree<TabData>) {
@@ -88,6 +90,21 @@ pub fn load_profiles() -> ProfileManager {
 
 pub fn save_profiles(profiles: &ProfileManager) {
     write_json("profiles.json", profiles);
+}
+
+fn normalize_session_wsl_paths(tree: &mut atlas_model::layout_tree::Tree<TabData>) {
+    for (_, tile) in tree.tiles.iter_mut() {
+        let atlas_model::layout_tree::Tile::Pane(tab) = tile else {
+            continue;
+        };
+        crate::fs::paths::normalize_wsl_location_path(&mut tab.location);
+        for location in &mut tab.history {
+            crate::fs::paths::normalize_wsl_location_path(location);
+        }
+        for location in &mut tab.history_forward {
+            crate::fs::paths::normalize_wsl_location_path(location);
+        }
+    }
 }
 
 /// Per-extension enabled overrides (id → enabled).

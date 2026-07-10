@@ -343,6 +343,7 @@ impl App {
                 kind.state(self).selected_idx = first_item;
             }
         }
+        self.preview_selected_theme(kind, &key_rows, selected_idx);
         // Keyboard nav requested a scroll: keep the selected row in view (the
         // handle applies it on the next layout of the tracked list).
         {
@@ -766,7 +767,7 @@ impl App {
                         }
                         btn_view.update(cx, |this, cx| {
                             this.process_actions(actions);
-                            cx.notify();
+                            this.flush_dirty_panes(cx);
                         });
                     })
                     .into_any_element()
@@ -817,7 +818,7 @@ impl App {
                 let actions = vec![row_action.clone(), row_close.clone()];
                 row_view.update(cx, |this, cx| {
                     this.process_actions(actions);
-                    cx.notify();
+                    this.flush_dirty_panes(cx);
                 });
             })
             .into_any_element()
@@ -851,6 +852,7 @@ impl App {
                 match rows.get(idx) {
                     Some(KeyRow::Item { action, .. }) => {
                         self.process_actions(vec![action.clone(), close_action.clone()]);
+                        self.flush_dirty_panes(cx);
                     }
                     Some(KeyRow::Header(section_id)) => {
                         self.toggle_palette_section(kind, section_id);
@@ -933,6 +935,19 @@ impl App {
                 let state = kind.state(self);
                 state.expanded = !state.expanded;
             }
+        }
+    }
+
+    fn preview_selected_theme(&mut self, kind: PaletteKind, rows: &[KeyRow], selected_idx: usize) {
+        if kind != PaletteKind::Commands {
+            return;
+        }
+        match rows.get(selected_idx) {
+            Some(KeyRow::Item {
+                action: Action::SetTheme(name),
+                ..
+            }) => self.process_actions([Action::PreviewTheme(name.clone())]),
+            _ => self.restore_theme_preview(),
         }
     }
 }

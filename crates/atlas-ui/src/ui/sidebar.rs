@@ -18,20 +18,21 @@ use crate::ui::icons::{atlas_logo, file_type_icon, icon, is_windows_theme, theme
 use crate::ui::root::DraggedFiles;
 #[cfg(all(feature = "cloud", windows))]
 use crate::InstallWinFspForRemote;
+use crate::{
+    OpenPropertiesForPath, OpenSpaceLensForPath, OpenThisPcProperties, SidebarHideSection,
+    SidebarMoveSectionDown, SidebarMoveSectionUp, SidebarNewGlobalTag, SidebarNewProfileTag,
+    SidebarResetSections, SidebarToggleSection,
+};
 #[cfg(feature = "cloud")]
 use crate::{RemoveCloudRemote, StartRenameCloudRemote};
-use crate::{
-    SidebarHideSection, SidebarMoveSectionDown, SidebarMoveSectionUp, SidebarNewGlobalTag,
-    SidebarNewProfileTag, SidebarResetSections, SidebarToggleSection,
-};
 use atlas_model::file_entry::FileKind;
 use atlas_model::location::Location;
 use atlas_model::profiles::{SectionKind, SidebarSection};
 use atlas_model::tag_cache::TagId;
 use gpui::prelude::*;
 use gpui::{
-    auto, div, hsla, img, point, px, relative, Anchor, AnyElement, App, Context, Entity,
-    EventEmitter, FocusHandle, Focusable, Hsla, MouseButton, MouseDownEvent, RenderOnce,
+    auto, div, hsla, img, point, px, relative, Anchor, AnimationExt, AnyElement, App, Context,
+    Entity, EventEmitter, FocusHandle, Focusable, Hsla, MouseButton, MouseDownEvent, RenderOnce,
     SharedString, Styled, WeakEntity, Window,
 };
 use gpui_component::dock::{Panel, PanelControl, PanelEvent};
@@ -39,12 +40,14 @@ use gpui_component::menu::{ContextMenuExt, PopupMenu};
 use gpui_component::popover::{Popover, PopoverState};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::tooltip::Tooltip;
-use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt, Selectable};
+use gpui_component::{h_flex, kbd::Kbd, v_flex, ActiveTheme, ElementExt, Selectable};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 const SCROLLBAR_GUTTER: f32 = 16.0;
+const ATLAS_LAUNCHER_MENU_WIDTH: f32 = 260.0;
+const PROFILE_MENU_WIDTH: f32 = 236.0;
 
 pub struct SidebarPanel {
     app: WeakEntity<AtlasApp>,
@@ -111,10 +114,10 @@ fn profile_menu_panel(
 
     let menu_app = app.clone();
     let mut menu = v_flex()
-        .w(auto())
+        .w(crate::ui::rem_px(PROFILE_MENU_WIDTH))
         .flex_none()
-        .p(px(4.))
-        .gap(px(2.))
+        .p(crate::ui::rem_px(4.))
+        .gap(crate::ui::rem_px(2.))
         .bg(popover_bg)
         .text_sm()
         .text_color(fg)
@@ -158,9 +161,21 @@ fn profile_menu_panel(
         ));
     }
 
-    menu.child(div().h(px(1.)).w_full().mx(px(8.)).my(px(4.)).bg(border))
-        .child(profile_menu_new_row(app, popover, fg, muted, hover))
-        .into_any_element()
+    menu.child(
+        div()
+            .h(px(1.))
+            .w_full()
+            .mx(crate::ui::rem_px(8.))
+            .my(crate::ui::rem_px(4.))
+            .bg(border),
+    )
+    .child(profile_menu_new_row(app, popover, fg, muted, hover))
+    .with_animation(
+        SharedString::from("sidebar-profile-menu-appear"),
+        crate::ui::motion::animation(crate::ui::motion::MICRO_MS),
+        |this, t| this.opacity(t).ml(px(5.0 * (1.0 - t))),
+    )
+    .into_any_element()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -228,7 +243,7 @@ fn profile_menu_profile_row(
         .id(SharedString::from(format!("profile-menu-row-{index}")))
         .group(row_group)
         .w_full()
-        .h(px(30.))
+        .h(crate::ui::rem_px(30.))
         .px_2()
         .gap_2()
         .items_center()
@@ -280,7 +295,7 @@ fn profile_menu_action_button(
     let is_duplicate = id == "duplicate";
     div()
         .id(SharedString::from(format!("profile-menu-row-{index}-{id}")))
-        .size(px(22.))
+        .size(crate::ui::rem_px(22.))
         .flex()
         .items_center()
         .justify_center()
@@ -339,7 +354,7 @@ fn profile_menu_new_row(
     h_flex()
         .id("profile-menu-new")
         .w_full()
-        .h(px(30.))
+        .h(crate::ui::rem_px(30.))
         .px_2()
         .gap_2()
         .items_center()
@@ -349,8 +364,8 @@ fn profile_menu_new_row(
         .hover(move |h| h.bg(hover))
         .child(
             div()
-                .w(px(16.))
-                .h(px(16.))
+                .w(crate::ui::rem_px(16.))
+                .h(crate::ui::rem_px(16.))
                 .flex_none()
                 .child(icon(AtlasIcon::Plus, 14.0, muted)),
         )
@@ -401,7 +416,8 @@ fn atlas_launcher_content(
 
     let menu = v_flex()
         .id("atlas-launcher-menu")
-        .p(px(4.))
+        .w(crate::ui::rem_px(ATLAS_LAUNCHER_MENU_WIDTH))
+        .p(crate::ui::rem_px(4.))
         .bg(popover_bg)
         .border_1()
         .border_color(border)
@@ -410,7 +426,7 @@ fn atlas_launcher_content(
         .text_sm()
         .text_color(fg)
         .occlude()
-        .gap(px(2.))
+        .gap(crate::ui::rem_px(2.))
         .on_prepaint({
             let anchor_app = app.clone();
             move |bounds, _window, cx| {
@@ -432,6 +448,7 @@ fn atlas_launcher_content(
             profiles_open,
             true,
             None,
+            None,
             fg,
             muted,
             accent,
@@ -452,6 +469,9 @@ fn atlas_launcher_content(
             false,
             false,
             Some(Action::ToggleSidebarCollapsed),
+            app_entity
+                .read(cx)
+                .command_shortcut_keystroke("view.sidebar-collapse"),
             fg,
             muted,
             accent,
@@ -468,6 +488,26 @@ fn atlas_launcher_content(
             false,
             false,
             Some(Action::OpenSettings),
+            app_entity
+                .read(cx)
+                .command_shortcut_keystroke("sys.settings"),
+            fg,
+            muted,
+            accent,
+            accent_fg,
+            hover,
+        ))
+        .child(atlas_launcher_row(
+            app.clone(),
+            popover.clone(),
+            "atlas-launcher-goto",
+            AtlasIcon::Search,
+            rust_i18n::t!("cmd_nav_goto_title").to_string(),
+            None,
+            false,
+            false,
+            Some(Action::OpenGotoBar),
+            app_entity.read(cx).command_shortcut_keystroke("nav.goto"),
             fg,
             muted,
             accent,
@@ -484,6 +524,9 @@ fn atlas_launcher_content(
             false,
             false,
             Some(Action::OpenPalette),
+            app_entity
+                .read(cx)
+                .command_shortcut_keystroke("sys.palette"),
             fg,
             muted,
             accent,
@@ -500,6 +543,26 @@ fn atlas_launcher_content(
             false,
             false,
             Some(Action::OpenExtManager),
+            app_entity
+                .read(cx)
+                .command_shortcut_keystroke("ext.manager"),
+            fg,
+            muted,
+            accent,
+            accent_fg,
+            hover,
+        ))
+        .child(atlas_launcher_row(
+            app.clone(),
+            popover.clone(),
+            "atlas-launcher-about",
+            AtlasIcon::House,
+            rust_i18n::t!("settings_about").to_string(),
+            None,
+            false,
+            false,
+            Some(Action::OpenSettingsAbout),
+            None,
             fg,
             muted,
             accent,
@@ -507,8 +570,15 @@ fn atlas_launcher_content(
             hover,
         ));
 
+    let menu = menu.with_animation(
+        SharedString::from("sidebar-atlas-launcher-menu-appear"),
+        crate::ui::motion::animation(crate::ui::motion::MICRO_MS),
+        |this, t| this.opacity(t).mt(px(5.0 * (1.0 - t))),
+    );
+
     div()
         .relative()
+        .w(crate::ui::rem_px(ATLAS_LAUNCHER_MENU_WIDTH))
         .child(menu)
         .when(profiles_open && profiles_anchor.x > px(0.), |s| {
             let submenu = profile_menu_panel(app, popover, cx, true, true);
@@ -534,6 +604,7 @@ fn atlas_launcher_row(
     selected: bool,
     opens_profiles: bool,
     action: Option<Action>,
+    shortcut: Option<gpui::Keystroke>,
     fg: Hsla,
     muted: Hsla,
     accent: Hsla,
@@ -562,9 +633,9 @@ fn atlas_launcher_row(
     let row = h_flex()
         .id(id)
         .w_full()
-        .min_h(px(34.))
+        .min_h(crate::ui::rem_px(34.))
         .px_2()
-        .py(px(5.))
+        .py(crate::ui::rem_px(5.))
         .gap_2()
         .items_center()
         .rounded(px(7.))
@@ -576,6 +647,7 @@ fn atlas_launcher_row(
         .when(!selected, |s| s.hover(move |h| h.bg(hover)))
         .child(icon(glyph, 15.0, row_icon))
         .child(label_col)
+        .when_some(shortcut, |s, shortcut| s.child(Kbd::new(shortcut)))
         .when(opens_profiles, |s| {
             s.child(icon(
                 AtlasIcon::CaretRight,
@@ -605,7 +677,7 @@ fn atlas_launcher_row(
             if let Some(app) = click_app.upgrade() {
                 app.update(cx, |this, cx| {
                     this.process_actions(vec![action.clone()]);
-                    cx.notify();
+                    this.flush_dirty_panes(cx);
                 });
             }
             popover.update(cx, |state, cx| state.dismiss(window, cx));
@@ -618,6 +690,7 @@ fn atlas_launcher_row(
 
 #[derive(IntoElement)]
 struct AtlasLauncherTrigger {
+    app: WeakEntity<AtlasApp>,
     profile_name: String,
     selected: bool,
     collapsed: bool,
@@ -642,38 +715,54 @@ impl Selectable for AtlasLauncherTrigger {
 impl RenderOnce for AtlasLauncherTrigger {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let fill = if self.selected { self.active } else { self.bg };
+        let rename_app = self.app.clone();
         h_flex()
             .id("sidebar-atlas-trigger")
             .w_full()
-            .h(px(34.))
-            .px(px(6.))
-            .gap(px(6.))
+            .h(crate::ui::rem_px(34.))
+            .px(crate::ui::rem_px(6.))
+            .gap(crate::ui::rem_px(6.))
             .items_center()
             .justify_center()
             .rounded(px(9.))
             .bg(fill)
             .hover(move |s| s.bg(self.hover))
             .text_color(self.fg)
-            .child(
-                div()
-                    .size(px(24.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(atlas_logo(if self.collapsed { 22.0 } else { 21.0 })),
+            .on_mouse_down(
+                MouseButton::Left,
+                move |ev: &MouseDownEvent, _window, cx| {
+                    if ev.click_count < 2 {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    if let Some(app) = rename_app.upgrade() {
+                        app.update(cx, |this, cx| {
+                            this.process_actions(vec![Action::OpenRenameProfile]);
+                            cx.notify();
+                        });
+                    }
+                },
             )
+            .when(self.collapsed, |s| {
+                s.child(
+                    div()
+                        .size(crate::ui::rem_px(24.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(atlas_logo(22.0)),
+                )
+            })
             .when(!self.collapsed, |s| {
                 s.justify_start()
-                    .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Atlas"))
-                    .child(icon(AtlasIcon::CaretRight, 11.0, self.muted.opacity(0.78)))
                     .child(
                         div()
-                            .min_w(px(0.))
                             .flex_1()
+                            .font_weight(gpui::FontWeight::BOLD)
                             .truncate()
-                            .text_color(self.muted)
                             .child(self.profile_name),
                     )
+                    .child(icon(AtlasIcon::CaretDown, 11.0, self.muted.opacity(0.78)))
             })
     }
 }
@@ -722,6 +811,9 @@ impl Render for SidebarPanel {
             (t.foreground, t.muted_foreground, t.accent, t.sidebar)
         };
         let active_theme = app.read(cx).state.profiles.active().theme.clone();
+        let (smooth_ease, smooth_boost) =
+            crate::app::scroll_smooth_params(app.read(cx).state.settings.scroll_smoothness);
+        self.scroll.set_smooth(smooth_ease, smooth_boost);
         let windows_theme = is_windows_theme(&active_theme);
         let figma_glass = active_theme == "Atlas Figma Glass";
         // Subtle fills tuned for the light glass surface (Figma item states).
@@ -753,6 +845,7 @@ impl Render for SidebarPanel {
             .appearance(false)
             .anchor(Anchor::TopLeft)
             .trigger(AtlasLauncherTrigger {
+                app: app.downgrade(),
                 profile_name: active_profile_name,
                 selected: false,
                 collapsed: sidebar_collapsed,
@@ -789,7 +882,7 @@ impl Render for SidebarPanel {
             };
             div()
                 .id("sidebar-collapse-toggle")
-                .size(px(30.))
+                .size(crate::ui::rem_px(30.))
                 .flex_none()
                 .flex()
                 .items_center()
@@ -810,7 +903,7 @@ impl Render for SidebarPanel {
         let atlas_header = if sidebar_collapsed {
             h_flex()
                 .w_full()
-                .pb(px(8.))
+                .pb(crate::ui::rem_px(8.))
                 .items_center()
                 .justify_center()
                 .child(atlas_launcher_popover)
@@ -818,16 +911,21 @@ impl Render for SidebarPanel {
         } else {
             h_flex()
                 .w_full()
-                .pb(px(8.))
-                .gap(px(5.))
-                .child(div().flex_1().child(atlas_launcher_popover))
+                .pb(crate::ui::rem_px(8.))
+                .gap(crate::ui::rem_px(5.))
+                // `min_w(0)` overrides flexbox's default `min-width: auto`, which
+                // otherwise refuses to shrink this item below the trigger's natural
+                // content width — without it, a long profile name grows the whole
+                // row past the sidebar and gets hard-clipped upstream instead of
+                // eliding via the trigger's own `.truncate()`.
+                .child(div().flex_1().min_w(px(0.)).child(atlas_launcher_popover))
                 .child(collapse_button)
                 .into_any_element()
         };
         let mut col = v_flex()
             .size_full()
             .p_2()
-            .gap(px(if windows_theme { 3.0 } else { 4.0 }))
+            .gap(crate::ui::rem_px(if windows_theme { 3.0 } else { 4.0 }))
             .when(figma_glass, |s| s.bg(glass_fill()).rounded(px(12.0)))
             .text_color(fg)
             .text_sm()
@@ -902,7 +1000,38 @@ impl Render for SidebarPanel {
                         cx.notify();
                     });
                 }
-            }));
+            }))
+            .on_action(
+                cx.listener(|this, action: &OpenSpaceLensForPath, _window, cx| {
+                    if let Some(app) = this.app.upgrade() {
+                        let path = action.path.clone();
+                        app.update(cx, |app, cx| {
+                            let pane = app.state.focused_tile;
+                            app.process_actions(vec![Action::OpenSpaceLens { pane, path }]);
+                            cx.notify();
+                        });
+                    }
+                }),
+            )
+            .on_action(
+                cx.listener(|_this, action: &OpenPropertiesForPath, _window, _cx| {
+                    let path = action.path.clone();
+                    #[cfg(windows)]
+                    crate::ui::shell_context_menu::show_properties(&path);
+                    #[cfg(not(windows))]
+                    if let Some(app) = _this.app.upgrade() {
+                        app.update(_cx, |app, cx| {
+                            app.open_properties(vec![path]);
+                            cx.notify();
+                        });
+                    }
+                }),
+            )
+            .on_action(
+                cx.listener(|_this, _: &OpenThisPcProperties, _window, _cx| {
+                    crate::ui::shell_context_menu::show_this_pc_properties();
+                }),
+            );
         #[cfg(feature = "cloud")]
         {
             col = col.on_action(
@@ -991,6 +1120,16 @@ impl Render for SidebarPanel {
             if section.hidden {
                 continue;
             }
+            if section.kind == SectionKind::Linux
+                && atlas_core::fs::paths::list_wsl_roots().is_empty()
+            {
+                continue;
+            }
+            if section.kind == SectionKind::Cloud
+                && !app.read(cx).ext_registry.has_sidebar_section("cloud")
+            {
+                continue;
+            }
             col = col.child(section_header(
                 idx,
                 section_count,
@@ -998,6 +1137,7 @@ impl Render for SidebarPanel {
                 &app,
                 muted,
                 hover,
+                cx,
             ));
             if !section.collapsed {
                 col = render_section_body(
@@ -1046,7 +1186,7 @@ impl Render for SidebarPanel {
                     .size_full()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
-                    .pr(px(SCROLLBAR_GUTTER)),
+                    .pr(crate::ui::rem_px(SCROLLBAR_GUTTER)),
             )
             .vertical_scrollbar(&self.scroll);
 
@@ -1115,7 +1255,7 @@ fn sidebar_drop_zone(
 
     let mut grid = h_flex()
         .w(auto())
-        .gap(px(if windows_theme { 14.0 } else { 12.0 }))
+        .gap(crate::ui::rem_px(if windows_theme { 14.0 } else { 12.0 }))
         .items_center();
     for (index, item) in staged.iter().enumerate() {
         let (kind, extension) = staged_file_meta(&item.path);
@@ -1156,10 +1296,10 @@ fn sidebar_drop_zone(
         .id("sidebar-drop-zone")
         .relative()
         .w(auto())
-        .h(px(if count == 0 { 96.0 } else { 148.0 }))
-        .mx(px(8.))
-        .mt(px(4.))
-        .mb(px(6.))
+        .h(crate::ui::rem_px(if count == 0 { 96.0 } else { 148.0 }))
+        .mx(crate::ui::rem_px(8.))
+        .mt(crate::ui::rem_px(4.))
+        .mb(crate::ui::rem_px(6.))
         .overflow_hidden()
         .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, window, cx| {
             cx.stop_propagation();
@@ -1184,13 +1324,13 @@ fn sidebar_drop_zone(
             v_flex()
                 .relative()
                 .size_full()
-                .gap(px(7.))
+                .gap(crate::ui::rem_px(7.))
                 .child(
                     h_flex()
                         .w_full()
                         .px_2()
-                        .pt(px(12.))
-                        .pb(px(4.))
+                        .pt(crate::ui::rem_px(12.))
+                        .pb(crate::ui::rem_px(4.))
                         .gap_1()
                         .items_center()
                         .text_color(muted)
@@ -1200,7 +1340,7 @@ fn sidebar_drop_zone(
                         .child(
                             div()
                                 .id("sidebar-drop-zone-place")
-                                .size(px(22.))
+                                .size(crate::ui::rem_px(22.))
                                 .flex()
                                 .items_center()
                                 .justify_center()
@@ -1226,7 +1366,7 @@ fn sidebar_drop_zone(
                         .child(
                             div()
                                 .id("sidebar-drop-zone-clear")
-                                .size(px(22.))
+                                .size(crate::ui::rem_px(22.))
                                 .flex()
                                 .items_center()
                                 .justify_center()
@@ -1256,7 +1396,8 @@ fn sidebar_drop_zone(
                             .relative()
                             .items_center()
                             .justify_center()
-                            .gap(px(6.))
+                            .px_2()
+                            .gap(crate::ui::rem_px(6.))
                             .rounded(px(8.))
                             .border_1()
                             .border_dashed()
@@ -1266,8 +1407,18 @@ fn sidebar_drop_zone(
                             .child(div().absolute().inset_0().bg(drop_veil))
                             .text_xs()
                             .text_color(muted)
-                            .child(icon(AtlasIcon::TrayArrowDown, 13.0, muted))
-                            .child(rust_i18n::t!("sidebar_drop_zone_hint").to_string()),
+                            .child(div().flex_none().child(icon(
+                                AtlasIcon::TrayArrowDown,
+                                13.0,
+                                muted,
+                            )))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_center()
+                                    .child(rust_i18n::t!("sidebar_drop_zone_hint").to_string()),
+                            ),
                     )
                 })
                 .when(count > 0, |s| {
@@ -1283,7 +1434,7 @@ fn sidebar_drop_zone(
                             .bg(drop_bg)
                             .child(div().absolute().inset_0().bg(drop_base))
                             .child(div().absolute().inset_0().bg(drop_veil))
-                            .p(px(6.))
+                            .p(crate::ui::rem_px(6.))
                             .overflow_x_scrollbar()
                             .child(grid),
                     )
@@ -1389,13 +1540,13 @@ fn drop_zone_item(
         .group(group.clone())
         .relative()
         .flex_none()
-        .w(px(84.))
-        .min_h(px(74.))
-        .p(px(6.))
+        .w(crate::ui::rem_px(84.))
+        .min_h(crate::ui::rem_px(74.))
+        .p(crate::ui::rem_px(6.))
         .flex()
         .flex_col()
         .items_center()
-        .gap(px(5.))
+        .gap(crate::ui::rem_px(5.))
         .rounded(px(8.))
         .cursor_pointer()
         .when(selected, |s| s.bg(accent.opacity(0.18)))
@@ -1449,9 +1600,9 @@ fn drop_zone_item(
         .child(
             div()
                 .absolute()
-                .top(px(3.))
-                .right(px(3.))
-                .size(px(18.))
+                .top(crate::ui::rem_px(3.))
+                .right(crate::ui::rem_px(3.))
+                .size(crate::ui::rem_px(18.))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1495,18 +1646,28 @@ fn drop_zone_preview(
     accent: Hsla,
 ) -> AnyElement {
     let area = div()
-        .w(px(72.))
-        .h(px(44.))
+        .w(crate::ui::rem_px(72.))
+        .h(crate::ui::rem_px(44.))
         .flex()
         .items_center()
         .justify_center();
     match thumb_tex {
         Some(tex) => area
-            .child(img(tex).max_w(px(72.)).max_h(px(44.)).rounded(px(3.)))
+            .child(
+                img(tex)
+                    .max_w(crate::ui::rem_px(72.))
+                    .max_h(crate::ui::rem_px(44.))
+                    .rounded(px(3.)),
+            )
             .into_any_element(),
         None => match icon_tex {
             Some(tex) => area
-                .child(img(tex).max_w(px(38.)).max_h(px(38.)).flex_none())
+                .child(
+                    img(tex)
+                        .max_w(crate::ui::rem_px(38.))
+                        .max_h(crate::ui::rem_px(38.))
+                        .flex_none(),
+                )
                 .into_any_element(),
             None => area
                 .child(file_type_icon(&kind, extension.as_deref(), 38.0))
@@ -1578,6 +1739,7 @@ fn place_sidebar_drop_zone(app: &mut AtlasApp, dest: PathBuf) {
         let effect = crate::dnd::default_effect_for_paths(&internal, &dest);
         actions.push(Action::Transfer(TransferRequest {
             sources: internal,
+            target_names: None,
             dest: dest.clone(),
             kind: if effect.is_move() {
                 TransferKind::Move
@@ -1591,6 +1753,7 @@ fn place_sidebar_drop_zone(app: &mut AtlasApp, dest: PathBuf) {
     if !external.is_empty() {
         actions.push(Action::Transfer(TransferRequest {
             sources: external,
+            target_names: None,
             dest,
             kind: TransferKind::Copy,
             policy: ConflictPolicy::Ask,
@@ -1629,6 +1792,7 @@ fn ph_icon(name: &str) -> AtlasIcon {
         "folder" => AtlasIcon::Folder,
         "cloud" => AtlasIcon::Cloud,
         "hard-drives" => AtlasIcon::HardDrives,
+        "terminal-window" => AtlasIcon::TerminalWindow,
         "caret-down" => AtlasIcon::CaretDown,
         "caret-right" => AtlasIcon::CaretRight,
         "trash" => AtlasIcon::Trash,
@@ -1661,6 +1825,11 @@ fn render_collapsed_sections(
         .collect();
     let mut drew_section = false;
     for section in sections {
+        if section.kind == SectionKind::Cloud
+            && !app.read(cx).ext_registry.has_sidebar_section("cloud")
+        {
+            continue;
+        }
         let before = drew_section;
         let mut section_has_items = false;
         match section.kind {
@@ -1729,11 +1898,18 @@ fn render_collapsed_sections(
                     ));
                 }
                 let rb_active = matches!(current_location, Some(Location::RecycleBin));
+                #[cfg(target_os = "windows")]
+                let rb_shell_tex = windows_theme
+                    .then(|| app.read(cx).shell_recycle_bin_icon())
+                    .flatten();
+                #[cfg(not(target_os = "windows"))]
+                let rb_shell_tex = None;
                 col = col.child(collapsed_virtual_nav_row(
                     SharedString::from("rail-place-recycle-bin"),
                     rust_i18n::t!("sidebar_recycle_bin").to_string(),
                     "trash",
                     Location::RecycleBin,
+                    rb_shell_tex,
                     app,
                     hover,
                     active_bg,
@@ -1796,6 +1972,32 @@ fn render_collapsed_sections(
                     section_has_items = true;
                 }
             }
+            SectionKind::Linux => {
+                let roots = atlas_core::fs::paths::list_wsl_roots();
+                if !roots.is_empty() && before {
+                    col = col.child(collapsed_divider());
+                }
+                for path in roots {
+                    let label = linux_root_label(&path);
+                    let active = current.is_some_and(|c| c == path.as_path());
+                    let shell_tex = sidebar_shell_tex(app, &path, windows_theme, cx);
+                    col = col.child(collapsed_nav_row(
+                        SharedString::from(format!("rail-linux-{}", path.display())),
+                        label,
+                        "terminal-window",
+                        path,
+                        shell_tex,
+                        windows_theme,
+                        app,
+                        hover,
+                        active_bg,
+                        accent,
+                        fg,
+                        active,
+                    ));
+                    section_has_items = true;
+                }
+            }
             SectionKind::Drives => {
                 let drives = atlas_core::fs::mounts::list_drives();
                 if !drives.is_empty() && before {
@@ -1821,9 +2023,7 @@ fn render_collapsed_sections(
             SectionKind::Recent => {
                 let recent: Vec<PathBuf> = app
                     .read(cx)
-                    .state
-                    .settings
-                    .recent_folders
+                    .recent_folders()
                     .iter()
                     .rev()
                     .take(8)
@@ -1859,10 +2059,30 @@ fn render_collapsed_sections(
             SectionKind::Cloud => {
                 #[cfg(feature = "cloud")]
                 {
+                    let native = native_cloud_folders();
                     let remotes: Vec<atlas_model::cloud_model::CloudRemote> =
                         app.read(cx).state.cloud.remotes.clone();
-                    if !remotes.is_empty() && before {
+                    if (!native.is_empty() || !remotes.is_empty()) && before {
                         col = col.child(collapsed_divider());
+                    }
+                    for (label, path) in native {
+                        let active = current.is_some_and(|c| c == path.as_path());
+                        let shell_tex = sidebar_shell_tex(app, &path, windows_theme, cx);
+                        col = col.child(collapsed_nav_row(
+                            SharedString::from(format!("rail-native-cloud-{}", path.display())),
+                            label,
+                            "cloud",
+                            path,
+                            shell_tex,
+                            windows_theme,
+                            app,
+                            hover,
+                            active_bg,
+                            accent,
+                            fg,
+                            active,
+                        ));
+                        section_has_items = true;
                     }
                     for remote in remotes {
                         col = col.child(collapsed_cloud_remote_row(
@@ -1888,7 +2108,7 @@ fn collapsed_divider() -> impl IntoElement {
     div()
         .h(px(1.))
         .w_full()
-        .my(px(6.))
+        .my(crate::ui::rem_px(6.))
         .bg(hsla(0., 0., 1., 0.08))
 }
 
@@ -1916,6 +2136,8 @@ fn collapsed_nav_row(
     let drop_app_external = app.clone();
     let shell_path = path.clone();
     let shell_app = app.clone();
+    let ctx_app = app.clone();
+    let ctx_path = path.clone();
     let icon_color = if active {
         accent
     } else {
@@ -1924,7 +2146,7 @@ fn collapsed_nav_row(
     h_flex()
         .id(id)
         .w_full()
-        .h(px(32.))
+        .h(crate::ui::rem_px(32.))
         .items_center()
         .justify_center()
         .rounded(px(9.))
@@ -1933,7 +2155,10 @@ fn collapsed_nav_row(
         .when(!active, |s| s.hover(|h| h.bg(hover)))
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .child(match shell_tex {
-            Some(tex) => img(tex).size(px(18.0)).flex_none().into_any_element(),
+            Some(tex) => img(tex)
+                .size(crate::ui::rem_px(18.0))
+                .flex_none()
+                .into_any_element(),
             None => theme_icon(ph_icon(icon_name), 17.0, icon_color, windows_theme),
         })
         .on_prepaint(move |_bounds, _window, cx| {
@@ -1981,6 +2206,13 @@ fn collapsed_nav_row(
                 cx.notify();
             });
         })
+        .on_mouse_down(MouseButton::Right, move |ev, window, cx| {
+            ctx_app.update(cx, |this, cx| {
+                this.open_ctx_menu(vec![ctx_path.clone()], ev.position, window, cx);
+                cx.notify();
+            });
+            cx.stop_propagation();
+        })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1989,6 +2221,7 @@ fn collapsed_virtual_nav_row(
     label: String,
     icon_name: &'static str,
     loc: Location,
+    shell_tex: Option<Arc<gpui::RenderImage>>,
     app: &Entity<AtlasApp>,
     hover: Hsla,
     active_bg: Hsla,
@@ -2000,6 +2233,8 @@ fn collapsed_virtual_nav_row(
     let app = app.clone();
     let tooltip = label.clone();
     let hover_id = DragHoverId::Sidebar(id.to_string());
+    let request_recycle_icon = windows_theme && loc == Location::RecycleBin && shell_tex.is_none();
+    let recycle_icon_app = app.clone();
     let icon_color = if active {
         accent
     } else {
@@ -2008,7 +2243,7 @@ fn collapsed_virtual_nav_row(
     h_flex()
         .id(id)
         .w_full()
-        .h(px(32.))
+        .h(crate::ui::rem_px(32.))
         .items_center()
         .justify_center()
         .rounded(px(9.))
@@ -2016,18 +2251,37 @@ fn collapsed_virtual_nav_row(
         .when(active, |s| s.bg(active_bg))
         .when(!active, |s| s.hover(|h| h.bg(hover)))
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-        .child(theme_icon(
-            ph_icon(icon_name),
-            17.0,
-            icon_color,
-            windows_theme,
-        ))
-        .on_prepaint(drag_hover_recorder(
-            hover_id,
-            DragHoverKind::Nav,
-            DragHoverCommand::NavigateLocation(loc.clone()),
-            &app,
-        ))
+        .child(match shell_tex {
+            Some(tex) => img(tex).size(px(18.0)).flex_none().into_any_element(),
+            None => theme_icon(ph_icon(icon_name), 17.0, icon_color, windows_theme),
+        })
+        .when(request_recycle_icon, |row| {
+            row.on_prepaint(move |_bounds, _window, cx| {
+                recycle_icon_app.update(cx, |this, _cx| {
+                    this.request_shell_recycle_bin_icon();
+                });
+            })
+        })
+        .map(|row| {
+            // Recycle Bin row doubles as a drop target: files dropped on it go
+            // to the OS trash instead of just spring-navigating.
+            if loc == Location::RecycleBin {
+                row.on_prepaint(drag_hover_recorder_with_drop(
+                    hover_id,
+                    DragHoverKind::Nav,
+                    DragHoverCommand::NavigateLocation(loc.clone()),
+                    DragHoverDropCommand::TrashPaths,
+                    &app,
+                ))
+            } else {
+                row.on_prepaint(drag_hover_recorder(
+                    hover_id,
+                    DragHoverKind::Nav,
+                    DragHoverCommand::NavigateLocation(loc.clone()),
+                    &app,
+                ))
+            }
+        })
         .on_click(move |_ev, _window, cx| {
             let loc = loc.clone();
             app.update(cx, |this, cx| {
@@ -2053,14 +2307,20 @@ fn collapsed_tag_row(
     h_flex()
         .id(SharedString::from(format!("rail-tag-{}", id.0)))
         .w_full()
-        .h(px(32.))
+        .h(crate::ui::rem_px(32.))
         .items_center()
         .justify_center()
         .rounded(px(9.))
         .cursor_pointer()
         .hover(|s| s.bg(hover))
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-        .child(div().size(px(12.)).rounded_full().bg(rgb).shadow_sm())
+        .child(
+            div()
+                .size(crate::ui::rem_px(12.))
+                .rounded_full()
+                .bg(rgb)
+                .shadow_sm(),
+        )
         .on_prepaint(drag_hover_recorder_with_drop(
             hover_id,
             DragHoverKind::Nav,
@@ -2109,12 +2369,16 @@ fn collapsed_drive_row(
     active: bool,
     windows_theme: bool,
 ) -> impl IntoElement {
-    let free_gb = drive.available_bytes as f64 / 1_073_741_824.0;
-    let tooltip = format!(
-        "{} · {}",
-        drive.label,
-        rust_i18n::t!("sidebar_free_space", gb = format!("{free_gb:.0}"))
-    );
+    let tooltip = if drive.total_bytes == 0 {
+        drive.label.clone()
+    } else {
+        let free_gb = drive.available_bytes as f64 / 1_073_741_824.0;
+        format!(
+            "{} · {}",
+            drive.label,
+            rust_i18n::t!("sidebar_free_space", gb = format!("{free_gb:.0}"))
+        )
+    };
     collapsed_nav_row(
         SharedString::from(format!("rail-drive-{}", drive.mount_point.display())),
         tooltip,
@@ -2158,7 +2422,7 @@ fn collapsed_cloud_remote_row(
     h_flex()
         .id(id)
         .w_full()
-        .h(px(32.))
+        .h(crate::ui::rem_px(32.))
         .items_center()
         .justify_center()
         .rounded(px(9.))
@@ -2266,11 +2530,18 @@ fn render_section_body(
                 ));
             }
             let rb_active = matches!(current_location, Some(Location::RecycleBin));
+            #[cfg(target_os = "windows")]
+            let rb_shell_tex = windows_theme
+                .then(|| app.read(cx).shell_recycle_bin_icon())
+                .flatten();
+            #[cfg(not(target_os = "windows"))]
+            let rb_shell_tex = None;
             col = col.child(virtual_nav_row(
                 SharedString::from("place-recycle-bin"),
                 rust_i18n::t!("sidebar_recycle_bin").to_string(),
                 "trash",
                 Location::RecycleBin,
+                rb_shell_tex,
                 app,
                 hover,
                 active_bg,
@@ -2348,6 +2619,26 @@ fn render_section_body(
                 }
             }
         }
+        SectionKind::Linux => {
+            for path in atlas_core::fs::paths::list_wsl_roots() {
+                let active = current.is_some_and(|c| c == path.as_path());
+                let shell_tex = sidebar_shell_tex(app, &path, windows_theme, cx);
+                col = col.child(nav_row(
+                    SharedString::from(format!("linux-{}", path.display())),
+                    linux_root_label(&path),
+                    "terminal-window",
+                    path,
+                    shell_tex,
+                    app,
+                    hover,
+                    active_bg,
+                    accent,
+                    fg,
+                    active,
+                    windows_theme,
+                ));
+            }
+        }
         SectionKind::Drives => {
             let drives = atlas_core::fs::mounts::list_drives();
             if drives.is_empty() {
@@ -2377,9 +2668,7 @@ fn render_section_body(
         SectionKind::Recent => {
             let recent: Vec<PathBuf> = app
                 .read(cx)
-                .state
-                .settings
-                .recent_folders
+                .recent_folders()
                 .iter()
                 .rev()
                 .take(8)
@@ -2418,6 +2707,29 @@ fn render_section_body(
         SectionKind::Cloud => {
             #[cfg(feature = "cloud")]
             {
+                let current = app
+                    .read(cx)
+                    .state
+                    .active_tab_data()
+                    .and_then(|tab| tab.location.fs_dir().map(std::path::Path::to_path_buf));
+                for (label, path) in native_cloud_folders() {
+                    let active = current.as_deref().is_some_and(|c| c == path.as_path());
+                    let shell_tex = sidebar_shell_tex(app, &path, windows_theme, cx);
+                    col = col.child(nav_row(
+                        SharedString::from(format!("native-cloud-{}", path.display())),
+                        label,
+                        "cloud",
+                        path,
+                        shell_tex,
+                        app,
+                        hover,
+                        active_bg,
+                        accent,
+                        fg,
+                        active,
+                        windows_theme,
+                    ));
+                }
                 let remotes: Vec<atlas_model::cloud_model::CloudRemote> =
                     app.read(cx).state.cloud.remotes.clone();
                 for remote in remotes {
@@ -2462,19 +2774,19 @@ fn tag_row(
         .group(group.clone())
         .w_full()
         .px_2()
-        .h(px(if windows_theme { 30.0 } else { 24.0 }))
-        .gap(px(if windows_theme { 10.0 } else { 8.0 }))
+        .h(crate::ui::rem_px(if windows_theme { 30.0 } else { 24.0 }))
+        .gap(crate::ui::rem_px(if windows_theme { 10.0 } else { 8.0 }))
         .items_center()
         .rounded(px(7.))
         .cursor_pointer()
         .text_color(fg)
         .hover(|s| s.bg(hover))
-        .child(div().size(px(11.)).rounded_full().bg(rgb))
+        .child(div().size(crate::ui::rem_px(11.)).rounded_full().bg(rgb))
         .child(div().min_w(px(0.)).flex_1().truncate().child(name))
         .child(
             div()
                 .id(SharedString::from(format!("tag-{}-rename", id.0)))
-                .size(px(20.))
+                .size(crate::ui::rem_px(20.))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -2500,6 +2812,17 @@ fn tag_row(
                     });
                 }),
         )
+        .when(global, |s| {
+            s.child(
+                div()
+                    .id(SharedString::from(format!("tag-{}-global", id.0)))
+                    .flex_none()
+                    .child(icon(AtlasIcon::GlobeSimple, 12.0, fg.opacity(0.6)))
+                    .tooltip(|window, cx| {
+                        Tooltip::new(rust_i18n::t!("tag_global_hint").to_string()).build(window, cx)
+                    }),
+            )
+        })
         .on_prepaint(drag_hover_recorder_with_drop(
             hover_id,
             DragHoverKind::Nav,
@@ -2551,7 +2874,7 @@ fn drive_row(
     muted: Hsla,
     active: bool,
     windows_theme: bool,
-) -> impl IntoElement {
+) -> gpui::AnyElement {
     let app = app.clone();
     let frac = drive.used_fraction();
     // Alert color when nearly full, otherwise the accent.
@@ -2560,8 +2883,12 @@ fn drive_row(
     } else {
         accent
     };
-    let free_gb = drive.available_bytes as f64 / 1_073_741_824.0;
-    let free_label = rust_i18n::t!("sidebar_free_space", gb = format!("{free_gb:.0}"));
+    let free_label = if drive.total_bytes == 0 {
+        String::new()
+    } else {
+        let free_gb = drive.available_bytes as f64 / 1_073_741_824.0;
+        rust_i18n::t!("sidebar_free_space", gb = format!("{free_gb:.0}")).to_string()
+    };
     let path = drive.mount_point.clone();
     let drop_path = path.clone();
     let drop_path_external = path.clone();
@@ -2572,12 +2899,12 @@ fn drive_row(
     let drop_app_external = app.clone();
     let shell_path = path.clone();
     let shell_app = app.clone();
-    v_flex()
+    let row = v_flex()
         .id(id)
         .w_full()
         .px_2()
-        .py(px(if windows_theme { 6.0 } else { 4.0 }))
-        .gap(px(3.))
+        .py(crate::ui::rem_px(if windows_theme { 6.0 } else { 4.0 }))
+        .gap(crate::ui::rem_px(3.))
         .rounded(px(7.))
         .cursor_pointer()
         .text_color(fg)
@@ -2586,11 +2913,11 @@ fn drive_row(
         .child(
             h_flex()
                 .w_full()
-                .gap(px(if windows_theme { 10.0 } else { 8.0 }))
+                .gap(crate::ui::rem_px(if windows_theme { 10.0 } else { 8.0 }))
                 .items_center()
                 .child(match shell_tex {
                     Some(tex) => img(tex)
-                        .size(px(if windows_theme { 18.0 } else { 16.0 }))
+                        .size(crate::ui::rem_px(if windows_theme { 18.0 } else { 16.0 }))
                         .flex_none()
                         .into_any_element(),
                     None => theme_icon(
@@ -2606,29 +2933,33 @@ fn drive_row(
                         .truncate()
                         .child(SharedString::from(drive.label.clone())),
                 )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(muted)
-                        .child(SharedString::from(free_label)),
-                ),
+                .when(!free_label.is_empty(), |row| {
+                    row.child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(SharedString::from(free_label)),
+                    )
+                }),
         )
-        .child(
+        .when(drive.total_bytes > 0, |row| {
             // Fullness track + filled portion (width = used fraction).
-            div()
-                .w_full()
-                .h(px(4.))
-                .rounded(px(2.))
-                .bg(crate::ui::glass::track_fill())
-                .sunken_surface()
-                .child(
-                    div()
-                        .h_full()
-                        .w(relative(frac))
-                        .rounded(px(2.))
-                        .bg(bar_color),
-                ),
-        )
+            row.child(
+                div()
+                    .w_full()
+                    .h(crate::ui::rem_px(4.))
+                    .rounded(px(2.))
+                    .bg(crate::ui::glass::track_fill())
+                    .sunken_surface()
+                    .child(
+                        div()
+                            .h_full()
+                            .w(relative(frac))
+                            .rounded(px(2.))
+                            .bg(bar_color),
+                    ),
+            )
+        })
         .on_prepaint(move |_bounds, _window, cx| {
             #[cfg(target_os = "windows")]
             if windows_theme {
@@ -2673,7 +3004,33 @@ fn drive_row(
                 this.navigate(tile, path);
                 cx.notify();
             });
+        });
+    #[cfg(target_os = "windows")]
+    {
+        row.context_menu({
+            let lens_path = drive.mount_point.clone();
+            let properties_path = drive.mount_point.clone();
+            move |menu, _window, _cx| {
+                menu.menu(
+                    rust_i18n::t!("sidebar_analyze_space"),
+                    Box::new(OpenSpaceLensForPath {
+                        path: lens_path.clone(),
+                    }),
+                )
+                .menu(
+                    rust_i18n::t!("root_properties"),
+                    Box::new(OpenPropertiesForPath {
+                        path: properties_path.clone(),
+                    }),
+                )
+            }
         })
+        .into_any_element()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        row.into_any_element()
+    }
 }
 
 fn section_header(
@@ -2683,8 +3040,19 @@ fn section_header(
     app: &Entity<AtlasApp>,
     muted: Hsla,
     hover: Hsla,
+    cx: &Context<SidebarPanel>,
 ) -> impl IntoElement {
-    let label = sidebar_label(&section.kind);
+    let label = if section.kind == SectionKind::Cloud {
+        app.read(cx)
+            .ext_registry
+            .sidebar_section("cloud")
+            .map_or_else(
+                || sidebar_label(&section.kind),
+                |section| section.title.clone(),
+            )
+    } else {
+        sidebar_label(&section.kind)
+    };
     let app_click = app.clone();
     // Disclosure chevron on the right (Figma "Section Header").
     let chevron = if section.collapsed {
@@ -2697,9 +3065,9 @@ fn section_header(
     h_flex()
         .id(SharedString::from(format!("sidebar-section-{idx}")))
         .w_full()
+        .mt(crate::ui::rem_px(10.))
         .px_2()
-        .pt(px(14.))
-        .pb(px(4.))
+        .py(crate::ui::rem_px(4.))
         .gap_1()
         .items_center()
         .text_color(muted)
@@ -2770,6 +3138,11 @@ fn sidebar_context_menu(
                 Box::new(SidebarNewProfileTag),
             );
     }
+    if kind == SectionKind::Drives {
+        menu = menu
+            .separator()
+            .menu("This PC Properties", Box::new(OpenThisPcProperties));
+    }
     menu
 }
 
@@ -2778,10 +3151,15 @@ fn sidebar_label(kind: &SectionKind) -> String {
         SectionKind::Places => rust_i18n::t!("sidebar_places").to_string(),
         SectionKind::Bookmarks => rust_i18n::t!("sidebar_bookmarks").to_string(),
         SectionKind::Tags => rust_i18n::t!("sidebar_tags").to_string(),
+        SectionKind::Linux => rust_i18n::t!("sidebar_linux").to_string(),
         SectionKind::Drives => rust_i18n::t!("sidebar_drives").to_string(),
         SectionKind::Cloud => rust_i18n::t!("sidebar_cloud").to_string(),
         SectionKind::Recent => rust_i18n::t!("sidebar_recent").to_string(),
     }
+}
+
+fn linux_root_label(path: &std::path::Path) -> String {
+    atlas_core::fs::paths::wsl_distro_name(path).unwrap_or_else(|| path.display().to_string())
 }
 
 fn empty_row(label: String, muted: Hsla) -> impl IntoElement {
@@ -2814,6 +3192,8 @@ fn nav_row(
     let drop_app_external = app.clone();
     let shell_path = path.clone();
     let shell_app = app.clone();
+    let ctx_app = app.clone();
+    let ctx_path = path.clone();
     let content = if active { accent } else { fg };
     let icon_color = if active {
         accent
@@ -2824,9 +3204,9 @@ fn nav_row(
     h_flex()
         .id(id)
         .w_full()
-        .h(px(if windows_theme { 30.0 } else { 24.0 }))
+        .h(crate::ui::rem_px(if windows_theme { 30.0 } else { 24.0 }))
         .px_2()
-        .gap(px(if windows_theme { 10.0 } else { 8.0 }))
+        .gap(crate::ui::rem_px(if windows_theme { 10.0 } else { 8.0 }))
         .items_center()
         .rounded(px(7.))
         .cursor_pointer()
@@ -2837,7 +3217,7 @@ fn nav_row(
         .when(!active, |s| s.hover(|h| h.bg(hover)))
         .child(match shell_tex {
             Some(tex) => img(tex)
-                .size(px(if windows_theme { 18.0 } else { 16.0 }))
+                .size(crate::ui::rem_px(if windows_theme { 18.0 } else { 16.0 }))
                 .flex_none()
                 .into_any_element(),
             None => theme_icon(
@@ -2893,6 +3273,13 @@ fn nav_row(
                 cx.notify();
             });
         })
+        .on_mouse_down(MouseButton::Right, move |ev, window, cx| {
+            ctx_app.update(cx, |this, cx| {
+                this.open_ctx_menu(vec![ctx_path.clone()], ev.position, window, cx);
+                cx.notify();
+            });
+            cx.stop_propagation();
+        })
 }
 
 /// Like `nav_row` but navigates to an arbitrary `Location` (for virtual places
@@ -2903,6 +3290,7 @@ fn virtual_nav_row(
     label: String,
     icon_name: &'static str,
     loc: Location,
+    shell_tex: Option<Arc<gpui::RenderImage>>,
     app: &Entity<AtlasApp>,
     hover: Hsla,
     active_bg: Hsla,
@@ -2913,6 +3301,8 @@ fn virtual_nav_row(
 ) -> impl IntoElement {
     let app = app.clone();
     let hover_id = DragHoverId::Sidebar(id.to_string());
+    let recycle_icon_app = app.clone();
+    let request_recycle_icon = windows_theme && loc == Location::RecycleBin && shell_tex.is_none();
     let content = if active { accent } else { fg };
     let icon_color = if active {
         accent
@@ -2922,9 +3312,9 @@ fn virtual_nav_row(
     h_flex()
         .id(id)
         .w_full()
-        .h(px(if windows_theme { 30.0 } else { 24.0 }))
+        .h(crate::ui::rem_px(if windows_theme { 30.0 } else { 24.0 }))
         .px_2()
-        .gap(px(if windows_theme { 10.0 } else { 8.0 }))
+        .gap(crate::ui::rem_px(if windows_theme { 10.0 } else { 8.0 }))
         .items_center()
         .rounded(px(7.))
         .cursor_pointer()
@@ -2933,19 +3323,45 @@ fn virtual_nav_row(
             s.bg(active_bg).font_weight(gpui::FontWeight::MEDIUM)
         })
         .when(!active, |s| s.hover(|h| h.bg(hover)))
-        .child(theme_icon(
-            ph_icon(icon_name),
-            if windows_theme { 18.0 } else { 16.0 },
-            icon_color,
-            windows_theme,
-        ))
+        .child(match shell_tex {
+            Some(tex) => img(tex)
+                .size(px(if windows_theme { 18.0 } else { 16.0 }))
+                .flex_none()
+                .into_any_element(),
+            None => theme_icon(
+                ph_icon(icon_name),
+                if windows_theme { 18.0 } else { 16.0 },
+                icon_color,
+                windows_theme,
+            ),
+        })
+        .when(request_recycle_icon, |row| {
+            row.on_prepaint(move |_bounds, _window, cx| {
+                recycle_icon_app.update(cx, |this, _cx| {
+                    this.request_shell_recycle_bin_icon();
+                });
+            })
+        })
         .child(div().flex_1().truncate().child(SharedString::from(label)))
-        .on_prepaint(drag_hover_recorder(
-            hover_id,
-            DragHoverKind::Nav,
-            DragHoverCommand::NavigateLocation(loc.clone()),
-            &app,
-        ))
+        .map(|row| {
+            // Recycle Bin row doubles as a drop target (drop = send to trash).
+            if loc == Location::RecycleBin {
+                row.on_prepaint(drag_hover_recorder_with_drop(
+                    hover_id,
+                    DragHoverKind::Nav,
+                    DragHoverCommand::NavigateLocation(loc.clone()),
+                    DragHoverDropCommand::TrashPaths,
+                    &app,
+                ))
+            } else {
+                row.on_prepaint(drag_hover_recorder(
+                    hover_id,
+                    DragHoverKind::Nav,
+                    DragHoverCommand::NavigateLocation(loc.clone()),
+                    &app,
+                ))
+            }
+        })
         .on_click(move |_ev, _window, cx| {
             let loc = loc.clone();
             app.update(cx, |this, cx| {
@@ -3024,9 +3440,9 @@ fn cloud_remote_row(
     h_flex()
         .id(SharedString::from(format!("cloud-remote-{id}")))
         .w_full()
-        .h(px(24.))
+        .h(crate::ui::rem_px(24.))
         .px_2()
-        .gap(px(8.))
+        .gap(crate::ui::rem_px(8.))
         .items_center()
         .rounded(px(7.))
         .cursor_pointer()
@@ -3128,6 +3544,66 @@ fn cloud_remote_row(
         })
 }
 
+#[cfg(feature = "cloud")]
+fn native_cloud_folders() -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    let mut push = |label: &str, path: Option<PathBuf>| {
+        let Some(path) = path else {
+            return;
+        };
+        if !path.is_dir() || out.iter().any(|(_, p)| *p == path) {
+            return;
+        }
+        out.push((label.to_string(), path));
+    };
+
+    push("OneDrive", std::env::var_os("OneDrive").map(PathBuf::from));
+    push(
+        "OneDrive",
+        std::env::var_os("OneDriveCommercial").map(PathBuf::from),
+    );
+    push(
+        "OneDrive",
+        std::env::var_os("OneDriveConsumer").map(PathBuf::from),
+    );
+
+    if let Some(home) = dirs::home_dir() {
+        push("Google Drive", Some(home.join("Google Drive")));
+        push("iCloud Drive", Some(home.join("iCloudDrive")));
+        push("MEGA", Some(home.join("MEGA")));
+        push("MEGA", Some(home.join("MEGAsync")));
+        push("MEGA", Some(home.join("MEGA Sync")));
+
+        #[cfg(target_os = "macos")]
+        {
+            let cloud_storage = home.join("Library").join("CloudStorage");
+            if let Ok(entries) = std::fs::read_dir(cloud_storage) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with("GoogleDrive") {
+                        push("Google Drive", Some(path));
+                    } else if name.starts_with("OneDrive") {
+                        push("OneDrive", Some(path));
+                    } else if name == "iCloudDrive" {
+                        push("iCloud Drive", Some(path));
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        for letter in b'A'..=b'Z' {
+            let root = PathBuf::from(format!("{}:\\", letter as char));
+            push("Google Drive", Some(root.join("My Drive")));
+        }
+    }
+
+    out
+}
+
 /// Always-visible "+ Add cloud drive" row that incites the user to connect.
 #[cfg(feature = "cloud")]
 fn add_cloud_row(app: &Entity<AtlasApp>, hover: Hsla, muted: Hsla, fg: Hsla) -> impl IntoElement {
@@ -3139,9 +3615,9 @@ fn add_cloud_row(app: &Entity<AtlasApp>, hover: Hsla, muted: Hsla, fg: Hsla) -> 
     h_flex()
         .id("cloud-add-row")
         .w_full()
-        .h(px(24.))
+        .h(crate::ui::rem_px(24.))
         .px_2()
-        .gap(px(8.))
+        .gap(crate::ui::rem_px(8.))
         .items_center()
         .rounded(px(7.))
         .cursor_pointer()

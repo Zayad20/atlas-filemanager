@@ -1,0 +1,130 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CommandMeta {
+    pub(crate) id: &'static str,
+    pub(crate) default_shortcut: Option<&'static str>,
+    pub(crate) remappable: bool,
+}
+
+impl CommandMeta {
+    const fn remappable(id: &'static str, default_shortcut: Option<&'static str>) -> Self {
+        Self {
+            id,
+            default_shortcut,
+            remappable: true,
+        }
+    }
+}
+
+pub(crate) const COMMANDS: &[CommandMeta] = &[
+    CommandMeta::remappable("tab.new", Some("ctrl-t")),
+    CommandMeta::remappable("tab.close", Some("ctrl-w")),
+    CommandMeta::remappable("tab.next", Some("ctrl-tab")),
+    CommandMeta::remappable("tab.previous", Some("ctrl-shift-tab")),
+    CommandMeta::remappable("tab.move-left", Some("ctrl-shift-pageup")),
+    CommandMeta::remappable("tab.move-right", Some("ctrl-shift-pagedown")),
+    CommandMeta::remappable("tab.1", Some("ctrl-1")),
+    CommandMeta::remappable("tab.2", Some("ctrl-2")),
+    CommandMeta::remappable("tab.3", Some("ctrl-3")),
+    CommandMeta::remappable("tab.4", Some("ctrl-4")),
+    CommandMeta::remappable("tab.5", Some("ctrl-5")),
+    CommandMeta::remappable("tab.6", Some("ctrl-6")),
+    CommandMeta::remappable("tab.7", Some("ctrl-7")),
+    CommandMeta::remappable("tab.8", Some("ctrl-8")),
+    CommandMeta::remappable("tab.9", Some("ctrl-9")),
+    CommandMeta::remappable("pane.split-h", Some("ctrl-shift-s")),
+    CommandMeta::remappable("pane.split-v", Some("ctrl-alt-s")),
+    CommandMeta::remappable("pane.close", Some("ctrl-shift-w")),
+    CommandMeta::remappable("nav.back", Some("alt-left")),
+    CommandMeta::remappable("nav.forward", Some("alt-right")),
+    CommandMeta::remappable("nav.parent", Some("alt-up")),
+    CommandMeta::remappable("nav.goto", Some("ctrl-k")),
+    CommandMeta::remappable("nav.refresh", Some("f5")),
+    #[cfg(target_os = "windows")]
+    CommandMeta::remappable("nav.recycle-bin", None),
+    CommandMeta::remappable("view.hidden", Some("ctrl-.")),
+    CommandMeta::remappable("view.inspector", Some("ctrl-i")),
+    CommandMeta::remappable("view.sidebar", Some("ctrl-b")),
+    CommandMeta::remappable("view.sidebar-collapse", Some("ctrl-alt-b")),
+    CommandMeta::remappable("view.details", None),
+    CommandMeta::remappable("view.grid", None),
+    CommandMeta::remappable("view.list", None),
+    CommandMeta::remappable("view.miller", None),
+    CommandMeta::remappable("view.zoom-in", Some("ctrl-=")),
+    CommandMeta::remappable("view.zoom-out", Some("ctrl--")),
+    CommandMeta::remappable("view.zoom-reset", Some("ctrl-0")),
+    CommandMeta::remappable("view.content-zoom-in", None),
+    CommandMeta::remappable("view.content-zoom-out", None),
+    CommandMeta::remappable("folder.toggle-folders-first", None),
+    CommandMeta::remappable("folder.toggle-files", None),
+    CommandMeta::remappable("folder.toggle-folders", None),
+    CommandMeta::remappable("folder.search", Some("ctrl-f")),
+    CommandMeta::remappable("folder.search-subfolders", Some("ctrl-shift-f")),
+    CommandMeta::remappable("selection.previous", Some("up")),
+    CommandMeta::remappable("selection.next", Some("down")),
+    CommandMeta::remappable("selection.first", Some("home")),
+    CommandMeta::remappable("selection.last", Some("end")),
+    CommandMeta::remappable("selection.page-up", Some("pageup")),
+    CommandMeta::remappable("selection.page-down", Some("pagedown")),
+    CommandMeta::remappable("selection.extend-previous", Some("shift-up")),
+    CommandMeta::remappable("selection.extend-next", Some("shift-down")),
+    CommandMeta::remappable("selection.extend-first", Some("shift-home")),
+    CommandMeta::remappable("selection.extend-last", Some("shift-end")),
+    CommandMeta::remappable("selection.extend-page-up", Some("shift-pageup")),
+    CommandMeta::remappable("selection.extend-page-down", Some("shift-pagedown")),
+    CommandMeta::remappable("selection.open", Some("enter")),
+    CommandMeta::remappable("edit.select-all", Some("ctrl-a")),
+    CommandMeta::remappable("edit.invert", None),
+    CommandMeta::remappable("edit.undo", Some("ctrl-z")),
+    CommandMeta::remappable("edit.redo", Some("ctrl-shift-z")),
+    CommandMeta::remappable("edit.batch-rename", None),
+    CommandMeta::remappable("files.rename", Some("f2")),
+    CommandMeta::remappable("files.create-folder", Some("ctrl-shift-n")),
+    CommandMeta::remappable("files.create-file", None),
+    CommandMeta::remappable("files.trash", Some("delete")),
+    CommandMeta::remappable("files.delete", Some("shift-delete")),
+    CommandMeta::remappable("files.compress", None),
+    CommandMeta::remappable("files.open-dirs-in-tabs", Some("ctrl-enter")),
+    CommandMeta::remappable("files.open-in-window", None),
+    CommandMeta::remappable("files.open-dir-right-split", Some("ctrl-shift-enter")),
+    CommandMeta::remappable("files.open-dir-bottom-split", None),
+    CommandMeta::remappable("recycle.restore", None),
+    CommandMeta::remappable("recycle.purge", None),
+    CommandMeta::remappable("recycle.empty", None),
+    CommandMeta::remappable("profile.new", None),
+    CommandMeta::remappable("profile.rename", None),
+    CommandMeta::remappable("profile.delete", None),
+    CommandMeta::remappable("ext.manager", Some("ctrl-shift-x")),
+    CommandMeta::remappable("sys.palette", Some("ctrl-shift-p")),
+    CommandMeta::remappable("sys.settings", Some("ctrl-,")),
+];
+
+pub(crate) fn command_meta(command_id: &str) -> Option<&'static CommandMeta> {
+    COMMANDS.iter().find(|command| command.id == command_id)
+}
+
+pub(crate) fn command_remappable(command_id: &str) -> bool {
+    command_meta(command_id).is_some_and(|command| command.remappable)
+}
+
+pub(crate) fn default_command_shortcut(command_id: &str) -> Option<&'static str> {
+    command_meta(command_id).and_then(|command| command.default_shortcut)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_ids_are_unique() {
+        let mut ids: Vec<&str> = COMMANDS.iter().map(|command| command.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), COMMANDS.len());
+    }
+
+    #[test]
+    fn command_without_default_can_still_be_remapped() {
+        assert_eq!(default_command_shortcut("view.details"), None);
+        assert!(command_remappable("view.details"));
+    }
+}

@@ -3,6 +3,7 @@
 
 use crate::app::App;
 use crate::ui::icons::{icon, AtlasIcon};
+use atlas_model::overlay::ToastKind;
 use gpui::prelude::*;
 use gpui::{deferred, div, px, AnyElement, Context, MouseButton, SharedString, Window};
 use gpui_component::scroll::ScrollableElement;
@@ -20,7 +21,7 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (popover, fg, muted, border, destructive) = {
+        let (popover, fg, muted, border, destructive, accent) = {
             let t = cx.theme();
             (
                 t.popover,
@@ -28,29 +29,43 @@ impl App {
                 t.muted_foreground,
                 t.border,
                 t.danger,
+                t.accent,
             )
         };
-        let errors: Vec<String> = self.state.overlay.op_errors.iter().cloned().collect();
+        let errors: Vec<_> = self.state.overlay.op_errors.iter().cloned().collect();
         let view = cx.entity();
         let viewport_w = f32::from(window.bounds().size.width);
-        let toast_w = TOAST_MAX_W.min((viewport_w - TOAST_SIDE_MARGIN * 2.0).max(280.));
+        // Chrome constants scaled explicitly: `toast_w` is combined with `viewport_w`
+        // (a real measured pixel width) via plain arithmetic, so it can't be
+        // resolved through `rem_px()`'s Styled-only Rems path.
+        let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
+        let toast_w = (TOAST_MAX_W * zoom_scale)
+            .min((viewport_w - TOAST_SIDE_MARGIN * zoom_scale * 2.0).max(280. * zoom_scale));
 
         let mut stack = v_flex().gap_2();
-        for (i, msg) in errors.iter().enumerate() {
+        for (i, toast) in errors.iter().enumerate() {
             let dismiss_view = view.clone();
             let idx = i;
-            let lines = wrap_toast_message(msg);
-            let mut body_lines = v_flex().gap(px(2.));
+            let tone = match toast.kind {
+                ToastKind::Error => destructive,
+                ToastKind::Info => accent,
+            };
+            let glyph = match toast.kind {
+                ToastKind::Error => AtlasIcon::X,
+                ToastKind::Info => AtlasIcon::Lightning,
+            };
+            let lines = wrap_toast_message(&toast.message);
+            let mut body_lines = v_flex().gap(crate::ui::rem_px(2.));
             for line in lines {
                 body_lines = body_lines.child(div().min_w_0().child(line));
             }
             let body = div()
                 .flex_1()
                 .min_w_0()
-                .max_h(px(TOAST_MAX_BODY_H))
+                .max_h(crate::ui::rem_px(TOAST_MAX_BODY_H))
                 .overflow_y_scrollbar()
                 .text_sm()
-                .line_height(px(18.))
+                .line_height(crate::ui::rem_px(18.))
                 .child(body_lines);
             let card = h_flex()
                 .id(SharedString::from(format!("op-err-{i}")))
@@ -60,7 +75,7 @@ impl App {
                 .bg(popover)
                 .text_color(fg)
                 .border_1()
-                .border_color(destructive.opacity(0.35))
+                .border_color(tone.opacity(0.35))
                 .rounded_lg()
                 .shadow_lg()
                 .occlude()
@@ -68,21 +83,21 @@ impl App {
                 .child(
                     div()
                         .flex_shrink_0()
-                        .mt(px(2.))
-                        .size(px(20.))
+                        .mt(crate::ui::rem_px(2.))
+                        .size(crate::ui::rem_px(20.))
                         .rounded_full()
-                        .bg(destructive.opacity(0.12))
+                        .bg(tone.opacity(0.12))
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(icon(AtlasIcon::X, 10., destructive)),
+                        .child(icon(glyph, 10., tone)),
                 )
                 .child(body)
                 .child(
                     div()
                         .id(SharedString::from(format!("op-err-x-{i}")))
                         .flex_shrink_0()
-                        .size(px(22.))
+                        .size(crate::ui::rem_px(22.))
                         .rounded(px(crate::ui::RADIUS))
                         .flex()
                         .items_center()
@@ -111,30 +126,34 @@ impl App {
         let has_many = errors.len() > 1;
 
         deferred(
-            div().absolute().bottom(px(24.)).right(px(24.)).child(
-                v_flex()
-                    .gap_2()
-                    .items_end()
-                    .child(stack)
-                    .when(has_many, |s| {
-                        s.child(
-                            div()
-                                .id("op-err-dismiss-all")
-                                .text_xs()
-                                .text_color(fg)
-                                .opacity(0.5)
-                                .cursor_pointer()
-                                .hover(|h| h.opacity(1.0))
-                                .child(rust_i18n::t!("overlay_close_all").to_string())
-                                .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
-                                    dismiss_all_view.update(cx, |this, cx| {
-                                        this.state.overlay.op_errors.clear();
-                                        cx.notify();
-                                    });
-                                }),
-                        )
-                    }),
-            ),
+            div()
+                .absolute()
+                .bottom(crate::ui::rem_px(24.))
+                .right(crate::ui::rem_px(24.))
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .items_end()
+                        .child(stack)
+                        .when(has_many, |s| {
+                            s.child(
+                                div()
+                                    .id("op-err-dismiss-all")
+                                    .text_xs()
+                                    .text_color(fg)
+                                    .opacity(0.5)
+                                    .cursor_pointer()
+                                    .hover(|h| h.opacity(1.0))
+                                    .child(rust_i18n::t!("overlay_close_all").to_string())
+                                    .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
+                                        dismiss_all_view.update(cx, |this, cx| {
+                                            this.state.overlay.op_errors.clear();
+                                            cx.notify();
+                                        });
+                                    }),
+                            )
+                        }),
+                ),
         )
         .into_any_element()
     }

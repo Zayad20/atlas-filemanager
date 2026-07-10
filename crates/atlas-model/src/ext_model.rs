@@ -14,19 +14,18 @@ pub enum ExtKind {
     /// Commands are shell-command templates run on the selection. No plugin code.
     #[default]
     Declarative,
-    /// Commands are dispatched to a long-lived sidecar binary over JSON-RPC.
+    /// Virtual locations are provided by a long-lived JSON-lines sidecar.
     Sidecar,
-    /// WebAssembly plugins executed via Extism.
+    /// Reserved for a future sandbox runtime; currently unavailable.
     Wasm,
-    /// Implemented in-app (compiled in), e.g. the cloud extension.
+    /// Implemented in-app for tightly integrated features.
     Builtin,
     /// Hidden dependency package that contributes portable tools for commands.
     #[serde(rename = "tool_provider")]
     ToolProvider,
 }
 
-/// Optional sidecar process for `kind = "sidecar"`. Parsed now; the JSON-RPC
-/// sidecar runner that consumes these is a later phase.
+/// Optional process for `kind = "sidecar"`.
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 pub struct Sidecar {
@@ -34,6 +33,17 @@ pub struct Sidecar {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+}
+
+/// A top-level section contributed to the sidebar by an extension.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SidebarContribution {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub icon: String,
+    #[serde(default)]
+    pub add_action: Option<String>,
 }
 
 /// What a command accepts as input from the current selection.
@@ -144,11 +154,12 @@ pub struct Manifest {
     pub hidden: bool,
     #[serde(default)]
     pub tools: Vec<ToolSpec>,
-    /// Consumed by the (later-phase) sidecar runner.
     #[serde(default)]
     #[allow(dead_code)]
     pub sidecar: Option<Sidecar>,
-    /// WebAssembly module filename for `kind = "wasm"` (relative to extension dir).
+    #[serde(default)]
+    pub sidebar: Vec<SidebarContribution>,
+    /// Reserved WebAssembly module filename (relative to the extension directory).
     #[serde(default)]
     #[allow(dead_code)]
     pub wasm_module: Option<String>,
@@ -172,6 +183,8 @@ pub struct ToolSpec {
     pub archive_format: String,
     #[serde(default)]
     pub signature_url: String,
+    #[serde(default)]
+    pub sha256: String,
 }
 
 impl Manifest {
@@ -194,6 +207,8 @@ pub struct RemoteExtension {
     pub icon_url: Option<String>,
     pub latest_version: String,
     pub download_url: String,
+    #[serde(default)]
+    pub sha256: String,
 }
 
 /// The `registry.json` document served from the R2 bucket.

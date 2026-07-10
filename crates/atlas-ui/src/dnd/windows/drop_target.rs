@@ -76,7 +76,9 @@ pub(super) unsafe fn read_cf_hdrop(data_obj: &IDataObject) -> Vec<PathBuf> {
         DragQueryFileW(hdrop, i, Some(&mut buf));
         buf.pop(); // remove null
         let s = String::from_utf16_lossy(&buf);
-        paths.push(PathBuf::from(s));
+        paths.push(atlas_core::fs::paths::normalize_wsl_unc_path(
+            PathBuf::from(s),
+        ));
     }
     ReleaseStgMedium(&mut medium);
     paths
@@ -288,8 +290,10 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
         };
 
         // Mark drag active so the render path starts publishing zones.
+        let (x, y) = self.to_logical(pt);
         if let Ok(mut zones) = self.zones.lock() {
             zones.drag_active = true;
+            zones.cursor = Some((x, y));
         }
 
         // Accept if the source offers real files (CF_HDROP) or virtual files
@@ -345,6 +349,9 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
             }
         }
         let (x, y) = self.to_logical(pt);
+        if let Ok(mut zones) = self.zones.lock() {
+            zones.cursor = Some((x, y));
+        }
         if let Ok(mut q) = self.action_queue.lock() {
             q.push(super::DndEvent::DragOver { x, y });
         }
@@ -354,6 +361,7 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
     fn DragLeave(&self) -> Result<()> {
         if let Ok(mut zones) = self.zones.lock() {
             zones.drag_active = false;
+            zones.cursor = None;
         }
         if let Ok(mut q) = self.action_queue.lock() {
             q.push(super::DndEvent::DragLeave);
@@ -375,6 +383,7 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
     ) -> Result<()> {
         if let Ok(mut zones) = self.zones.lock() {
             zones.drag_active = false;
+            zones.cursor = None;
         }
 
         let Some(data_obj) = pdataobj.as_ref() else {

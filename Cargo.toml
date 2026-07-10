@@ -10,9 +10,10 @@ members = [
     ".",
     "crates/atlas-model",
     "crates/atlas-core",
-    "crates/atlas-ui", "crates/atlas-wasm-icon-theme",
-    "crates/atlas-wasm-file-tools",
+    "crates/atlas-win-space",
+    "crates/atlas-ui",
     "crates/atlas-publisher",
+    "crates/atlas-cloud-extension",
 ]
 exclude = ["vendor/zed-reference", "vendor/gpui-component-fork"]
 resolver = "2"
@@ -81,13 +82,14 @@ ignored = ["kamadak-exif"]
 [features]
 default = ["cloud", "rar", "sevenz"]
 dhat-heap = ["dhat"]
-# Cloud / network mounting extension. Forwards to the UI crate (which forwards to
-# atlas-core/atlas-model); the heavy HTTP/TLS/crypto deps live in `atlas-core`.
+# Host support for optional virtual-file-provider extensions. The rclone backend
+# is built only by `atlas-cloud-extension`.
 cloud = ["atlas-ui/cloud"]
 # RAR archive navigation via bundled UnRAR.exe CLI.
 rar = ["atlas-ui/rar"]
 sevenz = ["atlas-ui/sevenz"]
 perf-log = ["atlas-ui/perf-log"]
+tracy = ["atlas-ui/tracy"]
 
 [dependencies]
 dhat = { version = "0.3", optional = true }

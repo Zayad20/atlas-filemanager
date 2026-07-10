@@ -3,8 +3,7 @@
 // reason: extension-dir scan + manifest reads happen one-shot at startup/reload,
 // off the gpui render thread; the sync-fs ban targets UI-foreground blocking.
 #![allow(clippy::disallowed_methods)]
-//! In-memory registry of installed extensions: builtins (compiled-in, e.g. cloud)
-//! plus declarative/sidecar extensions discovered under the extensions directory.
+//! In-memory registry of extensions discovered under the extensions directory.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -40,7 +39,7 @@ impl Registry {
     /// `extension.toml` under the extensions directory. `enabled` overrides the
     /// default-enabled state per extension id.
     pub fn load(enabled: &HashMap<String, bool>) -> Self {
-        let mut extensions = builtins(enabled);
+        let mut extensions: Vec<Extension> = Vec::new();
         let dir = super::extensions_dir();
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
@@ -63,7 +62,14 @@ impl Registry {
                 if extensions.iter().any(|e| e.manifest.id == manifest.id) {
                     continue;
                 }
-                let enabled = enabled.get(&manifest.id).copied().unwrap_or(true);
+                let enabled = enabled.get(&manifest.id).copied().unwrap_or(true)
+                    && manifest.kind != ExtKind::Wasm;
+                if manifest.kind == ExtKind::Wasm {
+                    tracing::warn!(
+                        "extension {} disabled: WASM runtime is not available",
+                        manifest.id
+                    );
+                }
                 extensions.push(Extension {
                     manifest,
                     dir: ext_dir,
@@ -86,6 +92,21 @@ impl Registry {
         self.get(id).is_some_and(|e| e.enabled)
     }
 
+    pub fn has_sidebar_section(&self, id: &str) -> bool {
+        self.sidebar_section(id).is_some()
+    }
+
+    pub fn sidebar_section(
+        &self,
+        id: &str,
+    ) -> Option<&atlas_model::ext_model::SidebarContribution> {
+        self.extensions
+            .iter()
+            .filter(|extension| extension.enabled)
+            .flat_map(|extension| &extension.manifest.sidebar)
+            .find(|section| section.id == id)
+    }
+
     /// All enabled declarative commands as `(ext_id, command)`, unfiltered by
     /// selection. The context menu filters these by the right-clicked paths.
     pub fn declarative_commands(&self) -> Vec<(String, ExtCommand)> {
@@ -106,6 +127,9 @@ impl Registry {
     /// Resolve a specific command to a runnable `CommandRef`.
     pub fn command(&self, ext_id: &str, cmd_id: &str) -> Option<CommandRef> {
         let ext = self.get(ext_id)?;
+        if !ext.enabled || ext.manifest.kind == ExtKind::Wasm {
+            return None;
+        }
         let command = ext.manifest.commands.iter().find(|c| c.id == cmd_id)?;
         Some(Self::make_ref(ext, command, self.required_tools(command)?))
     }
@@ -245,6 +269,7 @@ impl Registry {
                 if tool.name == name
                     && platform_matches(&tool.os, &tool.arch)
                     && !tool.download_url.is_empty()
+                    && !tool.sha256.is_empty()
                     && tool_archive_supported(&tool.archive_format)
                 {
                     return Some(ToolInstallRequest {
@@ -296,36 +321,6 @@ fn installed_tool_ok(name: &str, path: &Path) -> bool {
 fn platform_matches(os: &str, arch: &str) -> bool {
     (os.is_empty() || os == std::env::consts::OS)
         && (arch.is_empty() || arch == std::env::consts::ARCH)
-}
-
-/// Compiled-in extensions. Cloud is one when its feature is enabled.
-// reason: not `const` because the `cloud` feature build allocates a `Vec`; clippy only
-// sees the trivial no-cloud body in this config.
-#[allow(clippy::missing_const_for_fn)]
-fn builtins(enabled: &HashMap<String, bool>) -> Vec<Extension> {
-    let _ = enabled;
-    #[cfg(feature = "cloud")]
-    {
-        vec![Extension {
-            manifest: Manifest {
-                id: "cloud".into(),
-                name: "Cloud Drives".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                description: "Mount & browse SFTP, FTP, SMB, Google Drive, OneDrive".into(),
-                kind: ExtKind::Builtin,
-                sidecar: None,
-                wasm_module: None,
-                hidden: false,
-                tools: Vec::new(),
-                commands: Vec::new(),
-            },
-            dir: PathBuf::new(),
-            enabled: enabled.get("cloud").copied().unwrap_or(true),
-            builtin: true,
-        }]
-    }
-    #[cfg(not(feature = "cloud"))]
-    Vec::new()
 }
 
 /// Is `name` an executable on `PATH`? Cheap PATH scan (no process spawn).

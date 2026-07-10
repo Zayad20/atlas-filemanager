@@ -22,6 +22,8 @@ pub struct RegistryExtension {
     pub icon_url: Option<String>,
     pub latest_version: String,
     pub download_url: String,
+    #[serde(default)]
+    pub sha256: String,
 }
 
 pub struct R2Client {

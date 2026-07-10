@@ -1,5 +1,5 @@
 use crate::app::App;
-use crate::input::action::Action;
+use crate::input::action::{Action, SelectionMove};
 use atlas_model::file_entry::FileKind;
 use atlas_model::layout_tree::Tile;
 use atlas_model::settings::ViewMode;
@@ -18,6 +18,29 @@ impl App {
         } else {
             self.process_actions(vec![Action::EditLocation(tile)]);
         }
+    }
+
+    fn clear_focused_selection(&mut self) -> bool {
+        let mut cleared = !self.dropzone_selected.is_empty();
+        self.dropzone_selected.clear();
+
+        let tile = self.state.focused_tile;
+        let is_miller = self
+            .tab_data_for(tile)
+            .is_some_and(|tab| tab.view_mode == ViewMode::Miller);
+        let Some(ts) = self.state.tab_states.get_mut(&tile) else {
+            return cleared;
+        };
+        if is_miller {
+            if let Some(col) = ts.miller.columns.get_mut(ts.miller.focused) {
+                cleared |= !col.selection.selected.is_empty();
+                col.selection.clear();
+            }
+        } else {
+            cleared |= !ts.selection.selected.is_empty();
+            ts.selection.clear();
+        }
+        cleared
     }
 
     #[inline]
@@ -62,8 +85,53 @@ impl App {
                 Action::FocusTab(tab_id) => {
                     self.activate_tab(tab_id);
                 }
+                Action::FocusNextTab => self.focus_next_tab(),
+                Action::FocusPreviousTab => self.focus_prev_tab(),
+                Action::FocusTabIndex(index) => {
+                    let cur = self.state.focused_tile;
+                    if let Some(container) = self.state.find_tabs_container(cur) {
+                        let target = match self.state.pane_tree.tiles.get(container) {
+                            Some(Tile::Container(atlas_model::layout_tree::Container::Tabs(
+                                tabs,
+                            ))) => tabs.children.get(index).copied(),
+                            _ => None,
+                        };
+                        if let Some(target) = target {
+                            self.activate_tab(target);
+                        }
+                    }
+                }
+                Action::MoveFocusedTabLeft | Action::MoveFocusedTabRight => {
+                    let cur = self.state.focused_tile;
+                    if let Some(container) = self.state.find_tabs_container(cur) {
+                        let target = match self.state.pane_tree.tiles.get(container) {
+                            Some(Tile::Container(atlas_model::layout_tree::Container::Tabs(
+                                tabs,
+                            ))) => {
+                                let pos = tabs.children.iter().position(|id| *id == cur);
+                                match (pos, matches!(action, Action::MoveFocusedTabLeft)) {
+                                    (Some(pos), true) if pos > 0 => {
+                                        tabs.children.get(pos - 1).copied()
+                                    }
+                                    (Some(pos), false) => tabs.children.get(pos + 1).copied(),
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let Some(target) = target {
+                            if matches!(action, Action::MoveFocusedTabLeft) {
+                                self.move_tab_before(cur, target);
+                            } else {
+                                self.move_tab_before(target, cur);
+                                self.activate_tab(cur);
+                            }
+                        }
+                    }
+                }
                 Action::ToggleHidden => {
                     self.state.settings.show_hidden = !self.state.settings.show_hidden;
+                    atlas_core::util::config::save_settings(&self.state.settings);
                     let tab_id = self.state.focused_tile;
                     if let Some(tab_data) = self.tab_data_for(tab_id) {
                         let loc = tab_data.location.clone();
@@ -73,12 +141,24 @@ impl App {
                     }
                 }
                 Action::ToggleInspector => {
+                    let was_visible = self.preview_visible_for_focused();
                     if let Some(tab) = self.state.active_tab_data_mut() {
                         tab.preview_enabled = !tab.preview_enabled;
                     }
+                    let is_visible = self.preview_visible_for_focused();
+                    if was_visible != is_visible {
+                        self.preview_panel_anim_seq = self.preview_panel_anim_seq.wrapping_add(1);
+                    }
+                    self.preview_panel_closing =
+                        if was_visible && !is_visible && !self.state.settings.disable_animations {
+                            Some(std::time::Instant::now())
+                        } else {
+                            None
+                        };
                 }
                 Action::ToggleSidebar => {
                     self.state.settings.show_sidebar = !self.state.settings.show_sidebar;
+                    atlas_core::util::config::save_settings(&self.state.settings);
                 }
                 Action::ToggleSidebarCollapsed => {
                     self.state.settings.sidebar_collapsed = !self.state.settings.sidebar_collapsed;
@@ -87,6 +167,28 @@ impl App {
                 }
                 Action::OpenSettings => {
                     self.state.overlay.show_settings = true;
+                }
+                Action::OpenSettingsAbout => {
+                    self.settings_section = 5;
+                    self.state.overlay.show_settings = true;
+                }
+                Action::OpenGettingStarted => {
+                    self.getting_started_profile_input = None;
+                    self.state.overlay.show_getting_started = true;
+                    self.state.overlay.getting_started_step = 0;
+                    self.state.overlay.getting_started_loading_since = None;
+                }
+                Action::StartGettingStarted => {
+                    self.state.overlay.getting_started_loading_since = Some(Instant::now());
+                }
+                Action::CloseGettingStarted => {
+                    self.mark_getting_started_seen();
+                    self.state.overlay.show_getting_started = false;
+                    self.state.overlay.getting_started_loading_since = None;
+                    self.getting_started_profile_input = None;
+                }
+                Action::SaveSession => {
+                    self.save();
                 }
                 Action::OpenExtManager => {
                     self.handle_ext_action(crate::app::ext::ExtAction::OpenManager(true));
@@ -97,21 +199,39 @@ impl App {
                     self.state.overlay.show_analyzer = !self.state.overlay.show_analyzer;
                 }
                 Action::CloseOverlays => {
+                    if self.rubber.is_some() {
+                        self.cancel_rubber();
+                        continue;
+                    }
                     // Esc with no palette open also dismisses the focused pane's
                     // local filter (the "obvious" exit key for the filter pill).
                     let any_palette = self.state.overlay.show_goto_bar
                         || self.state.overlay.show_palette
                         || self.state.overlay.show_ext_palette;
-                    if !any_palette {
+                    let search_active = {
                         let tile = self.state.focused_tile;
-                        if self
-                            .state
+                        self.state
                             .tab_states
                             .get(&tile)
                             .is_some_and(|ts| ts.search.active)
-                        {
+                    };
+                    if !any_palette {
+                        let tile = self.state.focused_tile;
+                        if search_active {
                             self.close_search_in_place(tile);
                         }
+                    }
+                    let had_overlay = any_palette
+                        || search_active
+                        || self.breadcrumb_menu.is_some()
+                        || self.state.overlay.show_settings
+                        || self.state.ext.show_manager;
+                    self.breadcrumb_menu = None;
+                    self.breadcrumb_menu_input = None;
+                    self.breadcrumb_menu_sub = None;
+                    if self.state.overlay.show_settings {
+                        self.state.overlay.show_settings = false;
+                        self.settings_input = None;
                     }
                     // Goto dismisses with a fade-out: keep its view + input mounted and
                     // start the exit animation; `tick_palette_close` drops them when it
@@ -120,6 +240,9 @@ impl App {
                         self.state.overlay.show_goto_bar = false;
                         self.palette_closing =
                             Some((crate::ui::palette::PaletteKind::Goto, Instant::now()));
+                    }
+                    if self.state.overlay.show_palette {
+                        self.restore_theme_preview();
                     }
                     self.state.overlay.show_palette = false;
                     self.palette_input = None;
@@ -143,7 +266,10 @@ impl App {
                     }
 
                     // Esc also collapses an expanded image preview.
-                    self.collapse_preview_expanded();
+                    let preview_collapsed = self.collapse_preview_expanded();
+                    if !had_overlay && !preview_collapsed {
+                        self.clear_focused_selection();
+                    }
                 }
                 Action::SubmitExtPalette(selection) => {
                     self.state.overlay.show_ext_palette = false;
@@ -154,6 +280,9 @@ impl App {
                     }
                 }
                 Action::OpenGotoBar => {
+                    if self.state.overlay.show_palette {
+                        self.restore_theme_preview();
+                    }
                     self.state.overlay.show_goto_bar = true;
                     self.state.overlay.show_palette = false;
                     self.state.overlay.goto_state.reset();
@@ -278,11 +407,22 @@ impl App {
                         }
                     }
                 }
+                Action::ToggleFoldersFirstFocused => {
+                    let tile = self.state.focused_tile;
+                    self.process_actions([Action::ToggleFoldersFirst(tile)]);
+                }
+                Action::ToggleShowFilesFocused => {
+                    let tile = self.state.focused_tile;
+                    self.process_actions([Action::ToggleShowFiles(tile)]);
+                }
+                Action::ToggleShowFoldersFocused => {
+                    let tile = self.state.focused_tile;
+                    self.process_actions([Action::ToggleShowFolders(tile)]);
+                }
                 Action::ClosePalette => {
+                    self.restore_theme_preview();
                     self.state.overlay.show_palette = false;
-                    self.state.overlay.show_goto_bar = false;
                     self.palette_closing = None;
-                    self.goto_input = None;
                     self.palette_input = None;
                     self.command_shortcut_capture = None;
                     self.palette_host = None;
@@ -334,6 +474,43 @@ impl App {
                     }
                     self.state.focused_tile = tile;
                 }
+                Action::MoveSelection { target, extend } => match target {
+                    SelectionMove::Previous => self.nav_up(extend),
+                    SelectionMove::Next => self.nav_down(extend),
+                    SelectionMove::First => self.nav_home(extend),
+                    SelectionMove::Last => self.nav_end(extend),
+                    SelectionMove::PageUp => self.nav_page(false, extend),
+                    SelectionMove::PageDown => self.nav_page(true, extend),
+                },
+                Action::OpenCursor => self.open_cursor(),
+                Action::OpenSelectedDirsInNewTabs => {
+                    let focused = self.state.focused_tile;
+                    let pane = self
+                        .state
+                        .find_tabs_container(focused)
+                        .or_else(|| self.state.find_any_tabs_container())
+                        .unwrap_or(focused);
+                    let dirs: Vec<PathBuf> = self
+                        .state
+                        .tab_states
+                        .get(&focused)
+                        .map(|ts| {
+                            ts.selection
+                                .selected
+                                .iter()
+                                .filter_map(|&idx| {
+                                    ts.entries.get(idx).and_then(|entry| {
+                                        matches!(entry.kind, FileKind::Dir)
+                                            .then(|| entry.path.clone())
+                                    })
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    for path in dirs {
+                        self.new_tab_with_path(pane, path);
+                    }
+                }
                 Action::Activate { tile, idx } => {
                     let entry = self
                         .state
@@ -384,7 +561,19 @@ impl App {
                     }
                 }
                 Action::SelectAll => {
+                    let tile = self.state.focused_tile;
+                    let is_miller = self
+                        .tab_data_for(tile)
+                        .is_some_and(|tab| tab.view_mode == ViewMode::Miller);
                     if let Some(ts) = self.state.active_tab_state_mut() {
+                        if is_miller {
+                            if let Some(col) = ts.miller.columns.get_mut(ts.miller.focused) {
+                                col.selection.selected = (0..col.entries.len()).collect();
+                                col.selection.keyboard_cursor =
+                                    col.selection.selected.iter().next().copied();
+                            }
+                            continue;
+                        }
                         ts.selection.selected = ts.visible_indices().iter().copied().collect();
                         ts.selection.keyboard_cursor = ts.selection.selected.iter().next().copied();
                     }
@@ -431,7 +620,12 @@ impl App {
                         self.set_clipboard_with_remote(paths, false, Some(remote_id));
                         continue;
                     }
-                    self.set_clipboard(paths, false);
+                    let (selected, target_names) = self.selected_paths_with_target_names();
+                    if selected == paths {
+                        self.set_clipboard_with_names(paths, target_names, false);
+                    } else {
+                        self.set_clipboard(paths, false);
+                    }
                 }
                 Action::Cut(paths) => {
                     #[cfg(feature = "cloud")]
@@ -439,7 +633,12 @@ impl App {
                         self.set_clipboard_with_remote(paths, true, Some(remote_id));
                         continue;
                     }
-                    self.set_clipboard(paths, true);
+                    let (selected, target_names) = self.selected_paths_with_target_names();
+                    if selected == paths {
+                        self.set_clipboard_with_names(paths, target_names, true);
+                    } else {
+                        self.set_clipboard(paths, true);
+                    }
                 }
                 Action::CompressToZip(paths) => {
                     self.compress_to_zip(paths);
@@ -533,9 +732,76 @@ impl App {
                     let path = parent.join(&name);
                     self.create_dir(path);
                 }
+                Action::CreateFolderFocused => {
+                    if let Some(dir) = self
+                        .state
+                        .active_tab_data()
+                        .and_then(|t| t.location.fs_dir().map(PathBuf::from))
+                    {
+                        let tile = self.state.focused_tile;
+                        let name = unique_child_name(&dir, &rust_i18n::t!("root_new_folder"));
+                        let path = dir.join(&name);
+                        self.pending_select = Some((tile, path.clone()));
+                        self.pending_rename = Some((tile, path, true));
+                        self.process_actions([Action::CreateFolder { parent: dir, name }]);
+                    }
+                }
                 Action::CreateFile { parent, name } => {
                     let path = parent.join(&name);
-                    let _ = std::fs::File::create(&path);
+                    self.create_file(path);
+                }
+                Action::CreateFileFocused => {
+                    if let Some(dir) = self
+                        .state
+                        .active_tab_data()
+                        .and_then(|t| t.location.fs_dir().map(PathBuf::from))
+                    {
+                        let tile = self.state.focused_tile;
+                        let name = unique_child_name(&dir, &rust_i18n::t!("root_new_file"));
+                        let path = dir.join(&name);
+                        self.pending_select = Some((tile, path.clone()));
+                        self.pending_rename = Some((tile, path, true));
+                        self.process_actions([Action::CreateFile { parent: dir, name }]);
+                    }
+                }
+                Action::RenameFocused => {
+                    let tile = self.state.focused_tile;
+                    if let Some(path) = self.selected_paths().into_iter().next() {
+                        self.pending_rename = Some((tile, path, false));
+                    }
+                }
+                Action::OpenSelectedInNewWindow => {
+                    let target = self.selected_paths().into_iter().next().or_else(|| {
+                        self.state
+                            .active_tab_data()
+                            .and_then(|tab| tab.location.fs_dir().map(PathBuf::from))
+                    });
+                    if let Some(target) = target {
+                        if let Ok(exe) = std::env::current_exe() {
+                            let _ = std::process::Command::new(exe).arg(target).spawn();
+                        }
+                    }
+                }
+                Action::OpenSelectedDirInRightSplit | Action::OpenSelectedDirInBottomSplit => {
+                    let focused = self.state.focused_tile;
+                    let path = self.state.tab_states.get(&focused).and_then(|ts| {
+                        ts.selection.selected.iter().find_map(|&idx| {
+                            ts.entries.get(idx).and_then(|entry| {
+                                matches!(entry.kind, FileKind::Dir).then(|| entry.path.clone())
+                            })
+                        })
+                    });
+                    if let Some(path) = path {
+                        let tabs_id = self
+                            .state
+                            .find_tabs_container(focused)
+                            .or_else(|| self.state.find_any_tabs_container())
+                            .unwrap_or(focused);
+                        let vertical = matches!(action, Action::OpenSelectedDirInBottomSplit);
+                        self.split_pane(tabs_id, vertical);
+                        let new_pane = self.state.focused_tile;
+                        self.navigate(new_pane, path);
+                    }
                 }
                 Action::OpenTerminal { dir } => {
                     #[cfg(target_os = "linux")]
@@ -683,11 +949,28 @@ impl App {
                     }
                 }
                 Action::InvertSelection => {
+                    let tile = self.state.focused_tile;
+                    let is_miller = self
+                        .tab_data_for(tile)
+                        .is_some_and(|tab| tab.view_mode == ViewMode::Miller);
                     if let Some(ts) = self.state.active_tab_state_mut() {
-                        let n = ts.entries.len();
-                        let all: std::collections::HashSet<usize> = (0..n).collect();
-                        ts.selection.selected =
-                            all.difference(&ts.selection.selected).copied().collect();
+                        if is_miller {
+                            if let Some(col) = ts.miller.columns.get_mut(ts.miller.focused) {
+                                let all: std::collections::HashSet<usize> =
+                                    (0..col.entries.len()).collect();
+                                col.selection.selected =
+                                    all.difference(&col.selection.selected).copied().collect();
+                            }
+                            continue;
+                        }
+                        // Invert over the *visible* set (SelectAll already does),
+                        // otherwise an active filter selects hidden entries.
+                        let visible: std::collections::HashSet<usize> =
+                            ts.visible_indices().iter().copied().collect();
+                        ts.selection.selected = visible
+                            .difference(&ts.selection.selected)
+                            .copied()
+                            .collect();
                     }
                 }
                 Action::MillerInit { tile, location } => {
@@ -708,8 +991,14 @@ impl App {
                         self.spawn_miller_list(tile, loc);
                     }
                 }
-                Action::MillerSelect { tile, column, idx } => {
-                    self.miller_select(tile, column, idx);
+                Action::MillerSelect {
+                    tile,
+                    column,
+                    idx,
+                    shift,
+                    ctrl,
+                } => {
+                    self.miller_select(tile, column, idx, shift, ctrl);
                 }
                 Action::MillerActivate { tile, column, idx } => {
                     let info = self
@@ -721,7 +1010,7 @@ impl App {
                         .map(|e| (e.path.clone(), e.kind.clone()));
                     if let Some((path, kind)) = info {
                         if kind == FileKind::Dir {
-                            self.miller_select(tile, column, idx);
+                            self.miller_select(tile, column, idx, false, false);
                         } else {
                             self.spawn_open_files(vec![path]);
                         }
@@ -742,40 +1031,10 @@ impl App {
                 }
                 Action::SetViewMode(mode) => {
                     let tab = self.state.focused_tile;
-                    let mut folder_pref_write = None;
-                    if let Some(data) = self.state.active_tab_data_mut() {
-                        data.view_mode = mode.clone();
-                        if let atlas_model::location::Location::Directory(path) = &data.location {
-                            folder_pref_write = Some((
-                                path.clone(),
-                                atlas_model::profiles::FolderViewPref {
-                                    view_mode: mode.clone(),
-                                    sort_col: data.sort_col.clone(),
-                                    sort_dir: data.sort_dir.clone(),
-                                },
-                            ));
-                        }
-                    }
-                    self.save_folder_view_pref(folder_pref_write);
-                    // Leaving Miller can leave the canonical entries empty (Miller keeps
-                    // its data in its own columns); reload so the other views render.
-                    if mode != ViewMode::Miller {
-                        let needs_load = self
-                            .state
-                            .tab_states
-                            .get(&tab)
-                            .is_some_and(|ts| ts.entries.is_empty());
-                        if needs_load {
-                            if let Some(td) = self.tab_data_for(tab) {
-                                let loc = td.location.clone();
-                                let col = td.sort_col.clone();
-                                let dir = td.sort_dir.clone();
-                                self.dispatch_list(tab, loc, col, dir);
-                            }
-                        }
-                    }
+                    self.set_pane_view_mode(tab, mode);
                 }
                 Action::SetTheme(name) => self.set_theme(name),
+                Action::PreviewTheme(name) => self.preview_theme(name),
                 Action::SwitchProfile(idx) => self.switch_profile(idx),
                 Action::CreateProfile(name) => self.create_profile(name),
                 Action::RenameActiveProfile(name) => self.rename_active_profile(name),
@@ -903,6 +1162,16 @@ impl App {
                         .send(atlas_core::fs::tag_db::TagDbCmd::DeleteTag(tag));
                 }
                 Action::AssignTagToFiles { tag, paths } => {
+                    // Only real filesystem paths belong in the tag DB: archive/remote
+                    // entries are virtual and `$R` recycle payloads are transient.
+                    let paths: Vec<_> = paths
+                        .into_iter()
+                        .filter(|p| p.exists() && !atlas_core::fs::paths::is_recycle_bin_path(p))
+                        .collect();
+                    if paths.is_empty() {
+                        self.toast_error(rust_i18n::t!("tags_paths_blocked").into_owned());
+                        continue;
+                    }
                     self.state.tag_cache.assign_local(tag, &paths);
                     let _ = self
                         .tag_db_tx
@@ -921,6 +1190,7 @@ impl App {
                         .send(atlas_core::fs::tag_db::TagDbCmd::QueryPathsForTag(tag));
                 }
                 Action::OpenTagResults { pane, tag } => self.open_tag_results(pane, tag),
+                Action::OpenSpaceLens { pane, path } => self.open_space_lens(pane, path),
                 Action::ZoomIn => {
                     self.state.settings.global_zoom =
                         (self.state.settings.global_zoom * 1.1).min(3.0);
@@ -937,6 +1207,12 @@ impl App {
                     self.state.settings.global_zoom = 1.0;
                     atlas_core::util::config::save_settings(&self.state.settings);
                     self.theme_dirty = true;
+                }
+                Action::PaneContentZoomIn => {
+                    self.pane_ctrl_scroll(self.state.focused_tile, 1.0);
+                }
+                Action::PaneContentZoomOut => {
+                    self.pane_ctrl_scroll(self.state.focused_tile, -1.0);
                 }
                 Action::MountDevice(dev) => self.mount_device(dev),
                 Action::UnmountDevice(dev) => self.unmount_device(dev),
@@ -1026,6 +1302,14 @@ impl App {
     }
 }
 
+fn unique_child_name(dir: &std::path::Path, base: &str) -> String {
+    atlas_core::fs::transfer::unique_target(dir, std::ffi::OsStr::new(base))
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
+}
+
 impl App {
     pub(crate) fn close_search_in_place(&mut self, tile: atlas_model::layout_tree::TileId) {
         self.restore_search_original_entries(tile);
@@ -1069,10 +1353,10 @@ impl App {
             if let Some(ts) = self.state.tab_states.get_mut(&tile) {
                 ts.filter.clone_from(&query);
                 ts.visible_valid = false;
-                select_first_visible(ts);
                 ts.search.status = atlas_model::tab::SearchStatus::Ready;
                 ts.search.error = None;
             }
+            self.select_first_visible(tile);
             return;
         }
 
@@ -1126,17 +1410,5 @@ impl App {
         if let Some(entries) = ts.search.original_entries.take() {
             ts.set_entries(entries);
         }
-    }
-}
-
-fn select_first_visible(ts: &mut atlas_model::tab::TabState) {
-    let first = ts.visible_indices().first().copied();
-    ts.selection.clear();
-    if let Some(idx) = first {
-        ts.selection.selected.insert(idx);
-        ts.selection.keyboard_cursor = Some(idx);
-        ts.selection.selection_anchor = Some(idx);
-        ts.selection.last_clicked_index = Some(idx);
-        ts.selection.scroll_to_selected = true;
     }
 }

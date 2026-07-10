@@ -11,13 +11,16 @@
 //!   - Focus is claimed by `overlay_focus.rs` → `overlay_focus_target`.
 
 use crate::app::App;
-use crate::ui::icons::file_type_icon;
+use crate::ui::icons::{file_type_icon, icon, AtlasIcon};
 use atlas_model::file_entry::FileKind;
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
-use gpui::{div, px, AnyElement, Context, MouseButton, Pixels, Point, SharedString, Window};
+use gpui::{
+    div, px, AnimationExt, AnyElement, Context, MouseButton, Pixels, Point, SharedString, Window,
+};
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::{v_flex, ActiveTheme, Sizable as _};
+use gpui_component::{h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable as _};
+use std::collections::HashMap;
 
 const SCROLLBAR_GUTTER: f32 = 16.0;
 
@@ -26,8 +29,16 @@ pub(crate) struct TypeFilterMenuState {
     pub pane: TabId,
     /// Window-relative position of the click that opened the overlay.
     pub anchor: Point<Pixels>,
-    /// All unique type labels for the current pane (pre-computed on open).
-    pub labels: Vec<String>,
+    /// All unique type rows for the current pane (pre-computed on open).
+    pub items: Vec<TypeFilterItem>,
+}
+
+#[derive(Clone)]
+pub(crate) struct TypeFilterItem {
+    pub label: String,
+    pub count: usize,
+    pub kind: FileKind,
+    pub ext: Option<String>,
 }
 
 impl App {
@@ -40,7 +51,10 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let input = crate::ui::text_input::single_line(window, cx, "Buscar tipo…", "");
+        self.close_ctx_menu(cx);
+        let items = self.type_filter_items(pane, labels);
+        let placeholder = rust_i18n::t!("type_filter_placeholder", count = items.len()).to_string();
+        let input = crate::ui::text_input::single_line(window, cx, &placeholder, "");
         self.type_filter_sub = Some(cx.subscribe(
             &input,
             |_this, _input, ev: &gpui_component::input::InputEvent, cx| {
@@ -53,9 +67,50 @@ impl App {
         self.type_filter_menu = Some(TypeFilterMenuState {
             pane,
             anchor,
-            labels,
+            items,
         });
         cx.notify();
+    }
+
+    fn type_filter_items(&self, pane: TabId, labels: Vec<String>) -> Vec<TypeFilterItem> {
+        let mut by_label: HashMap<String, TypeFilterItem> = labels
+            .into_iter()
+            .map(|label| {
+                (
+                    label.clone(),
+                    TypeFilterItem {
+                        label,
+                        count: 0,
+                        kind: FileKind::File,
+                        ext: None,
+                    },
+                )
+            })
+            .collect();
+        if let Some(ts) = self.state.tab_states.get(&pane) {
+            for entry in ts.entries.iter() {
+                let label = crate::ui::views::details::entry_type_label(entry);
+                let item = by_label
+                    .entry(label.clone())
+                    .or_insert_with(|| TypeFilterItem {
+                        label,
+                        count: 0,
+                        kind: entry.kind.clone(),
+                        ext: entry.extension.clone(),
+                    });
+                item.count += 1;
+                if item.ext.is_none() {
+                    item.kind = entry.kind.clone();
+                    item.ext = entry.extension.clone();
+                }
+            }
+        }
+        let mut items: Vec<_> = by_label
+            .into_values()
+            .filter(|item| item.count > 0)
+            .collect();
+        items.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.label.cmp(&b.label)));
+        items
     }
 
     /// Close the type-filter overlay.
@@ -76,7 +131,7 @@ impl App {
             return div().into_any_element();
         };
         let pane = state.pane;
-        let labels = state.labels.clone();
+        let items = state.items.clone();
         let anchor = state.anchor;
 
         let (popover, fg, muted, border, accent, accent_fg) = {
@@ -98,25 +153,31 @@ impl App {
             .unwrap_or_default();
 
         let type_filter = self.type_filters.get(&pane).cloned().unwrap_or_default();
+        let (smooth_ease, smooth_boost) =
+            crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
+        self.type_filter_scroll
+            .set_smooth(smooth_ease, smooth_boost);
 
         // Clamp the panel into the window.
         let win = window.bounds().size;
-        const W: f32 = 260.;
-        let row_h = 28_f32;
-        let visible_labels: Vec<String> = labels
+        const W: f32 = 340.;
+        let row_h = 30_f32;
+        let visible_items: Vec<TypeFilterItem> = items
             .iter()
-            .filter(|l| query.is_empty() || l.to_lowercase().contains(&query))
+            .filter(|item| query.is_empty() || item.label.to_lowercase().contains(&query))
             .cloned()
             .collect();
-        // +1 for "Todos", +1 for search input row, small padding.
-        let est_h = visible_labels.len() as f32 * row_h + row_h + 52.0;
+        const MAX_H: f32 = 640.;
+        const V_MARGIN: f32 = 72.;
+        const INPUT_H: f32 = 40.;
+        let content_h = (visible_items.len() as f32 + 1.0) * row_h + 8.0;
         let ax = f32::from(anchor.x);
         let ay = f32::from(anchor.y);
         let ww = f32::from(win.width);
         let wh = f32::from(win.height);
-        let max_h = 520.0_f32.min((wh - 72.0 * 2.0).max(140.0));
-        let panel_h = est_h.clamp(row_h * 4.0, max_h);
-        let list_h = (panel_h - 44.0).max(row_h * 2.0);
+        let max_h = MAX_H.min((wh - V_MARGIN * 2.0).max(180.0));
+        let panel_h = (content_h + INPUT_H).min(max_h);
+        let list_h = panel_h - INPUT_H;
         let left = ax.min((ww - W - 6.0).max(6.0)).max(6.0);
         let top = ay.min((wh - panel_h - 6.0).max(6.0)).max(6.0);
 
@@ -129,14 +190,17 @@ impl App {
         // "Todos los tipos" row.
         let all_checked = type_filter.is_empty();
         let v_all = view.clone();
+        let total_count = items.iter().map(|item| item.count).sum();
         rows.push(
             type_filter_row(
                 SharedString::from("tf-all"),
                 None,
                 &rust_i18n::t!("all_types"),
+                total_count,
                 all_checked,
                 fg,
                 muted,
+                border,
                 accent,
                 accent_fg,
             )
@@ -149,66 +213,24 @@ impl App {
             .into_any_element(),
         );
 
-        // Separator.
-        rows.push(
-            div()
-                .h(px(1.))
-                .w_full()
-                .my(px(2.))
-                .bg(border)
-                .into_any_element(),
-        );
-
         // One row per matching label.
-        for label in &visible_labels {
-            let label = label.clone();
+        for item in &visible_items {
+            let label = item.label.clone();
             let checked = type_filter.contains(&label);
             let v = view.clone();
             let lc = label.clone();
-
-            // Derive kind + representative ext for the icon.
-            let (kind, ext_opt): (FileKind, Option<String>) =
-                if label == rust_i18n::t!("file_kind_folder") {
-                    (FileKind::Dir, None)
-                } else if label == rust_i18n::t!("file_kind_symlink") {
-                    (FileKind::Symlink, None)
-                } else if label.starts_with('.') {
-                    (FileKind::File, Some(label[1..].to_string()))
-                } else {
-                    let ext = if label == rust_i18n::t!("file_kind_image") {
-                        Some("png")
-                    } else if label == rust_i18n::t!("file_kind_audio") {
-                        Some("mp3")
-                    } else if label == rust_i18n::t!("file_kind_video") {
-                        Some("mp4")
-                    } else if label == rust_i18n::t!("file_kind_code") {
-                        Some("rs")
-                    } else if label == rust_i18n::t!("file_kind_archive") {
-                        Some("zip")
-                    } else if label == rust_i18n::t!("file_kind_document") {
-                        Some("pdf")
-                    } else if label == rust_i18n::t!("file_kind_spreadsheet") {
-                        Some("xlsx")
-                    } else if label == rust_i18n::t!("file_kind_presentation") {
-                        Some("pptx")
-                    } else if label == rust_i18n::t!("file_kind_application") {
-                        Some("exe")
-                    } else {
-                        None
-                    };
-                    (FileKind::File, ext.map(|s| s.to_string()))
-                };
-
-            let icon_el = Some(file_type_icon(&kind, ext_opt.as_deref(), 14.));
+            let icon_el = Some(file_type_icon(&item.kind, item.ext.as_deref(), 16.));
 
             rows.push(
                 type_filter_row(
                     SharedString::from(format!("tf-{}", lc)),
                     icon_el,
                     &label,
+                    item.count,
                     checked,
                     fg,
                     muted,
+                    border,
                     accent,
                     accent_fg,
                 )
@@ -231,63 +253,82 @@ impl App {
             );
         }
 
-        let close_view = view.clone();
+        let input_row = input.as_ref().map(|state| {
+            h_flex()
+                .w_full()
+                .px_2()
+                .py_1()
+                .gap_2()
+                .border_b_1()
+                .border_color(border)
+                .items_center()
+                .child(icon(AtlasIcon::Search, 14., muted))
+                .child(div().flex_1().child(crate::ui::text_input::flat(state)))
+        });
 
-        // Full-window backdrop (click-to-close).
-        div()
+        let panel = v_flex()
+            .id("type-filter-panel")
             .absolute()
-            .inset_0()
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                close_view.update(cx, |this, cx| {
-                    this.close_type_filter_menu(cx);
-                });
-            })
-            // The panel itself (stop propagation so clicks inside don't close it).
+            .left(px(left))
+            .top(px(top))
+            .w(px(W))
+            .h(px(panel_h))
+            .bg(popover)
+            .text_color(fg)
+            .border_1()
+            .border_color(border)
+            .rounded_lg()
+            .shadow_lg()
+            .occlude()
+            .overflow_hidden()
+            .children(input_row)
             .child(
-                v_flex()
-                    .absolute()
-                    .left(px(left))
-                    .top(px(top))
-                    .w(px(W))
-                    .h(px(panel_h))
-                    .bg(popover)
-                    .border_1()
-                    .border_color(border)
-                    .rounded(px(crate::ui::RADIUS))
-                    .shadow_lg()
-                    .py_1()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation();
-                    })
-                    // Search input.
-                    .when_some(input, |el, input| {
-                        el.child(
-                            div()
-                                .px_2()
-                                .py_1()
-                                .child(crate::ui::text_input::bordered(&input)),
-                        )
-                    })
-                    // Scrollable list.
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .max_h(px(list_h))
                     .child(
-                        div()
-                            .relative()
-                            .flex_1()
-                            .min_h(px(0.))
-                            .max_h(px(list_h))
-                            .child(
-                                v_flex()
-                                    .id("type-filter-list")
-                                    .size_full()
-                                    .overflow_y_scroll()
-                                    .track_scroll(&self.type_filter_scroll)
-                                    .pr(px(SCROLLBAR_GUTTER))
-                                    .children(rows),
-                            )
-                            .vertical_scrollbar(&self.type_filter_scroll),
-                    ),
+                        v_flex()
+                            .id("type-filter-list")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.type_filter_scroll)
+                            .py_1()
+                            .pr(px(SCROLLBAR_GUTTER))
+                            .children(rows),
+                    )
+                    .vertical_scrollbar(&self.type_filter_scroll),
             )
-            .into_any_element()
+            .with_animation(
+                SharedString::from("type-filter-panel-appear"),
+                crate::ui::motion::animation(crate::ui::motion::MICRO_MS),
+                |this, t| this.opacity(t).mt(px(5.0 * (1.0 - t))),
+            );
+
+        let v = view.clone();
+        gpui::deferred(
+            div()
+                .id("type-filter-scrim")
+                .absolute()
+                .inset_0()
+                .size_full()
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    v.update(cx, |this, cx| {
+                        this.close_type_filter_menu(cx);
+                    });
+                })
+                .on_mouse_down(MouseButton::Right, {
+                    let v = view.clone();
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.close_type_filter_menu(cx);
+                        });
+                    }
+                })
+                .child(panel),
+        )
+        .into_any_element()
     }
 }
 
@@ -297,14 +338,16 @@ fn type_filter_row(
     id: SharedString,
     icon: Option<AnyElement>,
     label: &str,
+    count: usize,
     checked: bool,
     fg: gpui::Hsla,
     muted: gpui::Hsla,
+    border: gpui::Hsla,
     accent: gpui::Hsla,
     accent_fg: gpui::Hsla,
 ) -> gpui::Stateful<gpui::Div> {
-    let (bg, text, check_color) = if checked {
-        (accent, accent_fg, accent_fg)
+    let (bg, text, count_color) = if checked {
+        (accent.opacity(0.92), accent_fg, accent_fg.opacity(0.9))
     } else {
         (gpui::transparent_black(), fg, muted)
     };
@@ -315,13 +358,35 @@ fn type_filter_row(
         .items_center()
         .gap_2()
         .px_2()
-        .h(px(28.))
+        .h(px(30.))
         .bg(bg)
         .text_color(text)
         .text_sm()
-        .rounded(px(4.))
-        .hover(|s| s.opacity(0.85))
+        .rounded(px(6.))
+        .hover(move |s| s.bg(if checked { bg } else { border.opacity(0.5) }))
         .cursor_pointer()
+        .child(
+            div()
+                .size(px(16.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(3.))
+                .border_1()
+                .border_color(if checked {
+                    accent_fg.opacity(0.75)
+                } else {
+                    border
+                })
+                .when(checked, |el| {
+                    el.child(
+                        Icon::new(IconName::Check)
+                            .with_size(gpui_component::Size::XSmall)
+                            .text_color(accent_fg),
+                    )
+                }),
+        )
         .when_some(icon, |el, icon| el.child(icon))
         .child(
             div()
@@ -330,11 +395,11 @@ fn type_filter_row(
                 .truncate()
                 .child(SharedString::from(label.to_string())),
         )
-        .when(checked, |el| {
-            el.child(
-                gpui_component::Icon::new(gpui_component::IconName::Check)
-                    .with_size(gpui_component::Size::XSmall)
-                    .text_color(check_color),
-            )
-        })
+        .child(
+            div()
+                .min_w(px(24.))
+                .text_right()
+                .text_color(count_color)
+                .child(SharedString::from(count.to_string())),
+        )
 }

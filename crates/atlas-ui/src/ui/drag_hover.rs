@@ -49,6 +49,8 @@ pub(crate) enum DragHoverDropCommand {
     AssignTag(TagId),
     StageInSidebar,
     TransferTo(PathBuf),
+    /// Send the dropped paths to the OS trash (drop on the Recycle Bin).
+    TrashPaths,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -229,7 +231,19 @@ impl App {
     }
 
     pub(crate) fn tick_drag_hover(&mut self, cx: &mut Context<Self>) {
-        let dirty = self.tick_drag_hover_inner();
+        #[cfg(windows)]
+        if let Some((x, y)) = self
+            .dnd
+            .as_ref()
+            .and_then(|d| d.zones.lock().ok().and_then(|z| z.cursor))
+        {
+            self.drag_hover_set_cursor(gpui::point(gpui::px(x), gpui::px(y)));
+        }
+        let mut dirty = self.tick_drag_hover_inner();
+        #[cfg(windows)]
+        {
+            dirty |= self.drain_dnd_queue();
+        }
         // During a Windows OLE drag the modal `DoDragDrop` loop starves gpui's
         // async 60 Hz drain, so spawn_list results and scroll offsets are applied
         // but never repainted. This canvas DOES run each frame (WM_PAINT is still
@@ -385,6 +399,13 @@ impl App {
                         self.tab_data_for(*pane)
                             .and_then(|tab| match &tab.location {
                                 Location::Tag(tag) => Some(DragHoverDropCommand::AssignTag(*tag)),
+                                Location::RecycleBin => Some(DragHoverDropCommand::TrashPaths),
+                                #[cfg(feature = "cloud")]
+                                Location::Remote { id, path } => {
+                                    Some(DragHoverDropCommand::TransferTo(
+                                        crate::app::cloud::remote_sentinel(id, path),
+                                    ))
+                                }
                                 _ => None,
                             })
                     })
@@ -437,6 +458,12 @@ impl App {
                     paths
                         .into_iter()
                         .filter(|path| !existing.contains(path))
+                        // Only stage real filesystem paths: virtual (archive/remote)
+                        // entries make dead chips, and `$R` recycle payloads would
+                        // later "place" with mangled names.
+                        .filter(|path| {
+                            path.exists() && !atlas_core::fs::paths::is_recycle_bin_path(path)
+                        })
                         .map(|path| atlas_model::app_state::StagedDrop { path, from_self }),
                 );
                 self.cancel_dropzone_file_drag();
@@ -449,6 +476,7 @@ impl App {
                 self.clear_committed_dropzone_drag(&paths);
                 self.process_actions(vec![Action::Transfer(TransferRequest {
                     sources: paths,
+                    target_names: None,
                     dest,
                     kind: if effect.is_move() {
                         TransferKind::Move
@@ -462,6 +490,13 @@ impl App {
                         TransferOrigin::DndExternal
                     },
                 })]);
+            }
+            DragHoverDropCommand::TrashPaths => {
+                self.clear_committed_dropzone_drag(&paths);
+                // Direct call (not Action::Delete): that action re-routes by the
+                // *focused* tab and would purge instead of trash when a recycle
+                // pane happens to hold focus.
+                self.delete_files(paths, true);
             }
         }
     }
@@ -490,7 +525,23 @@ impl App {
                     self.process_actions(vec![Action::Move { paths, dest }]);
                 }
             }
-            _ => {}
+            Location::RecycleBin => {
+                self.clear_committed_dropzone_drag(&paths);
+                self.delete_files(paths, true);
+            }
+            Location::Archive { .. } => {
+                // Writing into archives isn't supported yet — say so instead of
+                // swallowing the drop.
+                self.toast_error(rust_i18n::t!("dnd_archive_drop_blocked").into_owned());
+            }
+            #[cfg(feature = "cloud")]
+            Location::Remote { id, path } => {
+                self.clear_committed_dropzone_drag(&paths);
+                // drop into a remote always uploads as copy; move-on-drop
+                // (delete local source) when someone asks for it.
+                let dest = crate::app::cloud::remote_sentinel(&id, &path);
+                self.try_remote_upload(&paths, &dest, false);
+            }
         }
     }
 

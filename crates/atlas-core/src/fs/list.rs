@@ -8,12 +8,25 @@ pub async fn list_dir(
     sort_dir: SortDir,
     folders_first: bool,
 ) -> anyhow::Result<Vec<FileEntry>> {
-    let dir = path.to_path_buf();
+    list_dir_with_preview(path, show_hidden, sort_col, sort_dir, folders_first, |_| {}).await
+}
+
+pub async fn list_dir_with_preview(
+    path: &Path,
+    show_hidden: bool,
+    sort_col: SortColumn,
+    sort_dir: SortDir,
+    folders_first: bool,
+    preview: impl FnOnce(Vec<FileEntry>) + Send + 'static,
+) -> anyhow::Result<Vec<FileEntry>> {
+    let dir = crate::fs::paths::normalize_wsl_unc_path(path.to_path_buf());
     // Single blocking call: `DirEntry::file_type()` and `DirEntry::metadata()` on
     // Windows reuse the WIN32_FIND_DATA already fetched by read_dir, so no extra
     // stat syscall per file (versus the previous N async symlink_metadata round-trips).
     let entries = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<FileEntry>> {
+        crate::fs::paths::ensure_wsl_ready(&dir)?;
         let mut entries = Vec::new();
+        let mut preview = Some(preview);
         for raw in std::fs::read_dir(&dir)? {
             let Ok(de) = raw else { continue };
             let path = de.path();
@@ -52,12 +65,20 @@ pub async fn list_dir(
                 extension,
                 display_size: String::new(),
                 display_date: String::new(),
+                // Resolved from kind/extension by the background formatter.
+                // SHGetFileInfoW can touch the shell for every distinct type and
+                // makes cold listings such as WinSxS unpredictably slow.
                 display_type: String::new(),
                 _is_hidden: is_hidden,
                 _is_symlink: is_symlink,
                 archive_root: None,
                 recycle_info: None,
             });
+            if entries.len() == 256 {
+                let mut first = entries.clone();
+                sort_entries(&mut first, &sort_col, &sort_dir, folders_first);
+                preview.take().unwrap()(first);
+            }
         }
         sort_entries(&mut entries, &sort_col, &sort_dir, folders_first);
         Ok(entries)
@@ -113,6 +134,7 @@ pub(crate) async fn entry_for_path(path: &Path) -> Option<FileEntry> {
     let modified = meta.modified().ok();
     let extension = path.extension().map(|e| e.to_string_lossy().to_lowercase());
     let name_lower = name.to_lowercase();
+    let display_type = platform_type_name(path).unwrap_or_default();
 
     Some(FileEntry {
         name,
@@ -124,11 +146,53 @@ pub(crate) async fn entry_for_path(path: &Path) -> Option<FileEntry> {
         extension,
         display_size: String::new(),
         display_date: String::new(),
-        display_type: String::new(),
+        display_type,
         _is_hidden: crate::util::display::is_hidden(path),
         _is_symlink: is_symlink,
         archive_root: None,
         recycle_info: None,
+    })
+}
+
+#[cfg(windows)]
+fn platform_type_name(path: &Path) -> Option<String> {
+    atlas_win_space::type_name_for_path(path)
+}
+
+#[cfg(not(windows))]
+fn platform_type_name(_path: &Path) -> Option<String> {
+    None
+}
+
+/// Quick, non-recursive stats for a folder-hover tooltip (Explorer-style): immediate
+/// children only, no descent into subfolders. Fast enough to run synchronously from
+/// the tooltip closure, on demand, only while actually hovering.
+pub struct FolderHoverStats {
+    pub created: Option<std::time::SystemTime>,
+    pub subfolders: usize,
+    pub subfiles: usize,
+    pub size: u64,
+}
+
+pub fn folder_hover_stats(path: &Path) -> Option<FolderHoverStats> {
+    let created = std::fs::metadata(path).ok().and_then(|m| m.created().ok());
+    let mut subfolders = 0usize;
+    let mut subfiles = 0usize;
+    let mut size = 0u64;
+    for entry in std::fs::read_dir(path).ok()?.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_dir() {
+            subfolders += 1;
+        } else if ft.is_file() {
+            subfiles += 1;
+            size += entry.metadata().map_or(0, |m| m.len());
+        }
+    }
+    Some(FolderHoverStats {
+        created,
+        subfolders,
+        subfiles,
+        size,
     })
 }
 
@@ -203,5 +267,27 @@ mod tests {
         sort_entries(&mut entries, &SortColumn::Name, &SortDir::Asc, false);
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["alpha", "midway", "zeta"]);
+    }
+
+    #[tokio::test]
+    async fn large_directory_emits_preview_before_full_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..300 {
+            std::fs::File::create(dir.path().join(format!("{i:03}.txt"))).unwrap();
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let entries = list_dir_with_preview(
+            dir.path(),
+            true,
+            SortColumn::Name,
+            SortDir::Asc,
+            true,
+            move |preview| tx.send(preview.len()).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(rx.recv().unwrap(), 256);
+        assert_eq!(entries.len(), 300);
     }
 }

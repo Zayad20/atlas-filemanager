@@ -26,7 +26,6 @@ use atlas_model::layout_tree::TileId;
 use atlas_model::preview_cache::{
     MultiPreviewState, PreviewRequest, PreviewResult, DIR_PREVIEW_LIMIT,
 };
-use atlas_model::profiles::PreviewFeature;
 use atlas_model::settings::ViewMode;
 use atlas_model::tab::TabState;
 use gpui::prelude::*;
@@ -114,7 +113,6 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let prefs = self.state.profiles.active().scoped::<PreviewFeature>();
         let same = self.preview_editor.as_ref().is_some_and(|e| e.path == path);
         if same {
             return true;
@@ -125,7 +123,7 @@ impl App {
             cx,
             gpui::SharedString::from(lang.to_string()),
             text,
-            prefs.show_line_numbers,
+            false,
         );
         let text_str = text.to_string();
         let sub = cx.subscribe_in(
@@ -147,8 +145,8 @@ impl App {
             path,
             cached_text: text_str,
             dirty: false,
-            editing: prefs.edit_mode,
-            line_numbers: prefs.show_line_numbers,
+            editing: true,
+            line_numbers: false,
             ln_needs_sync: false,
             _sub: sub,
         });
@@ -448,24 +446,33 @@ impl App {
             let t = cx.theme();
             (t.foreground, t.muted_foreground, t.border, t.danger)
         };
-        // FASE6: when `expanded` is set (Space), widen the inspector to most of the
-        // window so the zoomable image has room. The image-preview box dimensions are
-        // derived here and threaded down to `render_image_preview`.
+        // FASE6: expanded preview is rendered as an overlay by root.rs, so widening
+        // it here no longer pushes the main dock/sidebar during window resize.
         let expanded = self
             .preview_view
             .get(&self.state.focused_tile)
             .is_some_and(|v| v.expanded);
         let viewport = window.viewport_size();
         let width = if expanded {
-            (f32::from(viewport.width) * 0.9).max(360.0)
+            let max_width = (f32::from(viewport.width) - 32.0).max(260.0);
+            self.state
+                .settings
+                .inspector_width
+                .max(180.0)
+                .min(max_width)
         } else {
-            self.state.settings.inspector_width.max(180.0)
+            self.state
+                .settings
+                .inspector_width
+                .max(180.0)
+                .min((f32::from(viewport.width) - 96.0).max(180.0))
         };
         let box_w = (width - 24.0).max(80.0);
+        let available_h = (f32::from(viewport.height) - 190.0).max(360.0);
         let box_h = if expanded {
-            (f32::from(viewport.height) - 160.0).max(300.0)
+            (f32::from(viewport.height) - 120.0).max(520.0)
         } else {
-            420.0
+            available_h
         };
 
         let summary = self
@@ -482,7 +489,7 @@ impl App {
                 if figma_glass {
                     glass_fill()
                 } else {
-                    t.background
+                    backdrop_tint(t.secondary, 0.10)
                 },
                 t.border,
             )
@@ -492,13 +499,12 @@ impl App {
             .h_full()
             .text_color(fg)
             .bg(panel_bg)
-            .rounded(px(crate::ui::RADIUS))
+            .rounded(px(10.))
             .border_1()
-            .border_color(panel_border.opacity(if figma_glass { 0.22 } else { 0.45 }))
+            .border_color(panel_border.opacity(if figma_glass { 0.18 } else { 0.28 }))
             .when(figma_glass, |s| s.glass_surface(panel_bg))
-            .when(!figma_glass, |s| s.raised_surface())
-            .p_2()
-            .gap_2();
+            .p_3()
+            .gap_3();
 
         if summary.count == 0 {
             return col
@@ -526,11 +532,11 @@ impl App {
                     .child(
                         match self.icon_tex_for_entry(&entry.kind, entry.extension.as_deref()) {
                             Some(tex) => gpui::img(tex)
-                                .w(gpui::px(22.))
-                                .h(gpui::px(22.))
+                                .w(gpui::px(18.))
+                                .h(gpui::px(18.))
                                 .flex_none()
                                 .into_any_element(),
-                            None => file_type_icon(&entry.kind, entry.extension.as_deref(), 22.0),
+                            None => file_type_icon(&entry.kind, entry.extension.as_deref(), 18.0),
                         },
                     )
                     .child(
@@ -571,10 +577,7 @@ impl App {
         // Capture the single-selection path before the mutable borrows below.
         let single_path: Option<PathBuf> = summary.single.as_ref().map(|e| e.path.clone());
 
-        col = col.child(div().h(px(1.)).w_full().bg(border));
-
-        // ── Preview toolbar ──────────────────────────────────────────────────
-        col = col.child(self.render_preview_toolbar(muted, window, cx));
+        col = col.child(div().h(px(1.)).w_full().bg(border.opacity(0.35)));
 
         // ── Preview body ─────────────────────────────────────────────────────
         col = col.child(self.render_preview_body(muted, danger, box_w, box_h, window, cx));
@@ -588,115 +591,45 @@ impl App {
         col.into_any_element()
     }
 
-    /// Toolbar rendered just above the preview body. Shows buttons relevant to the
-    /// current preview kind (code editor controls for text/md, zoom controls for images).
-    fn render_preview_toolbar(
+    fn render_floating_preview_controls(
         &mut self,
-        muted: Hsla,
-        _window: &mut Window,
+        kind: PreviewKind,
+        copy_text: Option<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let tab = self.state.focused_tile;
-        let kind = match self.state.preview.results.get(&tab) {
-            None => return div().into_any_element(),
-            Some(PreviewResult::Text { .. }) => PreviewKind::Text,
-            Some(PreviewResult::Markdown { .. }) => PreviewKind::Markdown,
-            Some(PreviewResult::Image { .. }) => PreviewKind::Image,
-            Some(PreviewResult::Pdf { .. }) => PreviewKind::Pdf,
-            Some(PreviewResult::Table { .. }) => PreviewKind::Table,
-            Some(PreviewResult::Document { .. }) => PreviewKind::Document,
-            Some(PreviewResult::Presentation { .. }) => PreviewKind::Presentation,
-            _ => return div().into_any_element(),
-        };
-
-        let (surface, border, fg) = {
-            let t = cx.theme();
-            (t.secondary, t.border, t.foreground)
-        };
-
-        let view = cx.entity();
-
-        let is_code = matches!(kind, PreviewKind::Text | PreviewKind::Markdown);
         let is_image = matches!(kind, PreviewKind::Image | PreviewKind::Pdf);
-
-        let dirty = self.preview_editor.as_ref().is_some_and(|e| e.dirty);
-        let editing = self.preview_editor.as_ref().is_some_and(|e| e.editing);
-        let line_numbers = self.preview_editor.as_ref().is_some_and(|e| e.line_numbers);
-
-        let mut bar = h_flex()
-            .w_full()
-            .px_1()
-            .py(px(2.))
-            .gap_1()
-            .bg(layer_color(surface, 0.03, 0.88))
-            .border_1()
-            .border_color(layer_color(border, 0.05, 0.45))
-            .rounded(px(crate::ui::RADIUS))
-            .raised_surface()
-            .items_center();
-
-        if is_code {
-            // ── Save button ─────────────────────────────────────────────────
-            let v_save = view.clone();
-            let save_label = if dirty {
-                rust_i18n::t!("save_dirty").into_owned()
-            } else {
-                rust_i18n::t!("save").into_owned()
-            };
-            bar = bar.child(
-                toolbar_text_button("tb-save", &save_label, !dirty || !editing, fg, muted)
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        v_save.update(cx, |this, _cx| {
-                            this.process_actions(vec![Action::SavePreviewFile]);
-                        });
-                    }),
-            );
-
-            // ── Toggle edit mode ────────────────────────────────────────────
-            let v_edit = view.clone();
-            let edit_label = if editing {
-                rust_i18n::t!("view_mode").into_owned()
-            } else {
-                rust_i18n::t!("edit_mode").into_owned()
-            };
-            let edit_color = if editing { fg } else { muted };
-            bar = bar.child(
-                toolbar_text_button("tb-edit", &edit_label, false, edit_color, muted)
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        v_edit.update(cx, |this, _cx| {
-                            this.process_actions(vec![Action::TogglePreviewEditMode]);
-                        });
-                    }),
-            );
-
-            // ── Toggle line numbers ─────────────────────────────────────────
-            let v_ln = view.clone();
-            let ln_color = if line_numbers { fg } else { muted };
-            bar = bar.child(
-                toolbar_icon_button(
-                    "tb-ln",
-                    gpui_component::IconName::Menu,
-                    &rust_i18n::t!("toggle_lines").into_owned(),
-                    false,
-                    ln_color,
-                    muted,
-                )
-                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    v_ln.update(cx, |this, _cx| {
-                        this.process_actions(vec![Action::TogglePreviewLineNumbers]);
-                    });
-                }),
-            );
+        if !is_image && copy_text.is_none() {
+            return div().into_any_element();
         }
 
+        let (surface, border, fg, muted) = {
+            let t = cx.theme();
+            (t.secondary, t.border, t.foreground, t.muted_foreground)
+        };
+        let view = cx.entity();
+
+        let mut bar = h_flex()
+            .absolute()
+            .top(px(10.))
+            .right(px(10.))
+            .gap_1()
+            .items_center()
+            .p(px(3.))
+            .rounded(px(999.))
+            .bg(layer_color(surface, 0.06, 0.72))
+            .border_1()
+            .border_color(border.opacity(0.24))
+            .raised_surface()
+            .invisible()
+            .group_hover("preview-surface", gpui::Styled::visible);
+
         if is_image {
-            // ── Zoom out ────────────────────────────────────────────────────
             let v_zo = view.clone();
             bar = bar.child(
-                toolbar_icon_button(
-                    "tb-zout",
+                floating_icon_button(
+                    "float-zout",
                     gpui_component::IconName::Minus,
-                    "−",
+                    rust_i18n::t!("inspector_preview_zoom_out").to_string(),
                     false,
                     fg,
                     muted,
@@ -708,13 +641,12 @@ impl App {
                 }),
             );
 
-            // ── Zoom fit ─────────────────────────────────────────────────────
             let v_fit = view.clone();
             bar = bar.child(
-                toolbar_icon_button(
-                    "tb-fit",
-                    gpui_component::IconName::Minimize,
-                    &rust_i18n::t!("fit_to_screen").into_owned(),
+                floating_icon_button(
+                    "float-fit",
+                    gpui_component::IconName::Maximize,
+                    rust_i18n::t!("inspector_preview_zoom_fit").to_string(),
                     false,
                     fg,
                     muted,
@@ -726,13 +658,12 @@ impl App {
                 }),
             );
 
-            // ── Zoom in ──────────────────────────────────────────────────────
             let v_zi = view.clone();
             bar = bar.child(
-                toolbar_icon_button(
-                    "tb-zin",
+                floating_icon_button(
+                    "float-zin",
                     gpui_component::IconName::Plus,
-                    "+",
+                    rust_i18n::t!("inspector_preview_zoom_in").to_string(),
                     false,
                     fg,
                     muted,
@@ -743,11 +674,14 @@ impl App {
                     });
                 }),
             );
+        }
 
-            // Show current zoom level.
-            let pv = self.preview_view_for_focused();
-            let zoom_label = format!("{:.0}%", pv.zoom * 100.0);
-            bar = bar.child(div().text_xs().text_color(muted).px_1().child(zoom_label));
+        if let Some(text) = copy_text {
+            bar = bar.child(
+                gpui_component::clipboard::Clipboard::new("preview-copy")
+                    .value(text)
+                    .tooltip(rust_i18n::t!("inspector_preview_copy").to_string()),
+            );
         }
 
         bar.into_any_element()
@@ -999,10 +933,9 @@ impl App {
     }
 
     /// Code/text preview with real syntax highlighting via gpui-component's code editor.
-    /// The editor starts read-only (`.disabled`); the toolbar's edit-mode toggle enables editing.
     fn render_text_preview(
         &mut self,
-        muted: Hsla,
+        _muted: Hsla,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1023,101 +956,61 @@ impl App {
         // Ensure the editor entity exists (creates lazily or on file change).
         self.ensure_preview_editor(path, &raw, lang, window, cx);
 
-        // Sync line-number setting into InputState if it was toggled.
-        if let Some(editor) = &mut self.preview_editor {
-            if editor.ln_needs_sync {
-                editor.ln_needs_sync = false;
-                let ln = editor.line_numbers;
-                editor.state.update(cx, |s, cx| {
-                    s.set_line_number(ln, window, cx);
-                });
-            }
-        }
-
         let Some(editor) = self.preview_editor.as_ref() else {
             return div().into_any_element();
         };
 
         let state_ref = editor.state.clone();
-        let editing = editor.editing;
         let raw_for_copy = raw.clone();
+
+        let (surface, border) = {
+            let t = cx.theme();
+            (t.secondary, t.border)
+        };
 
         v_flex()
             .id("inspector-text")
+            .group("preview-surface")
+            .relative()
             .flex_1()
             .min_h(px(0.))
             .gap_0()
+            .bg(layer_color(surface, -0.02, 0.30))
+            .border_1()
+            .border_color(border.opacity(0.18))
+            .rounded(px(10.))
+            .overflow_hidden()
             .child(
                 gpui_component::input::Input::new(&state_ref)
                     .h_full()
-                    .disabled(!editing)
                     .appearance(false),
             )
-            .child(Self::copy_button(raw_for_copy, muted, cx))
-            .into_any_element()
-    }
-
-    /// A floating icon button that writes `text` to the system clipboard.
-    fn copy_button(text: String, _muted: Hsla, _cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .absolute()
-            .top(px(8.))
-            .right(px(8.))
-            .child(gpui_component::clipboard::Clipboard::new("preview-copy").value(text))
+            .child(self.render_floating_preview_controls(PreviewKind::Text, Some(raw_for_copy), cx))
             .into_any_element()
     }
 
     fn render_markdown_preview(
         &mut self,
-        muted: Hsla,
-        window: &mut Window,
+        _muted: Hsla,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tab = self.state.focused_tile;
-        let (source, path) = match self.state.preview.results.get(&tab) {
-            Some(PreviewResult::Markdown { source, .. }) => (
-                source.clone(),
-                self.state
-                    .preview
-                    .paths
-                    .get(&tab)
-                    .cloned()
-                    .unwrap_or_else(|| PathBuf::from("<preview>")),
-            ),
+        let source = match self.state.preview.results.get(&tab) {
+            Some(PreviewResult::Markdown { source, .. }) => source.clone(),
             _ => return div().into_any_element(),
         };
-
-        // Check if the user has toggled edit mode; if so, render the code editor instead.
-        let editing = self
-            .preview_editor
-            .as_ref()
-            .map(|e| e.editing)
-            .unwrap_or(false);
-
-        if editing {
-            // Ensure a markdown code editor exists for this file.
-            self.ensure_preview_editor(path, &source, "markdown", window, cx);
-            if let Some(editor) = &self.preview_editor {
-                let state_ref = editor.state.clone();
-                return v_flex()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .child(
-                        gpui_component::input::Input::new(&state_ref)
-                            .h_full()
-                            .appearance(false),
-                    )
-                    .into_any_element();
-            }
-        }
+        let (smooth_ease, smooth_boost) =
+            crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
 
         v_flex()
             .flex_1()
             .min_h(px(0.))
             .child(
                 div()
-                    .relative()
                     .id("inspector-md")
+                    .group("preview-surface")
+                    .relative()
                     .flex_1()
                     .min_h(px(0.))
                     .child(
@@ -1127,10 +1020,15 @@ impl App {
                         )
                         .selectable(true)
                         .scrollable(true)
+                        .scroll_smooth(smooth_ease, smooth_boost)
                         .h_full()
                         .p_0(),
                     )
-                    .child(Self::copy_button(source, muted, cx)),
+                    .child(self.render_floating_preview_controls(
+                        PreviewKind::Markdown,
+                        Some(source),
+                        cx,
+                    )),
             )
             .into_any_element()
     }
@@ -1146,7 +1044,7 @@ impl App {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tab = self.state.focused_tile;
-        let (ow, oh, dw, dh, exif, is_pdf) = match self.state.preview.results.get(&tab) {
+        let (_ow, _oh, dw, dh, exif, is_pdf) = match self.state.preview.results.get(&tab) {
             Some(PreviewResult::Image {
                 original_width,
                 original_height,
@@ -1169,15 +1067,17 @@ impl App {
         };
         let view = self.preview_view_for_focused();
         let texture = self.focused_preview_texture();
-        let well = layer_color(cx.theme().secondary, -0.03, 0.62);
+        let (well, border) = {
+            let t = cx.theme();
+            (backdrop_tint(t.secondary, 0.16), t.border)
+        };
+        let kind = if is_pdf {
+            PreviewKind::Pdf
+        } else {
+            PreviewKind::Image
+        };
 
         let mut col = v_flex().flex_1().min_h(px(0.)).gap_2();
-        let label = if is_pdf {
-            rust_i18n::t!("inspector_pdf_instructions").to_string()
-        } else {
-            rust_i18n::t!("inspector_image_instructions", width = ow, height = oh).to_string()
-        };
-        col = col.child(div().text_xs().text_color(muted).child(label));
 
         if let Some(tex) = texture {
             let (fit_w, fit_h) = fit_into(dw as f32, dh as f32, box_w, box_h);
@@ -1195,14 +1095,17 @@ impl App {
             col = col.child(
                 div()
                     .id("preview-image")
+                    .group("preview-surface")
                     .relative()
                     .overflow_hidden()
                     .w(px(box_w))
                     .h(px(box_h))
                     .bg(well)
-                    .rounded(px(crate::ui::RADIUS))
-                    .sunken_surface()
+                    .rounded(px(10.))
+                    .border_1()
+                    .border_color(border.opacity(0.18))
                     .child(image)
+                    .child(self.render_floating_preview_controls(kind, None, cx))
                     .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _w, cx| {
                         let dy = match ev.delta {
                             ScrollDelta::Pixels(p) => f32::from(p.y),
@@ -1296,7 +1199,7 @@ impl App {
             return div().into_any_element();
         };
         let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
-        let (border, stripe, header_bg, table_bg, fg) = {
+        let (border, stripe, header_bg, fg) = {
             let t = cx.theme();
             (
                 t.border,
@@ -1309,11 +1212,6 @@ impl App {
                     glass_header_fill()
                 } else {
                     layer_color(t.secondary, 0.04, 0.88)
-                },
-                if figma_glass {
-                    glass_fill()
-                } else {
-                    t.background
                 },
                 t.foreground,
             )
@@ -1362,11 +1260,6 @@ impl App {
                 .flex_1()
                 .min_h(px(0.))
                 .overflow_x_scrollbar()
-                .bg(table_bg)
-                .border_1()
-                .border_color(border.opacity(0.45))
-                .rounded(px(crate::ui::RADIUS))
-                .sunken_surface()
                 .child(div().h_full().overflow_y_scrollbar().child(table)),
         )
         .into_any_element()
@@ -1862,11 +1755,10 @@ mod tests {
     }
 }
 
-/// Compact toolbar button with an icon + text label.
-fn toolbar_icon_button(
+fn floating_icon_button(
     id: &'static str,
     icon_name: gpui_component::IconName,
-    label: &str,
+    tooltip: String,
     disabled: bool,
     active_color: Hsla,
     muted: Hsla,
@@ -1875,13 +1767,11 @@ fn toolbar_icon_button(
     let el = div()
         .id(gpui::SharedString::from(id))
         .flex()
-        .flex_row()
         .items_center()
-        .gap_1()
-        .px(px(5.))
-        .py(px(2.))
-        .rounded(px(4.))
-        .text_xs()
+        .justify_center()
+        .w(px(24.))
+        .h(px(24.))
+        .rounded(px(6.))
         .text_color(color)
         .cursor_pointer();
     if !disabled {
@@ -1894,35 +1784,9 @@ fn toolbar_icon_button(
             .with_size(gpui_component::Size::XSmall)
             .text_color(color),
     )
-    .child(gpui::SharedString::from(label.to_string()))
-}
-
-/// Compact toolbar button with a text-only label (for Save / Vista / Editar).
-fn toolbar_text_button(
-    id: &'static str,
-    label: &str,
-    disabled: bool,
-    active_color: Hsla,
-    muted: Hsla,
-) -> gpui::Stateful<gpui::Div> {
-    let color = if disabled { muted } else { active_color };
-    let el = div()
-        .id(gpui::SharedString::from(id))
-        .flex()
-        .flex_row()
-        .items_center()
-        .px(px(6.))
-        .py(px(2.))
-        .rounded(px(4.))
-        .text_xs()
-        .text_color(color)
-        .cursor_pointer();
-    if !disabled {
-        el.hover(|s| s.opacity(0.75))
-    } else {
-        el
-    }
-    .child(gpui::SharedString::from(label.to_string()))
+    .tooltip(move |window, cx| {
+        gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+    })
 }
 
 // ── Selection summary (neutral; mirrors the egui inspector's SelectionSummary) ──

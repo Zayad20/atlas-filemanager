@@ -34,7 +34,7 @@ pub struct Capabilities {
 }
 
 /// Progress callback for a transfer: `(bytes_done, bytes_total)`.
-pub type ProgressSink = Box<dyn Fn(u64, u64) + Send + Sync>;
+pub type ProgressSink = std::sync::Arc<dyn Fn(u64, u64) + Send + Sync>;
 
 #[async_trait::async_trait]
 pub trait CloudProvider: Send + Sync {
@@ -95,4 +95,6 @@ pub trait CloudProvider: Send + Sync {
     /// FUSE-mount the remote root at `mount_point` (requires `can_mount`).
     async fn mount(&self, id: &str, mount_point: &Path) -> anyhow::Result<()>;
     async fn unmount(&self, mount_point: &Path) -> anyhow::Result<()>;
+
+    async fn install_mount_support(&self, progress: ProgressSink) -> anyhow::Result<()>;
 }

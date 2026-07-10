@@ -6,23 +6,24 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
+use anyhow::Context as _;
 use serde_json::json;
 
 use crate::cloud::provider::{CloudProvider, ProgressSink, RemoteEntry};
-use crate::cloud::rclone::rc_api::RcClient;
-use crate::cloud::rclone::{sidecar, RcloneProvider};
 use crate::cloud::remote::{CloudRemote, RemoteId, RemoteKind, RemoteStatus};
+use crate::cloud::sidecar_provider::SidecarProvider;
 use crate::cloud::transfer::{Transfer, TransferId, TransferKind, TransferState};
 use atlas_model::app_state::BgResult;
 use atlas_model::file_entry::{FileEntry, FileKind};
 use atlas_model::pane::TabId;
 
 const MAX_CONCURRENT: usize = 4;
-const DAEMON_READY_POLLS: u32 = 40;
-const DAEMON_POLL_MS: u64 = 100;
 
 /// Commands the UI sends to the cloud worker.
 pub enum CloudCmd {
+    StopProvider {
+        reply: std::sync::mpsc::Sender<()>,
+    },
     /// Create/overwrite a remote's rclone config. `secret` is the password/key
     /// passphrase (obscured by rclone, never stored by us).
     AddRemote {
@@ -135,7 +136,6 @@ pub fn spawn(
             bg_tx,
             ev_tx,
             provider: None,
-            daemon: None,
             transfers: Vec::new(),
             running: HashMap::new(),
             next_id: 1,
@@ -161,7 +161,6 @@ struct Worker {
     bg_tx: flume::Sender<BgResult>,
     ev_tx: flume::Sender<Ev>,
     provider: Option<Arc<dyn CloudProvider>>,
-    daemon: Option<sidecar::Daemon>,
     transfers: Vec<Transfer>,
     running: HashMap<TransferId, tokio::task::JoinHandle<()>>,
     next_id: TransferId,
@@ -182,37 +181,21 @@ impl Worker {
         }
     }
 
-    /// Lazily download rclone + start the daemon on first use. Cached afterwards.
+    /// Start the installed Cloud provider extension on first use.
     async fn ensure_ready(&mut self) -> anyhow::Result<Arc<dyn CloudProvider>> {
         if let Some(p) = &self.provider {
             return Ok(p.clone());
         }
-        let bg = self.bg_tx.clone();
-        let progress: sidecar::DownloadProgress = Box::new(move |done, total| {
-            let _ = bg.send(BgResult::CloudRcloneProgress { done, total });
-        });
-        let binary = sidecar::ensure_binary(progress).await?;
-        let daemon = sidecar::spawn_daemon(&binary)?;
-        let rc = RcClient::new(&daemon.addr, &daemon.user, &daemon.pass);
-
-        // Wait for the daemon to accept connections (poll core/version briefly).
-        let mut ready = false;
-        for _ in 0..DAEMON_READY_POLLS {
-            if rc.version().await.is_ok() {
-                ready = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(DAEMON_POLL_MS)).await;
-        }
-        if !ready {
-            return Err(anyhow::anyhow!("rclone daemon did not become ready"));
-        }
-        // Own the daemon for the worker's (process) lifetime; dropping it (on
-        // channel close at app exit) kills the rcd child and its mounts.
-        self.daemon = Some(daemon);
-
-        let cache_dir = crate::util::config::data_dir().join("rclone-cache");
-        let provider: Arc<dyn CloudProvider> = Arc::new(RcloneProvider::new(rc, cache_dir));
+        let extension_dir = crate::ext::extensions_dir().join("cloud");
+        let manifest_text = std::fs::read_to_string(extension_dir.join("extension.toml"))
+            .context("Cloud extension is not installed")?;
+        let manifest = atlas_model::ext_model::Manifest::parse(&manifest_text)?;
+        let sidecar = manifest.sidecar.context("Cloud extension has no sidecar")?;
+        let provider: Arc<dyn CloudProvider> = Arc::new(SidecarProvider::spawn(
+            &extension_dir,
+            &sidecar.command,
+            &sidecar.args,
+        )?);
         self.provider = Some(provider.clone());
         let _ = self.bg_tx.send(BgResult::CloudReady);
         Ok(provider)
@@ -220,6 +203,10 @@ impl Worker {
 
     async fn handle_cmd(&mut self, cmd: CloudCmd) {
         match cmd {
+            CloudCmd::StopProvider { reply } => {
+                self.provider = None;
+                let _ = reply.send(());
+            }
             CloudCmd::Warmup => {
                 let _ = self.ensure_ready().await;
             }
@@ -464,26 +451,6 @@ impl Worker {
             status: RemoteStatus::Mounting,
         });
 
-        // On Windows without WinFsp, FUSE mounting is not available.
-        // Fall back to Browse mode: the remote's status becomes BrowseFallback so
-        // the sidebar shows a neutral "Browse" badge and clicking still opens an
-        // Access tab through the normal OpenAccess path. No WebDAV, no net use.
-        #[cfg(windows)]
-        {
-            use crate::cloud::rclone::windows_mount;
-            if !windows_mount::ensure_winfsp_ready() {
-                let _ = self.bg_tx.send(BgResult::RemoteStatusChanged {
-                    id: id.clone(),
-                    status: RemoteStatus::BrowseFallback(
-                        "Installing WinFsp to enable drive mounting".to_string(),
-                    ),
-                });
-                self.install_winfsp(Some(id)).await;
-                return;
-            }
-        }
-
-        // FUSE mount — Linux/macOS, or Windows with WinFsp installed.
         let mount_point = crate::cloud::mount_point_for(&id);
         let bg = self.bg_tx.clone();
         self.rt.spawn(async move {
@@ -545,6 +512,12 @@ impl Worker {
                     if t.open_on_done {
                         let _ = open::that_detached(&t.local_path);
                     }
+                    if t.kind == TransferKind::Download {
+                        // Refresh any pane showing the destination dir (paste
+                        // remote→local lands outside the watcher's event stream
+                        // when the dest is a network/WSL share).
+                        let _ = self.bg_tx.send(BgResult::FsEvent(t.local_path.clone()));
+                    }
                     if t.kind == TransferKind::Upload {
                         // Refresh any tab showing the destination dir, and (for a
                         // move) trash the now-uploaded local source.
@@ -555,7 +528,7 @@ impl Worker {
                             .unwrap_or_default();
                         let _ = self.bg_tx.send(BgResult::RemoteChanged {
                             id: t.remote_id.clone(),
-                            path: dir,
+                            paths: vec![dir],
                         });
                         if t.delete_source {
                             let local = t.local_path.clone();
@@ -572,6 +545,13 @@ impl Worker {
             Ev::Failed { id, err } => {
                 self.running.remove(&id);
                 if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
+                    tracing::warn!(
+                        transfer = t.label,
+                        remote = t.remote_id,
+                        local = %t.local_path.display(),
+                        %err,
+                        "cloud transfer failed"
+                    );
                     t.state = TransferState::Failed(err);
                 }
             }
@@ -612,7 +592,7 @@ impl Worker {
             let p = provider.clone();
             let handle = self.rt.spawn(async move {
                 let sink_tx = ev_tx.clone();
-                let sink: ProgressSink = Box::new(move |done, total| {
+                let sink: ProgressSink = Arc::new(move |done, total| {
                     let _ = sink_tx.send(Ev::Progress { id, done, total });
                 });
                 let res = match kind {
@@ -638,15 +618,17 @@ impl Worker {
 
     #[cfg(windows)]
     async fn install_winfsp(&mut self, retry_id: Option<RemoteId>) {
-        use crate::cloud::rclone::windows_mount;
+        let Ok(provider) = self.ensure_ready().await else {
+            return;
+        };
         let bg = self.bg_tx.clone();
-        let progress = {
+        let progress: ProgressSink = Arc::new({
             let bg2 = bg.clone();
             move |done: u64, total: u64| {
                 let _ = bg2.send(BgResult::WinFspProgress { done, total });
             }
-        };
-        match windows_mount::install_winfsp(progress).await {
+        });
+        match provider.install_mount_support(progress).await {
             Ok(()) => {
                 let _ = bg.send(BgResult::WinFspInstalled { retry_id });
             }
@@ -674,7 +656,10 @@ impl Worker {
             if !errors.is_empty() {
                 let _ = bg.send(BgResult::CloudError(format!("{id}: {}", errors.join("; "))));
             }
-            let _ = bg.send(BgResult::RemoteChanged { id, path: parent });
+            let _ = bg.send(BgResult::RemoteChanged {
+                id,
+                paths: vec![parent],
+            });
         });
     }
 
@@ -690,7 +675,10 @@ impl Worker {
             if let Err(e) = provider.mkdir(&id, &path).await {
                 let _ = bg.send(BgResult::CloudError(format!("{id}: mkdir: {e}")));
             }
-            let _ = bg.send(BgResult::RemoteChanged { id, path: parent });
+            let _ = bg.send(BgResult::RemoteChanged {
+                id,
+                paths: vec![parent],
+            });
         });
     }
 
@@ -712,7 +700,10 @@ impl Worker {
             if let Err(e) = provider.rename(&id, &from, &to).await {
                 let _ = bg.send(BgResult::CloudError(format!("{id}: rename: {e}")));
             }
-            let _ = bg.send(BgResult::RemoteChanged { id, path: parent });
+            let _ = bg.send(BgResult::RemoteChanged {
+                id,
+                paths: remote_dirs([parent, remote_parent(&from), remote_parent(&to)]),
+            });
         });
     }
 
@@ -732,7 +723,12 @@ impl Worker {
         let bg = self.bg_tx.clone();
         self.rt.spawn(async move {
             let mut errors = Vec::new();
+            let mut changed_dirs = Vec::new();
             for (src, dst, _is_dir) in entries {
+                changed_dirs.push(remote_parent(&dst));
+                if is_move {
+                    changed_dirs.push(remote_parent(&src));
+                }
                 let res = if is_move {
                     provider.rename(&id, &src, &dst).await
                 } else {
@@ -745,7 +741,11 @@ impl Worker {
             if !errors.is_empty() {
                 let _ = bg.send(BgResult::CloudError(format!("{id}: {}", errors.join("; "))));
             }
-            let _ = bg.send(BgResult::RemoteChanged { id, path: parent });
+            changed_dirs.push(parent);
+            let _ = bg.send(BgResult::RemoteChanged {
+                id,
+                paths: remote_dirs(changed_dirs),
+            });
         });
     }
 
@@ -758,6 +758,40 @@ impl Worker {
     fn mutate_transfers(&mut self, f: impl FnOnce(&mut Vec<Transfer>)) {
         f(&mut self.transfers);
         self.emit_transfers();
+    }
+}
+
+fn remote_parent(path: &str) -> String {
+    path.rsplit_once('/')
+        .map_or("", |(parent, _)| parent)
+        .to_string()
+}
+
+fn remote_dirs(paths: impl IntoIterator<Item = String>) -> Vec<String> {
+    paths.into_iter().fold(Vec::new(), |mut out, path| {
+        let path = path.trim_matches('/').to_string();
+        if !out.contains(&path) {
+            out.push(path);
+        }
+        out
+    })
+}
+
+#[cfg(test)]
+mod remote_change_tests {
+    use super::*;
+
+    #[test]
+    fn remote_dirs_dedupes_and_normalizes() {
+        assert_eq!(
+            remote_dirs([
+                "docs".to_string(),
+                "/docs/".to_string(),
+                remote_parent("photos/a.jpg"),
+                remote_parent("b.jpg"),
+            ]),
+            vec!["docs".to_string(), "photos".to_string(), "".to_string()]
+        );
     }
 }
 

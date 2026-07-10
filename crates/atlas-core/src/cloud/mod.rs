@@ -12,8 +12,10 @@
 //!   existing file-view code path works unchanged.
 
 pub mod provider;
+#[cfg(feature = "cloud-backend")]
 pub mod rclone;
 pub mod remote;
+pub mod sidecar_provider;
 pub mod transfer;
 mod worker;
 

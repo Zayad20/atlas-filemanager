@@ -28,7 +28,10 @@ pub enum ThumbState {
 
 /// Longest edge (px) of the decoded thumbnail. Generous vs. the largest zoom step so
 /// it still looks crisp, but a tiny fraction of a full-res photo's pixels.
-const THUMB_MAX_EDGE: u32 = 128;
+// with global zoom (up to 3x) stacked on per-pane thumbnail size (up to
+// 384px), a cell can now render well past this cap and look soft. 256 halves the
+// worst-case blur cheaply; a fully dynamic decode resolution is a bigger change.
+const THUMB_MAX_EDGE: u32 = 256;
 
 /// Max concurrent *extension* thumbnailer processes (ffmpeg/magick/…). A large folder
 /// of videos must not spawn hundreds of processes at once; over-cap requests are simply
@@ -41,6 +44,104 @@ const MAX_EXT_THUMB_INFLIGHT: usize = 8;
 const MAX_NATIVE_THUMB_INFLIGHT: usize = 16;
 
 impl App {
+    #[cfg(target_os = "windows")]
+    fn shell_folder_icon_key() -> PathBuf {
+        PathBuf::from("__atlas_shell_folder_icon__")
+    }
+
+    #[cfg(target_os = "windows")]
+    fn shell_recycle_bin_icon_key() -> PathBuf {
+        PathBuf::from("__atlas_shell_recycle_bin_icon__")
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn shell_folder_icon(&self) -> Option<Arc<RenderImage>> {
+        self.grid_thumbnail(&Self::shell_folder_icon_key())
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn shell_recycle_bin_icon(&self) -> Option<Arc<RenderImage>> {
+        self.grid_thumbnail(&Self::shell_recycle_bin_icon_key())
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn request_shell_folder_icon(&mut self) {
+        let key = Self::shell_folder_icon_key();
+        if self.thumb_textures.contains_key(&key)
+            || self.ext_thumb_inflight.len() >= MAX_EXT_THUMB_INFLIGHT
+        {
+            return;
+        }
+        self.thumb_textures.insert(key.clone(), ThumbState::Loading);
+        self.ext_thumb_inflight.insert(key.clone());
+        let tx = self.tx.clone();
+        let folder = std::env::var_os("WINDIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+        self.rt.spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                crate::shell_thumb::shell_thumbnail_or_icon(&folder, THUMB_MAX_EDGE)
+            })
+            .await
+            .ok()
+            .flatten();
+            let bg = match result {
+                Some((rgba, width, height)) => BgResult::GridThumbnailReady {
+                    path: key,
+                    rgba,
+                    width,
+                    height,
+                },
+                None => BgResult::GridThumbnailReady {
+                    path: key,
+                    rgba: Vec::new(),
+                    width: 0,
+                    height: 0,
+                },
+            };
+            let _ = tx.send(bg);
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn request_shell_recycle_bin_icon(&mut self) {
+        let key = Self::shell_recycle_bin_icon_key();
+        if self.thumb_textures.contains_key(&key)
+            || self.ext_thumb_inflight.len() >= MAX_EXT_THUMB_INFLIGHT
+        {
+            return;
+        }
+        self.thumb_textures.insert(key.clone(), ThumbState::Loading);
+        self.ext_thumb_inflight.insert(key.clone());
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                crate::shell_thumb::shell_virtual_icon(
+                    "::{645FF040-5081-101B-9F08-00AA002F954E}",
+                    THUMB_MAX_EDGE,
+                )
+            })
+            .await
+            .ok()
+            .flatten();
+            let bg = match result {
+                Some((rgba, width, height)) => BgResult::GridThumbnailReady {
+                    path: key,
+                    rgba,
+                    width,
+                    height,
+                },
+                None => BgResult::GridThumbnailReady {
+                    path: key,
+                    rgba: Vec::new(),
+                    width: 0,
+                    height: 0,
+                },
+            };
+            let _ = tx.send(bg);
+        });
+    }
+
     /// Ensure a thumbnail decode is requested for `path`. If the native-decode cap is
     /// reached the request is silently dropped (the cell will re-request next frame
     /// because no Loading marker is inserted). The task checks `thumb_wanted` before
@@ -80,7 +181,9 @@ impl App {
     /// Remove `path` from the thumbnail cache (called when a decode was skipped because
     /// the path left the viewport), so the cell can re-request it when visible again.
     pub(crate) fn apply_thumb_skipped(&mut self, path: PathBuf) {
-        self.native_thumb_inflight = self.native_thumb_inflight.saturating_sub(1);
+        if !self.ext_thumb_inflight.remove(&path) {
+            self.native_thumb_inflight = self.native_thumb_inflight.saturating_sub(1);
+        }
         self.thumb_textures.remove(&path);
     }
 
@@ -136,16 +239,26 @@ impl App {
     /// inflight cap so we never exceed `MAX_EXT_THUMB_INFLIGHT` concurrent COM calls.
     #[cfg(target_os = "windows")]
     pub(crate) fn request_shell_thumbnail(&mut self, path: &std::path::Path) {
-        self.request_shell_image(path, false);
+        self.request_shell_image(path, false, false);
     }
 
     #[cfg(target_os = "windows")]
     pub(crate) fn request_shell_thumbnail_or_icon(&mut self, path: &std::path::Path) {
-        self.request_shell_image(path, true);
+        self.request_shell_image(path, true, false);
     }
 
     #[cfg(target_os = "windows")]
-    fn request_shell_image(&mut self, path: &std::path::Path, allow_icon: bool) {
+    pub(crate) fn request_visible_shell_thumbnail(&mut self, path: &std::path::Path) {
+        self.request_shell_image(path, false, true);
+    }
+
+    #[cfg(target_os = "windows")]
+    fn request_shell_image(
+        &mut self,
+        path: &std::path::Path,
+        allow_icon: bool,
+        visible_only: bool,
+    ) {
         if self.thumb_textures.contains_key(path)
             || self.ext_thumb_inflight.len() >= MAX_EXT_THUMB_INFLIGHT
         {
@@ -156,8 +269,18 @@ impl App {
             .insert(path.clone(), ThumbState::Loading);
         self.ext_thumb_inflight.insert(path.clone());
         let tx = self.tx.clone();
+        let wanted = self.thumb_wanted.clone();
         self.rt.spawn(async move {
             let report = path.clone();
+            if visible_only
+                && !wanted
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .contains(&path)
+            {
+                let _ = tx.send(BgResult::GridThumbnailSkipped { path: report });
+                return;
+            }
             let result = tokio::task::spawn_blocking(move || {
                 if allow_icon {
                     crate::shell_thumb::shell_thumbnail_or_icon(&path, THUMB_MAX_EDGE)

@@ -17,11 +17,13 @@ use atlas_model::location::Location;
 use atlas_model::pane::TabId;
 use atlas_model::settings::ViewMode;
 use gpui::prelude::*;
-use gpui::{div, px, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window};
+use gpui::{
+    div, px, AnimationExt, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window,
+};
 use gpui_component::button::ButtonVariants as _;
 use gpui_component::menu::{ContextMenuExt, DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_component::scroll::ScrollableElement;
-use gpui_component::{h_flex, ActiveTheme, ElementExt, Icon, Sizable as _};
+use gpui_component::slider::{Slider, SliderEvent, SliderState, SliderValue};
+use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt, Icon, Sizable as _};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -40,14 +42,14 @@ impl App {
             .absolute()
             .left_0()
             .right_0()
-            .bottom(px(18.))
+            .bottom(crate::ui::rem_px(18.))
             .flex()
             .justify_center()
             // The wrapper is non-interactive so only the pill captures clicks.
             .child(
                 h_flex()
                     .id("search-pill")
-                    .h(px(36.))
+                    .h(crate::ui::rem_px(36.))
                     .px_4()
                     .gap_2()
                     .items_center()
@@ -146,7 +148,7 @@ impl App {
                 // instead of a clickable path that would navigate nowhere.
                 other => h_flex()
                     .min_w(px(0.))
-                    .gap_1()
+                    .gap(crate::ui::rem_px(6.))
                     .items_center()
                     .text_color(fg)
                     .child(crate::ui::icons::icon(location_icon(other), 13.0, muted))
@@ -160,12 +162,13 @@ impl App {
         } else {
             border.opacity(0.03)
         };
+        let finder_view = view.clone();
         h_flex()
             .w_full()
-            .h(px(if windows_theme { 44.0 } else { 36.0 }))
+            .h(crate::ui::rem_px(if windows_theme { 44.0 } else { 36.0 }))
             .px_3()
             .min_w(px(0.))
-            .gap(px(if windows_theme { 9.0 } else { 6.0 }))
+            .gap(crate::ui::rem_px(if windows_theme { 9.0 } else { 6.0 }))
             .items_center()
             .bg(strip_bg)
             .border_b_1()
@@ -173,6 +176,14 @@ impl App {
             .when(!windows_theme, |s| s.text_sm())
             .when(windows_theme, |s| s.text_base())
             .text_color(muted)
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                finder_view.update(cx, |this, cx| {
+                    this.activate_tab(pane_id);
+                    this.open_location_finder_or_editor();
+                    cx.notify();
+                });
+            })
             .child(nav_button(
                 "pane-back",
                 pane_id,
@@ -184,8 +195,6 @@ impl App {
                 Action::NavigateBack(pane_id),
                 view.clone(),
                 recent_locations.clone(),
-                up_location.clone(),
-                bookmark_target.clone(),
                 fg,
                 button_hover,
                 windows_theme,
@@ -201,8 +210,6 @@ impl App {
                 Action::NavigateForward(pane_id),
                 view.clone(),
                 recent_locations.clone(),
-                up_location.clone(),
-                bookmark_target.clone(),
                 fg,
                 button_hover,
                 windows_theme,
@@ -218,8 +225,6 @@ impl App {
                 Action::NavigateUp(pane_id),
                 view.clone(),
                 recent_locations.clone(),
-                up_location.clone(),
-                bookmark_target.clone(),
                 fg,
                 button_hover,
                 windows_theme,
@@ -236,7 +241,7 @@ impl App {
                 div()
                     .flex_none()
                     .w(px(1.))
-                    .h(px(if windows_theme { 22.0 } else { 18.0 }))
+                    .h(crate::ui::rem_px(if windows_theme { 22.0 } else { 18.0 }))
                     .bg(border.opacity(0.35)),
             )
             .children(crumbs)
@@ -277,7 +282,7 @@ impl App {
                 }
             }
         }
-        for path in self.state.settings.recent_folders.iter().rev() {
+        for path in self.recent_folders().iter().rev() {
             let loc = Location::Directory(path.clone());
             if seen.insert(loc.clone()) {
                 locations.push(loc);
@@ -298,14 +303,19 @@ impl App {
             .map(|n| n.to_string_lossy().into_owned())
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| path.display().to_string());
-        let exists = self
+        let index = self
             .state
             .profiles
             .active()
             .bookmarks
             .iter()
-            .any(|bookmark| bookmark.path == path);
-        Some(BookmarkTarget { name, path, exists })
+            .position(|bookmark| bookmark.path == path);
+        Some(BookmarkTarget {
+            name,
+            path,
+            exists: index.is_some(),
+            index,
+        })
     }
 
     /// Floating per-pane overlays, anchored to the bottom corners of the file
@@ -367,7 +377,7 @@ impl App {
             self.refresh_search_in_place(pane_id);
         }
 
-        let (active, recursive, status, count, error, counts) = self
+        let (active, recursive, status, count, error) = self
             .state
             .tab_states
             .get_mut(&pane_id)
@@ -378,9 +388,14 @@ impl App {
                     ts.search.status,
                     ts.visible_indices().len(),
                     ts.search.error.clone(),
-                    ts.counts(),
                 )
             })
+            .unwrap_or_default();
+        let selected_count = self
+            .state
+            .tab_states
+            .get(&pane_id)
+            .map(|ts| ts.selection.selected.len())
             .unwrap_or_default();
         let filtering = active && !value.trim().is_empty();
         let (border, muted, fg, accent, accent_fg, secondary) = {
@@ -421,7 +436,7 @@ impl App {
                     .bottom_2()
                     .left_2()
                     .px_2()
-                    .py(px(3.))
+                    .py(crate::ui::rem_px(3.))
                     .gap_1()
                     .items_center()
                     .rounded_full()
@@ -438,7 +453,7 @@ impl App {
                     .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
                         cx.stop_propagation();
                         open_view.update(cx, |this, cx| {
-                            this.state.focused_tile = pane_id;
+                            this.activate_tab(pane_id);
                             if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
                                 ts.search.focus = true;
                             }
@@ -484,7 +499,7 @@ impl App {
                     cx.listener(move |this, ev: &gpui::KeyDownEvent, _window, cx| {
                         let handled = match ev.keystroke.key.as_str() {
                             "escape" => {
-                                this.state.focused_tile = pane_id;
+                                this.activate_tab(pane_id);
                                 this.process_actions(vec![Action::CloseSearchInPlace]);
                                 true
                             }
@@ -516,13 +531,13 @@ impl App {
                 ))
                 .child(
                     div()
-                        .w(px(180.))
+                        .w(crate::ui::rem_px(180.))
                         .child(crate::ui::text_input::flat(&input).xsmall()),
                 )
                 .child(
                     div()
                         .id(SharedString::from(format!("filter-rec-{}", pane_id.0)))
-                        .p(px(3.))
+                        .p(crate::ui::rem_px(3.))
                         .rounded_md()
                         .cursor_pointer()
                         .when(recursive, |s| s.bg(accent))
@@ -562,7 +577,7 @@ impl App {
                 .child(
                     div()
                         .id(SharedString::from(format!("filter-close-{}", pane_id.0)))
-                        .p(px(3.))
+                        .p(crate::ui::rem_px(3.))
                         .rounded_md()
                         .cursor_pointer()
                         .hover(|s| s.bg(layer_color(border, 0.04, 0.42)))
@@ -582,7 +597,7 @@ impl App {
                 .absolute()
                 .bottom_2()
                 .left_2()
-                .p(px(6.))
+                .p(crate::ui::rem_px(6.))
                 .rounded_full()
                 .border_1()
                 .border_color(border.opacity(0.35))
@@ -592,13 +607,15 @@ impl App {
                 .hover(|s| s.bg(layer_color(secondary, 0.07, 0.92)))
                 .child(theme_icon(AtlasIcon::Search, 14.0, muted, windows_theme))
                 .tooltip(|window, cx| {
-                    gpui_component::tooltip::Tooltip::new("Filtrar — solo empieza a escribir")
-                        .build(window, cx)
+                    gpui_component::tooltip::Tooltip::new(
+                        rust_i18n::t!("tooltip_filter_files").into_owned(),
+                    )
+                    .build(window, cx)
                 })
                 .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
                     cx.stop_propagation();
                     open_view.update(cx, |this, cx| {
-                        this.state.focused_tile = pane_id;
+                        this.activate_tab(pane_id);
                         this.process_actions(vec![Action::OpenSearchInPlace]);
                         cx.notify();
                     });
@@ -616,7 +633,7 @@ impl App {
                     view: Entity<App>| {
             div()
                 .id(SharedString::from(id))
-                .p(px(4.))
+                .p(crate::ui::rem_px(4.))
                 .rounded_md()
                 .cursor_pointer()
                 .when(!on, |s| s.opacity(0.45))
@@ -633,7 +650,7 @@ impl App {
                 .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
                     view.update(cx, |this, cx| {
                         this.process_actions(vec![action.clone()]);
-                        cx.notify();
+                        this.flush_dirty_panes(cx);
                     });
                 })
         };
@@ -648,64 +665,187 @@ impl App {
             ViewMode::List => AtlasIcon::List,
             ViewMode::Miller => AtlasIcon::Columns,
         };
-        let vm = view_mode.clone();
+        let view_label = match view_mode {
+            ViewMode::Details => rust_i18n::t!("view_details").into_owned(),
+            ViewMode::Grid => rust_i18n::t!("view_grid").into_owned(),
+            ViewMode::List => rust_i18n::t!("view_list").into_owned(),
+            ViewMode::Miller => rust_i18n::t!("view_columns").into_owned(),
+        };
+        let view_slider_value = self.pane_view_slider_value(pane_id);
+        let zoom_slider = if let Some(slider) = self.pane_zoom_sliders.get(&pane_id) {
+            slider.clone()
+        } else {
+            let slider = cx.new(|_| {
+                SliderState::new()
+                    .min(0.0)
+                    .max(22.0)
+                    .step(1.0)
+                    .default_value(view_slider_value)
+            });
+            let sub = cx.subscribe_in(
+                &slider,
+                window,
+                move |this, _, ev: &SliderEvent, _window, cx| {
+                    let value = match ev {
+                        SliderEvent::Change(value) | SliderEvent::Release(value) => value.end(),
+                    }
+                    .round()
+                    .clamp(0.0, 22.0);
+                    if this.set_pane_view_from_slider_value(pane_id, value) {
+                        this.notify_pane(pane_id, cx);
+                    }
+                    cx.notify();
+                },
+            );
+            self.pane_zoom_sliders.insert(pane_id, slider.clone());
+            self.pane_zoom_slider_subs.insert(pane_id, sub);
+            slider
+        };
+        let slider_value = zoom_slider.read(cx).value().end();
+        if (slider_value - view_slider_value).abs() > f32::EPSILON {
+            zoom_slider.update(cx, |slider, cx| {
+                slider.set_value(SliderValue::Single(view_slider_value), window, cx);
+            });
+        }
+        let zoom_slider_for_menu = zoom_slider.clone();
+        let menu_view = view.clone();
         let view_btn = gpui_component::button::Button::new(SharedString::from(format!(
             "view-select-{}",
             pane_id.0
         )))
         .ghost()
         .xsmall()
-        .child(theme_icon(view_icon, 14.0, muted, windows_theme))
+        .child(theme_icon(view_icon, 14.0, accent, windows_theme))
+        .tooltip(format!("{} - Ctrl+scroll", view_label))
         // Anchored to the bottom so the menu opens upward, above the icon.
         .dropdown_menu_with_anchor(
             gpui::Anchor::BottomRight,
             move |menu, _window, _cx| {
-                let row = |glyph: AtlasIcon, label: String| {
-                    move |_: &mut Window, _: &mut gpui::App| {
+                let slider = zoom_slider_for_menu.clone();
+                let view = menu_view.clone();
+                menu.item(
+                    PopupMenuItem::element(move |_: &mut Window, cx| {
+                        let active_mode = view
+                            .read(cx)
+                            .tab_data_for(pane_id)
+                            .map(|pane| pane.view_mode.clone())
+                            .unwrap_or_default();
+                        let row = |glyph: AtlasIcon,
+                                   label: String,
+                                   mode: ViewMode,
+                                   active: bool,
+                                   view: Entity<App>,
+                                   slider: Entity<SliderState>| {
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .rounded_md()
+                                .px_2()
+                                .h(px(24.0))
+                                .when(active, |this| this.bg(accent.opacity(0.14)))
+                                .child(theme_icon(
+                                    glyph,
+                                    14.0,
+                                    if active { accent } else { muted },
+                                    windows_theme,
+                                ))
+                                .child(
+                                    div()
+                                        .w(px(82.0))
+                                        .text_xs()
+                                        .text_color(if active {
+                                            cx.theme().foreground
+                                        } else {
+                                            cx.theme().muted_foreground
+                                        })
+                                        .child(label),
+                                )
+                                .on_mouse_down(MouseButton::Left, move |_ev, window, cx| {
+                                    cx.stop_propagation();
+                                    let mut slider_value = None;
+                                    view.update(cx, |this, cx| {
+                                        this.activate_tab(pane_id);
+                                        if this.set_pane_view_mode(pane_id, mode.clone()) {
+                                            this.notify_pane(pane_id, cx);
+                                        }
+                                        slider_value = Some(this.pane_view_slider_value(pane_id));
+                                        cx.notify();
+                                    });
+                                    if let Some(slider_value) = slider_value {
+                                        slider.update(cx, |state, cx| {
+                                            state.set_value(
+                                                SliderValue::Single(slider_value),
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                })
+                        };
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(theme_icon(glyph, 14.0, muted, windows_theme))
-                            .child(label.clone())
-                    }
-                };
-                menu.menu_element_with_check(
-                    vm == ViewMode::Details,
-                    Box::new(crate::ViewModeDetails),
-                    row(
-                        AtlasIcon::Details,
-                        rust_i18n::t!("view_details").into_owned(),
-                    ),
-                )
-                .menu_element_with_check(
-                    vm == ViewMode::Grid,
-                    Box::new(crate::ViewModeGrid),
-                    row(AtlasIcon::Grid, rust_i18n::t!("view_grid").into_owned()),
-                )
-                .menu_element_with_check(
-                    vm == ViewMode::List,
-                    Box::new(crate::ViewModeList),
-                    row(AtlasIcon::List, rust_i18n::t!("view_list").into_owned()),
-                )
-                .menu_element_with_check(
-                    vm == ViewMode::Miller,
-                    Box::new(crate::ViewModeMiller),
-                    row(
-                        AtlasIcon::Columns,
-                        rust_i18n::t!("view_columns").into_owned(),
-                    ),
+                            .p_1()
+                            .child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .child(row(
+                                        AtlasIcon::Columns,
+                                        rust_i18n::t!("view_columns").into_owned(),
+                                        ViewMode::Miller,
+                                        active_mode == ViewMode::Miller,
+                                        view.clone(),
+                                        slider.clone(),
+                                    ))
+                                    .child(row(
+                                        AtlasIcon::Details,
+                                        rust_i18n::t!("view_details").into_owned(),
+                                        ViewMode::Details,
+                                        active_mode == ViewMode::Details,
+                                        view.clone(),
+                                        slider.clone(),
+                                    ))
+                                    .child(row(
+                                        AtlasIcon::List,
+                                        rust_i18n::t!("view_list").into_owned(),
+                                        ViewMode::List,
+                                        active_mode == ViewMode::List,
+                                        view.clone(),
+                                        slider.clone(),
+                                    ))
+                                    .child(row(
+                                        AtlasIcon::Grid,
+                                        rust_i18n::t!("view_grid").into_owned(),
+                                        ViewMode::Grid,
+                                        active_mode == ViewMode::Grid,
+                                        view.clone(),
+                                        slider.clone(),
+                                    )),
+                            )
+                            .child(
+                                div().w(px(22.0)).h(px(96.0)).items_center().child(
+                                    Slider::new(&slider)
+                                        .vertical()
+                                        .h(px(88.0))
+                                        .bg(accent.opacity(0.55))
+                                        .text_color(accent),
+                                ),
+                            )
+                    })
+                    .disabled(true),
                 )
             },
         );
 
         let focus_view = view.clone();
+        let animate_selection_badge = !self.state.settings.disable_animations;
         let controls_pill = h_flex()
             .id(SharedString::from(format!("controls-pill-{}", pane_id.0)))
             .absolute()
             .bottom_2()
             .right_2()
             .px_1()
-            .py(px(3.))
+            .py(crate::ui::rem_px(3.))
             .gap_1()
             .items_center()
             .rounded_lg()
@@ -718,20 +858,47 @@ impl App {
             .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
                 cx.stop_propagation();
                 focus_view.update(cx, |this, _| {
-                    this.state.focused_tile = pane_id;
+                    this.activate_tab(pane_id);
                 });
             })
+            .children((selected_count > 1).then(|| {
+                let badge = h_flex()
+                    .id(SharedString::from(format!("selection-count-{}", pane_id.0)))
+                    .gap_1()
+                    .items_center()
+                    .px_1()
+                    .child(theme_icon(AtlasIcon::Grid, 14.0, accent, windows_theme))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(fg)
+                            .child(selected_count.to_string()),
+                    );
+                if animate_selection_badge {
+                    badge
+                        .with_animation(
+                            SharedString::from(format!("selection-count-appear-{}", pane_id.0)),
+                            crate::ui::motion::animation(crate::ui::motion::MICRO_MS),
+                            |this, t| this.opacity(t).ml(px(6.0 * (1.0 - t))),
+                        )
+                        .into_any_element()
+                } else {
+                    badge.into_any_element()
+                }
+            }))
+            .children((selected_count > 1).then(|| {
+                div()
+                    .w(px(1.))
+                    .h(crate::ui::rem_px(14.))
+                    .bg(border.opacity(0.35))
+            }))
             .child(tbtn(
                 format!("bb-folders-{}", pane_id.0),
                 AtlasIcon::Folder,
                 show_folders,
                 fg,
-                rust_i18n::t!(
-                    "folders_count",
-                    shown = counts.folders_shown,
-                    total = counts.folders_total
-                )
-                .into_owned(),
+                rust_i18n::t!("tooltip_toggle_folders").into_owned(),
                 Action::ToggleShowFolders(pane_id),
                 view.clone(),
             ))
@@ -740,12 +907,7 @@ impl App {
                 AtlasIcon::File,
                 show_files,
                 fg,
-                rust_i18n::t!(
-                    "files_count",
-                    shown = counts.files_shown,
-                    total = counts.files_total
-                )
-                .into_owned(),
+                rust_i18n::t!("tooltip_toggle_files").into_owned(),
                 Action::ToggleShowFiles(pane_id),
                 view.clone(),
             ))
@@ -754,11 +916,16 @@ impl App {
                 AtlasIcon::SortAscending,
                 folders_first,
                 accent,
-                rust_i18n::t!("folders_first").into_owned(),
+                rust_i18n::t!("tooltip_folders_first").into_owned(),
                 Action::ToggleFoldersFirst(pane_id),
                 view.clone(),
             ))
-            .child(div().w(px(1.)).h(px(14.)).bg(border.opacity(0.35)))
+            .child(
+                div()
+                    .w(px(1.))
+                    .h(crate::ui::rem_px(14.))
+                    .bg(border.opacity(0.35)),
+            )
             .child(view_btn)
             .into_any_element();
 
@@ -771,6 +938,7 @@ struct BookmarkTarget {
     name: String,
     path: PathBuf,
     exists: bool,
+    index: Option<usize>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -785,16 +953,12 @@ fn nav_button(
     action: Action,
     view: Entity<App>,
     recent: Vec<(SharedString, Location)>,
-    up_location: Option<Location>,
-    bookmark: Option<BookmarkTarget>,
     icon_color: Hsla,
     hover_bg: Hsla,
     windows_theme: bool,
 ) -> impl IntoElement {
     let menu_view = view.clone();
     let menu_recent = recent.clone();
-    let menu_up = up_location.clone();
-    let menu_bookmark = bookmark.clone();
     let hover_id = DragHoverId::Chrome(id, pane_id);
     let hover_command = match action.clone() {
         Action::NavigateBack(tile) => DragHoverCommand::NavigateBack(tile),
@@ -805,7 +969,7 @@ fn nav_button(
     div()
         .id(SharedString::from(format!("{id}-{}", pane_id.0)))
         .flex_none()
-        .size(px(if windows_theme { 34.0 } else { 26.0 }))
+        .size(crate::ui::rem_px(if windows_theme { 34.0 } else { 26.0 }))
         .rounded(px(if windows_theme { 8.0 } else { 7.0 }))
         .flex()
         .items_center()
@@ -841,19 +1005,21 @@ fn nav_button(
             if enabled {
                 view.update(cx, |this, cx| {
                     this.process_actions(vec![action.clone()]);
-                    cx.notify();
+                    this.flush_dirty_panes(cx);
+                });
+            }
+        })
+        .on_mouse_down(MouseButton::Right, {
+            let view = menu_view.clone();
+            move |_ev, _window, cx| {
+                view.update(cx, |this, cx| {
+                    this.suppress_next_shell_ctx_menu = true;
+                    this.close_ctx_menu(cx);
                 });
             }
         })
         .context_menu(move |menu, _window, _cx| {
-            nav_context_menu(
-                menu,
-                pane_id,
-                menu_view.clone(),
-                menu_recent.clone(),
-                menu_up.clone(),
-                menu_bookmark.clone(),
-            )
+            nav_context_menu(menu, pane_id, menu_view.clone(), menu_recent.clone())
         })
 }
 
@@ -882,7 +1048,7 @@ fn bookmark_button(
     div()
         .id(SharedString::from(format!("pane-bookmark-{}", pane_id.0)))
         .flex_none()
-        .size(px(if windows_theme { 34.0 } else { 26.0 }))
+        .size(crate::ui::rem_px(if windows_theme { 34.0 } else { 26.0 }))
         .rounded(px(if windows_theme { 8.0 } else { 7.0 }))
         .flex()
         .items_center()
@@ -908,14 +1074,15 @@ fn bookmark_button(
             let Some(bookmark) = bookmark.clone() else {
                 return;
             };
-            if bookmark.exists {
-                return;
-            }
             view.update(cx, |this, cx| {
-                this.process_actions(vec![Action::AddBookmark {
-                    name: bookmark.name,
-                    path: bookmark.path,
-                }]);
+                if let Some(index) = bookmark.index {
+                    this.process_actions(vec![Action::RemoveBookmark(index)]);
+                } else {
+                    this.process_actions(vec![Action::AddBookmark {
+                        name: bookmark.name,
+                        path: bookmark.path,
+                    }]);
+                }
                 cx.notify();
             });
         })
@@ -926,13 +1093,15 @@ fn nav_context_menu(
     pane_id: TabId,
     view: Entity<App>,
     recent: Vec<(SharedString, Location)>,
-    up_location: Option<Location>,
-    bookmark: Option<BookmarkTarget>,
 ) -> PopupMenu {
     if recent.is_empty() {
         menu = menu.label(rust_i18n::t!("no_recent_history"));
     } else {
-        menu = menu.label(rust_i18n::t!("recent_places"));
+        menu = menu.item(
+            PopupMenuItem::new(rust_i18n::t!("recent_places"))
+                .icon(Icon::empty().path(AtlasIcon::ClockCounterClockwise.path()))
+                .disabled(true),
+        );
         for (label, location) in recent.into_iter().take(6) {
             let icon_name = location_icon(&location);
             let item_view = view.clone();
@@ -952,48 +1121,7 @@ fn nav_context_menu(
             );
         }
     }
-
-    let up_view = view.clone();
-    let up_disabled = up_location.is_none();
-    menu = menu.separator().item(
-        PopupMenuItem::new(rust_i18n::t!("go_up"))
-            .icon(Icon::empty().path(AtlasIcon::ArrowUp.path()))
-            .disabled(up_disabled)
-            .on_click(move |_ev, _window, cx| {
-                if let Some(location) = up_location.clone() {
-                    up_view.update(cx, |this, cx| {
-                        this.process_actions(vec![Action::NavigateLocation {
-                            tab: pane_id,
-                            location,
-                        }]);
-                        cx.notify();
-                    });
-                }
-            }),
-    );
-
-    let bookmark_disabled = bookmark.as_ref().map_or(true, |b| b.exists);
-    let bookmark_label = if bookmark.as_ref().is_some_and(|b| b.exists) {
-        rust_i18n::t!("already_bookmarked")
-    } else {
-        rust_i18n::t!("add_bookmark")
-    };
-    menu.separator().item(
-        PopupMenuItem::new(bookmark_label)
-            .icon(Icon::empty().path(AtlasIcon::BookmarkSimple.path()))
-            .disabled(bookmark_disabled)
-            .on_click(move |_ev, _window, cx| {
-                if let Some(bookmark) = bookmark.clone() {
-                    view.update(cx, |this, cx| {
-                        this.process_actions(vec![Action::AddBookmark {
-                            name: bookmark.name,
-                            path: bookmark.path,
-                        }]);
-                        cx.notify();
-                    });
-                }
-            }),
-    )
+    menu
 }
 
 fn location_icon(location: &Location) -> AtlasIcon {
@@ -1035,20 +1163,11 @@ fn breadcrumb(
     layer_base: Hsla,
     windows_theme: bool,
 ) -> impl IntoElement {
-    let row_view = view.clone();
     let mut row = h_flex()
         .flex_1()
         .min_w(px(0.))
-        .gap(px(if windows_theme { 7.0 } else { 5.0 }))
+        .gap(crate::ui::rem_px(if windows_theme { 7.0 } else { 5.0 }))
         .items_center()
-        .cursor_pointer()
-        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-            row_view.update(cx, |this, cx| {
-                this.state.focused_tile = tile;
-                this.open_location_finder_or_editor();
-                cx.notify();
-            });
-        })
         // Plain clip (not overflow_x_scrollbar): the Scrollable wrapper adds its own
         // relative+size_full box that anchored each crumb's on_prepaint canvas to the
         // wrong rect, so drag-hover targets captured a region offset below the crumb.
@@ -1056,92 +1175,172 @@ fn breadcrumb(
         .overflow_hidden();
     let mut cumulative = std::path::PathBuf::new();
     for (i, comp) in path.components().enumerate() {
+        let parent = cumulative.clone();
         cumulative.push(comp.as_os_str());
         let raw = comp.as_os_str().to_string_lossy().into_owned();
         let label = if raw.is_empty() { "/".to_string() } else { raw };
         if i > 0 {
-            row = row.child(div().text_color(muted).child("›"));
+            row = row.child(breadcrumb_chevron(
+                view,
+                tile,
+                parent,
+                muted,
+                layer_base,
+                windows_theme,
+            ));
         }
-        let v = view.clone();
         let target = cumulative.clone();
-        let drop_target = target.clone();
-        let drop_target_external = target.clone();
-        let down_v = view.clone();
-        let drop_v = view.clone();
-        let drop_v_external = view.clone();
-        let hover_id = DragHoverId::Folder(tile, target.clone());
-        let hover_bg = layer_color(layer_base, 0.04, 0.42);
-        row = row.child(
-            div()
-                .id(SharedString::from(format!("crumb-{}-{}", tile.0, i)))
-                .flex_none()
-                // `relative` so the on_prepaint canvas anchors to this crumb. Without
-                // it the canvas anchors to the `overflow_x_scrollbar` wrapper and the
-                // drag-hover target captures a region offset below the crumb.
-                .relative()
-                .max_w(px(if windows_theme { 260.0 } else { 220.0 }))
-                .px(px(if windows_theme { 10.0 } else { 8.0 }))
-                .py(px(if windows_theme { 5.0 } else { 3.0 }))
-                .rounded(px(if windows_theme { 7.0 } else { 6.0 }))
-                .cursor_pointer()
-                .text_color(fg)
-                .overflow_hidden()
-                .text_ellipsis()
-                .whitespace_nowrap()
-                .child(SharedString::from(label))
-                .hover(move |s| s.bg(hover_bg))
-                .on_prepaint(drag_hover_recorder_with_drop(
-                    hover_id,
-                    DragHoverKind::Folder,
-                    DragHoverCommand::Process(Action::NavigateLocation {
-                        tab: tile,
-                        location: Location::Directory(target.clone()),
-                    }),
-                    DragHoverDropCommand::TransferTo(target.clone()),
-                    view,
-                ))
-                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                    down_v.update(cx, |this, _| {
-                        this.state.focused_tile = tile;
-                    });
-                    cx.stop_propagation();
-                })
-                .on_drop::<crate::ui::root::DraggedFiles>(move |d, _window, cx| {
-                    let paths = d.paths.clone();
-                    drop_v.update(cx, |this, cx| {
-                        this.execute_drag_hover_drop_command(
-                            DragHoverDropCommand::TransferTo(drop_target.clone()),
-                            paths,
-                            true,
-                        );
-                        cx.notify();
-                    });
-                })
-                .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
-                    let paths = paths.paths().to_vec();
-                    drop_v_external.update(cx, |this, cx| {
-                        this.execute_drag_hover_drop_command(
-                            DragHoverDropCommand::TransferTo(drop_target_external.clone()),
-                            paths,
-                            false,
-                        );
-                        cx.notify();
-                    });
-                })
-                .on_click(move |_ev, _window, cx| {
-                    let target = target.clone();
-                    v.update(cx, |this, cx| {
-                        this.state.focused_tile = tile;
-                        this.process_actions(vec![Action::NavigateLocation {
-                            tab: tile,
-                            location: Location::Directory(target),
-                        }]);
-                        cx.notify();
-                    });
-                }),
-        );
+        row = row.child(breadcrumb_segment(
+            view,
+            tile,
+            SharedString::from(format!("crumb-{}-{}", tile.0, i)),
+            label,
+            Location::Directory(target.clone()),
+            Some(target),
+            fg,
+            layer_base,
+            windows_theme,
+        ));
     }
     row
+}
+
+#[allow(clippy::too_many_arguments)]
+fn breadcrumb_segment(
+    view: &Entity<App>,
+    tile: TabId,
+    id: SharedString,
+    label: String,
+    location: Location,
+    drop_dest: Option<PathBuf>,
+    fg: Hsla,
+    layer_base: Hsla,
+    windows_theme: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let down_v = view.clone();
+    let down_location = location.clone();
+    let hover_bg = layer_color(layer_base, 0.04, 0.42);
+    let hover_id = match &location {
+        Location::Directory(path) => DragHoverId::Folder(tile, path.clone()),
+        Location::Archive { archive, inner } => DragHoverId::Folder(tile, archive.join(inner)),
+        _ => DragHoverId::Chrome("breadcrumb", tile),
+    };
+    let command = DragHoverCommand::Process(Action::NavigateLocation {
+        tab: tile,
+        location: location.clone(),
+    });
+    let mut el = div()
+        .id(id)
+        .flex_none()
+        .relative()
+        .h(crate::ui::rem_px(if windows_theme { 32.0 } else { 26.0 }))
+        .max_w(crate::ui::rem_px(if windows_theme { 260.0 } else { 220.0 }))
+        .px(crate::ui::rem_px(if windows_theme { 10.0 } else { 8.0 }))
+        .rounded(px(if windows_theme { 7.0 } else { 6.0 }))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .text_color(fg)
+        .overflow_hidden()
+        .text_ellipsis()
+        .whitespace_nowrap()
+        .child(SharedString::from(label))
+        .hover(move |s| s.bg(hover_bg))
+        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+            let location = down_location.clone();
+            down_v.update(cx, |this, cx| {
+                this.state.focused_tile = tile;
+                this.process_actions(vec![Action::NavigateLocation {
+                    tab: tile,
+                    location,
+                }]);
+                cx.notify();
+            });
+            cx.stop_propagation();
+        });
+
+    if let Some(dest) = drop_dest {
+        let drop_v = view.clone();
+        let drop_v_external = view.clone();
+        let drop_target = dest.clone();
+        let drop_target_external = dest.clone();
+        el = el
+            .on_prepaint(drag_hover_recorder_with_drop(
+                hover_id,
+                DragHoverKind::Folder,
+                command,
+                DragHoverDropCommand::TransferTo(dest),
+                view,
+            ))
+            .on_drop::<crate::ui::root::DraggedFiles>(move |d, _window, cx| {
+                let paths = d.paths.clone();
+                drop_v.update(cx, |this, cx| {
+                    this.execute_drag_hover_drop_command(
+                        DragHoverDropCommand::TransferTo(drop_target.clone()),
+                        paths,
+                        true,
+                    );
+                    cx.notify();
+                });
+            })
+            .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
+                let paths = paths.paths().to_vec();
+                drop_v_external.update(cx, |this, cx| {
+                    this.execute_drag_hover_drop_command(
+                        DragHoverDropCommand::TransferTo(drop_target_external.clone()),
+                        paths,
+                        false,
+                    );
+                    cx.notify();
+                });
+            });
+    } else {
+        el = el.on_prepaint(drag_hover_recorder(
+            hover_id,
+            DragHoverKind::Folder,
+            command,
+            view,
+        ));
+    }
+
+    el
+}
+
+fn breadcrumb_chevron(
+    view: &Entity<App>,
+    tile: TabId,
+    dir: PathBuf,
+    muted: Hsla,
+    layer_base: Hsla,
+    windows_theme: bool,
+) -> impl IntoElement {
+    let v = view.clone();
+    let hover_bg = layer_color(layer_base, 0.04, 0.42);
+    div()
+        .flex_none()
+        .size(crate::ui::rem_px(if windows_theme { 22.0 } else { 18.0 }))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(if windows_theme { 6.0 } else { 5.0 }))
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover_bg))
+        .child(theme_icon(
+            AtlasIcon::CaretRight,
+            11.0,
+            muted,
+            windows_theme,
+        ))
+        .on_mouse_down(MouseButton::Left, move |ev, window, cx| {
+            let dir = dir.clone();
+            let anchor = ev.position;
+            v.update(cx, |this, cx| {
+                this.state.focused_tile = tile;
+                this.open_breadcrumb_menu(tile, dir, anchor, window, cx);
+            });
+            cx.stop_propagation();
+        })
 }
 
 /// Breadcrumb for a tab currently browsing inside an archive.
@@ -1156,91 +1355,87 @@ fn archive_breadcrumb(
     layer_base: Hsla,
     windows_theme: bool,
 ) -> impl IntoElement {
-    let row_view = view.clone();
     let mut row = h_flex()
         .flex_1()
         .min_w(px(0.))
-        .gap(px(if windows_theme { 7.0 } else { 5.0 }))
+        .gap(crate::ui::rem_px(if windows_theme { 7.0 } else { 5.0 }))
         .items_center()
-        .cursor_pointer()
-        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-            row_view.update(cx, |this, cx| {
-                this.state.focused_tile = tile;
-                this.open_location_finder_or_editor();
-                cx.notify();
-            });
-        })
-        .overflow_x_scrollbar();
+        .overflow_hidden();
     let mut sep = false;
 
     // Real filesystem ancestors of the archive file.
     let mut cumulative = std::path::PathBuf::new();
-    for (i, comp) in archive.components().enumerate() {
+    for (i, comp) in archive
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""))
+        .components()
+        .enumerate()
+    {
         cumulative.push(comp.as_os_str());
         let raw = comp.as_os_str().to_string_lossy().into_owned();
         let label = if raw.is_empty() { "/".to_string() } else { raw };
-        let hover_bg = layer_color(layer_base, 0.04, 0.42);
         if sep {
             row = row.child(div().text_color(muted).child("›"));
         }
         sep = true;
-        let v = view.clone();
-        row = row.child(
-            div()
-                .id(SharedString::from(format!("crumb-r{}-{}", tile.0, i)))
-                .flex_none()
-                .max_w(px(if windows_theme { 260.0 } else { 220.0 }))
-                .px(px(if windows_theme { 10.0 } else { 8.0 }))
-                .py(px(if windows_theme { 5.0 } else { 3.0 }))
-                .rounded(px(if windows_theme { 7.0 } else { 6.0 }))
-                .cursor_pointer()
-                .text_color(fg)
-                .overflow_hidden()
-                .text_ellipsis()
-                .whitespace_nowrap()
-                .child(SharedString::from(label))
-                .hover(move |s| s.bg(hover_bg))
-                .on_click(move |_ev, _window, cx| {
-                    v.update(cx, |this, cx| {
-                        this.state.focused_tile = tile;
-                        this.open_location_finder_or_editor();
-                        cx.notify();
-                    });
-                }),
-        );
+        let target = cumulative.clone();
+        row = row.child(breadcrumb_segment(
+            view,
+            tile,
+            SharedString::from(format!("crumb-r{}-{}", tile.0, i)),
+            label,
+            Location::Directory(target.clone()),
+            Some(target),
+            fg,
+            layer_base,
+            windows_theme,
+        ));
     }
+
+    if sep {
+        row = row.child(div().text_color(muted).child("›"));
+    }
+    let archive_target = archive.to_path_buf();
+    row = row.child(breadcrumb_segment(
+        view,
+        tile,
+        SharedString::from(format!("crumb-archive-{}", tile.0)),
+        archive
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| archive.display().to_string()),
+        Location::Archive {
+            archive: archive_target,
+            inner: PathBuf::new(),
+        },
+        None,
+        fg,
+        layer_base,
+        windows_theme,
+    ));
 
     // Inner path components within the archive.
     let mut inner_so_far = std::path::PathBuf::new();
     for (j, comp) in inner.components().enumerate() {
         inner_so_far.push(comp.as_os_str());
         let raw = comp.as_os_str().to_string_lossy().into_owned();
-        let hover_bg = layer_color(layer_base, 0.04, 0.42);
         row = row.child(div().text_color(muted).child("›"));
-        let v = view.clone();
-        row = row.child(
-            div()
-                .id(SharedString::from(format!("crumb-a{}-{}", tile.0, j)))
-                .flex_none()
-                .max_w(px(if windows_theme { 260.0 } else { 220.0 }))
-                .px(px(if windows_theme { 10.0 } else { 8.0 }))
-                .py(px(if windows_theme { 5.0 } else { 3.0 }))
-                .rounded(px(if windows_theme { 7.0 } else { 6.0 }))
-                .cursor_pointer()
-                .text_color(fg)
-                .overflow_hidden()
-                .text_ellipsis()
-                .whitespace_nowrap()
-                .child(SharedString::from(raw))
-                .hover(move |s| s.bg(hover_bg))
-                .on_click(move |_ev, _window, cx| {
-                    v.update(cx, |this, cx| {
-                        this.state.focused_tile = tile;
-                        this.open_location_finder_or_editor();
-                        cx.notify();
-                    });
-                }),
-        );
+        let archive_path = archive.to_path_buf();
+        let inner_target = inner_so_far.clone();
+        row = row.child(breadcrumb_segment(
+            view,
+            tile,
+            SharedString::from(format!("crumb-a{}-{}", tile.0, j)),
+            raw,
+            Location::Archive {
+                archive: archive_path.clone(),
+                inner: inner_target,
+            },
+            None,
+            fg,
+            layer_base,
+            windows_theme,
+        ));
     }
 
     row

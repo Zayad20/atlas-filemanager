@@ -28,7 +28,6 @@ pub struct Workspace {
     pub show_sidebar: bool,
     pub sidebar_collapsed: bool,
     pub show_inspector: bool,
-    pub mica: bool,
     pub inspector_placement: InspectorPlacement,
     pub view_mode: ViewMode,
     pub sidebar_width: f32,
@@ -46,11 +45,10 @@ impl Default for Workspace {
             show_sidebar: true,
             sidebar_collapsed: false,
             show_inspector: false,
-            mica: true,
             inspector_placement: InspectorPlacement::Global,
             view_mode: ViewMode::Details,
             sidebar_width: 220.0,
-            inspector_width: 280.0,
+            inspector_width: 560.0,
             font_size: 13.0,
             font_family: "Geist".to_string(),
             thumbnail_size: 128.0,
@@ -73,6 +71,7 @@ pub struct Settings {
     pub font_size: f32,
     pub font_family: String,
     pub thumbnail_size: f32,
+    /// Legacy global recent folders. Migrated into per-profile prefs at startup.
     pub recent_folders: Vec<PathBuf>,
     pub global_zoom: f32,
     pub language: Option<String>,
@@ -84,12 +83,19 @@ pub struct Settings {
     /// glide). Maps to the gpui scroll handle's ease + per-notch boost. Global, like
     /// `disable_animations`. Trackpad (pixel-precise) input is unaffected.
     pub scroll_smoothness: f32,
-    /// When true, the window uses GPUI's blurred background and `apply_active_theme`
-    /// transparently swaps to the Glass variant of the active theme so the wallpaper
-    /// shows through translucent panels. Saved per profile through [`Workspace`].
-    pub mica: bool,
+    /// Show Atlas' custom top window bar. Turn off when the platform/window manager
+    /// already provides chrome and the extra in-app strip is unwanted.
+    pub show_titlebar: bool,
     /// When true, evicts thumbnails and shrinks collections when the window is inactive.
     pub eco_mode: bool,
+    /// When true, the pane/tab layout is persisted to `session.json` when the
+    /// window closes, so the next launch restores it. Off = the last explicit
+    /// save (theme change, manual "Save Session" command) still applies.
+    pub autosave_session: bool,
+    /// Visually de-emphasize panes other than the focused pane.
+    pub dim_inactive_panes: bool,
+    /// True after the first-run setup has been dismissed or completed.
+    pub getting_started_seen: bool,
 }
 
 impl Settings {
@@ -100,7 +106,6 @@ impl Settings {
             show_sidebar: self.show_sidebar,
             sidebar_collapsed: self.sidebar_collapsed,
             show_inspector: self.show_inspector,
-            mica: self.mica,
             inspector_placement: self.inspector_placement.clone(),
             view_mode: self.view_mode.clone(),
             sidebar_width: self.sidebar_width,
@@ -113,13 +118,12 @@ impl Settings {
     }
 
     /// Overlay a profile's saved knobs onto the live settings. Truly global
-    /// fields (`language`, `recent_folders`, `disable_animations`) are left intact.
+    /// fields (`language`, `disable_animations`) are left intact.
     pub fn apply_workspace(&mut self, ws: &Workspace) {
         self.show_hidden = ws.show_hidden;
         self.show_sidebar = ws.show_sidebar;
         self.sidebar_collapsed = ws.sidebar_collapsed;
         self.show_inspector = ws.show_inspector;
-        self.mica = ws.mica;
         self.inspector_placement = ws.inspector_placement.clone();
         self.view_mode = ws.view_mode.clone();
         self.sidebar_width = ws.sidebar_width;
@@ -141,7 +145,7 @@ impl Default for Settings {
             inspector_placement: InspectorPlacement::Global,
             view_mode: ViewMode::Details,
             sidebar_width: 220.0,
-            inspector_width: 280.0,
+            inspector_width: 560.0,
             font_size: 13.0,
             font_family: "Geist".to_string(),
             thumbnail_size: 128.0,
@@ -150,27 +154,11 @@ impl Default for Settings {
             language: None,
             disable_animations: false,
             scroll_smoothness: 0.6,
-            mica: true,
+            show_titlebar: true,
             eco_mode: true,
+            autosave_session: true,
+            dim_inactive_panes: false,
+            getting_started_seen: false,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Settings;
-
-    #[test]
-    fn workspace_carries_mica() {
-        let mut settings = Settings {
-            mica: false,
-            ..Settings::default()
-        };
-        let ws = settings.workspace();
-
-        settings.mica = true;
-        settings.apply_workspace(&ws);
-
-        assert!(!settings.mica);
     }
 }

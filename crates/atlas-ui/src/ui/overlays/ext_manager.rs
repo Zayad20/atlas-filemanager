@@ -39,6 +39,10 @@ impl App {
 
         let view = cx.entity();
         let focus = self.overlay_focus(cx);
+        let (smooth_ease, smooth_boost) =
+            crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
+        self.ext_manager_scroll
+            .set_smooth(smooth_ease, smooth_boost);
 
         // Ensure search input exists + capture query this frame.
         let input_entity = {
@@ -364,6 +368,7 @@ impl App {
                                 let author = remote.author.clone();
                                 let icon_url = remote.icon_url.clone();
                                 let download_url = remote.download_url.clone();
+                                let sha256 = remote.sha256.clone();
                                 let is_installed = installed_ids.contains(&id);
                                 let is_installing = currently_installing.contains(&id);
                                 let view2 = view.clone();
@@ -478,6 +483,7 @@ impl App {
                                                         ExtAction::InstallRemote {
                                                             id: id.clone(),
                                                             download_url: download_url.clone(),
+                                                            sha256: sha256.clone(),
                                                         },
                                                     );
                                                     cx.notify();

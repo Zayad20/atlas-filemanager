@@ -177,10 +177,20 @@ fn transfer_row(
         TransferState::Done => {}
     }
 
+    // Surface the failure reason: a bare "Failed" label is undebuggable.
+    let fail_reason = match &t.state {
+        TransferState::Failed(err) if !err.is_empty() => Some(err.clone()),
+        _ => None,
+    };
     h_flex()
         .id(SharedString::from(format!("xfer-row-{id}")))
         .gap_2()
         .items_center()
+        .when_some(fail_reason, |row, reason| {
+            row.tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(reason.clone()).build(window, cx)
+            })
+        })
         .child(icon(kind_icon, 14., muted))
         .child(
             v_flex()

@@ -221,7 +221,12 @@ impl AtlasDataObject {
         allowed: DROPEFFECT,
         performed_effect: Arc<AtomicU32>,
     ) -> Option<IDataObject> {
-        Self::with_extras(paths, allowed, performed_effect, Vec::new(), None)
+        let preferred = if allowed.0 & windows::Win32::System::Ole::DROPEFFECT_MOVE.0 != 0 {
+            windows::Win32::System::Ole::DROPEFFECT_MOVE
+        } else {
+            windows::Win32::System::Ole::DROPEFFECT_COPY
+        };
+        Self::with_preferred(paths, preferred, performed_effect, Vec::new(), None)
     }
 
     /// Like [`Self::new`] but with extra pre-built formats (clipboard image
@@ -236,13 +241,33 @@ impl AtlasDataObject {
             Vec<PathBuf>,
         )>,
     ) -> Option<IDataObject> {
+        Self::with_preferred(
+            paths,
+            allowed,
+            performed_effect,
+            extra_formats,
+            on_performed,
+        )
+    }
+
+    fn with_preferred(
+        paths: &[PathBuf],
+        preferred_effect: DROPEFFECT,
+        performed_effect: Arc<AtomicU32>,
+        extra_formats: Vec<FormatEntry>,
+        on_performed: Option<(
+            flume::Sender<atlas_model::app_state::BgResult>,
+            Vec<PathBuf>,
+        )>,
+    ) -> Option<IDataObject> {
+        let paths = atlas_core::fs::paths::normalize_wsl_unc_paths(paths.to_vec());
         let cf_performed = cf_performed_drop_effect();
         let mut formats = unsafe {
-            let hdrop = build_hdrop(paths);
+            let hdrop = build_hdrop(&paths);
             if hdrop == 0 {
                 return None;
             }
-            let preferred = build_u32_hglobal(allowed.0);
+            let preferred = build_u32_hglobal(preferred_effect.0);
             let atlas = build_u32_hglobal(0);
             vec![
                 FormatEntry::new_hglobal(CF_HDROP.0, hdrop),

@@ -19,12 +19,29 @@ impl App {
         rt: tokio::runtime::Handle,
         settings: atlas_model::settings::Settings,
         startup_started: std::time::Instant,
+        initial_paths: Vec<std::path::PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let app_new_started = std::time::Instant::now();
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
+        let rubber_escape_listener = cx.listener(|this, ev: &gpui::KeystrokeEvent, window, cx| {
+            if ev.keystroke.key == "escape" && this.rubber.is_some() {
+                let pane = this.rubber.as_ref().and_then(|r| match r.target {
+                    RubberTarget::Pane(pane) | RubberTarget::MillerColumn(pane, _) => Some(pane),
+                    RubberTarget::Dropzone => None,
+                });
+                this.cancel_rubber();
+                if let Some(pane) = pane {
+                    this.notify_pane(pane, cx);
+                }
+                cx.notify();
+                window.refresh();
+                cx.stop_propagation();
+            }
+        });
+        let rubber_escape_sub = cx.intercept_keystrokes(rubber_escape_listener);
         let profiles = load_profiles();
         tracing::info!(
             total_ms = startup_started.elapsed().as_millis(),
@@ -49,7 +66,32 @@ impl App {
         } else {
             AppState::new(settings)
         };
+        if let Some(path) = initial_paths.first().cloned() {
+            let path = if path.is_dir() {
+                Some(path)
+            } else if path.is_file() {
+                path.parent().map(std::path::Path::to_path_buf)
+            } else {
+                tracing::warn!(path = %path.display(), "startup path ignored: not found");
+                None
+            };
+            if let Some(path) = path {
+                if let Some(tile) = state.all_pane_tile_ids().first().copied() {
+                    if let Some(atlas_model::layout_tree::Tile::Pane(tab)) =
+                        state.pane_tree.tiles.get_mut(tile)
+                    {
+                        tab.location = atlas_model::location::Location::Directory(path);
+                        state.focused_tile = tile;
+                        state.pane_tree.make_active(|id, _| id == tile);
+                    }
+                }
+            }
+        }
         state.profiles = profiles;
+        migrate_global_recent_folders(&mut state);
+        if !state.settings.getting_started_seen {
+            state.overlay.show_getting_started = true;
+        }
         tracing::info!(
             total_ms = startup_started.elapsed().as_millis(),
             phase_ms = session_started.elapsed().as_millis(),
@@ -57,8 +99,8 @@ impl App {
         );
         // Profiles saved before the cloud feature lack the Network section, which
         // would hide configured remotes — backfill it.
-        #[cfg(feature = "cloud")]
-        state.profiles.ensure_cloud_section();
+        #[cfg(windows)]
+        state.profiles.ensure_linux_section();
 
         // Resolve the startup icon theme from the active profile's saved selection
         // (official per-profile store), falling back to VSCode auto-discovery.
@@ -267,6 +309,10 @@ impl App {
         state.ext.enabled = atlas_core::util::config::load_ext_enabled();
         let ext_started = std::time::Instant::now();
         let ext_registry = atlas_core::ext::Registry::load(&state.ext.enabled);
+        #[cfg(feature = "cloud")]
+        if ext_registry.has_sidebar_section("cloud") {
+            state.profiles.ensure_cloud_section();
+        }
         tracing::info!(
             total_ms = startup_started.elapsed().as_millis(),
             phase_ms = ext_started.elapsed().as_millis(),
@@ -282,9 +328,12 @@ impl App {
             state.cloud.remotes = atlas_core::util::config::load_cloud_remotes();
             // Auto-mount remotes the user flagged. Not added to `navigate_on_mount`,
             // so they mount silently without hijacking the startup tab.
-            for r in &state.cloud.remotes {
-                if r.auto_mount && r.access == atlas_core::cloud::AccessKind::Mount {
-                    let _ = cloud_tx.send(atlas_core::cloud::CloudCmd::Mount { id: r.id.clone() });
+            if ext_registry.is_enabled("cloud") {
+                for r in &state.cloud.remotes {
+                    if r.auto_mount && r.access == atlas_core::cloud::AccessKind::Mount {
+                        let _ =
+                            cloud_tx.send(atlas_core::cloud::CloudCmd::Mount { id: r.id.clone() });
+                    }
                 }
             }
         }
@@ -307,6 +356,7 @@ impl App {
                     // Finalize pane close-out animations: queue their dock removal.
                     dirty |= app.tick_pane_close();
                     dirty |= app.tick_tab_close();
+                    dirty |= app.tick_toasts();
                     if dirty {
                         cx.notify();
                     }
@@ -332,6 +382,19 @@ impl App {
             .or_else(dirs::home_dir)
             .unwrap_or_else(|| std::path::PathBuf::from("/"));
         atlas_core::fs::index::build_index(goto_root.clone(), nucleo.injector());
+        let watchers = state
+            .all_pane_tile_ids()
+            .into_iter()
+            .filter_map(|id| {
+                let Tile::Pane(pane) = state.pane_tree.tiles.get(id)? else {
+                    return None;
+                };
+                let path = pane.location.fs_dir()?;
+                atlas_core::fs::watcher::watch_path(path, tx.clone())
+                    .ok()
+                    .map(|watcher| (id, watcher))
+            })
+            .collect();
 
         Self {
             state,
@@ -342,7 +405,8 @@ impl App {
             rt,
             focus_handle,
             scroll_handles: HashMap::new(),
-            watchers: HashMap::new(),
+            miller_scroll_handles: HashMap::new(),
+            watchers,
             nucleo,
             goto_index_root: Some((goto_root, false)),
             goto_prefill: None,
@@ -357,6 +421,10 @@ impl App {
             multi_textures: HashMap::new(),
 
             preview_view: HashMap::new(),
+            preview_panel_anim_seq: 0,
+            preview_panel_closing: None,
+            last_viewport_size: None,
+            window_resize_suppress_until: None,
             preview_drag: None,
             overlay_focus: None,
             batch_rename_field: BatchRenameField::Pattern,
@@ -371,6 +439,7 @@ impl App {
             icon_rx,
             // FASE A: dock built lazily on first render from the restored pane_tree.
             file_panel_cache: HashMap::new(),
+            space_lens: HashMap::new(),
             pane_tabs_cache: HashMap::new(),
             pane_tabs_fp: HashMap::new(),
             sidebar_panel: None,
@@ -382,6 +451,8 @@ impl App {
             // FASE C: rubber-band selection state.
             rubber: None,
             row_rects: HashMap::new(),
+            miller_row_rects: HashMap::new(),
+            miller_column_bounds: HashMap::new(),
             dropzone_selected: HashSet::new(),
             dropzone_rects: Vec::new(),
             dropzone_bounds: None,
@@ -394,15 +465,21 @@ impl App {
             batch_pattern_input: None,
             batch_replacement_input: None,
             rename_profile_input: None,
+            getting_started_profile_input: None,
             create_tag_input: None,
             renaming_profile_idx: None,
+            settings_input: None,
+            settings_section: 0,
             rename_edit: None,
             rename_visual_suppress: None,
             content_results: Vec::new(),
             content_gen: 0,
             content_cancel: None,
             theme_dirty: true,
+            theme_preview_before: None,
             sidebar_width_dirty: true,
+            sidebar_render_width: None,
+            sidebar_width_animation: None,
             #[cfg(windows)]
             hwnd: hwnd_opt,
             #[cfg(windows)]
@@ -416,14 +493,19 @@ impl App {
             ctx_menu_input: None,
             ctx_menu_sub: None,
             ctx_menu_seq: 0,
+            suppress_next_shell_ctx_menu: false,
             ctx_menu_scroll: gpui::ScrollHandle::new(),
             type_filter_scroll: gpui::ScrollHandle::new(),
             settings_scroll: gpui::ScrollHandle::new(),
+            getting_started_theme_scroll: gpui::ScrollHandle::new(),
             ext_manager_scroll: gpui::ScrollHandle::new(),
+            pane_zoom_sliders: HashMap::new(),
+            pane_zoom_slider_subs: HashMap::new(),
             preview_editor: None,
             tag_picker_menu: None,
             tag_picker_input: None,
             tag_picker_sub: None,
+            _rubber_escape_sub: Some(rubber_escape_sub),
             tag_picker_scroll: gpui::ScrollHandle::new(),
             thumb_wanted: std::sync::Arc::new(std::sync::Mutex::new(HashSet::new())),
             native_thumb_inflight: 0,
@@ -443,6 +525,7 @@ impl App {
             cloud_add_inputs: None,
             #[cfg(feature = "cloud")]
             rename_remote_input: None,
+            pending_rename: None,
             pending_select: None,
             col_widths: details_prefs.widths,
             details_column_order: details_prefs.order,
@@ -455,6 +538,9 @@ impl App {
             type_filter_menu: None,
             type_filter_input: None,
             type_filter_sub: None,
+            breadcrumb_menu: None,
+            breadcrumb_menu_input: None,
+            breadcrumb_menu_sub: None,
             size_filter_menu: None,
             drag_hover: crate::ui::drag_hover::DragHoverState::default(),
             pending_drag_hover_targets: Vec::new(),
@@ -465,6 +551,19 @@ impl App {
             inspector_resize: None,
             dirty_all_panes: false,
             command_shortcut_capture: None,
+        }
+    }
+}
+
+fn migrate_global_recent_folders(state: &mut AppState) {
+    if state.settings.recent_folders.is_empty() {
+        return;
+    }
+    use atlas_model::profiles::RecentFoldersFeature;
+    let legacy = std::mem::take(&mut state.settings.recent_folders);
+    for profile in &mut state.profiles.profiles {
+        if profile.scoped::<RecentFoldersFeature>().is_empty() {
+            profile.set_scoped::<RecentFoldersFeature>(&legacy);
         }
     }
 }

@@ -1,7 +1,7 @@
 #![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
 use crate::ops::TransferConflictState;
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 /// Shared state for the fuzzy palettes (goto bar, command palette, ext palette):
 /// query text, the highlighted row, and a scroll-into-view request.
@@ -53,11 +53,38 @@ pub struct PropertiesState {
     pub rows: Vec<PropertyRow>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind {
+    Error,
+    Info,
+}
+
+#[derive(Debug, Clone)]
+pub struct Toast {
+    pub message: String,
+    pub kind: ToastKind,
+    pub created_at: Instant,
+}
+
+impl Toast {
+    pub fn new(message: String, kind: ToastKind) -> Self {
+        Self {
+            message,
+            kind,
+            created_at: Instant::now(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct OverlayState {
     pub show_goto_bar: bool,
     pub show_palette: bool,
     pub show_settings: bool,
+    pub show_getting_started: bool,
+    pub getting_started_step: usize,
+    pub getting_started_loading_since: Option<std::time::Instant>,
+    pub getting_started_welcome_since: Option<std::time::Instant>,
     pub goto_state: FuzzyOverlayState,
     pub palette_state: FuzzyOverlayState,
     pub show_ext_palette: bool,
@@ -69,8 +96,8 @@ pub struct OverlayState {
     pub show_analyzer: bool,
     /// The rename-active-profile dialog is open.
     pub renaming_profile: bool,
-    /// File-operation errors to show to the user as dismissible toasts.
-    pub op_errors: std::collections::VecDeque<String>,
+    /// File-operation messages to show to the user as dismissible toasts.
+    pub op_errors: std::collections::VecDeque<Toast>,
     /// Cross-platform "Properties" overlay (F3 #15). `None` when closed.
     pub properties: Option<PropertiesState>,
 }

@@ -4,9 +4,8 @@
 //! rclone binary lifecycle: locate or download it, then run a long-lived
 //! `rclone rcd` daemon the rest of the app drives over the rc HTTP API.
 //!
-//! The binary is intentionally **not** bundled into Atlas — it is fetched on
-//! first use (SHA256-verified) so the app ships small. A system `rclone` on
-//! `$PATH` is preferred when present.
+//! Store packages bundle a pinned binary. Other distributions fall back to a
+//! system `rclone` or a SHA256-verified first-use download.
 
 use anyhow::{anyhow, Context};
 use futures_util::StreamExt as _;
@@ -78,8 +77,16 @@ fn managed_binary_path() -> PathBuf {
         .join(rclone_bin_name())
 }
 
-/// Find a usable rclone: prefer `$PATH`, else our managed copy if already present.
+/// Find a usable rclone: prefer the Store-bundled binary, then `$PATH`, then our
+/// managed copy if already present.
 fn find_existing() -> Option<PathBuf> {
+    if let Some(bundled) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(rclone_bin_name())))
+        .filter(|path| path.is_file())
+    {
+        return Some(bundled);
+    }
     if let Ok(out) = std::process::Command::new("rclone").arg("version").output() {
         if out.status.success() {
             return Some(PathBuf::from("rclone"));

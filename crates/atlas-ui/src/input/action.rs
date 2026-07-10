@@ -5,6 +5,16 @@ use atlas_model::settings::ViewMode;
 use atlas_model::tag_cache::TagId;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Copy)]
+pub enum SelectionMove {
+    Previous,
+    Next,
+    First,
+    Last,
+    PageUp,
+    PageDown,
+}
+
 // reason: several variants are constructed only under other-platform cfg
 // (e.g. Mount/UnmountDevice from the Linux udisks sidebar), so per-cfg dead-code
 // analysis flags them on Windows. Keep the allow scoped to the enum.
@@ -39,6 +49,11 @@ pub enum Action {
     SplitVerticalFocused,
     CloseFocusedPane,
     FocusNextPane,
+    FocusNextTab,
+    FocusPreviousTab,
+    FocusTabIndex(usize),
+    MoveFocusedTabLeft,
+    MoveFocusedTabRight,
     Open(Vec<PathBuf>),
     Copy(Vec<PathBuf>),
     Cut(Vec<PathBuf>),
@@ -70,10 +85,16 @@ pub enum Action {
         parent: PathBuf,
         name: String,
     },
+    CreateFolderFocused,
     CreateFile {
         parent: PathBuf,
         name: String,
     },
+    CreateFileFocused,
+    RenameFocused,
+    OpenSelectedInNewWindow,
+    OpenSelectedDirInRightSplit,
+    OpenSelectedDirInBottomSplit,
     OpenTerminal {
         dir: PathBuf,
     },
@@ -98,6 +119,12 @@ pub enum Action {
         idx: usize,
     },
     SelectAll,
+    MoveSelection {
+        target: SelectionMove,
+        extend: bool,
+    },
+    OpenCursor,
+    OpenSelectedDirsInNewTabs,
     InvertSelection,
     MillerInit {
         tile: TabId,
@@ -107,6 +134,8 @@ pub enum Action {
         tile: TabId,
         column: usize,
         idx: usize,
+        shift: bool,
+        ctrl: bool,
     },
     MillerActivate {
         tile: TabId,
@@ -117,6 +146,7 @@ pub enum Action {
     SetViewMode(ViewMode),
     /// Switch the active profile's theme by registered theme name.
     SetTheme(String),
+    PreviewTheme(String),
     SetSort {
         col: SortColumn,
         dir: SortDir,
@@ -137,13 +167,23 @@ pub enum Action {
     ToggleFoldersFirst(TabId),
     ToggleShowFiles(TabId),
     ToggleShowFolders(TabId),
+    ToggleFoldersFirstFocused,
+    ToggleShowFilesFocused,
+    ToggleShowFoldersFocused,
     CloseOverlays,
     ToggleInspector,
     ToggleSidebar,
     ToggleSidebarCollapsed,
     OpenBatchRename,
     OpenSettings,
+    OpenSettingsAbout,
+    OpenGettingStarted,
+    StartGettingStarted,
+    CloseGettingStarted,
     OpenExtManager,
+    /// Manually persist settings/session/profiles now, regardless of the
+    /// autosave-on-quit setting.
+    SaveSession,
     /// Toggle the space-analyzer overlay. Currently unreachable: no palette
     /// entry or shortcut constructs it — re-wire when the analyzer UI lands.
     #[allow(dead_code)]
@@ -218,6 +258,10 @@ pub enum Action {
         pane: PaneId,
         tag: TagId,
     },
+    OpenSpaceLens {
+        pane: PaneId,
+        path: PathBuf,
+    },
     // ── Removable disks (udisks2) ──
     /// Mount a block device (e.g. `/dev/sdb1`) via udisksctl, then navigate to it.
     MountDevice(String),
@@ -227,6 +271,8 @@ pub enum Action {
     ZoomIn,
     ZoomOut,
     ZoomReset,
+    PaneContentZoomIn,
+    PaneContentZoomOut,
     // ── Archives ──
     /// Navigate inside an archive, entering the `inner` directory within it.
     /// Pass `inner = PathBuf::new()` to open at the archive root.

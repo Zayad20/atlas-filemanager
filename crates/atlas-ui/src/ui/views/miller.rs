@@ -8,15 +8,17 @@ use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
 use crate::ui::icons::{icon, AtlasIcon};
-use crate::ui::root::{ctrl_scroll, zone_recorder, DraggedFiles};
+use crate::ui::root::{miller_column_bounds_recorder, miller_rect_recorder, zone_recorder};
 use atlas_core::util::display::display_name;
 use atlas_model::file_entry::{FileEntry, FileKind};
 use atlas_model::pane::TabId;
 use atlas_model::tab::LoadState;
 use gpui::prelude::*;
 use gpui::{
-    div, px, uniform_list, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window,
+    div, px, uniform_list, AnyElement, Context, Entity, Hsla, MouseButton, Pixels, SharedString,
+    Window,
 };
+use gpui_component::input::InputState;
 use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt};
 
 impl App {
@@ -32,14 +34,18 @@ impl App {
     ) -> AnyElement {
         crate::perf::count("render.view.miller");
         let _perf = crate::perf::span_detail("miller.render", || format!("pane={}", pane_id.0));
-        // Lazily seed the first column from the pane path on entry.
-        let need_init = self
-            .state
-            .tab_states
-            .get(&pane_id)
-            .is_none_or(|ts| ts.miller.columns.is_empty());
+        // Seed (or re-seed) the cascade from the pane location. Comparing the
+        // first column against the live location catches external navigation
+        // (sidebar/breadcrumb/back) — otherwise the columns would show the old
+        // path forever, since nothing else ever resets `ts.miller`.
+        let pane_loc = self.tab_data_for(pane_id).map(|t| t.location.clone());
+        let need_init = match (&pane_loc, self.state.tab_states.get(&pane_id)) {
+            (Some(loc), Some(ts)) => ts.miller.columns.first().map(|c| &c.location) != Some(loc),
+            (Some(_), None) => true,
+            _ => false,
+        };
         if need_init {
-            if let Some(loc) = self.tab_data_for(pane_id).map(|t| t.location.clone()) {
+            if let Some(loc) = pane_loc {
                 self.process_actions(vec![Action::MillerInit {
                     tile: pane_id,
                     location: loc,
@@ -68,14 +74,28 @@ impl App {
         // Snapshot each column's rows up-front; Miller dirs are browsed one level at a
         // time, so a column is rarely huge — a scrollable v_flex per column is enough.
         let mut columns: Vec<AnyElement> = Vec::new();
-        if let Some(ts) = self.state.tab_states.get(&pane_id) {
-            for (ci, col) in ts.miller.columns.iter().enumerate() {
+        let column_count = self
+            .state
+            .tab_states
+            .get(&pane_id)
+            .map(|ts| ts.miller.columns.len())
+            .unwrap_or_default();
+        for ci in 0..column_count {
+            if let Some(col) = self
+                .state
+                .tab_states
+                .get(&pane_id)
+                .and_then(|ts| ts.miller.columns.get(ci))
+            {
                 let title = display_name(&col.location.display_path());
                 let body: AnyElement = if col.entries.is_empty() {
-                    let msg = match col.load_state {
+                    let msg = match &col.load_state {
                         LoadState::Loading if should_suppress_loading(&col.location) => None,
                         LoadState::Loading => Some(rust_i18n::t!("miller_loading")),
-                        LoadState::Error(_) => Some(rust_i18n::t!("miller_error")),
+                        LoadState::Error(error) if error.is_empty() => {
+                            Some(rust_i18n::t!("miller_error"))
+                        }
+                        LoadState::Error(error) => Some(error.clone().into()),
                         _ => Some(rust_i18n::t!("miller_empty")),
                     };
                     v_flex()
@@ -88,10 +108,15 @@ impl App {
                 } else {
                     let count = col.entries.len();
                     let list_view = view.clone();
+                    let scroll = self
+                        .miller_scroll_handles
+                        .entry((pane_id, ci))
+                        .or_default()
+                        .clone();
                     uniform_list(
                         SharedString::from(format!("mcol-{}-{}", pane_id.0, ci)),
                         count,
-                        move |range, _window, cx| {
+                        move |range, window, cx| {
                             let start = range.start;
                             let end = range.end;
                             crate::perf::count_by(
@@ -135,9 +160,31 @@ impl App {
                                                     pane_id,
                                                     entry.path.clone(),
                                                 ));
+                                        let rename_input =
+                                            crate::ui::views::rename::active_input_for_path(
+                                                app,
+                                                pane_id,
+                                                &entry.path,
+                                            );
                                         render_miller_row(
-                                            &entry, ci, i, selected, pane_id, &list_view, accent,
-                                            accent_fg, hover, flashing, file_icon,
+                                            &entry,
+                                            ci,
+                                            i,
+                                            selected,
+                                            pane_id,
+                                            &list_view,
+                                            accent,
+                                            accent_fg,
+                                            hover,
+                                            flashing,
+                                            file_icon,
+                                            rename_input,
+                                            crate::ui::views::rename::dim_other_path(
+                                                app,
+                                                pane_id,
+                                                &entry.path,
+                                            ),
+                                            window,
                                         )
                                         .into_any_element()
                                     })
@@ -145,6 +192,7 @@ impl App {
                             })
                         },
                     )
+                    .track_scroll(&scroll)
                     .flex_1()
                     .h_full()
                     .min_h(px(0.))
@@ -152,11 +200,33 @@ impl App {
                 };
 
                 let col_loc = col.location.fs_dir().map(|p| p.to_path_buf());
+                let rubber_view = view.clone();
+                let bounds_view = view.clone();
+                let column_flashing = col_loc.as_ref().is_some_and(|path| {
+                    self.drag_hover.blink_id.as_ref()
+                        == Some(&DragHoverId::Folder(pane_id, path.clone()))
+                });
                 let mut col_container = v_flex()
-                    .w(px(240.))
+                    .w(crate::ui::rem_px(240.))
                     .h_full()
                     .border_r_1()
                     .border_color(header_bg)
+                    .when(column_flashing, |s| s.border_color(accent))
+                    .on_prepaint(miller_column_bounds_recorder(pane_id, ci, &bounds_view))
+                    .on_mouse_down(MouseButton::Left, move |ev, _window, cx| {
+                        let (pos, additive) = (
+                            ev.position,
+                            ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift,
+                        );
+                        rubber_view.update(cx, |this, cx| {
+                            if this.rename_edit.is_some() {
+                                this.commit_rename(cx);
+                            }
+                            this.begin_miller_rubber(pane_id, ci, pos, additive);
+                            cx.notify();
+                        });
+                        cx.stop_propagation();
+                    })
                     .child(
                         div()
                             .w_full()
@@ -173,26 +243,31 @@ impl App {
                 if let Some(col_path) = col_loc {
                     let mv = view.clone();
                     let cpv = view.clone();
+                    let bounds_v = view.clone();
                     let dest_internal = col_path.clone();
                     let dest_external = col_path.clone();
                     let hover_id =
                         crate::ui::drag_hover::DragHoverId::Folder(pane_id, col_path.clone());
+                    let hover_record = crate::ui::drag_hover::drag_hover_recorder_with_drop(
+                        hover_id,
+                        crate::ui::drag_hover::DragHoverKind::Folder,
+                        crate::ui::drag_hover::DragHoverCommand::NavigatePathIn(
+                            pane_id,
+                            col_path.clone(),
+                        ),
+                        crate::ui::drag_hover::DragHoverDropCommand::TransferTo(col_path.clone()),
+                        &view,
+                    );
                     col_container = col_container
                         .drag_over::<crate::ui::root::DraggedFiles>(|s, _, _, _| {
                             s.bg(crate::ui::glass::glass_fill().opacity(0.1))
                         })
-                        .on_prepaint(crate::ui::drag_hover::drag_hover_recorder_with_drop(
-                            hover_id,
-                            crate::ui::drag_hover::DragHoverKind::Folder,
-                            crate::ui::drag_hover::DragHoverCommand::NavigatePathIn(
-                                pane_id,
-                                col_path.clone(),
-                            ),
-                            crate::ui::drag_hover::DragHoverDropCommand::TransferTo(
-                                col_path.clone(),
-                            ),
-                            &view,
-                        ))
+                        .on_prepaint(move |bounds, window, cx| {
+                            bounds_v.update(cx, |this, _| {
+                                this.miller_column_bounds.insert((pane_id, ci), bounds);
+                            });
+                            hover_record(bounds, window, cx);
+                        })
                         .on_drop::<crate::ui::root::DraggedFiles>(move |d, _window, cx| {
                             let paths = d.paths.clone();
                             mv.update(cx, |this, cx| {
@@ -228,90 +303,39 @@ impl App {
         }
 
         let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
-        let focus_view = view.clone();
-        let rubber_view = view.clone();
         let zone_view = view.clone();
-        let scroll_view = view;
-        v_flex()
-            .id(SharedString::from(format!("pane-{}", pane_id.0)))
-            .size_full()
-            .on_mouse_down(MouseButton::Left, {
-                let v = rubber_view.clone();
-                move |ev, _window, cx| {
-                    let (pos, additive) = (
-                        ev.position,
-                        ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift,
-                    );
-                    v.update(cx, |this, _| this.begin_rubber(pane_id, pos, additive));
-                }
-            })
-            .on_mouse_down(MouseButton::Right, {
-                let v = rubber_view.clone();
-                move |ev, window, cx| {
-                    let pos = ev.position;
-                    v.update(cx, |this, cx| {
-                        if let Some(path) = this
-                            .tab_data_for(pane_id)
-                            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
-                        {
-                            this.open_background_ctx_menu(Some(path), pos, window, cx);
-                            cx.notify();
-                        }
-                    });
-                }
-            })
-            .on_drop::<DraggedFiles>({
-                let v = rubber_view.clone();
-                move |d, _window, cx| {
-                    let paths = d.paths.clone();
-                    v.update(cx, |this, cx| {
-                        this.drop_files_on_pane(pane_id, paths, false);
-                        cx.notify();
-                    });
-                }
-            })
-            .on_drop::<gpui::ExternalPaths>({
-                let v = rubber_view;
-                move |paths, _window, cx| {
-                    let paths = paths.paths().to_vec();
-                    v.update(cx, |this, cx| {
-                        this.drop_files_on_pane(pane_id, paths, true);
-                        cx.notify();
-                    });
-                }
-            })
-            .on_click(move |_ev, _window, cx| {
-                focus_view.update(cx, |this, cx| {
-                    this.push_focus_history();
-                    this.state.focused_tile = pane_id;
-                    cx.notify();
-                });
-            })
-            .on_scroll_wheel(move |ev, _window, cx| ctrl_scroll(ev, pane_id, &scroll_view, cx))
-            // FASE F: register this pane's window-space rect each frame for OLE drop routing.
-            .when(cfg!(windows), |el| {
-                el.on_prepaint(zone_recorder(pane_id, &zone_view))
-            })
-            .child(crumb_strip)
-            .child(
-                div()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .relative()
-                    .when(figma_glass, |s| s.bg(glass_fill()))
-                    .rounded_bl(px(12.0))
-                    .rounded_br(px(12.0))
-                    .child(
-                        h_flex()
-                            .id(SharedString::from(format!("miller-{}", pane_id.0)))
-                            .size_full()
-                            .overflow_x_scroll()
-                            .children(columns),
-                    )
-                    .child(filter_pill)
-                    .child(controls_pill),
-            )
-            .into_any_element()
+        let pane_view = view;
+        crate::ui::views::pane_background_interactions(
+            v_flex()
+                .id(SharedString::from(format!("pane-{}", pane_id.0)))
+                .size_full(),
+            &pane_view,
+            pane_id,
+        )
+        // FASE F: register this pane's window-space rect each frame for OLE drop routing.
+        .when(cfg!(windows), |el| {
+            el.on_prepaint(zone_recorder(pane_id, &zone_view))
+        })
+        .child(crumb_strip)
+        .child(
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .relative()
+                .when(figma_glass, |s| s.bg(glass_fill()))
+                .rounded_bl(px(12.0))
+                .rounded_br(px(12.0))
+                .child(
+                    h_flex()
+                        .id(SharedString::from(format!("miller-{}", pane_id.0)))
+                        .size_full()
+                        .overflow_x_scroll()
+                        .children(columns),
+                )
+                .child(filter_pill)
+                .child(controls_pill),
+        )
+        .into_any_element()
     }
 }
 
@@ -330,6 +354,9 @@ fn render_miller_row(
     hover: Hsla,
     flashing: bool,
     file_icon: FileIcon,
+    rename_input: Option<Entity<InputState>>,
+    dimmed: bool,
+    window: &mut Window,
 ) -> AnyElement {
     let is_dir = matches!(entry.kind, FileKind::Dir);
     let trailing = if is_dir {
@@ -339,61 +366,120 @@ fn render_miller_row(
             if selected { accent_fg } else { accent },
         )
     } else {
-        div().w(px(12.)).flex_none().into_any_element()
+        div()
+            .w(crate::ui::rem_px(12.))
+            .flex_none()
+            .into_any_element()
     };
     let name = entry.name.clone();
     let dest = entry.path.clone();
+    let tip_name = entry.name.clone();
+    let tip_path = entry.path.clone();
     let v = view.clone();
+    let font_size: Pixels = window.text_style().font_size.to_pixels(window.rem_size());
     let mut row = h_flex()
         .id(SharedString::from(format!(
             "mrow-{}-{}-{}",
             pane_id.0, column, idx
         )))
+        .on_prepaint(miller_rect_recorder(pane_id, column, idx, view))
         .w_full()
         .px_2()
-        .py(px(3.))
+        .py(crate::ui::rem_px(3.))
         .gap_2()
         .items_center()
+        .when(dimmed, |s| s.opacity(0.45))
         .cursor_pointer()
-        .when(selected, |s| s.bg(accent).text_color(accent_fg))
+        .when(selected && rename_input.is_none(), |s| {
+            s.bg(accent).text_color(accent_fg)
+        })
         .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
-        .when(!selected, |s| s.hover(|h| h.bg(hover)))
+        .when(!selected && rename_input.is_none(), |s| {
+            s.hover(|h| h.bg(hover))
+        })
         .child(
             div()
-                .w(px(16.))
+                .w(crate::ui::rem_px(16.))
                 .flex_none()
                 .child(file_icon.element(14.0, accent)),
         )
-        .child(div().flex_1().min_w(px(0.)).truncate().child(name))
+        .child(match &rename_input {
+            Some(input) => {
+                let line_h = window.line_height();
+                h_flex()
+                    .w(px(crate::ui::views::rename::input_width(
+                        &name,
+                        190.0 * f32::from(window.rem_size()) / crate::ui::BASE_PX,
+                        font_size,
+                        window,
+                    )))
+                    .h(line_h)
+                    .items_center()
+                    .flex_none()
+                    .child(crate::ui::views::rename::input_element(
+                        input, view, line_h, font_size, window,
+                    ))
+                    .into_any_element()
+            }
+            None => div()
+                .flex_1()
+                .min_w(px(0.))
+                .truncate()
+                .child(name)
+                .into_any_element(),
+        })
         .child(trailing)
-        .on_drag(crate::ui::drag::file_drag_value(vec![dest.clone()]), {
+        .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
+            cx.stop_propagation();
+        })
+        .on_mouse_down(MouseButton::Right, {
             let v = view.clone();
-            let _drag_dest = dest.clone();
-            move |_d, _pos, _window, cx| {
+            let ctx_path = dest.clone();
+            move |ev, window, cx| {
+                let pos = ev.position;
                 v.update(cx, |this, cx| {
-                    this.process_actions(vec![Action::MillerSelect {
-                        tile: pane_id,
-                        column,
-                        idx,
-                    }]);
-                    this.begin_drag_hover();
+                    let already_selected = this
+                        .state
+                        .tab_states
+                        .get(&pane_id)
+                        .and_then(|ts| ts.miller.columns.get(column))
+                        .is_some_and(|col| col.selection.selected.contains(&idx));
+                    if !already_selected {
+                        this.process_actions(vec![Action::MillerSelect {
+                            tile: pane_id,
+                            column,
+                            idx,
+                            shift: false,
+                            ctrl: false,
+                        }]);
+                    } else {
+                        this.activate_tab(pane_id);
+                        if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
+                            ts.miller.focused = column;
+                        }
+                    }
+                    let paths = {
+                        let p = this.miller_focused_selection_paths().unwrap_or_default();
+                        if p.is_empty() {
+                            vec![ctx_path.clone()]
+                        } else {
+                            p
+                        }
+                    };
+                    this.open_ctx_menu(paths, pos, window, cx);
                     cx.notify();
                 });
-                #[cfg(windows)]
-                {
-                    cx.new(|_| crate::ui::root::DragNoop)
-                }
-                #[cfg(not(windows))]
-                {
-                    cx.new(|_| crate::ui::root::DraggedFiles {
-                        paths: vec![drag_dest.clone()],
-                    })
-                }
+                cx.stop_propagation();
             }
         })
         .on_click(move |ev, _window, cx| {
             let activate = ev.click_count() >= 2;
+            let m = ev.modifiers();
+            let (shift, ctrl) = (m.shift, m.control || m.platform);
             v.update(cx, |this, cx| {
+                if this.rename_edit.is_some() {
+                    this.commit_rename(cx);
+                }
                 if activate {
                     this.process_actions(vec![Action::MillerActivate {
                         tile: pane_id,
@@ -405,11 +491,87 @@ fn render_miller_row(
                         tile: pane_id,
                         column,
                         idx,
+                        shift,
+                        ctrl,
                     }]);
                 }
                 cx.notify();
             });
         });
+    if rename_input.is_none() {
+        let drag_view = view.clone();
+        row = row.on_drag(crate::ui::drag::file_drag_value(vec![dest.clone()]), {
+            let anchor = dest.clone();
+            let in_archive = entry.archive_root.is_some();
+            move |_d, _pos, _window, cx| {
+                drag_view.update(cx, |this, cx| {
+                    let selected = this
+                        .state
+                        .tab_states
+                        .get(&pane_id)
+                        .and_then(|ts| ts.miller.columns.get(column))
+                        .is_some_and(|col| col.selection.selected.contains(&idx));
+                    if !selected {
+                        this.process_actions(vec![Action::MillerSelect {
+                            tile: pane_id,
+                            column,
+                            idx,
+                            shift: false,
+                            ctrl: false,
+                        }]);
+                    } else {
+                        this.activate_tab(pane_id);
+                        if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
+                            ts.miller.focused = column;
+                        }
+                    }
+                    this.begin_drag_hover();
+                    cx.notify();
+                });
+                let paths = {
+                    let app = drag_view.read(&*cx);
+                    let p = app.miller_focused_selection_paths().unwrap_or_default();
+                    if p.is_empty() {
+                        vec![anchor.clone()]
+                    } else {
+                        p
+                    }
+                };
+                #[cfg(windows)]
+                {
+                    // archive rows carry virtual paths — no OS drag for
+                    // them; extract-on-drag when someone needs it.
+                    if !in_archive {
+                        drag_view.read(&*cx).trigger_os_drag(paths, None);
+                    }
+                    cx.new(|_| crate::ui::root::DragNoop)
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = in_archive;
+                    let urls: Vec<String> = paths
+                        .iter()
+                        .map(|p| format!("file://{}", p.display()))
+                        .collect();
+                    _window.start_urilist_drag(urls);
+                    cx.new(|_| crate::ui::root::DraggedFiles { paths })
+                }
+            }
+        });
+    }
+    let entry_size = entry.size;
+    let entry_modified = entry.modified;
+    row = row.tooltip(move |window, cx| {
+        crate::ui::tooltips::entry_hover_tooltip(
+            tip_name.clone(),
+            tip_path.clone(),
+            is_dir,
+            entry_size,
+            entry_modified,
+            window,
+            cx,
+        )
+    });
     if is_dir {
         row = crate::ui::views::folder_drop_target(row, view, pane_id, dest);
     }

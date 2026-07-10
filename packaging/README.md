@@ -81,6 +81,30 @@ Publish it to the configured R2 bucket:
 That uploads the installer to `app/windows/versions/` and writes
 `app/windows/latest.json`. The in-app updater only needs to read that tiny manifest.
 
+### Microsoft Store (MSIX)
+
+The Store package uses the reserved `CuberLabs.AtlasFileManager` identity and is
+unsigned locally because Microsoft signs it after certification:
+
+```powershell
+.\scripts\build-windows-msix.ps1 -Version 0.1.0.0
+```
+
+Upload `target\msix\Atlas_0.1.0.0_x64.msix` in Partner Center. For local
+installation only, sign it with a trusted development certificate first. The
+package registers `atlas.exe` as an execution alias, so it does not modify
+`PATH`. A generic-folder Explorer context menu requires a packaged COM shell
+extension DLL; the registry entries used by the Inno installer are not visible
+to Explorer from an MSIX package.
+
+Cloud/rclone is distributed separately as an optional extension:
+
+```powershell
+.\scripts\build-cloud-extension.ps1
+```
+
+The base package contains UnRAR but no rclone binary or Cloud backend.
+
 ## Icons
 
 Drop platform icon files into `packaging/icons/` (`atlas.icns` for macOS,

@@ -11,7 +11,7 @@ use atlas_model::ops::{
     TransferReport, TransferRequest,
 };
 use atlas_model::pane::TabId;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -51,22 +51,8 @@ fn starts_with_ci(child: &Path, ancestor: &Path) -> bool {
     false
 }
 
-/// Volume root of a path ("C:\\" or "\\\\server\\share"); used to decide
-/// whether a move can be an atomic rename and whether it consumes disk space.
-fn volume_root(path: &Path) -> Option<String> {
-    use std::path::Component;
-    match path.components().next() {
-        Some(Component::Prefix(p)) => Some(p.as_os_str().to_string_lossy().to_lowercase()),
-        Some(Component::RootDir) => Some("/".to_string()),
-        _ => None,
-    }
-}
-
 fn same_volume(a: &Path, b: &Path) -> bool {
-    match (volume_root(a), volume_root(b)) {
-        (Some(va), Some(vb)) => va == vb,
-        _ => false,
-    }
+    super::paths::same_volume(a, b)
 }
 
 /// Add the `\\?\` extended-length prefix on Windows when a path is long enough
@@ -175,6 +161,14 @@ pub struct ValidationOutcome {
     pub fatal: Option<PathBuf>,
 }
 
+fn target_name<'a>(src: &'a Path, names: Option<&'a [OsString]>, index: usize) -> OsString {
+    names
+        .and_then(|names| names.get(index))
+        .filter(|name| !name.is_empty())
+        .cloned()
+        .unwrap_or_else(|| src.file_name().unwrap_or_default().to_os_string())
+}
+
 /// Pre-flight checks shared by every entry point (paste, drag-and-drop, menu, undo).
 pub fn validate(req: &TransferRequest) -> ValidationOutcome {
     let mut out = ValidationOutcome {
@@ -229,16 +223,22 @@ pub fn validate(req: &TransferRequest) -> ValidationOutcome {
 
 /// Split sources into those whose target name already exists at `dest`
 /// (conflicts, with metadata for the dialog) and the rest (clean).
-pub fn detect_conflicts(sources: &[PathBuf], dest: &Path) -> (Vec<ConflictItem>, Vec<PathBuf>) {
+pub fn detect_conflicts(
+    sources: &[PathBuf],
+    target_names: Option<&[OsString]>,
+    dest: &Path,
+) -> (Vec<ConflictItem>, Vec<(PathBuf, OsString)>) {
     let mut conflicts = Vec::new();
     let mut clean = Vec::new();
-    for src in sources {
-        let target = dest.join(src.file_name().unwrap_or_default());
+    for (index, src) in sources.iter().enumerate() {
+        let target_name = target_name(src, target_names, index);
+        let target = dest.join(&target_name);
         if target.exists() {
             let src_meta = src.metadata().ok();
             let dst_meta = target.metadata().ok();
             conflicts.push(ConflictItem {
                 source: src.clone(),
+                target_name,
                 is_dir: target.is_dir(),
                 src_size: src_meta
                     .as_ref()
@@ -253,7 +253,7 @@ pub fn detect_conflicts(sources: &[PathBuf], dest: &Path) -> (Vec<ConflictItem>,
                 existing: target,
             });
         } else {
-            clean.push(src.clone());
+            clean.push((src.clone(), target_name));
         }
     }
     (conflicts, clean)
@@ -302,7 +302,7 @@ pub struct BuildOutcome {
 /// Turn clean + resolved-conflict sources into executable pairs. `policy` must
 /// already be resolved (not `Ask`); `Ask` degrades to skipping the conflicts.
 pub fn build_pairs(
-    clean: &[PathBuf],
+    clean: &[(PathBuf, OsString)],
     conflicts: &[ConflictItem],
     policy: &ConflictPolicy,
     dest: &Path,
@@ -311,9 +311,9 @@ pub fn build_pairs(
         pairs: Vec::new(),
         skipped: Vec::new(),
     };
-    for src in clean {
+    for (src, target_name) in clean {
         out.pairs.push(TransferPair {
-            dst: dest.join(src.file_name().unwrap_or_default()),
+            dst: dest.join(target_name),
             src: src.clone(),
             // No conflict was visible when planning; if one appears in the
             // race window, renaming is the only choice that can't lose data.
@@ -334,12 +334,12 @@ pub fn build_pairs(
         match resolution {
             Resolution::Skip => out.skipped.push(item.source.clone()),
             Resolution::Rename => out.pairs.push(TransferPair {
-                dst: unique_target(dest, item.source.file_name().unwrap_or_default()),
+                dst: unique_target(dest, &item.target_name),
                 src: item.source.clone(),
                 on_conflict: Resolution::Rename,
             }),
             Resolution::Overwrite => out.pairs.push(TransferPair {
-                dst: dest.join(item.source.file_name().unwrap_or_default()),
+                dst: dest.join(&item.target_name),
                 src: item.source.clone(),
                 on_conflict: Resolution::Overwrite,
             }),
@@ -773,6 +773,7 @@ mod tests {
     fn req(sources: Vec<PathBuf>, dest: &Path, kind: TransferKind) -> TransferRequest {
         TransferRequest {
             sources,
+            target_names: None,
             dest: dest.to_path_buf(),
             kind,
             policy: ConflictPolicy::Ask,
@@ -888,11 +889,26 @@ mod tests {
         write(&a, "1");
         write(&b, "2");
         write(&dest.join("a.txt"), "old");
-        let (conflicts, clean) = detect_conflicts(&[a.clone(), b.clone()], &dest);
+        let (conflicts, clean) = detect_conflicts(&[a.clone(), b.clone()], None, &dest);
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].source, a);
         assert_eq!(conflicts[0].existing, dest.join("a.txt"));
-        assert_eq!(clean, vec![b]);
+        assert_eq!(clean, vec![(b, OsString::from("b.txt"))]);
+    }
+
+    #[test]
+    fn detect_conflicts_uses_target_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        fs::create_dir(&dest).unwrap();
+        let src = tmp.path().join("$Rabc123");
+        write(&src, "1");
+        let names = vec![OsString::from("foto.png")];
+        let (conflicts, clean) = detect_conflicts(&[src.clone()], Some(&names), &dest);
+        assert!(conflicts.is_empty());
+        let out = build_pairs(&clean, &conflicts, &ConflictPolicy::Ask, &dest);
+        assert_eq!(out.pairs[0].src, src);
+        assert_eq!(out.pairs[0].dst, dest.join("foto.png"));
     }
 
     #[test]
@@ -913,8 +929,11 @@ mod tests {
             write(&tmp.path().join(n), "src");
             write(&dest.join(n), "old");
         }
-        let (conflicts, clean) =
-            detect_conflicts(&[tmp.path().join("x.txt"), tmp.path().join("y.txt")], &dest);
+        let (conflicts, clean) = detect_conflicts(
+            &[tmp.path().join("x.txt"), tmp.path().join("y.txt")],
+            None,
+            &dest,
+        );
         assert!(clean.is_empty());
         let policy = ConflictPolicy::PerItem(vec![Resolution::Skip, Resolution::Rename]);
         let out = build_pairs(&clean, &conflicts, &policy, &dest);
@@ -969,7 +988,7 @@ mod tests {
         let src = tmp.path().join("a.txt");
         write(&src, "new");
         write(&dest.join("a.txt"), "old");
-        let (conflicts, clean) = detect_conflicts(&[src.clone()], &dest);
+        let (conflicts, clean) = detect_conflicts(&[src.clone()], None, &dest);
         let out = build_pairs(&clean, &conflicts, &ConflictPolicy::RenameAll, &dest);
         let report = run(out.pairs, TransferKind::Move, not_cancelled()).await;
         assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -989,7 +1008,7 @@ mod tests {
         let src = tmp.path().join("a.txt");
         write(&src, "new");
         write(&dest.join("a.txt"), "old");
-        let (conflicts, clean) = detect_conflicts(&[src.clone()], &dest);
+        let (conflicts, clean) = detect_conflicts(&[src.clone()], None, &dest);
         let out = build_pairs(&clean, &conflicts, &ConflictPolicy::OverwriteAll, &dest);
         let report = run(out.pairs, TransferKind::Move, not_cancelled()).await;
         assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -1006,7 +1025,7 @@ mod tests {
         fs::create_dir(&src_dir).unwrap();
         write(&src_dir.join("new.txt"), "n");
         write(&dest.join("dir").join("keep.txt"), "k");
-        let (conflicts, clean) = detect_conflicts(&[src_dir.clone()], &dest);
+        let (conflicts, clean) = detect_conflicts(&[src_dir.clone()], None, &dest);
         let out = build_pairs(&clean, &conflicts, &ConflictPolicy::OverwriteAll, &dest);
         let report = run(out.pairs, TransferKind::Copy, not_cancelled()).await;
         assert!(report.errors.is_empty(), "{:?}", report.errors);

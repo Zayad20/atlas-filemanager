@@ -10,6 +10,11 @@
 [![Join Discord](https://img.shields.io/badge/Join-Discord-5865F2?logo=discord&logoColor=white&style=for-the-badge)](https://discord.gg/aeAvQ27bgG)
 [![Website](https://img.shields.io/badge/Website-atlasnative.com-18181B?style=for-the-badge)](https://atlasnative.com)
 
+<br>
+<br>
+
+![Atlas Screenshot](website/public/images/app-screenshot.png)
+
 </div>
 
 Atlas is a desktop file manager for Windows and Linux designed for modern workflows, offering native stutter-free performance, robust extensibility, and a clean interface. Our mission is to build a highly productive file management experience, prioritizing speed, local privacy, and user customization.
@@ -17,6 +22,7 @@ Atlas is a desktop file manager for Windows and Linux designed for modern workfl
 ## Features
 
 - **Cross-platform**: natively supporting Windows and Linux (for now)
+- **Featherweight**: extremely low RAM consumption and minimal system footprint
 - **Native & blazing fast**: GPU-accelerated performance via Rust and GPUI
 - **All of the eyecandy**: smooth scrolling, fluid animations, and a modern interface
 - **Keyboard-first**: navigate and execute instantly via a powerful Command Palette
@@ -50,6 +56,8 @@ cargo test --workspace
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the workspace layout and dependency rules.
+See [docs/extensions.md](docs/extensions.md) for the extension manifest, WASM host API,
+security limits, and publishing flow.
 
 ## Contributing
 

@@ -1,15 +1,13 @@
 //! Details view (table): `render_pane` (dispatch + Details body) + row/header cells.
 #![allow(clippy::too_many_lines)] // reason: cohesive view renderer kept whole
 
-use crate::app::{App, ColResizeState, DetailsColumn};
+use crate::app::{App, ColResizeState, DetailsColumn, RubberTarget};
 use crate::input::action::Action;
 use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
 use crate::ui::icons::{icon, AtlasIcon};
-use crate::ui::root::{
-    ctrl_scroll, pane_bounds_recorder, rect_recorder, zone_recorder, DraggedFiles,
-};
+use crate::ui::root::{ctrl_scroll, pane_bounds_recorder, rect_recorder, zone_recorder};
 use atlas_model::file_entry::{FileEntry, FileKind, SortColumn, SortDir};
 use atlas_model::pane::TabId;
 use atlas_model::settings::ViewMode;
@@ -46,17 +44,35 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // Reset this pane's item rects before the view re-records them via
-        // prepaint. The rubber-band drag reads these for hit-testing, and with
-        // scoped re-renders (notify_pane) only THIS pane's render runs — so the
-        // global clear that used to live in App::render is no longer guaranteed
-        // to fire on every frame the selection updates. Clearing here keeps the
-        // vec from accumulating stale rects across frames.
-        self.row_rects.remove(&pane_id);
+        if self.space_lens.contains_key(&pane_id) {
+            return self.render_space_lens(pane_id, window, cx);
+        }
+        // Keep the last hit-test rects while this pane owns an active rubber drag;
+        // cached content may not prepaint immediately after a scoped repaint.
+        if !self
+            .rubber
+            .as_ref()
+            .is_some_and(|r| r.target == RubberTarget::Pane(pane_id))
+        {
+            self.row_rects.remove(&pane_id);
+        }
         let view_mode = self
             .tab_data_for(pane_id)
             .map(|t| t.view_mode.clone())
             .unwrap_or_default();
+        self.scroll_handle_for(pane_id);
+        let should_scroll_selected = self
+            .state
+            .tab_states
+            .get(&pane_id)
+            .is_some_and(|ts| ts.selection.scroll_to_selected);
+        if should_scroll_selected
+            && self.scroll_selected_into_view(pane_id, gpui::ScrollStrategy::Center)
+        {
+            if let Some(ts) = self.state.tab_states.get_mut(&pane_id) {
+                ts.selection.scroll_to_selected = false;
+            }
+        }
         let mode_name = match &view_mode {
             ViewMode::Grid => "grid",
             ViewMode::List => "list",
@@ -120,25 +136,28 @@ impl App {
 
         let col_widths = self.col_widths;
         let column_order = self.details_column_order;
+        // Zoom-scaled once here; threaded as already-real-px through the row/header
+        // geometry below so every consumption site can stay a plain `px(...)`.
+        let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
         // Single source of geometry for header AND rows → pixel-perfect alignment.
         // Left-anchored fixed widths (Explorer-style); layout is independent of the
         // pane width, so resize/reorder touch only the dragged pane (notify_pane).
         // While a reorder slide is running, blend from the pre-swap order so columns
         // glide; request_animation_frame here re-renders only THIS pane (scoped).
-        let to_layout = details_row_layout(col_widths, &column_order);
+        let to_layout = details_row_layout(col_widths, &column_order, zoom_scale);
         let layout = Arc::new(match self.details_reorder_anim() {
             Some(anim) => {
                 crate::perf::event(|| format!("details.reorder_anim pane={}", pane_id.0));
                 window.request_animation_frame();
                 blend_layouts(
-                    &details_row_layout(col_widths, &anim.from_order),
+                    &details_row_layout(col_widths, &anim.from_order, zoom_scale),
                     &to_layout,
                     anim.progress(),
                 )
             }
             None => to_layout,
         });
-        let row_h = DETAILS_ROW_H;
+        let row_h = DETAILS_ROW_H * zoom_scale;
         let dragging = self.col_dragging;
         let drag_x = self.col_drag_x;
         let type_filter_set = self.type_filters.get(&pane_id).cloned().unwrap_or_default();
@@ -196,14 +215,26 @@ impl App {
                 .items_center()
                 .justify_center()
                 .text_color(muted)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    crate::ui::views::on_pane_rubber_mouse_down(&view, pane_id),
+                )
                 .children(msg)
                 .into_any_element()
         } else {
             let scroll = self.scroll_handle_for(pane_id);
             let base_scroll = scroll.0.borrow().base_handle.clone();
+            let scroll_view = view.clone();
             let viewport_h = f32::from(base_scroll.bounds().size.height);
             let scroll_y = (-f32::from(base_scroll.offset().y)).max(0.0);
-            prime_details_file_icons(self, pane_id, &filtered_visible, scroll_y, viewport_h);
+            prime_details_file_icons(
+                self,
+                pane_id,
+                &filtered_visible,
+                scroll_y,
+                viewport_h,
+                row_h,
+            );
             let list_view = view.clone();
             let fv = filtered_visible.clone();
             let row_layout = Arc::clone(&layout);
@@ -213,6 +244,10 @@ impl App {
                 .overflow_hidden()
                 .min_w(px(0.))
                 .min_h(px(0.))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    crate::ui::views::on_pane_rubber_mouse_down(&view, pane_id),
+                )
                 .child(
                     uniform_list(
                         SharedString::from(format!("list-{}", pane_id.0)),
@@ -278,6 +313,9 @@ impl App {
                                         font_size,
                                         row_font.clone(),
                                         row_h,
+                                        crate::ui::views::rename::dim_other_entry(
+                                            app, pane_id, entry_idx,
+                                        ),
                                         window,
                                     );
                                     Some(row.into_any_element())
@@ -286,7 +324,10 @@ impl App {
                         },
                     )
                     .track_scroll(&scroll)
-                    .pr(px(16.))
+                    .on_scroll_wheel(move |ev, window, cx| {
+                        ctrl_scroll(ev, pane_id, &scroll_view, window, cx)
+                    })
+                    .pr(crate::ui::rem_px(16.))
                     .h_full(),
                 )
                 .vertical_scrollbar(&base_scroll)
@@ -294,118 +335,64 @@ impl App {
         };
 
         let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
-        let focus_view = view.clone();
-        let rubber_view = view.clone();
         let zone_view = view.clone();
         let prepaint_view = view.clone();
         let bounds_view = view.clone();
-        let scroll_view = view;
-        v_flex()
-            .id(SharedString::from(format!("pane-{}", pane_id.0)))
-            .size_full()
-            .overflow_hidden()
-            .on_mouse_down(MouseButton::Left, {
-                let v = rubber_view.clone();
-                move |ev, _window, cx| {
-                    let (pos, additive) = (
-                        ev.position,
-                        ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift,
-                    );
-                    v.update(cx, |this, cx| {
-                        if this.rename_edit.is_some() {
-                            this.commit_rename(cx);
+        let pane_view = view;
+        crate::ui::views::pane_background_interactions(
+            v_flex()
+                .id(SharedString::from(format!("pane-{}", pane_id.0)))
+                .size_full()
+                .overflow_hidden(),
+            &pane_view,
+            pane_id,
+        )
+        .on_prepaint({
+            let v = prepaint_view;
+            move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {
+                crate::perf::count("prepaint.details_pane");
+                let new_w = f32::from(bounds.size.width);
+                let new_h = f32::from(bounds.size.height);
+                v.update(cx, |this, _cx| {
+                    if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
+                        if (ts.last_pane_width - new_w).abs() > 0.5 {
+                            ts.last_pane_width = new_w;
                         }
-                        this.begin_rubber(pane_id, pos, additive);
-                        cx.notify();
-                    });
-                }
-            })
-            .on_mouse_down(MouseButton::Right, {
-                let v = rubber_view.clone();
-                move |ev, window, cx| {
-                    let pos = ev.position;
-                    v.update(cx, |this, cx| {
-                        if let Some(path) = this
-                            .tab_data_for(pane_id)
-                            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
-                        {
-                            this.open_background_ctx_menu(Some(path), pos, window, cx);
-                            cx.notify();
+                        if (ts.last_pane_height - new_h).abs() > 0.5 {
+                            ts.last_pane_height = new_h;
                         }
-                    });
-                }
-            })
-            .on_drop::<DraggedFiles>({
-                let v = rubber_view.clone();
-                move |d, _window, cx| {
-                    let paths = d.paths.clone();
-                    v.update(cx, |this, cx| {
-                        this.drop_files_on_pane(pane_id, paths, false);
-                        cx.notify();
-                    });
-                }
-            })
-            .on_drop::<gpui::ExternalPaths>({
-                let v = rubber_view;
-                move |paths, _window, cx| {
-                    let paths = paths.paths().to_vec();
-                    v.update(cx, |this, cx| {
-                        this.drop_files_on_pane(pane_id, paths, true);
-                        cx.notify();
-                    });
-                }
-            })
-            .on_click(move |_ev, _window, cx| {
-                focus_view.update(cx, |this, cx| {
-                    this.push_focus_history();
-                    this.state.focused_tile = pane_id;
-                    cx.notify();
+                    }
                 });
-            })
-            .on_scroll_wheel(move |ev, _window, cx| ctrl_scroll(ev, pane_id, &scroll_view, cx))
-            .on_prepaint({
-                let v = prepaint_view;
-                move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {
-                    crate::perf::count("prepaint.details_pane");
-                    let new_w = f32::from(bounds.size.width);
-                    let new_h = f32::from(bounds.size.height);
-                    v.update(cx, |this, _cx| {
-                        if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
-                            if (ts.last_pane_width - new_w).abs() > 0.5 {
-                                ts.last_pane_width = new_w;
-                            }
-                            if (ts.last_pane_height - new_h).abs() > 0.5 {
-                                ts.last_pane_height = new_h;
-                            }
-                        }
-                    });
-                }
-            })
-            // FASE F: register this pane's window-space rect each frame for OLE drop routing.
-            .when(cfg!(windows), |el| {
-                el.on_prepaint(zone_recorder(pane_id, &zone_view))
-            })
-            .child(crumb_strip)
-            .child(header)
-            .child(
-                div()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .relative()
-                    .when(figma_glass, |s| s.bg(glass_fill()))
-                    .rounded_bl(px(12.0))
-                    .rounded_br(px(12.0))
-                    .on_prepaint(pane_bounds_recorder(pane_id, &bounds_view))
-                    .child(inner)
-                    .child(filter_pill)
-                    .child(controls_pill),
-            )
-            .into_any_element()
+            }
+        })
+        // FASE F: register this pane's window-space rect each frame for OLE drop routing.
+        .when(cfg!(windows), |el| {
+            el.on_prepaint(zone_recorder(pane_id, &zone_view))
+        })
+        .child(crumb_strip)
+        .child(header)
+        .child(
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .relative()
+                .when(figma_glass, |s| s.bg(glass_fill()))
+                .rounded_bl(px(12.0))
+                .rounded_br(px(12.0))
+                .on_prepaint(pane_bounds_recorder(pane_id, &bounds_view))
+                .child(inner)
+                .child(filter_pill)
+                .child(controls_pill),
+        )
+        .into_any_element()
     }
 }
 
 /// Semantic category label for the Type column and filter overlay.
 pub fn entry_type_label(entry: &FileEntry) -> String {
+    if !entry.display_type.is_empty() {
+        return entry.display_type.clone();
+    }
     file_category(&entry.kind, entry.extension.as_deref())
 }
 
@@ -475,14 +462,20 @@ impl App {
     /// is header-relative). Every position is reachable, including the last (when the
     /// cursor passes every other column's centre). On a real change we snapshot the
     /// previous order so the columns *slide* to their new slots instead of snapping.
-    pub(crate) fn reorder_details_live(&mut self, dragged: DetailsColumn, local_x: f32) {
+    pub(crate) fn reorder_details_live(
+        &mut self,
+        dragged: DetailsColumn,
+        local_x: f32,
+        zoom_scale: f32,
+    ) {
         self.col_dragging = Some(dragged);
         self.col_drag_x = local_x;
         let old = self.details_column_order;
 
         // Insertion index = how many of the *other* columns the cursor has passed
         // (compared against each column's centre in the current left-anchored layout).
-        let mut x = self.col_widths.name.max(ROW_NAME_MIN_W);
+        // Matches `details_row_layout`'s `name_w` computation.
+        let mut x = self.col_widths.name.max(ROW_NAME_MIN_W * zoom_scale);
         let mut passed = 0usize;
         for column in old {
             let w = details_column_width_raw(
@@ -540,7 +533,7 @@ fn details_header(
         .id(SharedString::from(format!("details-header-{}", pane_id.0)))
         .relative()
         .w_full()
-        .h(px(DETAILS_ROW_H))
+        .h(crate::ui::rem_px(DETAILS_ROW_H))
         .bg(header_bg)
         .text_xs()
         .text_color(muted)
@@ -549,11 +542,12 @@ fn details_header(
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         // Live drag-reorder: as the grabbed header moves over the strip, drop it
         // into the slot under the cursor and slide the others to make room.
-        .on_drag_move::<DetailsColumnDrag>(move |e, _window, cx| {
+        .on_drag_move::<DetailsColumnDrag>(move |e, window, cx| {
             let dragged = e.drag(cx).column;
             let local_x = f32::from(e.event.position.x - e.bounds.origin.x);
+            let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
             move_view.update(cx, |this, cx| {
-                this.reorder_details_live(dragged, local_x);
+                this.reorder_details_live(dragged, local_x, zoom_scale);
                 this.notify_pane(pane_id, cx);
             });
         })
@@ -635,11 +629,11 @@ fn details_header(
                 .absolute()
                 .top_0()
                 .left(px((drag_x - w * 0.5).max(0.0)))
-                .h(px(DETAILS_ROW_H))
+                .h(crate::ui::rem_px(DETAILS_ROW_H))
                 .w(px(w))
                 .flex()
                 .items_center()
-                .px(px(CELL_PAD))
+                .px(crate::ui::rem_px(CELL_PAD))
                 .rounded_md()
                 .border_1()
                 .border_color(accent)
@@ -730,7 +724,7 @@ fn details_header_cell(
             div()
                 .flex_1()
                 .min_w(px(0.))
-                .pl(px(CELL_PAD))
+                .pl(crate::ui::rem_px(CELL_PAD))
                 .overflow_hidden()
                 .child(content),
         )
@@ -882,7 +876,13 @@ fn type_header_cell(
         .child(rust_i18n::t!("column_type"))
         // Active filter indicator: small dot next to the label.
         .when(has_filter, |el| {
-            el.child(div().w(px(5.)).h(px(5.)).rounded_full().bg(accent))
+            el.child(
+                div()
+                    .w(crate::ui::rem_px(5.))
+                    .h(crate::ui::rem_px(5.))
+                    .rounded_full()
+                    .bg(accent),
+            )
         })
         .when_some(sort_icon, |el, ico| el.child(ico))
         .on_click(move |_ev, _window, cx| {
@@ -955,13 +955,14 @@ fn prime_details_file_icons(
     visible: &[usize],
     scroll_y: f32,
     viewport_h: f32,
+    row_h: f32,
 ) {
     let files = {
         let Some(ts) = app.state.tab_states.get(&pane_id) else {
             return;
         };
-        let start = (scroll_y / DETAILS_ROW_H).floor().max(0.0) as usize;
-        let end = ((scroll_y + viewport_h) / DETAILS_ROW_H).ceil() as usize + 1;
+        let start = (scroll_y / row_h).floor().max(0.0) as usize;
+        let end = ((scroll_y + viewport_h) / row_h).ceil() as usize + 1;
         let end = end.min(visible.len());
         (start..end)
             .filter_map(|i| {
@@ -997,11 +998,18 @@ fn details_column_width_raw(
 /// Resizing a column shifts the ones to its right into the trailing space — the
 /// handle follows the cursor and nothing "jumps the other way". No flex column,
 /// no collapse: when columns overrun the pane they simply clip on the right.
+/// `zoom_scale` scales the icon-gutter/min-width chrome constants (`ROW_NAME_X`,
+/// `ROW_NAME_MIN_W`) to real pixels before combining them with `widths` — which
+/// are already real, zoom-independent pixels (user drag-resize state, like a
+/// Zed panel width). Everything in the returned layout is real pixels.
 fn details_row_layout(
     widths: crate::app::ColWidths,
     order: &[DetailsColumn; 3],
+    zoom_scale: f32,
 ) -> DetailsRowLayout {
-    let name_w = widths.name.max(ROW_NAME_MIN_W);
+    let row_name_x = ROW_NAME_X * zoom_scale;
+    let row_name_min_w = ROW_NAME_MIN_W * zoom_scale;
+    let name_w = widths.name.max(row_name_min_w);
     let mut x = name_w;
     let mut columns = Vec::with_capacity(3);
     for column in order {
@@ -1014,8 +1022,8 @@ fn details_row_layout(
         x += w;
     }
     DetailsRowLayout {
-        name_x: ROW_NAME_X,
-        name_col_w: (name_w - ROW_NAME_X).max(0.0),
+        name_x: row_name_x,
+        name_col_w: (name_w - row_name_x).max(0.0),
         name_right: name_w,
         columns,
     }
@@ -1075,6 +1083,7 @@ fn canvas_row(
     font_size: Pixels,
     font: Font,
     row_h: f32,
+    dimmed: bool,
     window: &mut Window,
 ) -> AnyElement {
     if let Some(input) = rename_input {
@@ -1099,6 +1108,13 @@ fn canvas_row(
             font_size,
         );
     }
+
+    // Raw canvas paint math bypasses gpui's rems system, so these chrome
+    // constants are scaled explicitly and threaded through as plain f32/Pixels.
+    let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
+    let row_icon_size = ROW_ICON_SIZE * zoom_scale;
+    let row_pad_x = ROW_PAD_X * zoom_scale;
+    let cell_pad = CELL_PAD * zoom_scale;
 
     let name: SharedString = entry.name.clone().into();
     let is_dir = matches!(entry.kind, FileKind::Dir);
@@ -1153,7 +1169,10 @@ fn canvas_row(
                 })
                 .collect();
             crate::perf::count_by("details.meta_cols.shaped", columns.len() as u64);
-            let name_col_w = px(layout.name_col_w.min((row_w - ROW_NAME_X).max(0.0)));
+            // Use `layout.name_x` (already real-px, scaled in `details_row_layout`)
+            // rather than the raw `ROW_NAME_X` const, so this stays consistent with
+            // the rest of the row geometry at any zoom level.
+            let name_col_w = px(layout.name_col_w.min((row_w - layout.name_x).max(0.0)));
             let ellipsis_s = if name_s.width() > name_col_w {
                 let ellipsis: SharedString = "…".into();
                 let e_run = mk(&ellipsis, name_color);
@@ -1181,21 +1200,26 @@ fn canvas_row(
         move |bounds, state, window, cx| {
             crate::perf::count("details.row.paint_count");
             let _perf = crate::perf::span("details.row.paint");
+            // `row_h`/`row_icon_size`/`row_pad_x`/`cell_pad` are captured from the
+            // enclosing scope, already scaled — raw canvas paint math bypasses
+            // gpui's rems system, so they can't be resolved via `rem_px()` here.
+            // `state.layout.name_x`/`name_col_w` are already scaled too (see
+            // `details_row_layout`).
             // `ShapedLine::paint` already centers the glyphs vertically inside the
             // `line_height` (ROW_H) box we pass below — so origin.y is just the row top
             // (plus a tiny optical nudge). Adding our own (ROW_H - font_size)/2 here too
             // double-counted the centering and pushed text below the icon.
-            let text_y = bounds.origin.y + px(ROW_TEXT_Y_NUDGE);
+            let text_y = bounds.origin.y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
 
             // Icon texture
             if let Some(tex) = &icon_tex_paint {
                 let _ = window.paint_image(
                     Bounds {
                         origin: point(
-                            bounds.origin.x + px(8.),
-                            bounds.origin.y + px((row_h - ROW_ICON_SIZE) * 0.5),
+                            bounds.origin.x + px(row_pad_x),
+                            bounds.origin.y + px((row_h - row_icon_size) * 0.5),
                         ),
-                        size: size(px(ROW_ICON_SIZE), px(ROW_ICON_SIZE)),
+                        size: size(px(row_icon_size), px(row_icon_size)),
                     },
                     Corners::default(),
                     tex.clone(),
@@ -1205,7 +1229,7 @@ fn canvas_row(
             }
 
             // Name column — clipped; truncated with "…" when overflowing
-            let name_x = bounds.origin.x + px(ROW_NAME_X);
+            let name_x = bounds.origin.x + px(state.layout.name_x);
             window.paint_layer(
                 Bounds {
                     origin: point(name_x, bounds.origin.y),
@@ -1247,7 +1271,7 @@ fn canvas_row(
                 // Left-align every column so the data lines up exactly under its
                 // (left-aligned) header label, with CELL_PAD breathing room from the
                 // separator. Clip to the column so text never bleeds into its neighbour.
-                let text_x = col_x + px(CELL_PAD.min(col_w));
+                let text_x = col_x + px(cell_pad.min(col_w));
                 window.paint_layer(
                     Bounds {
                         origin: point(col_x, bounds.origin.y),
@@ -1290,6 +1314,7 @@ fn canvas_row(
         .relative()
         .overflow_hidden()
         .rounded_sm()
+        .when(dimmed, |s| s.opacity(0.45))
         .when(selected, |s| s.bg(accent))
         .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
         .when(!selected && odd, |s| s.bg(stripe_bg))
@@ -1303,10 +1328,10 @@ fn canvas_row(
             s.child(
                 div()
                     .absolute()
-                    .left(px(ROW_PAD_X))
-                    .top(px((row_h - ROW_ICON_SIZE) * 0.5))
-                    .w(px(ROW_ICON_SIZE))
-                    .h(px(ROW_ICON_SIZE))
+                    .left(px(row_pad_x))
+                    .top(px((row_h - row_icon_size) * 0.5))
+                    .w(px(row_icon_size))
+                    .h(px(row_icon_size))
                     .child(fallback_icon.clone().element(ROW_ICON_SIZE, muted)),
             )
         });
@@ -1345,6 +1370,23 @@ fn canvas_row(
                 ),
             )
         })
+        .tooltip({
+            let tip_name = name.clone();
+            let tip_path = entry_path.clone();
+            let size = entry.size;
+            let modified = entry.modified;
+            move |window, cx| {
+                crate::ui::tooltips::entry_hover_tooltip(
+                    tip_name.clone(),
+                    tip_path.clone(),
+                    is_dir,
+                    size,
+                    modified,
+                    window,
+                    cx,
+                )
+            }
+        })
         .when(is_dir, |s| {
             crate::ui::views::folder_drop_target(s, view, pane_id, entry_path.clone())
         })
@@ -1372,6 +1414,17 @@ fn render_rename_row(
     window: &mut Window,
     font_size: Pixels,
 ) -> AnyElement {
+    // Same reasoning as `canvas_row`: these are chrome constants, scaled once
+    // here; `col.x`/`col.w`/`layout.name_col_w` are already real-px (user column
+    // widths / `details_row_layout`), so they stay plain `px(...)`.
+    let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
+    let row_h = DETAILS_ROW_H * zoom_scale;
+    let row_icon_size = ROW_ICON_SIZE * zoom_scale;
+    let row_pad_x = ROW_PAD_X * zoom_scale;
+    let row_name_x = ROW_NAME_X * zoom_scale;
+    let row_name_min_w = ROW_NAME_MIN_W * zoom_scale;
+    let cell_pad = CELL_PAD * zoom_scale;
+
     let name = entry.name.clone();
     let fallback_icon = FileIcon::Builtin {
         kind: entry.kind.clone(),
@@ -1391,7 +1444,7 @@ fn render_rename_row(
             .w(px(col.w))
             .flex()
             .items_center()
-            .pl(px(CELL_PAD))
+            .pl(px(cell_pad))
             .overflow_hidden()
             .text_color(muted)
             .child(text)
@@ -1403,7 +1456,7 @@ fn render_rename_row(
             s.on_prepaint(rect_recorder(pane_id, entry_idx, view))
         })
         .w_full()
-        .h(px(DETAILS_ROW_H))
+        .h(px(row_h))
         .relative()
         .overflow_hidden()
         .rounded_sm()
@@ -1413,14 +1466,14 @@ fn render_rename_row(
         .child(
             div()
                 .absolute()
-                .left(px(ROW_PAD_X))
-                .top(px((DETAILS_ROW_H - ROW_ICON_SIZE) * 0.5))
-                .w(px(ROW_ICON_SIZE))
-                .h(px(ROW_ICON_SIZE))
+                .left(px(row_pad_x))
+                .top(px((row_h - row_icon_size) * 0.5))
+                .w(px(row_icon_size))
+                .h(px(row_icon_size))
                 .child(match icon_tex {
                     Some(tex) => img(tex)
-                        .w(px(ROW_ICON_SIZE))
-                        .h(px(ROW_ICON_SIZE))
+                        .w(px(row_icon_size))
+                        .h(px(row_icon_size))
                         .flex_none()
                         .into_any_element(),
                     None => fallback_icon.element(ROW_ICON_SIZE, muted),
@@ -1429,19 +1482,20 @@ fn render_rename_row(
         .child(
             div()
                 .absolute()
-                .left(px(ROW_NAME_X))
+                .left(px(row_name_x))
                 .top_0()
                 .w(px(crate::ui::views::rename::input_width(
                     &name,
-                    layout.name_col_w.max(ROW_NAME_MIN_W),
+                    layout.name_col_w.max(row_name_min_w),
                     font_size,
                     window,
                 )))
                 .child(crate::ui::views::rename::input_element(
                     &rename_input,
                     view,
-                    DETAILS_ROW_H,
+                    px(row_h),
                     font_size,
+                    window,
                 )),
         )
         .children(meta_cells)

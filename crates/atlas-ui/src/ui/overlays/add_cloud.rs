@@ -196,6 +196,17 @@ impl App {
                 .into_any_element()
         });
 
+        let native_hint = div()
+            .px_3()
+            .py_2()
+            .rounded(px(crate::ui::RADIUS))
+            .bg(border.opacity(0.18))
+            .border_1()
+            .border_color(border)
+            .text_xs()
+            .text_color(muted)
+            .child(rust_i18n::t!("cloud_native_hint").to_string());
+
         // ── Error banner ───────────────────────────────────────────────────────
         let error_banner: Option<AnyElement> = last_error.as_deref().map(|msg| {
             div()
@@ -454,6 +465,7 @@ impl App {
                     .child(rust_i18n::t!("cloud_add_title").to_string()),
             )
             .child(service_picker)
+            .child(native_hint)
             .children(oauth_name)
             .children(fields)
             .children(access_toggle)

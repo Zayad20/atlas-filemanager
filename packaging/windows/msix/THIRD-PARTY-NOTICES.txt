@@ -1,0 +1,7 @@
+Atlas File Manager includes the following unmodified third-party program.
+
+UnRAR for Windows
+Copyright (C) Alexander Roshal
+Command-line freeware distributed by RARLAB.
+https://www.rarlab.com/rar_add.htm
+https://www.rarlab.com/

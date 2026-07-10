@@ -59,18 +59,23 @@ pub trait ProfileScoped {
 }
 
 /// Persisted preferences for the preview / inspector panel, scoped per profile.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PreviewPrefs {
-    /// Show line numbers in the code editor. Defaults to `true`.
-    #[serde(default = "default_true")]
+    /// Show line numbers in the code editor. Defaults to `false`.
+    #[serde(default)]
     pub show_line_numbers: bool,
     /// Open files in edit mode (editable) by default. Defaults to `false`.
     #[serde(default)]
     pub edit_mode: bool,
 }
 
-fn default_true() -> bool {
-    true
+impl Default for PreviewPrefs {
+    fn default() -> Self {
+        Self {
+            show_line_numbers: false,
+            edit_mode: false,
+        }
+    }
 }
 
 /// Marker for [`ProfileScoped`] — stores [`PreviewPrefs`] under key `"preview"`.
@@ -124,6 +129,14 @@ impl ProfileScoped for FolderViewFeature {
     type State = FolderViewPrefs;
 }
 
+/// Marker for [`ProfileScoped`] — stores recent folders for one profile.
+pub struct RecentFoldersFeature;
+
+impl ProfileScoped for RecentFoldersFeature {
+    const KEY: &'static str = "recent_folders";
+    type State = Vec<PathBuf>;
+}
+
 /// Name of the theme applied to new profiles. Must match a theme registered in
 /// `ThemeRegistry` (see `crates/atlas-ui/assets/themes/atlas-themes.json`).
 pub const DEFAULT_THEME: &str = "Atlas Figma Glass";
@@ -137,6 +150,7 @@ pub enum SectionKind {
     Places,
     Bookmarks,
     Tags,
+    Linux,
     Drives,
     Recent,
     /// Cloud / network remotes (feature `cloud`). Renders nothing without it.
@@ -150,6 +164,7 @@ impl SectionKind {
             Self::Places => "Places",
             Self::Bookmarks => "Bookmarks",
             Self::Tags => "Tags",
+            Self::Linux => "Linux",
             Self::Drives => "Drives",
             Self::Recent => "Recent",
             Self::Cloud => "Network",
@@ -180,6 +195,8 @@ pub fn default_sections() -> Vec<SidebarSection> {
         SidebarSection::new(SectionKind::Places),
         SidebarSection::new(SectionKind::Bookmarks),
         SidebarSection::new(SectionKind::Tags),
+        #[cfg(windows)]
+        SidebarSection::new(SectionKind::Linux),
         SidebarSection::new(SectionKind::Drives),
         #[cfg(feature = "cloud")]
         SidebarSection::new(SectionKind::Cloud),
@@ -309,6 +326,26 @@ impl ProfileManager {
                 .unwrap_or(p.sidebar_sections.len());
             p.sidebar_sections
                 .insert(pos, SidebarSection::new(SectionKind::Cloud));
+        }
+    }
+
+    /// Profiles saved before the WSL/Linux section existed lack it.
+    #[cfg(windows)]
+    pub fn ensure_linux_section(&mut self) {
+        for p in &mut self.profiles {
+            if p.sidebar_sections
+                .iter()
+                .any(|s| s.kind == SectionKind::Linux)
+            {
+                continue;
+            }
+            let pos = p
+                .sidebar_sections
+                .iter()
+                .position(|s| s.kind == SectionKind::Drives)
+                .unwrap_or(p.sidebar_sections.len());
+            p.sidebar_sections
+                .insert(pos, SidebarSection::new(SectionKind::Linux));
         }
     }
 }

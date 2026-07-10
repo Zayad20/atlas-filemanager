@@ -13,17 +13,35 @@ use gpui_component::{Theme, ThemeRegistry};
 impl App {
     /// Suffix that marks a theme as the translucent "Glass" variant of a base
     /// theme. Paired by name: `"Atlas Midnight"` ↔ `"Atlas Midnight Glass"`.
-    /// Used by [`App::apply_active_theme`] to swap in the glass config when the
-    /// glass setting is on, while keeping the base name as the stored/selected
-    /// theme so the picker stays coherent.
     const GLASS_SUFFIX: &'static str = " Glass";
 
     /// Record `name` as the active profile's theme, persist, and request that the
     /// next render apply it. Cheap and cx-free so it can run inside `process_actions`.
     pub(crate) fn set_theme(&mut self, name: String) {
+        self.theme_preview_before = None;
         self.state.profiles.active_mut().theme = name;
         self.theme_dirty = true;
         self.save();
+    }
+
+    pub(crate) fn preview_theme(&mut self, name: String) {
+        if self.theme_preview_before.is_none() {
+            self.theme_preview_before = Some(self.state.profiles.active().theme.clone());
+        }
+        if self.state.profiles.active().theme != name {
+            self.state.profiles.active_mut().theme = name;
+            self.theme_dirty = true;
+        }
+    }
+
+    pub(crate) fn restore_theme_preview(&mut self) {
+        let Some(name) = self.theme_preview_before.take() else {
+            return;
+        };
+        if self.state.profiles.active().theme != name {
+            self.state.profiles.active_mut().theme = name;
+            self.theme_dirty = true;
+        }
     }
 
     /// Apply the active profile's theme to the global gpui-component `Theme`.
@@ -55,31 +73,11 @@ impl App {
                 return;
             };
 
-        let wants_backdrop = self.state.settings.mica
-            || resolved_name.ends_with(Self::GLASS_SUFFIX)
-            || resolved_name == "Atlas Frost";
+        let wants_backdrop =
+            resolved_name.ends_with(Self::GLASS_SUFFIX) || resolved_name == "Atlas Frost";
 
-        // Glass swap. When the global `mica` setting is on, transparently
-        // apply the Glass variant of the resolved theme — same palette, but with
-        // translucent backgrounds so the OS blurred background shows
-        // through. The *stored* theme name stays the base ("Atlas Midnight"), so
-        // the picker keeps showing what the user picked; only the applied config
-        // comes from the glass twin. Themes without a glass twin (e.g. a custom
-        // opaque theme, or "Atlas Frost" which is already glass) fall through to
-        // the base config unchanged.
-        let config = if self.state.settings.mica && !resolved_name.ends_with(Self::GLASS_SUFFIX) {
-            let glass_name = format!("{resolved_name}{}", Self::GLASS_SUFFIX);
-            registry
-                .themes()
-                .get(&SharedString::from(glass_name.as_str()))
-                .cloned()
-                .unwrap_or(config)
-        } else {
-            config
-        };
-
-        // Enable the OS backdrop for the global glass toggle and explicit glass
-        // themes. This is Atlas' equivalent of Zed's `background.appearance=blurred`.
+        // Enable the OS backdrop for explicit glass themes. This is Atlas'
+        // equivalent of Zed's `background.appearance=blurred`.
         window.set_background_appearance(if wants_backdrop {
             WindowBackgroundAppearance::Blurred
         } else {
@@ -87,8 +85,6 @@ impl App {
         });
 
         // Persist the normalized name so the migration is one-time and sticky.
-        // NOTE: `resolved_name` is always the base theme — never the glass twin —
-        // so the swap above stays idempotent across reboots.
         if resolved_name != self.state.profiles.active().theme {
             self.state.profiles.active_mut().theme = resolved_name;
             self.save();

@@ -1,5 +1,5 @@
 use crate::app::App;
-use atlas_core::fs::list::{entries_for_paths, list_dir};
+use atlas_core::fs::list::{entries_for_paths, list_dir, list_dir_with_preview};
 use atlas_model::app_state::BgResult;
 use atlas_model::layout_tree::{Tile, TileId};
 use atlas_model::location::Location;
@@ -24,7 +24,24 @@ impl App {
         let tx = self.tx.clone();
         let show_hidden = self.state.settings.show_hidden;
         self.rt.spawn(async move {
-            match list_dir(&path, show_hidden, sort_col, sort_dir, folders_first).await {
+            let preview_tx = tx.clone();
+            match list_dir_with_preview(
+                &path,
+                show_hidden,
+                sort_col,
+                sort_dir,
+                folders_first,
+                move |mut entries| {
+                    crate::ui::views::details::format_entries(&mut entries);
+                    let _ = preview_tx.send(BgResult::DirListPreview {
+                        tab: tab_id,
+                        op_id,
+                        entries,
+                    });
+                },
+            )
+            .await
+            {
                 Ok(mut entries) => {
                     crate::ui::views::details::format_entries(&mut entries);
                     let _ = tx.send(BgResult::DirListed {
@@ -199,8 +216,15 @@ impl App {
 
     /// Select an item in a Miller column: focus that column, truncate deeper
     /// columns, and (for a folder) open a new child column.
-    pub(crate) fn miller_select(&mut self, tile: TileId, column: usize, idx: usize) {
-        self.state.focused_tile = tile;
+    pub(crate) fn miller_select(
+        &mut self,
+        tile: TileId,
+        column: usize,
+        idx: usize,
+        shift: bool,
+        ctrl: bool,
+    ) {
+        self.activate_tab(tile);
         let entry = self
             .state
             .tab_states
@@ -219,9 +243,25 @@ impl App {
                 return;
             }
             ts.miller.focused = column;
-            ts.miller.columns[column].selection.selected.clear();
-            ts.miller.columns[column].selection.selected.insert(idx);
-            ts.miller.columns[column].selection.keyboard_cursor = Some(idx);
+            let col = &mut ts.miller.columns[column];
+            if ctrl {
+                if col.selection.selected.contains(&idx) {
+                    col.selection.selected.remove(&idx);
+                } else {
+                    col.selection.selected.insert(idx);
+                }
+            } else if shift {
+                let anchor = col.selection.last_clicked_index.unwrap_or(idx);
+                col.selection.selected.clear();
+                let (lo, hi) = (anchor.min(idx), anchor.max(idx));
+                col.selection.selected.extend(lo..=hi);
+            } else {
+                col.selection.selected.clear();
+                col.selection.selected.insert(idx);
+            }
+            col.selection.last_clicked_index = Some(idx);
+            col.selection.keyboard_cursor = Some(idx);
+            col.selection.selection_anchor = Some(idx);
             ts.miller.columns.truncate(column + 1);
             ts.selection.scroll_to_selected = true;
             if kind == atlas_model::file_entry::FileKind::Dir {
@@ -251,8 +291,107 @@ impl App {
                 None
             }
         };
+        self.miller_scroll_handles
+            .retain(|(pane, col), _| *pane != tile || *col <= column);
         if let Some(child_loc) = child_to_load {
             self.spawn_miller_list(tile, child_loc);
+        }
+    }
+
+    /// When the focused pane is in Miller view, the live selection is the focused
+    /// column's — not `ts.selection` (which tracks the hidden flat listing).
+    /// Returns `None` for non-Miller panes so callers fall through to the flat path.
+    pub(crate) fn miller_focused_selection_paths(&self) -> Option<Vec<PathBuf>> {
+        let tile = self.state.focused_tile;
+        let td = self.tab_data_for(tile)?;
+        if !matches!(td.view_mode, atlas_model::settings::ViewMode::Miller) {
+            return None;
+        }
+        let ts = self.state.tab_states.get(&tile)?;
+        let col = ts.miller.columns.get(ts.miller.focused)?;
+        Some(
+            col.selection
+                .selected
+                .iter()
+                .filter_map(|i| col.entries.get(*i))
+                .map(|e| e.path.clone())
+                .collect(),
+        )
+    }
+
+    /// Keyboard cursor movement inside the focused Miller column. Returns `true`
+    /// when the focused pane is in Miller view (event consumed), else `false` so
+    /// the flat-list `nav_apply` runs. `target` maps `(cursor, len) → new cursor`.
+    pub(crate) fn miller_nav_apply(&mut self, target: &dyn Fn(usize, usize) -> usize) -> bool {
+        let tile = self.state.focused_tile;
+        let is_miller = self
+            .tab_data_for(tile)
+            .is_some_and(|td| matches!(td.view_mode, atlas_model::settings::ViewMode::Miller));
+        if !is_miller {
+            return false;
+        }
+        let Some((column, cur, len)) = self.state.tab_states.get(&tile).and_then(|ts| {
+            let ci = ts.miller.focused;
+            let col = ts.miller.columns.get(ci)?;
+            Some((
+                ci,
+                col.selection.keyboard_cursor.unwrap_or(0),
+                col.entries.len(),
+            ))
+        }) else {
+            return true;
+        };
+        if len == 0 {
+            return true;
+        }
+        let next = target(cur, len).min(len - 1);
+        self.miller_select(tile, column, next, false, false);
+        true
+    }
+
+    /// Enter in Miller view: activate the focused column's cursor entry (files
+    /// open; dirs re-cascade). Returns `false` for non-Miller panes.
+    pub(crate) fn miller_open_cursor(&mut self) -> bool {
+        let tile = self.state.focused_tile;
+        let is_miller = self
+            .tab_data_for(tile)
+            .is_some_and(|td| matches!(td.view_mode, atlas_model::settings::ViewMode::Miller));
+        if !is_miller {
+            return false;
+        }
+        let target = self.state.tab_states.get(&tile).and_then(|ts| {
+            let ci = ts.miller.focused;
+            let col = ts.miller.columns.get(ci)?;
+            let idx = col.selection.keyboard_cursor?;
+            Some((ci, idx))
+        });
+        if let Some((column, idx)) = target {
+            self.process_actions(vec![crate::input::action::Action::MillerActivate {
+                tile,
+                column,
+                idx,
+            }]);
+        }
+        true
+    }
+
+    /// Re-list every Miller column of `tile` (post file-op refresh). No-op for
+    /// panes that never opened Miller view.
+    pub(crate) fn refresh_miller_columns(&mut self, tile: TileId) {
+        let locations: Vec<Location> = self
+            .state
+            .tab_states
+            .get(&tile)
+            .map(|ts| {
+                ts.miller
+                    .columns
+                    .iter()
+                    .map(|c| c.location.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for loc in locations {
+            self.spawn_miller_list(tile, loc);
         }
     }
 

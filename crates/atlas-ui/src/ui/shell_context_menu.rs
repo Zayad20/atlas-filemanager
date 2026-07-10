@@ -13,9 +13,9 @@ use std::sync::Arc;
 use atlas_model::ext_model::CommandRef;
 
 use gpui::{
-    div, img, px, AnyElement, Context, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    KeyDownEvent, Keystroke, MouseButton, ParentElement, Pixels, Point, RenderImage, SharedString,
-    StatefulInteractiveElement, Styled, Window,
+    div, img, px, AnimationExt, AnyElement, Context, FocusHandle, Focusable, InteractiveElement,
+    IntoElement, KeyDownEvent, Keystroke, MouseButton, ParentElement, Pixels, Point, RenderImage,
+    SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{h_flex, kbd::Kbd, v_flex, ActiveTheme};
@@ -84,6 +84,7 @@ enum AtlasCmd {
     NewFolder,
     NewFile,
     OpenTerminal,
+    Refresh,
     SelectAll,
 }
 
@@ -96,6 +97,7 @@ impl AtlasCmd {
             Self::NewFolder => rust_i18n::t!("root_new_folder").to_string(),
             Self::NewFile => "New file".to_string(),
             Self::OpenTerminal => "Open terminal".to_string(),
+            Self::Refresh => rust_i18n::t!("cmd_nav_refresh_title").to_string(),
             Self::SelectAll => rust_i18n::t!("root_select_all").to_string(),
             Self::Cut => rust_i18n::t!("root_cut").to_string(),
             Self::Paste => rust_i18n::t!("root_paste").to_string(),
@@ -119,6 +121,7 @@ impl AtlasCmd {
             Self::NewFolder => Some(AtlasIcon::Folder),
             Self::NewFile => Some(AtlasIcon::File),
             Self::OpenTerminal => Some(AtlasIcon::Lightning),
+            Self::Refresh => Some(AtlasIcon::ArrowClockwise),
             Self::SelectAll => Some(AtlasIcon::SelectionAll),
         }
     }
@@ -132,6 +135,7 @@ impl AtlasCmd {
             Self::Paste => Some("ctrl-v"),
             Self::Trash => Some("delete"),
             Self::DeletePerm => Some("shift-delete"),
+            Self::Refresh => Some("f5"),
             Self::SelectAll => Some("ctrl-a"),
             Self::Restore
             | Self::Properties
@@ -168,6 +172,7 @@ const ATLAS_ITEMS_BACKGROUND: &[(AtlasCmd, bool)] = &[
     (AtlasCmd::NewFolder, false),
     (AtlasCmd::OpenTerminal, true),
     (AtlasCmd::Paste, false),
+    (AtlasCmd::Refresh, false),
     (AtlasCmd::SelectAll, false),
 ];
 
@@ -215,9 +220,16 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.suppress_next_shell_ctx_menu {
+            self.suppress_next_shell_ctx_menu = false;
+            self.close_ctx_menu(cx);
+            return;
+        }
         if paths.is_empty() {
             return;
         }
+        self.close_type_filter_menu(cx);
+        self.close_breadcrumb_menu(cx);
         self.ctx_menu_seq += 1;
         let menu_id = self.ctx_menu_seq;
 
@@ -512,10 +524,10 @@ impl App {
         const MAX_H: f32 = 640.;
         const V_MARGIN: f32 = 72.;
         const INPUT_H: f32 = 40.;
-        let content_h = rows.len() as f32 * 30.0 + 8.0;
+        let content_h = rows.iter().map(ctx_row_height).sum::<f32>() + 8.0;
         let max_h = MAX_H.min((wh - V_MARGIN * 2.0).max(180.0));
-        let est_h = (content_h + INPUT_H).clamp(120.0, max_h);
-        let list_h = (est_h - INPUT_H).max(72.0);
+        let est_h = (content_h + INPUT_H).min(max_h);
+        let list_h = est_h - INPUT_H;
         let left = ax.min((ww - W - 6.0).max(6.0)).max(6.0);
         let top = ay.min((wh - est_h - 6.0).max(6.0)).max(6.0);
 
@@ -750,7 +762,12 @@ impl App {
                     cx.stop_propagation();
                     cx.notify();
                 }
-            }));
+            }))
+            .with_animation(
+                SharedString::from("ctx-menu-panel-appear"),
+                crate::ui::motion::animation(crate::ui::motion::MICRO_MS),
+                |this, t| this.opacity(t).mt(px(5.0 * (1.0 - t))),
+            );
 
         // Full-window scrim: any click outside the panel closes the menu.
         let v = view.clone();
@@ -904,7 +921,7 @@ impl App {
     /// Run an Atlas command against the current selection, then close. We call the
     /// App methods directly (rather than dispatching the gpui action) so the menu's
     /// focused search input can't intercept `Copy`/`Cut`/`Paste` as text edits.
-    fn run_ctx_atlas(&mut self, cmd: AtlasCmd, window: &mut Window, cx: &mut Context<Self>) {
+    fn run_ctx_atlas(&mut self, cmd: AtlasCmd, _window: &mut Window, cx: &mut Context<Self>) {
         let is_archive = self
             .state
             .active_tab_data()
@@ -918,7 +935,7 @@ impl App {
         self.close_ctx_menu(cx);
         match cmd {
             AtlasCmd::Open => self.open_cursor(),
-            AtlasCmd::Rename => self.begin_rename(window, cx),
+            AtlasCmd::Rename => self.process_actions(vec![Action::RenameFocused]),
             AtlasCmd::Copy => {
                 if is_archive {
                     self.toast_error(rust_i18n::t!("root_copy_archive_error").into());
@@ -983,8 +1000,10 @@ impl App {
                     menu_paths.clone()
                 };
                 #[cfg(windows)]
-                if let Some(path) = paths.into_iter().next() {
-                    show_properties(&path);
+                match paths.as_slice() {
+                    [] => {}
+                    [single] => show_properties(single),
+                    many => show_properties_multi(many),
                 }
                 // No native "properties" verb outside Windows — use our own
                 // themed overlay instead (F3 #15).
@@ -995,32 +1014,10 @@ impl App {
                 self.process_actions(vec![Action::SelectAll]);
             }
             AtlasCmd::NewFolder => {
-                if let Some(dir) = self
-                    .state
-                    .active_tab_data()
-                    .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
-                {
-                    let tile = self.state.focused_tile;
-                    let base = rust_i18n::t!("root_new_folder").to_string();
-                    let name = unique_folder_name(&dir, &base);
-                    let path = dir.join(&name);
-                    self.pending_select = Some((tile, path));
-                    self.process_actions(vec![Action::CreateFolder { parent: dir, name }]);
-                }
+                self.process_actions(vec![Action::CreateFolderFocused]);
             }
             AtlasCmd::NewFile => {
-                if let Some(dir) = self
-                    .state
-                    .active_tab_data()
-                    .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
-                {
-                    let tile = self.state.focused_tile;
-                    let base = "New file".to_string();
-                    let name = unique_folder_name(&dir, &base); // Just use this for uniqueness
-                    let path = dir.join(&name);
-                    self.pending_select = Some((tile, path));
-                    self.process_actions(vec![Action::CreateFile { parent: dir, name }]);
-                }
+                self.process_actions(vec![Action::CreateFileFocused]);
             }
             AtlasCmd::OpenTerminal => {
                 if let Some(dir) = self
@@ -1030,6 +1027,9 @@ impl App {
                 {
                     self.process_actions(vec![Action::OpenTerminal { dir }]);
                 }
+            }
+            AtlasCmd::Refresh => {
+                self.process_actions(vec![Action::Refresh(self.state.focused_tile)]);
             }
         }
         cx.notify();
@@ -1044,6 +1044,13 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.suppress_next_shell_ctx_menu {
+            self.suppress_next_shell_ctx_menu = false;
+            self.close_ctx_menu(cx);
+            return;
+        }
+        self.close_type_filter_menu(cx);
+        self.close_breadcrumb_menu(cx);
         self.ctx_menu_seq += 1;
         let menu_id = self.ctx_menu_seq;
         let screen_pt = cursor_screen_pos();
@@ -1182,12 +1189,19 @@ fn sanitize_separators(rows: Vec<CtxRow>) -> Vec<CtxRow> {
     out
 }
 
+fn ctx_row_height(row: &CtxRow) -> f32 {
+    match row {
+        CtxRow::Separator => 9.0,
+        CtxRow::Loading | CtxRow::Atlas { .. } | CtxRow::Ext { .. } | CtxRow::Native { .. } => 30.0,
+    }
+}
+
 /// Open the native shell Properties dialog for `path`.
 /// On Windows uses `ShellExecuteExW` with the "properties" verb and
 /// `SEE_MASK_INVOKEIDLIST` so the dialog works for any file system object.
 /// No-op on non-Windows.
 #[allow(unsafe_code)]
-fn show_properties(path: &std::path::Path) {
+pub(crate) fn show_properties(path: &std::path::Path) {
     #[cfg(windows)]
     {
         use windows::core::PCWSTR;
@@ -1219,6 +1233,58 @@ fn show_properties(path: &std::path::Path) {
     }
     #[cfg(not(windows))]
     let _ = path;
+}
+
+/// Open the shell Properties dialog for "This PC".
+#[allow(unsafe_code)]
+pub(crate) fn show_this_pc_properties() {
+    #[cfg(windows)]
+    {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::Shell::{
+            ShellExecuteExW, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
+
+        let verb: Vec<u16> = "properties\0".encode_utf16().collect();
+        let this_pc: Vec<u16> = "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\0"
+            .encode_utf16()
+            .collect();
+        let mut info = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_INVOKEIDLIST,
+            hwnd: HWND::default(),
+            lpVerb: PCWSTR(verb.as_ptr()),
+            lpFile: PCWSTR(this_pc.as_ptr()),
+            nShow: SW_SHOW.0,
+            ..Default::default()
+        };
+        unsafe {
+            let _ = ShellExecuteExW(&mut info);
+        }
+    }
+}
+
+/// Open the combined native Properties dialog for several paths at once
+/// (`SHMultiFileProperties`, the same sheet Explorer shows for a multi-select).
+/// Falls back to one dialog per path if the data object can't be built (e.g.
+/// items don't share a common shell parent).
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn show_properties_multi(paths: &[PathBuf]) {
+    use crate::dnd::windows::data_object::AtlasDataObject;
+    use std::sync::atomic::AtomicU32;
+    use windows::Win32::System::Ole::DROPEFFECT_COPY;
+    use windows::Win32::UI::Shell::SHMultiFileProperties;
+
+    let data_obj = AtlasDataObject::new(paths, DROPEFFECT_COPY, Arc::new(AtomicU32::new(0)));
+    let ok = data_obj.is_some_and(|obj| unsafe { SHMultiFileProperties(&obj, 0).is_ok() });
+    if !ok {
+        for path in paths {
+            show_properties(path);
+        }
+    }
 }
 
 /// Rank `titles` against `query` (best first). Standalone so it doesn't need the
@@ -1391,7 +1457,8 @@ fn menu_row(
         .rounded_md()
         .cursor_pointer()
         .text_color(text_color)
-        .text_sm();
+        .text_sm()
+        .min_h(px(30.));
     if selected {
         row = row.bg(accent);
     }
@@ -1490,20 +1557,4 @@ fn raw_icon_to_texture(raw: crate::shell_menu::RawIcon) -> Option<Arc<RenderImag
     }
     let buf = image::RgbaImage::from_raw(raw.w, raw.h, bytes)?;
     Some(Arc::new(RenderImage::new(vec![image::Frame::new(buf)])))
-}
-
-/// Return a folder name that doesn't already exist under `dir`.
-/// Tries `base`, then `base 2`, `base 3`, …
-fn unique_folder_name(dir: &std::path::Path, base: &str) -> String {
-    if !dir.join(base).exists() {
-        return base.to_string();
-    }
-    let mut n = 2u32;
-    loop {
-        let name = format!("{base} {n}");
-        if !dir.join(&name).exists() {
-            return name;
-        }
-        n += 1;
-    }
 }

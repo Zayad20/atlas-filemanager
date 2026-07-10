@@ -86,6 +86,7 @@ async fn main() -> Result<()> {
                 std::env::temp_dir().join(format!("{}-{}.zip", manifest.id, manifest.version));
             println!("Packaging extension to: {:?}", temp_zip_path);
             packager::zip_extension(path, &temp_zip_path)?;
+            let zip_sha256 = sha256_file(&temp_zip_path)?;
 
             // 3. Connect to R2
             let client = R2Client::new(bucket.clone(), public_url.clone()).await?;
@@ -130,6 +131,7 @@ async fn main() -> Result<()> {
                 icon_url,
                 latest_version: manifest.version.clone(),
                 download_url: client.build_public_url(&zip_key),
+                sha256: zip_sha256,
             };
 
             registry.extensions.insert(manifest.id.clone(), ext_entry);

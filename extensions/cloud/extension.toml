@@ -1,0 +1,15 @@
+id = "cloud"
+name = "Cloud Drives"
+version = "0.1.0"
+author = "Cuber Labs"
+description = "SFTP, FTP, SMB, Google Drive and OneDrive virtual locations"
+kind = "sidecar"
+
+[sidecar]
+command = "atlas-cloud-extension.exe"
+
+[[sidebar]]
+id = "cloud"
+title = "Network"
+icon = "cloud"
+add_action = "cloud.add"

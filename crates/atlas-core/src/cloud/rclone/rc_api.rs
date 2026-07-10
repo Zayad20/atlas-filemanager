@@ -186,17 +186,17 @@ impl RcClient {
         dst_fs: &str,
         dst_remote: &str,
         group: &str,
+        config: Option<Value>,
     ) -> anyhow::Result<AsyncJob> {
-        let v = self
-            .call(
-                "operations/copyfile",
-                json!({
-                    "srcFs": src_fs, "srcRemote": src_remote,
-                    "dstFs": dst_fs, "dstRemote": dst_remote,
-                    "_async": true, "_group": group,
-                }),
-            )
-            .await?;
+        let mut body = json!({
+            "srcFs": src_fs, "srcRemote": src_remote,
+            "dstFs": dst_fs, "dstRemote": dst_remote,
+            "_async": true, "_group": group,
+        });
+        if let Some(config) = config {
+            body["_config"] = config;
+        }
+        let v = self.call("operations/copyfile", body).await?;
         let jobid = v
             .get("jobid")
             .and_then(Value::as_i64)
