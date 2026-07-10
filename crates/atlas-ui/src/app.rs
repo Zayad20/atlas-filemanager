@@ -161,6 +161,9 @@ pub struct App {
     // it down.
     pub(crate) palette_closing: Option<(crate::ui::palette::PaletteKind, Instant)>,
     pub(crate) layout_revision: u64,
+    /// Short split/close burst window: keep inactive pane bodies cheap while the dock
+    /// animates rects. Full pane content rehydrates when this expires.
+    pub(crate) layout_storm_until: Option<Instant>,
     /// Short-lived visual affordances for panes that just entered through a tab
     /// create or split operation. UI-only; never persisted into AppState.
     pub(crate) pane_animations: HashMap<TileId, PaneAnimation>,
@@ -827,6 +830,28 @@ pub(crate) fn scroll_smooth_params(smoothness: f32) -> (f32, f32) {
 pub(crate) const ITEM_APPEAR_WINDOW: Duration = Duration::from_millis(150);
 
 impl App {
+    pub(crate) fn arm_layout_storm(&mut self) {
+        // global burst window; switch to per-container freezing if needed.
+        self.layout_storm_until = Some(Instant::now() + Duration::from_millis(160));
+    }
+
+    pub(crate) fn layout_storm_active(&self) -> bool {
+        self.layout_storm_until
+            .is_some_and(|until| Instant::now() < until)
+    }
+
+    pub(crate) fn tick_layout_storm(&mut self) -> bool {
+        if self
+            .layout_storm_until
+            .is_some_and(|until| Instant::now() >= until)
+        {
+            self.layout_storm_until = None;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Notify only the signal entity for `pane_id`. The `PaneContentView` for that
     /// pane observes this signal, so only it re-renders — not every other pane.
     pub(crate) fn notify_pane(&self, pane_id: TileId, cx: &mut gpui::Context<Self>) {

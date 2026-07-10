@@ -382,8 +382,20 @@ impl App {
         // whose bounds changed (measured in release: ~17ms with 10-14 panes, ~28ms
         // with 20+). The older sibling-count gate penalized same-direction splits
         // even with few panes; the real cost depends on total invalidated panes.
-        let max_animated_panes = if cfg!(debug_assertions) { 4 } else { 6 };
-        let max_animated_siblings = if cfg!(debug_assertions) { 6 } else { 8 };
+        let max_animated_panes = if self.layout_storm_active() {
+            64
+        } else if cfg!(debug_assertions) {
+            4
+        } else {
+            6
+        };
+        let max_animated_siblings = if self.layout_storm_active() {
+            64
+        } else if cfg!(debug_assertions) {
+            6
+        } else {
+            8
+        };
         if self.file_panel_cache.len() > max_animated_panes
             || final_shares.len() > max_animated_siblings
         {
@@ -479,6 +491,7 @@ impl App {
         cx.has_active_drag().hash(&mut h);
         self.state.dragging_pane.map(|p| p.0).hash(&mut h);
         self.state.drag_pending.hash(&mut h);
+        self.layout_storm_active().hash(&mut h);
         self.rename_edit
             .as_ref()
             .map(|edit| edit.pane.0)
@@ -637,6 +650,7 @@ impl App {
 
     fn should_render_pane_body(&self, pane_id: TileId) -> bool {
         !self.pane_closing.contains_key(&pane_id)
+            && (!self.layout_storm_active() || pane_id == self.state.focused_tile)
     }
 
     fn render_tab_strip(
