@@ -48,6 +48,14 @@ struct FlatSplitter {
     rect: FlatRect,
 }
 
+fn split_child_span(share: f32, share_sum: f32, available: f32, child_count: usize) -> f32 {
+    if share_sum > f32::EPSILON {
+        share / share_sum * available
+    } else {
+        available / child_count.max(1) as f32
+    }
+}
+
 /// Tabs-like tile (tab strip + body) hosted in its own entity so it can be embedded
 /// with `AnyView::cached` (Zed's `dock.rs:1185` pattern: the whole pane, including
 /// the tab bar, is cached). Rendering delegates to `App::render_tabs_like`;
@@ -308,6 +316,7 @@ impl App {
                 } else {
                     vec![1.0; linear.children.len()]
                 };
+                let share_sum = shares.iter().copied().filter(|v| *v > 0.0).sum::<f32>();
 
                 let splitter_size = 5.0;
                 let span = match linear.dir {
@@ -348,7 +357,9 @@ impl App {
                         offset += splitter_size;
                     }
 
-                    let child_span = shares.get(ix).copied().unwrap_or(1.0).max(0.01) * available;
+                    let share = shares.get(ix).copied().unwrap_or(1.0).max(0.01);
+                    let child_span =
+                        split_child_span(share, share_sum, available, linear.children.len());
                     let child_rect = match linear.dir {
                         LinearDir::Horizontal => FlatRect {
                             x: offset,
@@ -439,9 +450,11 @@ impl App {
                 } else {
                     vec![1.0; children.len()]
                 };
+                let share_sum = shares.iter().copied().filter(|v| *v > 0.0).sum::<f32>();
 
                 let view = cx.entity();
-                let num_splitters = children.len().saturating_sub(1);
+                let child_count = children.len();
+                let num_splitters = child_count.saturating_sub(1);
                 let splitter_size = 5.0; // from resize.rs splitter thickness
                 let mut current_offset = 0.0;
 
@@ -467,7 +480,7 @@ impl App {
 
                     let child_span = if let Some(span) = exact_span {
                         let available = (span - (num_splitters as f32 * splitter_size)).max(0.0);
-                        Some(share * available)
+                        Some(split_child_span(share, share_sum, available, child_count))
                     } else {
                         None
                     };
@@ -1299,5 +1312,21 @@ impl App {
         if let Some(panel) = self.file_panel_cache.get(&self.state.focused_tile) {
             window.focus(&panel.read(cx).focus_handle(cx), cx);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_child_span_uses_share_ratio() {
+        assert_eq!(split_child_span(1.0, 2.0, 100.0, 2), 50.0);
+        assert_eq!(split_child_span(3.0, 4.0, 100.0, 2), 75.0);
+    }
+
+    #[test]
+    fn split_child_span_falls_back_to_even_width() {
+        assert_eq!(split_child_span(1.0, 0.0, 90.0, 3), 30.0);
     }
 }
