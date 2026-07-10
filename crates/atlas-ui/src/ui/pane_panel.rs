@@ -250,7 +250,9 @@ impl Render for FilePanel {
                     .on_prepaint(move |bounds, _window, cx| {
                         if let Some(app) = bounds_app.upgrade() {
                             app.update(cx, |app, _cx| {
-                                if app.state.tab_states.contains_key(&pane_id) {
+                                if app.dock_split_animations.is_empty()
+                                    && app.state.tab_states.contains_key(&pane_id)
+                                {
                                     app.pane_layout_bounds.insert(pane_id, bounds);
                                 }
                             });

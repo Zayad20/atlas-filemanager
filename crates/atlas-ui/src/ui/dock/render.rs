@@ -56,6 +56,15 @@ fn split_child_span(share: f32, share_sum: f32, available: f32, child_count: usi
     }
 }
 
+fn render_pane_body_during_split(
+    pane: TileId,
+    focused: TileId,
+    dragging: Option<TileId>,
+    split_animating: bool,
+) -> bool {
+    !split_animating || pane == focused || dragging == Some(pane)
+}
+
 /// Tabs-like tile (tab strip + body) hosted in its own entity so it can be embedded
 /// with `AnyView::cached` (Zed's `dock.rs:1185` pattern: the whole pane, including
 /// the tab bar, is cached). Rendering delegates to `App::render_tabs_like`;
@@ -880,7 +889,15 @@ impl App {
     }
 
     fn should_render_pane_body(&self, pane_id: TileId) -> bool {
-        !self.pane_closing.contains_key(&pane_id)
+        if self.pane_closing.contains_key(&pane_id) {
+            return false;
+        }
+        render_pane_body_during_split(
+            pane_id,
+            self.state.focused_tile,
+            self.state.dragging_pane,
+            !self.dock_split_animations.is_empty(),
+        )
     }
 
     fn render_tab_strip(
@@ -1328,5 +1345,17 @@ mod tests {
     #[test]
     fn split_child_span_falls_back_to_even_width() {
         assert_eq!(split_child_span(1.0, 0.0, 90.0, 3), 30.0);
+    }
+
+    #[test]
+    fn split_animation_renders_only_interactive_pane_bodies() {
+        let a = TileId(1);
+        let b = TileId(2);
+        let c = TileId(3);
+
+        assert!(render_pane_body_during_split(a, b, None, false));
+        assert!(render_pane_body_during_split(b, b, None, true));
+        assert!(render_pane_body_during_split(c, b, Some(c), true));
+        assert!(!render_pane_body_during_split(a, b, Some(c), true));
     }
 }
