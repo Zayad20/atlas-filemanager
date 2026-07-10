@@ -467,6 +467,8 @@ impl AppState {
 
     /// Restore from a persisted tree. Returns (state, `first_pane_to_load`).
     pub fn from_tree(mut tree: Tree<TabData>, settings: Settings) -> (Self, TileId) {
+        tree.sanitize();
+
         // Collect all Pane leaf IDs to initialize tab_states
         let mut tab_states = HashMap::new();
         let mut first_tile = None;

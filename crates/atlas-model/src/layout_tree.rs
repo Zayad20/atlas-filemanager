@@ -9,7 +9,7 @@
 //! The renderer (gpui) reads this tree to lay out panes and emits `Action`s for any
 //! structural change — the tree never mutates itself during rendering.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 /// Stable identity of a tile (a pane leaf or a container). Monotonic `u64` so a
 /// `BTreeMap` keeps tiles in insertion order — `all_pane_tile_ids().first()` is then
@@ -202,6 +202,134 @@ impl<Pane> Tree<Pane> {
         }
     }
 
+    /// Repair a restored tree before the UI reads it.
+    ///
+    /// Older builds could persist empty split containers after aggressive pane
+    /// churn. Those nodes are legal to deserialize but not useful to render: a
+    /// branch with no pane can still consume split space and leave the real pane
+    /// collapsed off-screen. Keep only branches that lead to panes, collapse
+    /// one-child split chains, and replace invalid shares with sane weights.
+    pub fn sanitize(&mut self)
+    where
+        Pane: Clone,
+    {
+        let Some(root) = self.root else {
+            self.tiles.map.clear();
+            return;
+        };
+
+        let mut visiting = HashSet::new();
+        self.root = self.sanitize_node(root, &mut visiting);
+
+        let mut reachable = HashSet::new();
+        if let Some(root) = self.root {
+            self.collect_reachable(root, &mut reachable);
+        }
+        self.tiles.map.retain(|id, _| reachable.contains(id));
+    }
+
+    fn sanitize_node(&mut self, id: TileId, visiting: &mut HashSet<TileId>) -> Option<TileId>
+    where
+        Pane: Clone,
+    {
+        if !self.tiles.map.contains_key(&id) || !visiting.insert(id) {
+            return None;
+        }
+
+        let tile = self.tiles.map.get(&id)?.clone();
+        let result = match tile {
+            Tile::Pane(_) => Some(id),
+            Tile::Container(Container::Tabs(tabs)) => {
+                let mut children = Vec::new();
+                let mut seen = HashSet::new();
+                for child in tabs.children {
+                    if let Some(child) = self.sanitize_node(child, visiting) {
+                        if seen.insert(child) {
+                            children.push(child);
+                        }
+                    }
+                }
+
+                match children.len() {
+                    0 => None,
+                    1 => Some(children[0]),
+                    _ => {
+                        let active = tabs
+                            .active
+                            .and_then(|active| children.contains(&active).then_some(active))
+                            .or_else(|| children.first().copied());
+                        if let Some(Tile::Container(Container::Tabs(tabs))) =
+                            self.tiles.map.get_mut(&id)
+                        {
+                            tabs.children = children;
+                            tabs.active = active;
+                        }
+                        Some(id)
+                    }
+                }
+            }
+            Tile::Container(Container::Linear(linear)) => {
+                let mut children = Vec::new();
+                let mut shares = Vec::new();
+                let mut seen = HashSet::new();
+                for (ix, child) in linear.children.into_iter().enumerate() {
+                    let Some(child) = self.sanitize_node(child, visiting) else {
+                        continue;
+                    };
+                    if !seen.insert(child) {
+                        continue;
+                    }
+                    children.push(child);
+                    let share = linear.shares.get(ix).copied().unwrap_or(1.0);
+                    shares.push(if share.is_finite() && share > 0.0 {
+                        share
+                    } else {
+                        1.0
+                    });
+                }
+
+                match children.len() {
+                    0 => None,
+                    1 => Some(children[0]),
+                    _ => {
+                        if let Some(Tile::Container(Container::Linear(linear))) =
+                            self.tiles.map.get_mut(&id)
+                        {
+                            linear.children = children;
+                            linear.shares = shares;
+                        }
+                        Some(id)
+                    }
+                }
+            }
+        };
+
+        visiting.remove(&id);
+        result
+    }
+
+    fn collect_reachable(&self, id: TileId, reachable: &mut HashSet<TileId>) {
+        if !reachable.insert(id) {
+            return;
+        }
+        let Some(tile) = self.tiles.map.get(&id) else {
+            return;
+        };
+        match tile {
+            Tile::Pane(_) => {}
+            Tile::Container(Container::Tabs(tabs)) => {
+                for child in &tabs.children {
+                    self.collect_reachable(*child, reachable);
+                }
+            }
+            Tile::Container(Container::Linear(linear)) => {
+                for child in &linear.children {
+                    self.collect_reachable(*child, reachable);
+                }
+            }
+        }
+    }
+
     /// Insert `new_id` immediately after `target_id` when the target already lives
     /// in a `Linear` container with the requested direction. Returns `true` when
     /// the insertion happened, or `false` when callers should wrap `target_id` in a
@@ -359,6 +487,44 @@ mod tests {
                 assert_eq!(linear.children, vec![t1, t2]);
             }
             _ => panic!("expected linear root"),
+        }
+    }
+
+    #[test]
+    fn sanitize_removes_empty_split_branches() {
+        let mut tree = Tree::empty();
+        let pane = tree.tiles.insert_pane("pane");
+        let tabs = tree.tiles.insert_tab_tile(vec![pane]);
+        let empty = tree.tiles.insert_horizontal_tile(vec![]);
+        let root = tree.tiles.insert_vertical_tile(vec![empty, tabs]);
+        tree.root = Some(root);
+
+        tree.sanitize();
+
+        assert_eq!(tree.root, Some(pane));
+        assert_eq!(tree.tiles.iter().count(), 1);
+        assert!(matches!(tree.tiles.get(pane), Some(Tile::Pane(_))));
+    }
+
+    #[test]
+    fn sanitize_replaces_invalid_split_shares() {
+        let mut tree = Tree::empty();
+        let a = tree.tiles.insert_pane("a");
+        let b = tree.tiles.insert_pane("b");
+        let root = tree.tiles.insert_horizontal_tile(vec![a, b]);
+        if let Some(Tile::Container(Container::Linear(linear))) = tree.tiles.get_mut(root) {
+            linear.shares = vec![f32::INFINITY, -10.0];
+        }
+        tree.root = Some(root);
+
+        tree.sanitize();
+
+        match tree.tiles.get(root) {
+            Some(Tile::Container(Container::Linear(linear))) => {
+                assert_eq!(linear.children, vec![a, b]);
+                assert_eq!(linear.shares, vec![1.0, 1.0]);
+            }
+            other => panic!("expected linear root, got {other:?}"),
         }
     }
 }
