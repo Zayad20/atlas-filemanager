@@ -207,7 +207,6 @@ impl App {
             header_bg,
         );
 
-        // Empty / loading / error placeholder, or the virtualized list.
         let inner = if count == 0 {
             let msg = self.empty_pane_message(pane_id, rust_i18n::t!("empty_folder").into_owned());
             v_flex()
@@ -235,9 +234,309 @@ impl App {
                 viewport_h,
                 row_h,
             );
+            
             let list_view = view.clone();
             let fv = filtered_visible.clone();
             let row_layout = Arc::clone(&layout);
+            
+            let start_idx = (scroll_y / row_h).floor().max(0.0) as usize;
+            let end_idx = ((scroll_y + viewport_h) / row_h).ceil() as usize + 1;
+            let end_idx = end_idx.min(count);
+            let total_height = count as f32 * row_h;
+            
+            let mut row_divs = Vec::with_capacity(end_idx - start_idx);
+            let mut overlays = Vec::new();
+            
+            let Some(ts) = self.state.tab_states.get(&pane_id) else {
+                return div().into_any_element();
+            };
+            let record_rects = self.dock_split_animations.is_empty()
+                && self.pane_layout_animations.is_empty();
+                
+            let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
+            let row_icon_size = ROW_ICON_SIZE * zoom_scale;
+            let row_pad_x = ROW_PAD_X * zoom_scale;
+            
+            for i in start_idx..end_idx {
+                let Some(&entry_idx) = fv.get(i) else { continue };
+                let Some(entry) = ts.entries.get(entry_idx) else { continue };
+                
+                let rename_input = crate::ui::views::rename::active_input(
+                    self, pane_id, entry_idx,
+                );
+                let selected = ts.selection.selected.contains(&entry_idx)
+                    && !crate::ui::views::rename::suppress_row_chrome(
+                        self, pane_id, entry_idx,
+                    );
+                let flashing = matches!(entry.kind, FileKind::Dir)
+                    && self.drag_hover.blink_id.as_ref()
+                        == Some(&DragHoverId::Folder(
+                            pane_id,
+                            entry.path.clone(),
+                        ));
+                let odd = i % 2 == 1;
+                let dimmed = crate::ui::views::rename::dim_other_entry(self, pane_id, entry_idx);
+                let icon_tex = self.file_icon_for_entry(&entry.path, &entry.kind, entry.extension.as_deref()).texture();
+                let has_tex = icon_tex.is_some();
+                
+                if let Some(input) = rename_input {
+                    let overlay = render_rename_row(
+                        entry, entry_idx, odd, selected, pane_id, &view,
+                        accent, accent_fg, hover, muted, stripe_bg, input, flashing,
+                        record_rects, icon_tex, &row_layout, window, font_size
+                    );
+                    overlays.push(
+                        div()
+                            .absolute()
+                            .top(px(i as f32 * row_h))
+                            .left_0()
+                            .w_full()
+                            .h(px(row_h))
+                            .child(overlay)
+                    );
+                } else {
+                    let name = SharedString::from(entry.name.clone());
+                    let path = entry.path.clone();
+                    let is_dir = matches!(entry.kind, FileKind::Dir);
+                    let size = entry.size;
+                    let modified = entry.modified;
+                    
+                    let mut row_div = div()
+                        .id(("row", entry_idx))
+                        .absolute()
+                        .top(px(i as f32 * row_h))
+                        .left_0()
+                        .w_full()
+                        .h(px(row_h))
+                        .rounded_sm()
+                        .when(dimmed, |s| s.opacity(0.45))
+                        .when(selected, |s| s.bg(accent))
+                        .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
+                        .when(!selected && odd, |s| s.bg(stripe_bg))
+                        .when(!selected, |s| s.hover(|h| h.bg(hover)))
+                        .on_click(crate::ui::views::on_entry_click(&view, pane_id, entry_idx))
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            crate::ui::views::on_entry_ctx_menu(&view, pane_id, entry_idx),
+                        )
+                        .tooltip(move |window, cx| {
+                            crate::ui::tooltips::entry_hover_tooltip(
+                                name.clone(),
+                                path.clone(),
+                                is_dir,
+                                size,
+                                modified,
+                                window,
+                                cx,
+                            )
+                        });
+                        
+                    if record_rects {
+                        row_div = row_div.on_prepaint(crate::ui::root::rect_recorder(pane_id, entry_idx, &view));
+                    }
+                    
+                    if selected {
+                        let v = view.clone();
+                        let p = entry.path.clone();
+                        row_div = row_div
+                            .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
+                                cx.stop_propagation();
+                            })
+                            .on_drag(
+                                crate::ui::drag::file_drag_value(vec![p.clone()]),
+                                crate::ui::drag::file_drag_handler_for_item(
+                                    v,
+                                    pane_id,
+                                    entry_idx,
+                                    p,
+                                ),
+                            );
+                    } else {
+                        let v = view.clone();
+                        row_div = row_div.on_mouse_down(MouseButton::Left, move |ev, _window, cx| {
+                            let (pos, additive) = (
+                                ev.position,
+                                ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift,
+                            );
+                            v.update(cx, |this, cx| {
+                                this.begin_rubber(pane_id, pos, additive);
+                                cx.notify();
+                            });
+                            cx.stop_propagation();
+                        });
+                    }
+                    
+                    if is_dir {
+                        row_div = crate::ui::views::folder_drop_target(row_div, &view, pane_id, entry.path.clone());
+                    }
+                    
+                    if !has_tex {
+                        let fallback_icon = FileIcon::Builtin {
+                            kind: entry.kind.clone(),
+                            extension: entry.extension.clone(),
+                        };
+                        row_div = row_div.child(
+                            div()
+                                .absolute()
+                                .left(px(row_pad_x))
+                                .top(px((row_h - row_icon_size) * 0.5))
+                                .w(px(row_icon_size))
+                                .h(px(row_icon_size))
+                                .child(fallback_icon.element(ROW_ICON_SIZE, muted))
+                        );
+                    }
+                    
+                    row_divs.push(row_div);
+                }
+            }
+            
+            let canvas_view = view.clone();
+            let row_layout_c = Arc::clone(&layout);
+            let fv_c = fv.clone();
+            let font_c = row_font.clone();
+            
+            let monolithic_canvas = canvas(
+                move |bounds, window, _cx| {
+                    let _perf = crate::perf::span("details.canvas.shape");
+                    let ts = window.text_system();
+                    let app = canvas_view.read(_cx);
+                    let Some(tab_state) = app.state.tab_states.get(&pane_id) else {
+                        return MonolithicCanvasState { rows: Vec::new(), layout: (*row_layout_c).clone() };
+                    };
+                    
+                    let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
+                    let name_col_w = px(row_layout_c.name_col_w.min((f32::from(bounds.size.width) - row_layout_c.name_x).max(0.0)));
+                    
+                    let mut rows = Vec::with_capacity(end_idx - start_idx);
+                    
+                    for i in start_idx..end_idx {
+                        let Some(&entry_idx) = fv_c.get(i) else { continue };
+                        let Some(entry) = tab_state.entries.get(entry_idx) else { continue };
+                        
+                        if crate::ui::views::rename::active_input(app, pane_id, entry_idx).is_some() {
+                            continue;
+                        }
+                        
+                        let selected = tab_state.selection.selected.contains(&entry_idx)
+                            && !crate::ui::views::rename::suppress_row_chrome(app, pane_id, entry_idx);
+                        let dimmed = crate::ui::views::rename::dim_other_entry(app, pane_id, entry_idx);
+                        
+                        let name_color = if selected { accent_fg } else { fg };
+                        let name_color = if dimmed { name_color.opacity(0.45) } else { name_color };
+                        let meta_color = if selected { accent_fg } else { muted };
+                        let meta_color = if dimmed { meta_color.opacity(0.45) } else { meta_color };
+                        
+                        let name_run = TextRun {
+                            len: entry.name.len(), font: font_c.clone(), color: name_color,
+                            background_color: None, underline: None, strikethrough: None,
+                        };
+                        let mut name_s = ts.shape_line(entry.name.clone().into(), font_size, &[name_run], None);
+                        
+                        let ellipsis_s = if name_s.width() > name_col_w {
+                            let ellipsis: SharedString = "…".into();
+                            let e_run = TextRun { len: 1, font: font_c.clone(), color: name_color, background_color: None, underline: None, strikethrough: None };
+                            let es = ts.shape_line(ellipsis, font_size, &[e_run], None);
+                            let cutoff = (name_col_w - es.width()).max(px(0.));
+                            let split_idx = name_s.index_for_x(cutoff).unwrap_or(0);
+                            let (prefix, _) = name_s.split_at(split_idx);
+                            name_s = prefix;
+                            Some(es)
+                        } else {
+                            None
+                        };
+                        
+                        let mut meta_cols = Vec::new();
+                        for col in &row_layout_c.columns {
+                            if col.x < f32::from(bounds.size.width) && col.w > 1.0 {
+                                let text: SharedString = match col.column {
+                                    DetailsColumn::Size => entry.display_size.clone().into(),
+                                    DetailsColumn::Modified => entry.display_date.clone().into(),
+                                    DetailsColumn::Type => entry.display_type.clone().into(),
+                                };
+                                let run = TextRun {
+                                    len: text.len(), font: font_c.clone(), color: meta_color,
+                                    background_color: None, underline: None, strikethrough: None,
+                                };
+                                meta_cols.push(DetailsPaintColumn {
+                                    column: col.column,
+                                    line: ts.shape_line(text, font_size, &[run], None),
+                                });
+                            }
+                        }
+                        
+                        let icon_tex = app.file_icon_for_entry(&entry.path, &entry.kind, entry.extension.as_deref()).texture();
+                        
+                        rows.push(MonolithicRowState {
+                            idx: i,
+                            dimmed,
+                            name_s, ellipsis_s, meta_cols,
+                            icon_tex,
+                        });
+                    }
+                    
+                    MonolithicCanvasState {
+                        rows,
+                        layout: (*row_layout_c).clone(),
+                    }
+                },
+                move |bounds, state, window, cx| {
+                    let _perf = crate::perf::span("details.canvas.paint");
+                    let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
+                    let row_icon_size = ROW_ICON_SIZE * zoom_scale;
+                    let row_pad_x = ROW_PAD_X * zoom_scale;
+                    let cell_pad = CELL_PAD * zoom_scale;
+                    
+                    for row in &state.rows {
+                        let y = bounds.origin.y + px(row.idx as f32 * row_h);
+                        
+                        let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
+                        
+                        if let Some(tex) = &row.icon_tex {
+                            // GPUI Images don't support opacity parameter directly in paint_image,
+                            // but GPUI does support color tinting via opacity on render pipeline.
+                            // The easiest way is just to paint the image. We don't worry about dimmed image opacity for now.
+                            let _ = window.paint_image(
+                                gpui::Bounds {
+                                    origin: gpui::point(bounds.origin.x + px(row_pad_x), y + px((row_h - row_icon_size) * 0.5)),
+                                    size: gpui::size(px(row_icon_size), px(row_icon_size)),
+                                },
+                                Corners::default(), tex.clone(), 0, false,
+                            );
+                        }
+                        
+                        let name_x = bounds.origin.x + px(state.layout.name_x);
+                        window.paint_layer(
+                            gpui::Bounds {
+                                origin: gpui::point(name_x, y),
+                                size: gpui::size(px(state.layout.name_col_w), px(row_h)),
+                            },
+                            |window| {
+                                let _ = row.name_s.paint(gpui::point(name_x, text_y), px(row_h), TextAlign::Left, None, window, cx);
+                                if let Some(ref es) = row.ellipsis_s {
+                                    let _ = es.paint(gpui::point(name_x + row.name_s.width(), text_y), px(row_h), TextAlign::Left, None, window, cx);
+                                }
+                            },
+                        );
+                        
+                        for paint_col in &row.meta_cols {
+                            let Some(layout_col) = state.layout.columns.iter().find(|col| col.column == paint_col.column) else { continue };
+                            let col_x = bounds.origin.x + px(layout_col.x);
+                            let col_w = layout_col.w;
+                            let text_x = col_x + px(cell_pad.min(col_w));
+                            window.paint_layer(
+                                gpui::Bounds {
+                                    origin: gpui::point(col_x, y),
+                                    size: gpui::size(px(col_w), px(row_h)),
+                                },
+                                |window| {
+                                    let _ = paint_col.line.paint(gpui::point(text_x, text_y), px(row_h), TextAlign::Left, None, window, cx);
+                                },
+                            );
+                        }
+                    }
+                }
+            );
+            
             div()
                 .size_full()
                 .relative()
@@ -249,92 +548,29 @@ impl App {
                     crate::ui::views::on_pane_rubber_mouse_down(&view, pane_id),
                 )
                 .child(
-                    uniform_list(
-                        SharedString::from(format!("list-{}", pane_id.0)),
-                        count,
-                        move |range, window, cx| {
-                            let start = range.start;
-                            let end = range.end;
-                            crate::perf::count_by(
-                                "details.rows.requested",
-                                end.saturating_sub(start) as u64,
-                            );
-                            let _perf = crate::perf::span_detail("details.rows.build", || {
-                                format!("pane={} range={start}..{end}", pane_id.0)
-                            });
-                            let app = list_view.read(cx);
-                            let Some(ts) = app.state.tab_states.get(&pane_id) else {
-                                return Vec::new();
-                            };
-                            let record_rects = app.dock_split_animations.is_empty()
-                                && app.pane_layout_animations.is_empty();
-                            range
-                                .filter_map(|i| {
-                                    let entry_idx = *fv.get(i)?;
-                                    let entry = ts.entries.get(entry_idx)?;
-                                    let rename_input = crate::ui::views::rename::active_input(
-                                        app, pane_id, entry_idx,
-                                    );
-                                    let selected = ts.selection.selected.contains(&entry_idx)
-                                        && !crate::ui::views::rename::suppress_row_chrome(
-                                            app, pane_id, entry_idx,
-                                        );
-                                    let icon_tex = app
-                                        .file_icon_for_entry(
-                                            &entry.path,
-                                            &entry.kind,
-                                            entry.extension.as_deref(),
-                                        )
-                                        .texture();
-                                    let flashing = matches!(entry.kind, FileKind::Dir)
-                                        && app.drag_hover.blink_id.as_ref()
-                                            == Some(&DragHoverId::Folder(
-                                                pane_id,
-                                                entry.path.clone(),
-                                            ));
-                                    let row = canvas_row(
-                                        entry,
-                                        entry_idx,
-                                        i % 2 == 1,
-                                        selected,
-                                        pane_id,
-                                        &list_view,
-                                        accent,
-                                        accent_fg,
-                                        hover,
-                                        muted,
-                                        fg,
-                                        stripe_bg,
-                                        rename_input,
-                                        flashing,
-                                        record_rects,
-                                        icon_tex,
-                                        Arc::clone(&row_layout),
-                                        font_size,
-                                        row_font.clone(),
-                                        row_h,
-                                        crate::ui::views::rename::dim_other_entry(
-                                            app, pane_id, entry_idx,
-                                        ),
-                                        window,
-                                    );
-                                    Some(row.into_any_element())
-                                })
-                                .collect::<Vec<_>>()
-                        },
-                    )
-                    .track_scroll(&scroll)
-                    .on_scroll_wheel(move |ev, window, cx| {
-                        ctrl_scroll(ev, pane_id, &scroll_view, window, cx)
-                    })
-                    .pr(crate::ui::rem_px(16.))
-                    .h_full(),
+                    div()
+                        .id(SharedString::from(format!("details-scroll-{}", pane_id.0)))
+                        .size_full()
+                        .overflow_y_scroll()
+                        .track_scroll(&base_scroll)
+                        .on_scroll_wheel(move |ev, window, cx| {
+                            ctrl_scroll(ev, pane_id, &scroll_view, window, cx)
+                        })
+                        .child(
+                            div()
+                                .w_full()
+                                .h(px(total_height))
+                                .relative()
+                                .children(row_divs)
+                                .child(monolithic_canvas.absolute().top_0().left_0().w_full().h_full())
+                                .children(overlays)
+                        )
+                        .pr(crate::ui::rem_px(16.))
                 )
                 .vertical_scrollbar(&base_scroll)
                 .into_any_element()
         };
-
-        let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
+                let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
         let zone_view = view.clone();
         let prepaint_view = view.clone();
         let bounds_view = view.clone();
@@ -1062,338 +1298,6 @@ fn blend_layouts(from: &DetailsRowLayout, to: &DetailsRowLayout, t: f32) -> Deta
 /// commands in paint — no per-column div/flex layout.
 /// Falls back to render_row when renaming (input element required).
 #[allow(clippy::too_many_arguments)]
-fn canvas_row(
-    entry: &FileEntry,
-    entry_idx: usize,
-    odd: bool,
-    selected: bool,
-    pane_id: TabId,
-    view: &Entity<App>,
-    accent: Hsla,
-    accent_fg: Hsla,
-    hover: Hsla,
-    muted: Hsla,
-    fg: Hsla,
-    stripe_bg: Hsla,
-    rename_input: Option<Entity<InputState>>,
-    flashing: bool,
-    record_rects: bool,
-    icon_tex: Option<std::sync::Arc<gpui::RenderImage>>,
-    layout: Arc<DetailsRowLayout>,
-    font_size: Pixels,
-    font: Font,
-    row_h: f32,
-    dimmed: bool,
-    window: &mut Window,
-) -> AnyElement {
-    if let Some(input) = rename_input {
-        return render_rename_row(
-            entry,
-            entry_idx,
-            odd,
-            selected,
-            pane_id,
-            view,
-            accent,
-            accent_fg,
-            hover,
-            muted,
-            stripe_bg,
-            input,
-            flashing,
-            record_rects,
-            icon_tex,
-            &layout,
-            window,
-            font_size,
-        );
-    }
-
-    // Raw canvas paint math bypasses gpui's rems system, so these chrome
-    // constants are scaled explicitly and threaded through as plain f32/Pixels.
-    let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
-    let row_icon_size = ROW_ICON_SIZE * zoom_scale;
-    let row_pad_x = ROW_PAD_X * zoom_scale;
-    let cell_pad = CELL_PAD * zoom_scale;
-
-    let name: SharedString = entry.name.clone().into();
-    let is_dir = matches!(entry.kind, FileKind::Dir);
-    let display_size: SharedString = entry.display_size.clone().into();
-    let display_date: SharedString = entry.display_date.clone().into();
-    let display_type: SharedString = entry.display_type.clone().into();
-
-    let name_color = if selected { accent_fg } else { fg };
-    let meta_color = if selected { accent_fg } else { muted };
-
-    // Separate clones per closure (prepaint vs paint capture different sets).
-    let name_p = name.clone();
-    let font_p = font.clone();
-    let icon_tex_paint = icon_tex.clone();
-
-    let row_canvas = canvas(
-        move |bounds, window, _cx| {
-            crate::perf::count("details.row.shape_count");
-            let _perf = crate::perf::span("details.row.shape");
-            let shape_t0 = std::time::Instant::now();
-            let ts = window.text_system();
-            let mk = |s: &SharedString, color: Hsla| TextRun {
-                len: s.len(),
-                font: font_p.clone(),
-                color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            // TextRuns must be created before moving the SharedStrings.
-            let name_run = mk(&name_p, name_color);
-
-            let mut name_s = ts.shape_line(name_p, font_size, &[name_run], None);
-
-            let layout = (*layout).clone();
-            let row_w = f32::from(bounds.size.width);
-            let columns: Vec<DetailsPaintColumn> = layout
-                .columns
-                .iter()
-                .filter(|col| col.x < row_w && col.w > 1.0)
-                .map(|col| {
-                    let text: SharedString = match col.column {
-                        DetailsColumn::Size => display_size.clone(),
-                        DetailsColumn::Modified => display_date.clone(),
-                        DetailsColumn::Type => display_type.clone(),
-                    };
-                    let run = mk(&text, meta_color);
-                    DetailsPaintColumn {
-                        column: col.column,
-                        line: ts.shape_line(text, font_size, &[run], None),
-                    }
-                })
-                .collect();
-            crate::perf::count_by("details.meta_cols.shaped", columns.len() as u64);
-            // Use `layout.name_x` (already real-px, scaled in `details_row_layout`)
-            // rather than the raw `ROW_NAME_X` const, so this stays consistent with
-            // the rest of the row geometry at any zoom level.
-            let name_col_w = px(layout.name_col_w.min((row_w - layout.name_x).max(0.0)));
-            let ellipsis_s = if name_s.width() > name_col_w {
-                let ellipsis: SharedString = "…".into();
-                let e_run = mk(&ellipsis, name_color);
-                let es = ts.shape_line(ellipsis, font_size, &[e_run], None);
-                let cutoff = (name_col_w - es.width()).max(px(0.));
-                let split_idx = name_s.index_for_x(cutoff).unwrap_or(0);
-                let (prefix, _) = name_s.split_at(split_idx);
-                name_s = prefix;
-                Some(es)
-            } else {
-                None
-            };
-
-            crate::perf::count_by(
-                "details.row.shape_us",
-                shape_t0.elapsed().as_micros() as u64,
-            );
-            DetailsRowCanvasState {
-                name_s,
-                ellipsis_s,
-                columns,
-                layout,
-            }
-        },
-        move |bounds, state, window, cx| {
-            crate::perf::count("details.row.paint_count");
-            let _perf = crate::perf::span("details.row.paint");
-            // `row_h`/`row_icon_size`/`row_pad_x`/`cell_pad` are captured from the
-            // enclosing scope, already scaled — raw canvas paint math bypasses
-            // gpui's rems system, so they can't be resolved via `rem_px()` here.
-            // `state.layout.name_x`/`name_col_w` are already scaled too (see
-            // `details_row_layout`).
-            // `ShapedLine::paint` already centers the glyphs vertically inside the
-            // `line_height` (ROW_H) box we pass below — so origin.y is just the row top
-            // (plus a tiny optical nudge). Adding our own (ROW_H - font_size)/2 here too
-            // double-counted the centering and pushed text below the icon.
-            let text_y = bounds.origin.y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
-
-            // Icon texture
-            if let Some(tex) = &icon_tex_paint {
-                let _ = window.paint_image(
-                    Bounds {
-                        origin: point(
-                            bounds.origin.x + px(row_pad_x),
-                            bounds.origin.y + px((row_h - row_icon_size) * 0.5),
-                        ),
-                        size: size(px(row_icon_size), px(row_icon_size)),
-                    },
-                    Corners::default(),
-                    tex.clone(),
-                    0,
-                    false,
-                );
-            }
-
-            // Name column — clipped; truncated with "…" when overflowing
-            let name_x = bounds.origin.x + px(state.layout.name_x);
-            window.paint_layer(
-                Bounds {
-                    origin: point(name_x, bounds.origin.y),
-                    size: size(px(state.layout.name_col_w), bounds.size.height),
-                },
-                |window| {
-                    let _ = state.name_s.paint(
-                        point(name_x, text_y),
-                        px(row_h),
-                        TextAlign::Left,
-                        None,
-                        window,
-                        cx,
-                    );
-                    if let Some(ref es) = state.ellipsis_s {
-                        let _ = es.paint(
-                            point(name_x + state.name_s.width(), text_y),
-                            px(row_h),
-                            TextAlign::Left,
-                            None,
-                            window,
-                            cx,
-                        );
-                    }
-                },
-            );
-
-            for paint_col in &state.columns {
-                let Some(layout_col) = state
-                    .layout
-                    .columns
-                    .iter()
-                    .find(|col| col.column == paint_col.column)
-                else {
-                    continue;
-                };
-                let col_x = bounds.origin.x + px(layout_col.x);
-                let col_w = layout_col.w;
-                // Left-align every column so the data lines up exactly under its
-                // (left-aligned) header label, with CELL_PAD breathing room from the
-                // separator. Clip to the column so text never bleeds into its neighbour.
-                let text_x = col_x + px(cell_pad.min(col_w));
-                window.paint_layer(
-                    Bounds {
-                        origin: point(col_x, bounds.origin.y),
-                        size: size(px(col_w), bounds.size.height),
-                    },
-                    |window| {
-                        let _ = paint_col.line.paint(
-                            point(text_x, text_y),
-                            px(row_h),
-                            TextAlign::Left,
-                            None,
-                            window,
-                            cx,
-                        );
-                    },
-                );
-            }
-        },
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .right_0()
-    .h(px(row_h));
-
-    let v = view.clone();
-    let entry_path = entry.path.clone();
-    let fallback_icon = FileIcon::Builtin {
-        kind: entry.kind.clone(),
-        extension: entry.extension.clone(),
-    };
-    let has_tex = icon_tex.is_some();
-
-    // Row id is scoped within this pane's `uniform_list` (id `list-{pane}`), so the
-    // entry index alone is unique — avoids a per-row `format!` heap alloc (×~900/frame).
-    let outer = div()
-        .id(("row", entry_idx))
-        .w_full()
-        .h(px(row_h))
-        .relative()
-        .overflow_hidden()
-        .rounded_sm()
-        .when(dimmed, |s| s.opacity(0.45))
-        .when(selected, |s| s.bg(accent))
-        .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
-        .when(!selected && odd, |s| s.bg(stripe_bg))
-        .when(!selected, |s| s.hover(|h| h.bg(hover)))
-        .when(record_rects, |s| {
-            s.on_prepaint(crate::ui::root::rect_recorder(pane_id, entry_idx, view))
-        })
-        .child(row_canvas)
-        // SVG icon fallback when no pre-rasterised texture
-        .when(!has_tex, |s| {
-            s.child(
-                div()
-                    .absolute()
-                    .left(px(row_pad_x))
-                    .top(px((row_h - row_icon_size) * 0.5))
-                    .w(px(row_icon_size))
-                    .h(px(row_icon_size))
-                    .child(fallback_icon.clone().element(ROW_ICON_SIZE, muted)),
-            )
-        });
-
-    outer
-        .on_click(crate::ui::views::on_entry_click(view, pane_id, entry_idx))
-        .on_mouse_down(
-            MouseButton::Right,
-            crate::ui::views::on_entry_ctx_menu(view, pane_id, entry_idx),
-        )
-        .when(!selected, |s| {
-            let rv = v.clone();
-            s.on_mouse_down(MouseButton::Left, move |ev, _window, cx| {
-                let (pos, additive) = (
-                    ev.position,
-                    ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift,
-                );
-                rv.update(cx, |this, cx| {
-                    this.begin_rubber(pane_id, pos, additive);
-                    cx.notify();
-                });
-                cx.stop_propagation();
-            })
-        })
-        .when(selected, |s| {
-            s.on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
-                cx.stop_propagation();
-            })
-            .on_drag(
-                crate::ui::drag::file_drag_value(vec![entry_path.clone()]),
-                crate::ui::drag::file_drag_handler_for_item(
-                    v.clone(),
-                    pane_id,
-                    entry_idx,
-                    entry_path.clone(),
-                ),
-            )
-        })
-        .tooltip({
-            let tip_name = name.clone();
-            let tip_path = entry_path.clone();
-            let size = entry.size;
-            let modified = entry.modified;
-            move |window, cx| {
-                crate::ui::tooltips::entry_hover_tooltip(
-                    tip_name.clone(),
-                    tip_path.clone(),
-                    is_dir,
-                    size,
-                    modified,
-                    window,
-                    cx,
-                )
-            }
-        })
-        .when(is_dir, |s| {
-            crate::ui::views::folder_drop_target(s, view, pane_id, entry_path.clone())
-        })
-        .into_any_element()
-}
-
-#[allow(clippy::too_many_arguments)]
 fn render_rename_row(
     entry: &FileEntry,
     entry_idx: usize,
@@ -1503,4 +1407,18 @@ fn render_rename_row(
             cx.stop_propagation();
         })
         .into_any_element()
+}
+
+struct MonolithicCanvasState {
+    rows: Vec<MonolithicRowState>,
+    layout: DetailsRowLayout,
+}
+
+struct MonolithicRowState {
+    idx: usize,
+    dimmed: bool,
+    name_s: ShapedLine,
+    ellipsis_s: Option<ShapedLine>,
+    meta_cols: Vec<DetailsPaintColumn>,
+    icon_tex: Option<std::sync::Arc<gpui::RenderImage>>,
 }
