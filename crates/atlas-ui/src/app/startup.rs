@@ -356,7 +356,6 @@ impl App {
                     // Finalize pane close-out animations: queue their dock removal.
                     dirty |= app.tick_pane_close();
                     dirty |= app.tick_tab_close();
-                    dirty |= app.tick_layout_storm();
                     dirty |= app.tick_toasts();
                     if dirty {
                         cx.notify();
@@ -449,7 +448,6 @@ impl App {
             palette_host: None,
             palette_closing: None,
             layout_revision: 0,
-            layout_storm_until: None,
             // FASE C: rubber-band selection state.
             rubber: None,
             row_rects: HashMap::new(),
@@ -518,6 +516,7 @@ impl App {
             atlas_launcher_profiles_anchor: gpui::Point::default(),
             pane_layout_bounds: HashMap::new(),
             pane_layout_animations: HashMap::new(),
+            dock_root_bounds: None,
             dock_split_animations: HashMap::new(),
             pane_closing: HashMap::new(),
             tab_closing: HashMap::new(),

@@ -28,6 +28,26 @@ enum TabMotion {
     Closing(Instant),
 }
 
+#[derive(Clone, Copy)]
+struct FlatRect {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+struct FlatPane {
+    tile: TileId,
+    rect: FlatRect,
+}
+
+struct FlatSplitter {
+    container: TileId,
+    divider: usize,
+    dir: LinearDir,
+    rect: FlatRect,
+}
+
 /// Tabs-like tile (tab strip + body) hosted in its own entity so it can be embedded
 /// with `AnyView::cached` (Zed's `dock.rs:1185` pattern: the whole pane, including
 /// the tab bar, is cached). Rendering delegates to `App::render_tabs_like`;
@@ -135,11 +155,227 @@ impl App {
             .retain(|id, _| tiles.get(*id).is_some());
         self.pane_tabs_fp.retain(|id, _| tiles.get(*id).is_some());
 
-        self.state
-            .pane_tree
-            .root
-            .and_then(|root| self.render_tree(root, window, cx))
-            .unwrap_or_else(|| div().size_full().into_any_element())
+        let root = self.state.pane_tree.root;
+        let content = root
+            .and_then(|root| {
+                self.render_flat_tree(root, window, cx)
+                    .or_else(|| self.render_tree(root, window, cx))
+            })
+            .unwrap_or_else(|| div().size_full().into_any_element());
+        let view = cx.entity();
+        div()
+            .relative()
+            .size_full()
+            .min_w(px(0.))
+            .min_h(px(0.))
+            .overflow_hidden()
+            .child(content)
+            .on_prepaint(move |bounds, window, cx| {
+                view.update(cx, |this, _cx| {
+                    let old = this
+                        .dock_root_bounds
+                        .map(|b| (f32::from(b.size.width), f32::from(b.size.height)));
+                    let new = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+                    if old != Some(new) {
+                        this.dock_root_bounds = Some(bounds);
+                        window.request_animation_frame();
+                    }
+                });
+            })
+            .into_any_element()
+    }
+
+    fn render_flat_tree(
+        &mut self,
+        root: TileId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let bounds = self.dock_root_bounds?;
+        let w = f32::from(bounds.size.width);
+        let h = f32::from(bounds.size.height);
+        if w <= 1.0 || h <= 1.0 {
+            return None;
+        }
+
+        let mut panes = Vec::new();
+        let mut splitters = Vec::new();
+        let rect = FlatRect {
+            x: 0.0,
+            y: 0.0,
+            w,
+            h,
+        };
+        if !self.collect_flat_layout(root, rect, window, cx, &mut panes, &mut splitters) {
+            return None;
+        }
+
+        let view = cx.entity();
+        let mut host = div()
+            .relative()
+            .size_full()
+            .min_w(px(0.))
+            .min_h(px(0.))
+            .overflow_hidden();
+
+        for pane in panes {
+            let content = if pane.rect.w <= 4.0 || pane.rect.h <= 4.0 {
+                div().size_full().into_any_element()
+            } else {
+                self.render_cached_tabs(pane.tile, window, cx)
+            };
+            host = host.child(
+                div()
+                    .absolute()
+                    .left(px(pane.rect.x))
+                    .top(px(pane.rect.y))
+                    .w(px(pane.rect.w.max(0.0)))
+                    .h(px(pane.rect.h.max(0.0)))
+                    .min_w(px(0.))
+                    .min_h(px(0.))
+                    .overflow_hidden()
+                    .child(content),
+            );
+        }
+
+        for splitter in splitters {
+            let splitter_el = crate::ui::dock::resize::splitter(
+                splitter.container,
+                splitter.divider,
+                splitter.dir,
+                &view,
+                cx,
+            );
+            host = host.child(
+                div()
+                    .absolute()
+                    .left(px(splitter.rect.x))
+                    .top(px(splitter.rect.y))
+                    .w(px(splitter.rect.w.max(0.0)))
+                    .h(px(splitter.rect.h.max(0.0)))
+                    .child(splitter_el),
+            );
+        }
+
+        Some(host.into_any_element())
+    }
+
+    fn collect_flat_layout(
+        &mut self,
+        id: TileId,
+        rect: FlatRect,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        panes: &mut Vec<FlatPane>,
+        splitters: &mut Vec<FlatSplitter>,
+    ) -> bool {
+        match self.state.pane_tree.tiles.get(id).cloned() {
+            Some(Tile::Pane(_)) => {
+                panes.push(FlatPane { tile: id, rect });
+                true
+            }
+            Some(Tile::Container(Container::Tabs(tabs))) => {
+                if tabs.children.is_empty() {
+                    false
+                } else {
+                    panes.push(FlatPane { tile: id, rect });
+                    true
+                }
+            }
+            Some(Tile::Container(Container::Linear(linear))) => {
+                if linear.children.is_empty() {
+                    return false;
+                }
+                self.dock_linear_bounds.insert(
+                    id,
+                    gpui::Bounds {
+                        origin: gpui::point(gpui::px(rect.x), gpui::px(rect.y)),
+                        size: gpui::size(gpui::px(rect.w), gpui::px(rect.h)),
+                    },
+                );
+
+                let mut final_shares = linear.shares.clone();
+                if cx.has_active_drag() {
+                    if let Some(dragged) = self.state.dragging_pane {
+                        for (ix, child_id) in linear.children.iter().enumerate() {
+                            if ix < final_shares.len()
+                                && self.state.container_contains_pane(*child_id, dragged)
+                            {
+                                final_shares[ix] = 0.0;
+                            }
+                        }
+                    }
+                }
+                crate::app::normalize_split_shares(&mut final_shares);
+                let sum: f32 = final_shares.iter().copied().filter(|v| *v > 0.0).sum();
+                let shares = if final_shares.len() == linear.children.len() && sum > f32::EPSILON {
+                    self.dock_split_shares(id, final_shares, window, cx)
+                } else {
+                    vec![1.0; linear.children.len()]
+                };
+
+                let splitter_size = 5.0;
+                let span = match linear.dir {
+                    LinearDir::Horizontal => rect.w,
+                    LinearDir::Vertical => rect.h,
+                };
+                let available = (span
+                    - (linear.children.len().saturating_sub(1) as f32 * splitter_size))
+                    .max(0.0);
+                let mut offset = match linear.dir {
+                    LinearDir::Horizontal => rect.x,
+                    LinearDir::Vertical => rect.y,
+                };
+                let mut any = false;
+
+                for (ix, child_id) in linear.children.iter().copied().enumerate() {
+                    if ix > 0 {
+                        let srect = match linear.dir {
+                            LinearDir::Horizontal => FlatRect {
+                                x: offset,
+                                y: rect.y,
+                                w: splitter_size,
+                                h: rect.h,
+                            },
+                            LinearDir::Vertical => FlatRect {
+                                x: rect.x,
+                                y: offset,
+                                w: rect.w,
+                                h: splitter_size,
+                            },
+                        };
+                        splitters.push(FlatSplitter {
+                            container: id,
+                            divider: ix - 1,
+                            dir: linear.dir,
+                            rect: srect,
+                        });
+                        offset += splitter_size;
+                    }
+
+                    let child_span = shares.get(ix).copied().unwrap_or(1.0).max(0.01) * available;
+                    let child_rect = match linear.dir {
+                        LinearDir::Horizontal => FlatRect {
+                            x: offset,
+                            y: rect.y,
+                            w: child_span,
+                            h: rect.h,
+                        },
+                        LinearDir::Vertical => FlatRect {
+                            x: rect.x,
+                            y: offset,
+                            w: rect.w,
+                            h: child_span,
+                        },
+                    };
+                    offset += child_span;
+                    any |= self
+                        .collect_flat_layout(child_id, child_rect, window, cx, panes, splitters);
+                }
+                any
+            }
+            None => false,
+        }
     }
 
     fn render_tree(
@@ -382,20 +618,8 @@ impl App {
         // whose bounds changed (measured in release: ~17ms with 10-14 panes, ~28ms
         // with 20+). The older sibling-count gate penalized same-direction splits
         // even with few panes; the real cost depends on total invalidated panes.
-        let max_animated_panes = if self.layout_storm_active() {
-            64
-        } else if cfg!(debug_assertions) {
-            4
-        } else {
-            6
-        };
-        let max_animated_siblings = if self.layout_storm_active() {
-            64
-        } else if cfg!(debug_assertions) {
-            6
-        } else {
-            8
-        };
+        let max_animated_panes = 64;
+        let max_animated_siblings = 64;
         if self.file_panel_cache.len() > max_animated_panes
             || final_shares.len() > max_animated_siblings
         {
@@ -491,7 +715,6 @@ impl App {
         cx.has_active_drag().hash(&mut h);
         self.state.dragging_pane.map(|p| p.0).hash(&mut h);
         self.state.drag_pending.hash(&mut h);
-        self.layout_storm_active().hash(&mut h);
         self.rename_edit
             .as_ref()
             .map(|edit| edit.pane.0)
@@ -650,7 +873,6 @@ impl App {
 
     fn should_render_pane_body(&self, pane_id: TileId) -> bool {
         !self.pane_closing.contains_key(&pane_id)
-            && (!self.layout_storm_active() || pane_id == self.state.focused_tile)
     }
 
     fn render_tab_strip(

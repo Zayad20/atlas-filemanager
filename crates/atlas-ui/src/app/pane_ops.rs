@@ -150,7 +150,6 @@ impl App {
                 self.pane_closing.len()
             )
         });
-        self.arm_layout_storm();
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
 
         // Resolve the source to a concrete Pane leaf (Tabs -> active child,
@@ -251,7 +250,6 @@ impl App {
                 self.pane_closing.len()
             )
         });
-        self.arm_layout_storm();
         let panes: Vec<TileId> = match self.state.pane_tree.tiles.get(tabs_container_id) {
             Some(Tile::Container(Container::Tabs(t))) => t.children.clone(),
             Some(Tile::Pane(_)) => vec![tabs_container_id],
@@ -578,7 +576,6 @@ impl App {
                 self.pane_closing.len()
             )
         });
-        self.arm_layout_storm();
         // Already animating out — a held Ctrl+W must not re-queue it.
         if self.pane_closing.contains_key(&tab_id) || self.tab_closing.contains_key(&tab_id) {
             return;
@@ -871,7 +868,6 @@ impl App {
         vertical: bool,
         before: bool,
     ) {
-        self.arm_layout_storm();
         let Some(target_tabs) = self.state.find_tabs_container(target) else {
             return;
         };
