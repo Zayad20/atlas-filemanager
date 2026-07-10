@@ -38,6 +38,15 @@ pub struct PaneContentView {
     pane_id: TabId,
 }
 
+fn frozen_content_size(
+    split_animating: bool,
+    stable_size: Option<gpui::Size<gpui::Pixels>>,
+) -> Option<gpui::Size<gpui::Pixels>> {
+    stable_size.filter(|size| {
+        split_animating && f32::from(size.width) > 1.0 && f32::from(size.height) > 1.0
+    })
+}
+
 impl Render for PaneContentView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf::count("render.pane_content");
@@ -233,14 +242,26 @@ impl Panel for FilePanel {
 }
 
 impl Render for FilePanel {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pane_id = self.pane_id;
         crate::perf::count("render.file_panel");
         let _perf = crate::perf::span_detail("file_panel.render", || format!("pane={}", pane_id.0));
         match self.app.upgrade() {
-            Some(_app) => {
-                let content = AnyView::from(self.content.clone())
-                    .cached(StyleRefinement::default().v_flex().size_full());
+            Some(app) => {
+                let frozen_size = {
+                    let app = app.read(cx);
+                    frozen_content_size(
+                        !app.dock_split_animations.is_empty(),
+                        app.pane_layout_bounds.get(&pane_id).map(|bounds| bounds.size),
+                    )
+                };
+                let mut content_style = StyleRefinement::default().v_flex();
+                content_style = if let Some(size) = frozen_size {
+                    content_style.w(size.width).h(size.height)
+                } else {
+                    content_style.size_full()
+                };
+                let content = AnyView::from(self.content.clone()).cached(content_style);
                 let bounds_app = self.app.clone();
                 let panel = div()
                     .size_full()
@@ -263,5 +284,20 @@ impl Render for FilePanel {
             }
             None => div().into_any_element(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn freezes_content_size_only_during_split_animation() {
+        let size = gpui::size(px(320.0), px(200.0));
+
+        assert_eq!(frozen_content_size(false, Some(size)), None);
+        assert_eq!(frozen_content_size(true, None), None);
+        assert_eq!(frozen_content_size(true, Some(size)), Some(size));
+        assert_eq!(frozen_content_size(true, Some(gpui::size(px(1.0), px(200.0)))), None);
     }
 }
