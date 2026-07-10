@@ -460,19 +460,12 @@ impl DockSplitAnimation {
         normalize_split_shares(&mut to);
         if from.len() + 1 == to.len() && inserted_ix <= from.len() {
             let start = 0.01;
-            let delta = to
-                .get(inserted_ix)
-                .map(|share| (share - start).max(0.0))
-                .unwrap_or(0.0);
-            from.insert(inserted_ix, start);
-            if let Some((ix, _)) = from
-                .iter()
-                .enumerate()
-                .filter(|(ix, _)| *ix != inserted_ix)
-                .max_by(|(_, a), (_, b)| a.total_cmp(b))
-            {
-                from[ix] += delta;
+            let old_sum = from.iter().sum::<f32>().max(f32::EPSILON);
+            let scale = (to.len() as f32 - start) / old_sum;
+            for share in &mut from {
+                *share *= scale;
             }
+            from.insert(inserted_ix, start);
         } else {
             from = to.clone();
         }

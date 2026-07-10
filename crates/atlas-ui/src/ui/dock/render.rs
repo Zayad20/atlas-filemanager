@@ -517,27 +517,6 @@ impl App {
         let active = active
             .filter(|id| children.contains(id))
             .or_else(|| children.first().copied());
-        let content = active
-            .map(|id| {
-                if self.should_render_pane_body(id) {
-                    // Zed pattern (pane_group.rs:554): pane cached as AnyView. If the
-                    // pane was not notified and its bounds did not change, GPUI reuses
-                    // the previous layout, hitboxes, and primitives: one Taffy node
-                    // instead of roughly 250.
-                    gpui::AnyView::from(self.get_or_make_file_panel(id, cx))
-                        .cached(gpui::StyleRefinement::default().size_full())
-                        .into_any_element()
-                } else {
-                    crate::perf::count("render.pane_body_skipped");
-                    div().size_full().into_any_element()
-                }
-            })
-            .unwrap_or_else(|| div().size_full().into_any_element());
-        let content = if let Some(active) = active {
-            self.with_split_drop_zones(active, content, cx)
-        } else {
-            content
-        };
         let active_theme = self.state.profiles.active().theme.as_str();
         let figma_glass = active_theme == "Atlas Figma Glass";
         let windows_glass = active_theme == "Atlas Windows Glass";
@@ -554,6 +533,27 @@ impl App {
             backdrop_tint(cx.theme().secondary, 0.24)
         };
         let active_id = active.unwrap_or_else(|| *children.first().unwrap());
+        let content = active
+            .map(|id| {
+                if self.should_render_pane_body(id) {
+                    // Zed pattern (pane_group.rs:554): pane cached as AnyView. If the
+                    // pane was not notified and its bounds did not change, GPUI reuses
+                    // the previous layout, hitboxes, and primitives: one Taffy node
+                    // instead of roughly 250.
+                    gpui::AnyView::from(self.get_or_make_file_panel(id, cx))
+                        .cached(gpui::StyleRefinement::default().size_full())
+                        .into_any_element()
+                } else {
+                    crate::perf::count("render.pane_body_skipped");
+                    div().size_full().bg(panel_bg).into_any_element()
+                }
+            })
+            .unwrap_or_else(|| div().size_full().bg(panel_bg).into_any_element());
+        let content = if let Some(active) = active {
+            self.with_split_drop_zones(active, content, cx)
+        } else {
+            content
+        };
         let panel = v_flex()
             .size_full()
             .min_w(px(0.))
