@@ -12,6 +12,7 @@ use crate::ui::glass::{backdrop_tint, glass_chip_fill, glass_fill, GlassExt};
 use crate::ui::icons::{icon, is_windows_theme, theme_icon, AtlasIcon};
 use crate::ui::pane_panel::FilePanel;
 use atlas_core::util::display::display_name;
+use atlas_model::file_entry::FileKind;
 use atlas_model::layout_tree::{Container, LinearDir, Tile, TileId};
 use atlas_model::location::Location;
 use std::time::Instant;
@@ -56,7 +57,7 @@ fn split_child_span(share: f32, share_sum: f32, available: f32, child_count: usi
     }
 }
 
-fn render_pane_body_during_split(
+fn render_full_pane_body_during_split(
     pane: TileId,
     focused: TileId,
     dragging: Option<TileId>,
@@ -783,6 +784,9 @@ impl App {
                     gpui::AnyView::from(self.get_or_make_file_panel(id, cx))
                         .cached(gpui::StyleRefinement::default().size_full())
                         .into_any_element()
+                } else if !self.pane_closing.contains_key(&id) {
+                    crate::perf::count("render.pane_body_skipped");
+                    self.render_split_preview_body(id, panel_bg, cx)
                 } else {
                     crate::perf::count("render.pane_body_skipped");
                     div().size_full().bg(panel_bg).into_any_element()
@@ -892,12 +896,83 @@ impl App {
         if self.pane_closing.contains_key(&pane_id) {
             return false;
         }
-        render_pane_body_during_split(
+        render_full_pane_body_during_split(
             pane_id,
             self.state.focused_tile,
             self.state.dragging_pane,
             !self.dock_split_animations.is_empty(),
         )
+    }
+
+    fn render_split_preview_body(
+        &mut self,
+        pane_id: TileId,
+        panel_bg: gpui::Hsla,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let fg = cx.theme().foreground.opacity(0.78);
+        let muted = cx.theme().muted_foreground.opacity(0.68);
+        let stripe = cx.theme().border.opacity(0.10);
+        let icon_color = cx.theme().muted_foreground.opacity(0.72);
+
+        let Some(ts) = self.state.tab_states.get_mut(&pane_id) else {
+            return div().size_full().bg(panel_bg).into_any_element();
+        };
+        let visible = ts.visible_indices_shared();
+        let entries = ts.entries.clone();
+        let selected = ts.selection.selected.clone();
+
+        let mut rows = v_flex().size_full().gap(px(1.)).overflow_hidden();
+        for (row_ix, entry_idx) in visible.iter().copied().take(28).enumerate() {
+            let Some(entry) = entries.get(entry_idx) else {
+                continue;
+            };
+            let icon_kind = if matches!(entry.kind, FileKind::Dir) {
+                AtlasIcon::Folder
+            } else {
+                AtlasIcon::File
+            };
+            rows = rows.child(
+                h_flex()
+                    .h(px(22.))
+                    .min_w(px(0.))
+                    .items_center()
+                    .gap(px(7.))
+                    .px(px(9.))
+                    .when(row_ix % 2 == 1, |s| s.bg(stripe))
+                    .when(selected.contains(&entry_idx), |s| {
+                        s.bg(cx.theme().accent.opacity(0.34))
+                    })
+                    .child(icon(icon_kind, 13.0, icon_color))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .text_color(fg)
+                            .child(SharedString::from(entry.name.clone())),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .max_w(px(90.))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .text_color(muted)
+                            .child(SharedString::from(entry.display_size.clone())),
+                    ),
+            );
+        }
+
+        div()
+            .size_full()
+            .bg(panel_bg)
+            .overflow_hidden()
+            .child(rows)
+            .into_any_element()
     }
 
     fn render_tab_strip(
@@ -1348,14 +1423,14 @@ mod tests {
     }
 
     #[test]
-    fn split_animation_renders_only_interactive_pane_bodies() {
+    fn split_animation_renders_full_body_only_for_interactive_panes() {
         let a = TileId(1);
         let b = TileId(2);
         let c = TileId(3);
 
-        assert!(render_pane_body_during_split(a, b, None, false));
-        assert!(render_pane_body_during_split(b, b, None, true));
-        assert!(render_pane_body_during_split(c, b, Some(c), true));
-        assert!(!render_pane_body_during_split(a, b, Some(c), true));
+        assert!(render_full_pane_body_during_split(a, b, None, false));
+        assert!(render_full_pane_body_during_split(b, b, None, true));
+        assert!(render_full_pane_body_during_split(c, b, Some(c), true));
+        assert!(!render_full_pane_body_during_split(a, b, Some(c), true));
     }
 }
