@@ -28,12 +28,11 @@ accepts everything.
 
 ## Extension kinds
 
-- `wasm`: reserved for a future sandbox runtime; currently disabled.
 - `declarative`: executes the tokenized `run` template without a shell.
 - `builtin`: implemented inside Atlas.
 - `tool_provider`: hidden package that supplies approved external tools.
-- `sidecar`: out-of-process virtual file provider using the versioned JSON-lines
-  API in `atlas_model::provider_protocol`.
+- `sidecar`: an isolated executable. Provider sidecars use the versioned JSON-lines
+  API; command sidecars receive one request on stdin and return one response on stdout.
 
 Declarative templates support `{input}`, `{dir}`, `{stem}`, `{ext}`, `{output}`
 and `{prompt:NAME}`. Every executable named by a template must also appear in

@@ -632,7 +632,7 @@ impl App {
         // container that is the stutter when rapidly splitting or closing under a held
         // shortcut (perf.log: 40-54ms frames at 10+ panes). Past a small count, snap to
         // the final layout (open still fades via PaneAnimation, close via the pop anim).
-        // heuristic cap; raise if paint per pane gets cheap enough.
+        // Heuristic cap; raise if paint per pane gets cheap enough.
         // Gate by total pane count: animation-frame cost is rebuilding every pane
         // whose bounds changed (measured in release: ~17ms with 10-14 panes, ~28ms
         // with 20+). The older sibling-count gate penalized same-direction splits

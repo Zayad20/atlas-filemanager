@@ -179,14 +179,22 @@ pub(super) fn pane_background_interactions(
         .on_drop::<DraggedFiles>(move |d, _window, cx| {
             let paths = d.paths.clone();
             drop_view.update(cx, |this, cx| {
-                this.drop_files_on_pane(pane_id, paths, false);
+                if let Some(command) = this.active_drag_hover_drop_command() {
+                    this.execute_drag_hover_drop_command(command, paths, true);
+                } else {
+                    this.drop_files_on_pane(pane_id, paths, false);
+                }
                 cx.notify();
             });
         })
         .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
             let paths = paths.paths().to_vec();
             drop_ext_view.update(cx, |this, cx| {
-                this.drop_files_on_pane(pane_id, paths, true);
+                if let Some(command) = this.active_drag_hover_drop_command() {
+                    this.execute_drag_hover_drop_command(command, paths, false);
+                } else {
+                    this.drop_files_on_pane(pane_id, paths, true);
+                }
                 cx.notify();
             });
         })

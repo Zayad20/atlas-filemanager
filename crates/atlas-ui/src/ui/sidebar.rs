@@ -1,9 +1,9 @@
-//! FASE B: left sidebar as a Dock `left_dock` panel.
+//! Phase B: left sidebar as a Dock `left_dock` panel.
 //!
 //! `SidebarPanel` is its own gpui `Entity` (like `FilePanel`) so it can live in the
 //! `DockArea`'s left dock. It reads `AppState` through a weak handle and navigates
 //! the focused pane on click. Places + Bookmarks land here; Tags/Drives/Cloud are
-//! added with their subsystems (Fase H).
+//! added with their subsystems (Phase H).
 
 use crate::app::nav::NavKind;
 use crate::app::App as AtlasApp;
@@ -16,14 +16,14 @@ use crate::ui::drag_hover::{
 use crate::ui::glass::{glass_chip_fill, glass_fill, layer_color, GlassExt};
 use crate::ui::icons::{atlas_logo, file_type_icon, icon, is_windows_theme, theme_icon, AtlasIcon};
 use crate::ui::root::DraggedFiles;
-#[cfg(all(feature = "cloud", windows))]
+#[cfg(all(feature = "provider-host", windows))]
 use crate::InstallWinFspForRemote;
 use crate::{
     OpenPropertiesForPath, OpenSpaceLensForPath, OpenThisPcProperties, SidebarHideSection,
     SidebarMoveSectionDown, SidebarMoveSectionUp, SidebarNewGlobalTag, SidebarNewProfileTag,
     SidebarResetSections, SidebarToggleSection,
 };
-#[cfg(feature = "cloud")]
+#[cfg(feature = "provider-host")]
 use crate::{RemoveCloudRemote, StartRenameCloudRemote};
 use atlas_model::file_entry::FileKind;
 use atlas_model::location::Location;
@@ -44,6 +44,27 @@ use gpui_component::{h_flex, kbd::Kbd, v_flex, ActiveTheme, ElementExt, Selectab
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+#[derive(Clone, Copy)]
+pub struct SidebarStyle {
+    pub hover: Hsla,
+    pub active_bg: Hsla,
+    pub accent: Hsla,
+    pub fg: Hsla,
+    pub muted: Hsla,
+    pub windows_theme: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct MenuColors {
+    pub fg: Hsla,
+    pub muted: Hsla,
+    pub accent: Hsla,
+    pub accent_fg: Hsla,
+    pub hover: Hsla,
+    pub action_hover: Hsla,
+    pub danger: Hsla,
+}
 
 const SCROLLBAR_GUTTER: f32 = 16.0;
 const ATLAS_LAUNCHER_MENU_WIDTH: f32 = 260.0;
@@ -143,6 +164,16 @@ fn profile_menu_panel(
         });
     }
 
+    let colors = MenuColors {
+        fg,
+        muted,
+        accent,
+        accent_fg,
+        hover,
+        action_hover,
+        danger,
+    };
+
     for (index, name) in profiles.into_iter().enumerate() {
         menu = menu.child(profile_menu_profile_row(
             app.clone(),
@@ -151,13 +182,7 @@ fn profile_menu_panel(
             name,
             index == active_idx,
             confirming_delete == Some(index),
-            fg,
-            muted,
-            accent,
-            accent_fg,
-            hover,
-            action_hover,
-            danger,
+            colors,
         ));
     }
 
@@ -178,7 +203,6 @@ fn profile_menu_panel(
     .into_any_element()
 }
 
-#[allow(clippy::too_many_arguments)]
 fn profile_menu_profile_row(
     app: WeakEntity<AtlasApp>,
     popover: Entity<PopoverState>,
@@ -186,14 +210,9 @@ fn profile_menu_profile_row(
     name: String,
     active: bool,
     confirming: bool,
-    fg: Hsla,
-    muted: Hsla,
-    accent: Hsla,
-    accent_fg: Hsla,
-    hover: Hsla,
-    action_hover: Hsla,
-    danger: Hsla,
+    colors: MenuColors,
 ) -> gpui::AnyElement {
+    let MenuColors { fg, muted, accent, accent_fg, hover, .. } = colors;
     let row_group = SharedString::from(format!("profile-menu-row-{index}"));
     let row_text = if active { accent_fg } else { fg };
     let row_icon = if active { accent_fg } else { muted };
@@ -231,8 +250,7 @@ fn profile_menu_profile_row(
                 tooltip,
                 confirming,
                 row_icon,
-                action_hover,
-                danger,
+                colors,
             )
         })
         .collect::<Vec<_>>();
@@ -276,7 +294,6 @@ fn profile_menu_profile_row(
         .into_any_element()
 }
 
-#[allow(clippy::too_many_arguments)]
 fn profile_menu_action_button(
     app: WeakEntity<AtlasApp>,
     popover: Entity<PopoverState>,
@@ -287,9 +304,9 @@ fn profile_menu_action_button(
     tooltip: String,
     confirming: bool,
     icon_color: Hsla,
-    action_hover: Hsla,
-    danger: Hsla,
+    colors: MenuColors,
 ) -> gpui::AnyElement {
+    let MenuColors { action_hover, danger, .. } = colors;
     let is_delete = id == "delete";
     let is_rename = id == "rename";
     let is_duplicate = id == "duplicate";
@@ -414,6 +431,16 @@ fn atlas_launcher_content(
     let accent_fg = cx.theme().accent_foreground;
     let hover = hsla(0., 0., 1., 0.08);
 
+    let colors = MenuColors {
+        fg,
+        muted,
+        accent,
+        accent_fg,
+        hover,
+        action_hover: hover,
+        danger: hover,
+    };
+
     let menu = v_flex()
         .id("atlas-launcher-menu")
         .w(crate::ui::rem_px(ATLAS_LAUNCHER_MENU_WIDTH))
@@ -449,11 +476,7 @@ fn atlas_launcher_content(
             true,
             None,
             None,
-            fg,
-            muted,
-            accent,
-            accent_fg,
-            hover,
+            colors,
         ))
         .child(atlas_launcher_row(
             app.clone(),
@@ -472,11 +495,7 @@ fn atlas_launcher_content(
             app_entity
                 .read(cx)
                 .command_shortcut_keystroke("view.sidebar-collapse"),
-            fg,
-            muted,
-            accent,
-            accent_fg,
-            hover,
+            colors,
         ))
         .child(atlas_launcher_row(
             app.clone(),
@@ -491,11 +510,7 @@ fn atlas_launcher_content(
             app_entity
                 .read(cx)
                 .command_shortcut_keystroke("sys.settings"),
-            fg,
-            muted,
-            accent,
-            accent_fg,
-            hover,
+            colors,
         ))
         .child(atlas_launcher_row(
             app.clone(),
@@ -508,11 +523,7 @@ fn atlas_launcher_content(
             false,
             Some(Action::OpenGotoBar),
             app_entity.read(cx).command_shortcut_keystroke("nav.goto"),
-            fg,
-            muted,
-            accent,
-            accent_fg,
-            hover,
+            colors,
         ))
         .child(atlas_launcher_row(
             app.clone(),
@@ -527,11 +538,7 @@ fn atlas_launcher_content(
             app_entity
                 .read(cx)
                 .command_shortcut_keystroke("sys.palette"),
-            fg,
-            muted,
-            accent,
-            accent_fg,
-            hover,
+            colors,
         ))
         .child(atlas_launcher_row(
             app.clone(),
@@ -546,11 +553,22 @@ fn atlas_launcher_content(
             app_entity
                 .read(cx)
                 .command_shortcut_keystroke("ext.manager"),
-            fg,
-            muted,
-            accent,
-            accent_fg,
-            hover,
+            colors,
+        ))
+        .child(atlas_launcher_row(
+            app.clone(),
+            popover.clone(),
+            "atlas-launcher-toggle-preview",
+            AtlasIcon::Eye,
+            rust_i18n::t!("cmd_view_inspector_title").to_string(),
+            None,
+            false,
+            false,
+            Some(Action::ToggleInspector),
+            app_entity
+                .read(cx)
+                .command_shortcut_keystroke("view.inspector"),
+            colors,
         ))
         .child(atlas_launcher_row(
             app.clone(),
@@ -563,11 +581,7 @@ fn atlas_launcher_content(
             false,
             Some(Action::OpenSettingsAbout),
             None,
-            fg,
-            muted,
-            accent,
-            accent_fg,
-            hover,
+            colors,
         ));
 
     let menu = menu.with_animation(
@@ -593,7 +607,6 @@ fn atlas_launcher_content(
         .into_any_element()
 }
 
-#[allow(clippy::too_many_arguments)]
 fn atlas_launcher_row(
     app: WeakEntity<AtlasApp>,
     popover: Entity<PopoverState>,
@@ -605,12 +618,9 @@ fn atlas_launcher_row(
     opens_profiles: bool,
     action: Option<Action>,
     shortcut: Option<gpui::Keystroke>,
-    fg: Hsla,
-    muted: Hsla,
-    accent: Hsla,
-    accent_fg: Hsla,
-    hover: Hsla,
+    colors: MenuColors,
 ) -> gpui::AnyElement {
+    let MenuColors { fg, muted, accent, accent_fg, hover, .. } = colors;
     let row_icon = if selected { accent_fg } else { muted };
     let row_text = if selected { accent_fg } else { fg };
     let mut label_col = v_flex().min_w(px(0.)).flex_1().child(label);
@@ -823,6 +833,14 @@ impl Render for SidebarPanel {
             layer_color(sidebar_bg, 0.04, 0.18)
         };
         let active_bg = layer_color(accent, 0.0, 0.10);
+        let style = SidebarStyle {
+            hover,
+            active_bg,
+            accent,
+            fg,
+            muted,
+            windows_theme,
+        };
         // The focused pane's current location — used to mark matching place/virtual row active.
         let current_location = app
             .read(cx)
@@ -1032,7 +1050,7 @@ impl Render for SidebarPanel {
                     crate::ui::shell_context_menu::show_this_pc_properties();
                 }),
             );
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         {
             col = col.on_action(
                 cx.listener(|this, action: &RemoveCloudRemote, _window, cx| {
@@ -1082,13 +1100,9 @@ impl Render for SidebarPanel {
             col = render_collapsed_sections(
                 col,
                 &app,
-                hover,
-                active_bg,
-                accent,
-                fg,
+                style,
                 current_path.as_deref(),
                 current_location.as_ref(),
-                windows_theme,
                 cx,
             );
             return div()
@@ -1144,14 +1158,9 @@ impl Render for SidebarPanel {
                     col,
                     &section.kind,
                     &app,
-                    muted,
-                    hover,
-                    active_bg,
-                    accent,
-                    fg,
+                    style,
                     current_path.as_deref(),
                     current_location.as_ref(),
-                    windows_theme,
                     cx,
                 );
             }
@@ -1800,19 +1809,15 @@ fn ph_icon(name: &str) -> AtlasIcon {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_collapsed_sections(
     mut col: gpui::Div,
     app: &Entity<AtlasApp>,
-    hover: Hsla,
-    active_bg: Hsla,
-    accent: Hsla,
-    fg: Hsla,
+    style: SidebarStyle,
     current: Option<&std::path::Path>,
     current_location: Option<&Location>,
-    windows_theme: bool,
     cx: &mut Context<SidebarPanel>,
 ) -> gpui::Div {
+    let SidebarStyle { hover, windows_theme, .. } = style;
     let sections: Vec<SidebarSection> = app
         .read(cx)
         .state
@@ -1888,12 +1893,8 @@ fn render_collapsed_sections(
                         icon_name,
                         path,
                         shell_tex,
-                        windows_theme,
                         app,
-                        hover,
-                        active_bg,
-                        accent,
-                        fg,
+                        style,
                         active,
                     ));
                 }
@@ -1911,12 +1912,8 @@ fn render_collapsed_sections(
                     Location::RecycleBin,
                     rb_shell_tex,
                     app,
-                    hover,
-                    active_bg,
-                    accent,
-                    fg,
+                    style,
                     rb_active,
-                    windows_theme,
                 ));
                 section_has_items = true;
             }
@@ -1942,12 +1939,8 @@ fn render_collapsed_sections(
                         "folder",
                         path,
                         shell_tex,
-                        windows_theme,
                         app,
-                        hover,
-                        active_bg,
-                        accent,
-                        fg,
+                        style,
                         active,
                     ));
                     section_has_items = true;
@@ -1987,12 +1980,8 @@ fn render_collapsed_sections(
                         "terminal-window",
                         path,
                         shell_tex,
-                        windows_theme,
                         app,
-                        hover,
-                        active_bg,
-                        accent,
-                        fg,
+                        style,
                         active,
                     ));
                     section_has_items = true;
@@ -2010,12 +1999,8 @@ fn render_collapsed_sections(
                         drive,
                         shell_tex,
                         app,
-                        hover,
-                        active_bg,
-                        accent,
-                        fg,
+                        style,
                         active,
-                        windows_theme,
                     ));
                     section_has_items = true;
                 }
@@ -2045,19 +2030,15 @@ fn render_collapsed_sections(
                         "folder",
                         path,
                         shell_tex,
-                        windows_theme,
                         app,
-                        hover,
-                        active_bg,
-                        accent,
-                        fg,
+                        style,
                         active,
                     ));
                     section_has_items = true;
                 }
             }
             SectionKind::Cloud => {
-                #[cfg(feature = "cloud")]
+                #[cfg(feature = "provider-host")]
                 {
                     let native = native_cloud_folders();
                     let remotes: Vec<atlas_model::cloud_model::CloudRemote> =
@@ -2074,12 +2055,8 @@ fn render_collapsed_sections(
                             "cloud",
                             path,
                             shell_tex,
-                            windows_theme,
                             app,
-                            hover,
-                            active_bg,
-                            accent,
-                            fg,
+                            style,
                             active,
                         ));
                         section_has_items = true;
@@ -2088,11 +2065,7 @@ fn render_collapsed_sections(
                         col = col.child(collapsed_cloud_remote_row(
                             remote,
                             app,
-                            hover,
-                            active_bg,
-                            accent,
-                            fg,
-                            windows_theme,
+                            style,
                         ));
                         section_has_items = true;
                     }
@@ -2112,21 +2085,17 @@ fn collapsed_divider() -> impl IntoElement {
         .bg(hsla(0., 0., 1., 0.08))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn collapsed_nav_row(
     id: SharedString,
     label: String,
     icon_name: &'static str,
     path: PathBuf,
     shell_tex: Option<Arc<gpui::RenderImage>>,
-    windows_theme: bool,
     app: &Entity<AtlasApp>,
-    hover: Hsla,
-    active_bg: Hsla,
-    accent: Hsla,
-    fg: Hsla,
+    style: SidebarStyle,
     active: bool,
 ) -> impl IntoElement {
+    let SidebarStyle { hover, active_bg, accent, fg, windows_theme, .. } = style;
     let app = app.clone();
     let tooltip = label.clone();
     let hover_id = DragHoverId::Sidebar(id.to_string());
@@ -2215,7 +2184,6 @@ fn collapsed_nav_row(
         })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn collapsed_virtual_nav_row(
     id: SharedString,
     label: String,
@@ -2223,13 +2191,10 @@ fn collapsed_virtual_nav_row(
     loc: Location,
     shell_tex: Option<Arc<gpui::RenderImage>>,
     app: &Entity<AtlasApp>,
-    hover: Hsla,
-    active_bg: Hsla,
-    accent: Hsla,
-    fg: Hsla,
+    style: SidebarStyle,
     active: bool,
-    windows_theme: bool,
 ) -> impl IntoElement {
+    let SidebarStyle { hover, active_bg, accent, fg, windows_theme, .. } = style;
     let app = app.clone();
     let tooltip = label.clone();
     let hover_id = DragHoverId::Sidebar(id.to_string());
@@ -2357,17 +2322,12 @@ fn collapsed_tag_row(
         })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn collapsed_drive_row(
     drive: atlas_core::fs::mounts::DriveInfo,
     shell_tex: Option<Arc<gpui::RenderImage>>,
     app: &Entity<AtlasApp>,
-    hover: Hsla,
-    active_bg: Hsla,
-    accent: Hsla,
-    fg: Hsla,
+    style: SidebarStyle,
     active: bool,
-    windows_theme: bool,
 ) -> impl IntoElement {
     let tooltip = if drive.total_bytes == 0 {
         drive.label.clone()
@@ -2385,27 +2345,19 @@ fn collapsed_drive_row(
         "hard-drives",
         drive.mount_point,
         shell_tex,
-        windows_theme,
         app,
-        hover,
-        active_bg,
-        accent,
-        fg,
+        style,
         active,
     )
 }
 
-#[cfg(feature = "cloud")]
-#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "provider-host")]
 fn collapsed_cloud_remote_row(
     remote: atlas_model::cloud_model::CloudRemote,
     app: &Entity<AtlasApp>,
-    hover: Hsla,
-    active_bg: Hsla,
-    accent: Hsla,
-    fg: Hsla,
-    windows_theme: bool,
+    style: SidebarStyle,
 ) -> impl IntoElement {
+    let SidebarStyle { hover, active_bg, accent, fg, windows_theme, .. } = style;
     use crate::app::cloud::CloudAction;
     use atlas_model::cloud_model::RemoteStatus;
 
@@ -2454,21 +2406,16 @@ fn collapsed_cloud_remote_row(
         })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_section_body(
     mut col: gpui::Div,
     kind: &SectionKind,
     app: &Entity<AtlasApp>,
-    muted: Hsla,
-    hover: Hsla,
-    active_bg: Hsla,
-    accent: Hsla,
-    fg: Hsla,
+    style: SidebarStyle,
     current: Option<&std::path::Path>,
     current_location: Option<&Location>,
-    windows_theme: bool,
     cx: &mut Context<SidebarPanel>,
 ) -> gpui::Div {
+    let SidebarStyle { hover, fg, muted, windows_theme, .. } = style;
     match kind {
         SectionKind::Places => {
             let places: Vec<(&'static str, String, PathBuf)> = [
@@ -2521,12 +2468,8 @@ fn render_section_body(
                     path,
                     shell_tex,
                     app,
-                    hover,
-                    active_bg,
-                    accent,
-                    fg,
+                    style,
                     active,
-                    windows_theme,
                 ));
             }
             let rb_active = matches!(current_location, Some(Location::RecycleBin));
@@ -2543,12 +2486,8 @@ fn render_section_body(
                 Location::RecycleBin,
                 rb_shell_tex,
                 app,
-                hover,
-                active_bg,
-                accent,
-                fg,
+                style,
                 rb_active,
-                windows_theme,
             ));
         }
         SectionKind::Bookmarks => {
@@ -2578,12 +2517,8 @@ fn render_section_body(
                         path,
                         shell_tex,
                         app,
-                        hover,
-                        active_bg,
-                        accent,
-                        fg,
+                        style,
                         active,
-                        windows_theme,
                     ));
                 }
             }
@@ -2612,9 +2547,7 @@ fn render_section_body(
                         id,
                         global,
                         app,
-                        hover,
-                        fg,
-                        windows_theme,
+                        style,
                     ));
                 }
             }
@@ -2630,12 +2563,8 @@ fn render_section_body(
                     path,
                     shell_tex,
                     app,
-                    hover,
-                    active_bg,
-                    accent,
-                    fg,
+                    style,
                     active,
-                    windows_theme,
                 ));
             }
         }
@@ -2654,13 +2583,8 @@ fn render_section_body(
                         drive,
                         shell_tex,
                         app,
-                        hover,
-                        active_bg,
-                        accent,
-                        fg,
-                        muted,
+                        style,
                         active,
-                        windows_theme,
                     ));
                 }
             }
@@ -2694,18 +2618,14 @@ fn render_section_body(
                         path,
                         shell_tex,
                         app,
-                        hover,
-                        active_bg,
-                        accent,
-                        fg,
+                        style,
                         active,
-                        windows_theme,
                     ));
                 }
             }
         }
         SectionKind::Cloud => {
-            #[cfg(feature = "cloud")]
+            #[cfg(feature = "provider-host")]
             {
                 let current = app
                     .read(cx)
@@ -2722,24 +2642,20 @@ fn render_section_body(
                         path,
                         shell_tex,
                         app,
-                        hover,
-                        active_bg,
-                        accent,
-                        fg,
+                        style,
                         active,
-                        windows_theme,
                     ));
                 }
                 let remotes: Vec<atlas_model::cloud_model::CloudRemote> =
                     app.read(cx).state.cloud.remotes.clone();
                 for remote in remotes {
                     col = col.child(cloud_remote_row(
-                        remote, app, hover, active_bg, accent, fg, muted,
+                        remote, app, style,
                     ));
                 }
                 col = col.child(add_cloud_row(app, hover, muted, fg));
             }
-            #[cfg(not(feature = "cloud"))]
+            #[cfg(not(feature = "provider-host"))]
             {
                 col = col.child(empty_row(
                     rust_i18n::t!("sidebar_no_cloud").to_string(),
@@ -2758,10 +2674,9 @@ fn tag_row(
     id: TagId,
     global: bool,
     app: &Entity<AtlasApp>,
-    hover: Hsla,
-    fg: Hsla,
-    windows_theme: bool,
+    style: SidebarStyle,
 ) -> impl IntoElement {
+    let SidebarStyle { hover, fg, windows_theme, .. } = style;
     let app = app.clone();
     let edit_app = app.clone();
     let edit_name = name.clone();
@@ -2862,19 +2777,14 @@ fn tag_row(
 /// One mounted volume: clickable row that navigates to its mount point, with a thin
 /// fullness bar (used fraction). The bar turns red when the volume is nearly full
 /// (>90%). Taller than a `nav_row` to fit the label + bar (the Figma mock had no bars).
-#[allow(clippy::too_many_arguments)]
 fn drive_row(
     drive: atlas_core::fs::mounts::DriveInfo,
     shell_tex: Option<Arc<gpui::RenderImage>>,
     app: &Entity<AtlasApp>,
-    hover: Hsla,
-    active_bg: Hsla,
-    accent: Hsla,
-    fg: Hsla,
-    muted: Hsla,
+    style: SidebarStyle,
     active: bool,
-    windows_theme: bool,
 ) -> gpui::AnyElement {
+    let SidebarStyle { hover, active_bg, accent, fg, muted, windows_theme, .. } = style;
     let app = app.clone();
     let frac = drive.used_fraction();
     // Alert color when nearly full, otherwise the accent.
@@ -3169,7 +3079,6 @@ fn empty_row(label: String, muted: Hsla) -> impl IntoElement {
 /// One clickable row that navigates the focused pane to `path`. Styled per the Figma
 /// sidebar item: Phosphor icon + label, rounded, with hover and an active (current
 /// folder) state that tints the icon/label with the accent.
-#[allow(clippy::too_many_arguments)]
 fn nav_row(
     id: SharedString,
     label: String,
@@ -3177,13 +3086,10 @@ fn nav_row(
     path: PathBuf,
     shell_tex: Option<Arc<gpui::RenderImage>>,
     app: &Entity<AtlasApp>,
-    hover: Hsla,
-    active_bg: Hsla,
-    accent: Hsla,
-    fg: Hsla,
+    style: SidebarStyle,
     active: bool,
-    windows_theme: bool,
 ) -> impl IntoElement {
+    let SidebarStyle { hover, active_bg, accent, fg, windows_theme, .. } = style;
     let app = app.clone();
     let hover_id = DragHoverId::Sidebar(id.to_string());
     let drop_path = path.clone();
@@ -3284,7 +3190,6 @@ fn nav_row(
 
 /// Like `nav_row` but navigates to an arbitrary `Location` (for virtual places
 /// like RecycleBin that have no real `PathBuf`).
-#[allow(clippy::too_many_arguments)]
 fn virtual_nav_row(
     id: SharedString,
     label: String,
@@ -3292,13 +3197,10 @@ fn virtual_nav_row(
     loc: Location,
     shell_tex: Option<Arc<gpui::RenderImage>>,
     app: &Entity<AtlasApp>,
-    hover: Hsla,
-    active_bg: Hsla,
-    accent: Hsla,
-    fg: Hsla,
+    style: SidebarStyle,
     active: bool,
-    windows_theme: bool,
 ) -> impl IntoElement {
+    let SidebarStyle { hover, active_bg, accent, fg, windows_theme, .. } = style;
     let app = app.clone();
     let hover_id = DragHoverId::Sidebar(id.to_string());
     let recycle_icon_app = app.clone();
@@ -3375,16 +3277,13 @@ fn virtual_nav_row(
 /// Row for a configured cloud remote. Status label on the right; click opens access/mount.
 /// Right-click menu: pending — needs dedicated gpui Action types (PopupMenu only accepts
 /// Box<dyn gpui::Action>, not closures). For now, use the Add button to manage remotes.
-#[cfg(feature = "cloud")]
+#[cfg(feature = "provider-host")]
 fn cloud_remote_row(
     remote: atlas_model::cloud_model::CloudRemote,
     app: &Entity<AtlasApp>,
-    hover: Hsla,
-    _active_bg: Hsla,
-    _accent: Hsla,
-    fg: Hsla,
-    muted: Hsla,
+    style: SidebarStyle,
 ) -> impl IntoElement {
+    let SidebarStyle { hover, fg, muted, .. } = style;
     use crate::app::cloud::CloudAction;
     use crate::input::action::Action;
     use atlas_model::cloud_model::RemoteStatus;
@@ -3544,7 +3443,7 @@ fn cloud_remote_row(
         })
 }
 
-#[cfg(feature = "cloud")]
+#[cfg(feature = "provider-host")]
 fn native_cloud_folders() -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
     let mut push = |label: &str, path: Option<PathBuf>| {
@@ -3605,7 +3504,7 @@ fn native_cloud_folders() -> Vec<(String, PathBuf)> {
 }
 
 /// Always-visible "+ Add cloud drive" row that incites the user to connect.
-#[cfg(feature = "cloud")]
+#[cfg(feature = "provider-host")]
 fn add_cloud_row(app: &Entity<AtlasApp>, hover: Hsla, muted: Hsla, fg: Hsla) -> impl IntoElement {
     use crate::app::cloud::CloudAction;
     use crate::input::action::Action;

@@ -1,27 +1,32 @@
-//! Cloud transfers bar (bottom-left, dismissible) — F3 #13.
+//! Unified local/cloud transfer center.
 //!
 //! Renders `state.cloud.transfers` while `state.cloud.show_transfers` is set.
 //! Backend (queueing, progress, pause/resume/cancel/retry) already lives in
 //! `app/cloud.rs::CloudAction` / the rclone worker; this is display-only.
 
+#[cfg(feature = "provider-host")]
 use crate::app::cloud::CloudAction;
 use crate::app::App;
 use crate::ui::icons::{icon, AtlasIcon};
+use atlas_core::util::display::format_size;
+#[cfg(feature = "provider-host")]
 use atlas_model::cloud_model::{Transfer, TransferKind, TransferState};
+use atlas_model::ops::OpState;
 use gpui::prelude::*;
 use gpui::{deferred, div, px, AnyElement, Context, MouseButton, SharedString, Window};
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
 const BAR_W: f32 = 360.;
 const ROW_MAX_BYTES_LABEL: f32 = 90.;
 
 impl App {
-    pub(crate) fn render_cloud_transfers_bar(
+    pub(crate) fn render_transfer_center(
         &mut self,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (popover, fg, muted, border, danger, success) = {
+        let (popover, fg, muted, border, danger, _success) = {
             let t = cx.theme();
             (
                 t.popover,
@@ -32,46 +37,54 @@ impl App {
                 t.success,
             )
         };
-        let transfers: Vec<Transfer> = self.state.cloud.transfers.clone();
+        #[cfg(feature = "provider-host")]
         let view = cx.entity();
 
         let mut rows = v_flex().gap_2();
-        for t in &transfers {
-            rows = rows.child(transfer_row(t, fg, muted, border, danger, success, &view));
+        let mut local: Vec<_> = self.state.ops.active_ops.iter().collect();
+        local.sort_unstable_by_key(|(id, _)| **id);
+        for (id, op) in local {
+            rows = rows.child(local_transfer_row(*id, op, fg, muted, border, danger));
+        }
+        #[cfg(feature = "provider-host")]
+        if self.state.cloud.show_transfers {
+            for transfer in &self.state.cloud.transfers {
+                rows = rows.child(cloud_transfer_row(
+                    transfer, fg, muted, border, danger, _success, &view,
+                ));
+            }
         }
 
-        let close_view = view.clone();
-        let header = h_flex()
-            .items_center()
-            .justify_between()
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(fg)
-                    .child(rust_i18n::t!("cloud_transfers_title").to_string()),
-            )
-            .child(
-                div()
-                    .id("cloud-transfers-close")
-                    .size(px(20.))
-                    .rounded(px(crate::ui::RADIUS))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(muted)
-                    .cursor_pointer()
-                    .hover(move |h| h.bg(border).text_color(fg))
-                    .child(icon(AtlasIcon::X, 11., muted))
-                    .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
-                        close_view.update(cx, |this, cx| {
-                            this.handle_cloud_action(CloudAction::ShowTransfers(false));
-                            cx.notify();
-                        });
-                    }),
-            );
+        let header = h_flex().items_center().justify_between().child(
+            div()
+                .text_sm()
+                .text_color(fg)
+                .child(rust_i18n::t!("cloud_transfers_title").to_string()),
+        );
+        #[cfg(feature = "provider-host")]
+        let header = header.child({
+            let close_view = view.clone();
+            div()
+                .id("cloud-transfers-close")
+                .size(px(20.))
+                .rounded(px(crate::ui::RADIUS))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(muted)
+                .cursor_pointer()
+                .hover(move |h| h.bg(border).text_color(fg))
+                .child(icon(AtlasIcon::X, 11., muted))
+                .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
+                    close_view.update(cx, |this, cx| {
+                        this.handle_cloud_action(CloudAction::ShowTransfers(false));
+                        cx.notify();
+                    });
+                })
+        });
 
         deferred(
-            div().absolute().bottom(px(24.)).left(px(24.)).child(
+            div().absolute().bottom(px(24.)).right(px(24.)).child(
                 v_flex()
                     .id("cloud-transfers-bar")
                     .gap_2()
@@ -85,14 +98,122 @@ impl App {
                     .occlude()
                     .p_3()
                     .child(header)
-                    .child(rows),
+                    .child(div().max_h(px(360.)).overflow_y_scrollbar().child(rows)),
             ),
         )
         .into_any_element()
     }
 }
 
-fn transfer_row(
+fn local_transfer_row(
+    id: u64,
+    op: &OpState,
+    fg: gpui::Hsla,
+    muted: gpui::Hsla,
+    border: gpui::Hsla,
+    danger: gpui::Hsla,
+) -> impl IntoElement {
+    let fraction = if op.bytes_total > 0 {
+        op.bytes_done as f32 / op.bytes_total as f32
+    } else if op.total > 0 {
+        op.done as f32 / op.total as f32
+    } else {
+        0.0
+    }
+    .clamp(0.0, 1.0);
+    let elapsed = op.started_at.elapsed().as_secs_f64();
+    let bytes_per_second = if elapsed >= 0.5 {
+        (op.bytes_done as f64 / elapsed) as u64
+    } else {
+        0
+    };
+    let eta = if bytes_per_second > 0 && op.bytes_total > op.bytes_done {
+        Some((op.bytes_total - op.bytes_done) / bytes_per_second)
+    } else {
+        None
+    };
+    let file = op
+        .current_file
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| op.label.clone());
+    let detail = if op.bytes_total > 0 {
+        format!(
+            "{} / {}",
+            format_size(op.bytes_done),
+            format_size(op.bytes_total)
+        )
+    } else {
+        format!("{} / {}", op.done.min(op.total), op.total)
+    };
+    let telemetry = if bytes_per_second > 0 {
+        let speed = format!("{}/s", format_size(bytes_per_second));
+        eta.map_or(speed.clone(), |seconds| {
+            format!("{speed} · {}", format_eta(seconds))
+        })
+    } else {
+        detail
+    };
+    let cancel = op.cancel.clone();
+
+    h_flex()
+        .id(SharedString::from(format!("local-xfer-row-{id}")))
+        .gap_2()
+        .items_center()
+        .child(icon(AtlasIcon::Copy, 14., muted))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap(px(2.))
+                .child(div().text_xs().text_color(fg).truncate().child(file))
+                .child(
+                    div().h(px(3.)).w_full().rounded_full().bg(border).child(
+                        div()
+                            .h(px(3.))
+                            .rounded_full()
+                            .bg(danger)
+                            .w(gpui::relative(fraction)),
+                    ),
+                ),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .w(px(ROW_MAX_BYTES_LABEL))
+                .text_xs()
+                .text_color(muted)
+                .child(telemetry),
+        )
+        .child(
+            div()
+                .id(SharedString::from(format!("local-xfer-cancel-{id}")))
+                .size(px(18.))
+                .rounded(px(crate::ui::RADIUS))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(move |hover| hover.bg(border).text_color(fg))
+                .child(icon(AtlasIcon::X, 10., muted))
+                .on_mouse_down(MouseButton::Left, move |_event, _window, _cx| {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }),
+        )
+}
+
+fn format_eta(seconds: u64) -> String {
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3_600 {
+        format!("{}m", seconds.div_ceil(60))
+    } else {
+        format!("{}h {}m", seconds / 3_600, (seconds % 3_600).div_ceil(60))
+    }
+}
+
+#[cfg(feature = "provider-host")]
+fn cloud_transfer_row(
     t: &Transfer,
     fg: gpui::Hsla,
     muted: gpui::Hsla,
@@ -226,6 +347,7 @@ fn transfer_row(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "provider-host")]
 fn transfer_btn(
     ic: AtlasIcon,
     muted: gpui::Hsla,

@@ -16,8 +16,6 @@ pub enum ExtKind {
     Declarative,
     /// Virtual locations are provided by a long-lived JSON-lines sidecar.
     Sidecar,
-    /// Reserved for a future sandbox runtime; currently unavailable.
-    Wasm,
     /// Implemented in-app for tightly integrated features.
     Builtin,
     /// Hidden dependency package that contributes portable tools for commands.
@@ -33,6 +31,27 @@ pub struct Sidecar {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+}
+
+/// One-shot request sent to a command-capable sidecar over stdin.
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+pub struct SidecarCommandRequest {
+    pub version: u32,
+    pub command_id: String,
+    #[serde(default)]
+    pub paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub answers: HashMap<String, String>,
+    pub data_dir: PathBuf,
+}
+
+/// One-shot result emitted by a command-capable sidecar on stdout.
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+pub struct SidecarCommandResponse {
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub changed_dirs: Vec<PathBuf>,
 }
 
 /// A top-level section contributed to the sidebar by an extension.
@@ -159,10 +178,6 @@ pub struct Manifest {
     pub sidecar: Option<Sidecar>,
     #[serde(default)]
     pub sidebar: Vec<SidebarContribution>,
-    /// Reserved WebAssembly module filename (relative to the extension directory).
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub wasm_module: Option<String>,
     #[serde(default)]
     pub commands: Vec<ExtCommand>,
 }
@@ -229,6 +244,7 @@ pub struct CommandRef {
     pub ext_dir: PathBuf,
     #[allow(dead_code)]
     pub kind: ExtKind,
+    pub sidecar: Option<Sidecar>,
     pub command: ExtCommand,
     pub tools: HashMap<String, PathBuf>,
 }

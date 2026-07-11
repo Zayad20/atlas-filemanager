@@ -28,7 +28,7 @@ pub enum ThumbState {
 
 /// Longest edge (px) of the decoded thumbnail. Generous vs. the largest zoom step so
 /// it still looks crisp, but a tiny fraction of a full-res photo's pixels.
-// with global zoom (up to 3x) stacked on per-pane thumbnail size (up to
+// With global zoom (up to 3x) stacked on per-pane thumbnail size (up to
 // 384px), a cell can now render well past this cap and look soft. 256 halves the
 // worst-case blur cheaply; a fully dynamic decode resolution is a bigger change.
 const THUMB_MAX_EDGE: u32 = 256;

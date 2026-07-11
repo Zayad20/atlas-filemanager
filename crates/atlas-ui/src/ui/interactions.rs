@@ -191,6 +191,115 @@ impl App {
         self.ensure_drag_selection(pane, entry_idx);
         self.selected_paths()
     }
+
+    pub(crate) fn details_entry_at(
+        &self,
+        pane: TabId,
+        pos: gpui::Point<gpui::Pixels>,
+    ) -> Option<usize> {
+        self.details_hit
+            .get(&pane)
+            .and_then(|model| model.hit_entry(pos))
+    }
+
+    pub(crate) fn details_contains_point(
+        &self,
+        pane: TabId,
+        pos: gpui::Point<gpui::Pixels>,
+    ) -> bool {
+        self.details_hit
+            .get(&pane)
+            .is_some_and(|model| model.bounds.contains(&pos))
+    }
+
+    pub(crate) fn details_row_selected(&self, pane: TabId, entry_idx: usize) -> bool {
+        self.state
+            .tab_states
+            .get(&pane)
+            .is_some_and(|ts| ts.selection.selected.contains(&entry_idx))
+    }
+
+    pub(crate) fn details_hover_at(
+        &mut self,
+        pane: TabId,
+        pos: gpui::Point<gpui::Pixels>,
+    ) -> Option<(TabId, usize)> {
+        self.details_entry_at(pane, pos).map(|idx| (pane, idx))
+    }
+
+    pub(crate) fn details_left_mouse_down(
+        &mut self,
+        pane: TabId,
+        entry_idx: Option<usize>,
+        pos: gpui::Point<gpui::Pixels>,
+        shift: bool,
+        ctrl: bool,
+        click_count: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if self.rename_edit.is_some() {
+            self.commit_rename(cx);
+        }
+
+        let Some(entry_idx) = entry_idx else {
+            self.begin_rubber(pane, pos, shift || ctrl);
+            cx.notify();
+            return;
+        };
+
+        if click_count >= 2 {
+            self.process_actions(vec![Action::Activate {
+                tile: pane,
+                idx: entry_idx,
+            }]);
+            cx.notify();
+            return;
+        }
+
+        let selected = self.details_row_selected(pane, entry_idx);
+        if selected && !shift && !ctrl {
+            self.activate_tab(pane);
+            cx.notify();
+            return;
+        }
+
+        if !selected {
+            self.begin_rubber(pane, pos, shift || ctrl);
+        }
+        self.process_actions(vec![Action::Select {
+            tile: pane,
+            idx: entry_idx,
+            shift,
+            ctrl,
+        }]);
+        cx.notify();
+    }
+
+    pub(crate) fn details_right_mouse_down(
+        &mut self,
+        pane: TabId,
+        entry_idx: Option<usize>,
+        pos: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(entry_idx) = entry_idx {
+            self.activate_tab(pane);
+            let paths = self.select_context_menu_paths(pane, entry_idx);
+            self.open_ctx_menu(paths, pos, window, cx);
+            cx.notify();
+            return;
+        }
+
+        if let Some(path) = self
+            .tab_data_for(pane)
+            .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
+        {
+            self.open_background_ctx_menu(Some(path), pos, window, cx);
+            cx.notify();
+        }
+    }
+
     /// Compute (cols, row_count) for autoscroll in the given pane. Uses tab_state
     /// pixel width for Grid/List; returns (1, count) for Details; (1, 0) for Miller.
     pub(crate) fn rubber_scroll_dims(&self, pane: TabId) -> (usize, usize) {
@@ -223,7 +332,7 @@ impl App {
         }
     }
 
-    /// FASE C: recompute the focused rubber-band selection by intersecting its
+    /// Phase C: recompute the focused rubber-band selection by intersecting its
     /// rectangle (window coords) against the recorded visible-item rects.
     ///
     /// Hit-test is a full AABB overlap (any contact counts), matching the
@@ -242,7 +351,7 @@ impl App {
         // Clamp both endpoints to the pane so the hit-test region matches the
         // marquee rectangle that is actually drawn (which is also clamped in the
         // paint callback). Without this the visible box and the selection region
-        // could disagree near pane edges → "descuadre".
+        // could disagree near pane edges → "misalignment".
         let origin = self.clamp_rubber_target_point(target, r.origin);
         let current = self.clamp_rubber_target_point(target, r.current);
         let (ox, oy, cx_, cy) = match target {
@@ -923,7 +1032,7 @@ impl App {
         }
     }
 
-    /// FASE C: start a rubber-band drag in `pane` at `pos` (window coords), capturing
+    /// Phase C: start a rubber-band drag in `pane` at `pos` (window coords), capturing
     /// the current selection as the additive base. Shared by the pane's empty area and
     /// the Details "dead zone" column so the gesture begins the same way from either.
     pub(crate) fn begin_rubber(
@@ -1229,13 +1338,6 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
     canvas(
         |_, _, _| {},
         move |_, (), window, cx| {
-            let rubber_started = v.read(cx).rubber.as_ref().is_some_and(|r| r.started);
-
-            // ── Crosshair cursor while drag is active ────────────────────────
-            if rubber_started {
-                window.set_window_cursor_style(gpui::CursorStyle::Crosshair);
-            }
-
             // ── Draw the rubber band marquee rectangle ───────────────────────
             if let Some(r) = v.read(cx).rubber.as_ref() {
                 let app = v.read(cx);
@@ -1530,14 +1632,19 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                             // If pos hit an item rect, that item's on_click already handled it.
                             match r.target {
                                 RubberTarget::Pane(pane) => {
-                                    let hit = this.row_rects.get(&pane).is_some_and(|rects| {
-                                        rects.iter().any(|(_, b)| {
-                                            pos.x >= b.left()
-                                                && pos.x <= b.right()
-                                                && pos.y >= b.top()
-                                                && pos.y <= b.bottom()
-                                        })
-                                    });
+                                    let hit = this
+                                        .details_hit
+                                        .get(&pane)
+                                        .and_then(|model| model.hit_entry(pos))
+                                        .is_some()
+                                        || this.row_rects.get(&pane).is_some_and(|rects| {
+                                            rects.iter().any(|(_, b)| {
+                                                pos.x >= b.left()
+                                                    && pos.x <= b.right()
+                                                    && pos.y >= b.top()
+                                                    && pos.y <= b.bottom()
+                                            })
+                                        });
                                     if !hit {
                                         if let Some(ts) = this.state.tab_states.get_mut(&pane) {
                                             ts.selection.clear();

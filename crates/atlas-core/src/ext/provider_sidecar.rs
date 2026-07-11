@@ -127,7 +127,7 @@ impl Drop for ProviderSidecar {
     }
 }
 
-fn confined_program(extension_dir: &Path, command: &str) -> Result<PathBuf> {
+pub(crate) fn confined_program(extension_dir: &Path, command: &str) -> Result<PathBuf> {
     let root = extension_dir
         .canonicalize()
         .context("canonicalize extension directory")?;

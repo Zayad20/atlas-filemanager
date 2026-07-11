@@ -165,12 +165,12 @@ impl App {
                                                 && !crate::ui::views::rename::suppress_row_chrome(
                                                     app, pane_id, entry_idx,
                                                 );
-                                            cells.push(render_cell_compact(
-                                                &entry,
+                                            cells.push(render_cell_compact(ListCellProps {
+                                                entry: &entry,
                                                 entry_idx,
                                                 selected,
                                                 pane_id,
-                                                &list_view,
+                                                view: &list_view,
                                                 accent,
                                                 accent_fg,
                                                 hover,
@@ -178,11 +178,11 @@ impl App {
                                                 record_rects,
                                                 file_icon,
                                                 rename_input,
-                                                crate::ui::views::rename::dim_other_entry(
+                                                dimmed: crate::ui::views::rename::dim_other_entry(
                                                     app, pane_id, entry_idx,
                                                 ),
                                                 window,
-                                            ));
+                                            }));
                                         }
                                         let row_el = h_flex()
                                             .w_full()
@@ -211,7 +211,7 @@ impl App {
         let pane_view = view;
         crate::ui::views::pane_background_interactions(
             v_flex()
-                .id(SharedString::from(format!("pane-{}", pane_id.0)))
+                .id(("pane", pane_id.0))
                 .size_full()
                 .overflow_hidden(),
             &pane_view,
@@ -239,7 +239,7 @@ impl App {
                 });
             }
         })
-        // FASE F: register this pane's window-space rect each frame for OLE drop routing.
+        // Phase F: register this pane's window-space rect each frame for OLE drop routing.
         .when(cfg!(windows), |el| {
             el.on_prepaint(zone_recorder(pane_id, &zone_view))
         })
@@ -263,13 +263,12 @@ impl App {
 
 /// One compact List cell: 16px icon + truncated name in a fixed 220px row. Click
 /// routing mirrors the Details rows (shift = range, ctrl = toggle, dbl = open).
-#[allow(clippy::too_many_arguments)]
-fn render_cell_compact(
-    entry: &FileEntry,
+struct ListCellProps<'a> {
+    entry: &'a FileEntry,
     entry_idx: usize,
     selected: bool,
     pane_id: TabId,
-    view: &Entity<App>,
+    view: &'a Entity<App>,
     accent: Hsla,
     accent_fg: Hsla,
     hover: Hsla,
@@ -278,15 +277,32 @@ fn render_cell_compact(
     file_icon: FileIcon,
     rename_input: Option<gpui::Entity<gpui_component::input::InputState>>,
     dimmed: bool,
-    window: &mut Window,
-) -> AnyElement {
+    window: &'a mut Window,
+}
+
+/// One compact List cell: 16px icon + truncated name in a fixed 220px row. Click
+/// routing mirrors the Details rows (shift = range, ctrl = toggle, dbl = open).
+fn render_cell_compact(props: ListCellProps) -> AnyElement {
+    let ListCellProps {
+        entry,
+        entry_idx,
+        selected,
+        pane_id,
+        view,
+        accent,
+        accent_fg,
+        hover,
+        flashing,
+        record_rects,
+        file_icon,
+        rename_input,
+        dimmed,
+        window,
+    } = props;
     let name = entry.name.clone();
     let font_size = window.text_style().font_size.to_pixels(window.rem_size());
     h_flex()
-        .id(SharedString::from(format!(
-            "lc-{}-{}",
-            pane_id.0, entry_idx
-        )))
+        .id(("lc", entry_idx))
         .when(record_rects, |s| {
             s.on_prepaint(rect_recorder(pane_id, entry_idx, view))
         })

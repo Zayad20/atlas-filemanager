@@ -166,26 +166,26 @@ impl App {
                                                 pane_id,
                                                 &entry.path,
                                             );
-                                        render_miller_row(
-                                            &entry,
-                                            ci,
-                                            i,
+                                        render_miller_row(MillerRowProps {
+                                            entry: &entry,
+                                            column: ci,
+                                            idx: i,
                                             selected,
                                             pane_id,
-                                            &list_view,
+                                            view: &list_view,
                                             accent,
                                             accent_fg,
                                             hover,
                                             flashing,
                                             file_icon,
                                             rename_input,
-                                            crate::ui::views::rename::dim_other_path(
+                                            dimmed: crate::ui::views::rename::dim_other_path(
                                                 app,
                                                 pane_id,
                                                 &entry.path,
                                             ),
                                             window,
-                                        )
+                                        })
                                         .into_any_element()
                                     })
                                     .collect::<Vec<_>>()
@@ -312,7 +312,7 @@ impl App {
             &pane_view,
             pane_id,
         )
-        // FASE F: register this pane's window-space rect each frame for OLE drop routing.
+        // Phase F: register this pane's window-space rect each frame for OLE drop routing.
         .when(cfg!(windows), |el| {
             el.on_prepaint(zone_recorder(pane_id, &zone_view))
         })
@@ -341,14 +341,13 @@ impl App {
 
 /// One row in a Miller column. Single click selects (cascading the next column);
 /// double click on a file opens it. Routed through the `Miller*` actions.
-#[allow(clippy::too_many_arguments)]
-fn render_miller_row(
-    entry: &FileEntry,
+struct MillerRowProps<'a> {
+    entry: &'a FileEntry,
     column: usize,
     idx: usize,
     selected: bool,
     pane_id: TabId,
-    view: &Entity<App>,
+    view: &'a Entity<App>,
     accent: Hsla,
     accent_fg: Hsla,
     hover: Hsla,
@@ -356,8 +355,28 @@ fn render_miller_row(
     file_icon: FileIcon,
     rename_input: Option<Entity<InputState>>,
     dimmed: bool,
-    window: &mut Window,
-) -> AnyElement {
+    window: &'a mut Window,
+}
+
+/// One row in a Miller column. Single click selects (cascading the next column);
+/// double click on a file opens it. Routed through the `Miller*` actions.
+fn render_miller_row(props: MillerRowProps) -> AnyElement {
+    let MillerRowProps {
+        entry,
+        column,
+        idx,
+        selected,
+        pane_id,
+        view,
+        accent,
+        accent_fg,
+        hover,
+        flashing,
+        file_icon,
+        rename_input,
+        dimmed,
+        window,
+    } = props;
     let is_dir = matches!(entry.kind, FileKind::Dir);
     let trailing = if is_dir {
         icon(
@@ -378,10 +397,7 @@ fn render_miller_row(
     let v = view.clone();
     let font_size: Pixels = window.text_style().font_size.to_pixels(window.rem_size());
     let mut row = h_flex()
-        .id(SharedString::from(format!(
-            "mrow-{}-{}-{}",
-            pane_id.0, column, idx
-        )))
+        .id(("mrow", idx))
         .on_prepaint(miller_rect_recorder(pane_id, column, idx, view))
         .w_full()
         .px_2()
@@ -539,7 +555,7 @@ fn render_miller_row(
                 };
                 #[cfg(windows)]
                 {
-                    // archive rows carry virtual paths — no OS drag for
+                    // Archive rows carry virtual paths — no OS drag for
                     // them; extract-on-drag when someone needs it.
                     if !in_archive {
                         drag_view.read(&*cx).trigger_os_drag(paths, None);

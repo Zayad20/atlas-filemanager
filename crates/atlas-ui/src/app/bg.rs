@@ -598,7 +598,7 @@ impl App {
                         }
                     }
                     // Miller cascades: re-list any column showing the changed dir.
-                    // only the pane root is watched, so deep-column
+                    // Only the pane root is watched, so deep-column
                     // changes from *external* programs still go unseen — per-column
                     // watchers if that ever matters.
                     let mut miller_refresh = Vec::new();
@@ -762,6 +762,12 @@ impl App {
                     if report.cancelled {
                         self.toast_error(
                             rust_i18n::t!("op_cancelled_partial", done = report.completed.len())
+                                .into_owned(),
+                        );
+                    }
+                    if !report.cancelled && report.errors.is_empty() {
+                        self.toast_info(
+                            rust_i18n::t!("op_transfer_complete", count = report.completed.len())
                                 .into_owned(),
                         );
                     }
@@ -929,7 +935,7 @@ impl App {
                 BgResult::ExtLocalInstalled(result) => {
                     self.handle_ext_local_installed(result);
                 }
-                #[cfg(feature = "cloud")]
+                #[cfg(feature = "provider-host")]
                 other => self.handle_cloud_bg(other),
             }
         }

@@ -1,6 +1,6 @@
 //! `FilePanel`: a gpui-component `Panel` wrapping one file-view pane.
 //!
-//! FASE A: the central tabs/splits are now a `gpui_component::dock::DockArea`. The
+//! Phase A: the central tabs/splits are now a `gpui_component::dock::DockArea`. The
 //! Dock owns the interactive layout (tab drag/reorder, drag-to-split, close), so
 //! each pane must be its own `Entity` implementing the `Panel` trait. `FilePanel`
 //! holds a weak handle back to `App` and renders the pane by delegating to the
@@ -252,7 +252,9 @@ impl Render for FilePanel {
                     let app = app.read(cx);
                     frozen_content_size(
                         !app.dock_split_animations.is_empty(),
-                        app.pane_layout_bounds.get(&pane_id).map(|bounds| bounds.size),
+                        app.pane_layout_bounds
+                            .get(&pane_id)
+                            .map(|bounds| bounds.size),
                     )
                 };
                 let mut content_style = StyleRefinement::default().v_flex();
@@ -298,6 +300,9 @@ mod tests {
         assert_eq!(frozen_content_size(false, Some(size)), None);
         assert_eq!(frozen_content_size(true, None), None);
         assert_eq!(frozen_content_size(true, Some(size)), Some(size));
-        assert_eq!(frozen_content_size(true, Some(gpui::size(px(1.0), px(200.0)))), None);
+        assert_eq!(
+            frozen_content_size(true, Some(gpui::size(px(1.0), px(200.0)))),
+            None
+        );
     }
 }

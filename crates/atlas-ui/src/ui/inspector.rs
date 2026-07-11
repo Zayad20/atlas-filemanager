@@ -1,4 +1,4 @@
-//! FASE5 — Inspector / preview panel (gpui port of the egui `src/ui/inspector.rs`).
+//! Phase5 — Inspector / preview panel (gpui port of the egui `src/ui/inspector.rs`).
 //!
 //! Renders the right-hand preview panel for the focused tab's selection:
 //! single-file metadata + content preview (text/markdown/image/pdf/dir/binary),
@@ -446,7 +446,7 @@ impl App {
             let t = cx.theme();
             (t.foreground, t.muted_foreground, t.border, t.danger)
         };
-        // FASE6: expanded preview is rendered as an overlay by root.rs, so widening
+        // Phase6: expanded preview is rendered as an overlay by root.rs, so widening
         // it here no longer pushes the main dock/sidebar during window resize.
         let expanded = self
             .preview_view

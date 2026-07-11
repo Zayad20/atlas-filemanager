@@ -11,10 +11,9 @@
 use crate::app::App;
 use crate::input::action::Action;
 use crate::ui::drag_hover::drag_hover_layer;
-use crate::ui::glass::{backdrop_tint, glass_chrome_fill, glass_sidebar_fill, GlassExt};
+use crate::ui::glass::{backdrop_tint, glass_sidebar_fill, GlassExt};
 use crate::ui::icons::{icon, is_windows_theme, AtlasIcon};
 use crate::ui::interactions::{ctrl_scroll_layer, rubber_layer};
-use atlas_core::util::display::format_size;
 use atlas_model::pane::TabId;
 use atlas_model::settings::ViewMode;
 use gpui::prelude::*;
@@ -26,7 +25,7 @@ use gpui_component::{h_flex, v_flex, ActiveTheme};
 use std::path::PathBuf;
 
 /// A small clickable glyph in the tab toolbar, bound to an `App` mutation.
-/// FASE F: payload for an internal file drag (paths dragged between panes / onto
+/// Phase F: payload for an internal file drag (paths dragged between panes / onto
 /// folders). The platform/gpui renders the drag image from this view.
 #[derive(Clone)]
 pub struct DraggedFiles {
@@ -49,7 +48,7 @@ impl Render for DraggedFiles {
     }
 }
 
-/// FASE F (Windows): placeholder drag view used instead of `DraggedFiles` when the
+/// Phase F (Windows): placeholder drag view used instead of `DraggedFiles` when the
 /// OLE drag-and-drop path (`DoDragDrop`) takes over. Returns an invisible zero-size
 /// element so gpui has no ghost to paint. The OLE drag loop provides its own OS
 /// cursor feedback.  Using a *distinct type* ensures no `on_drop::<DraggedFiles>`
@@ -65,7 +64,7 @@ impl Render for DragNoop {
     }
 }
 
-/// FASE C: record a visible item's window-space rect for rubber-band hit-testing.
+/// Phase C: record a visible item's window-space rect for rubber-band hit-testing.
 /// Returns an `on_prepaint` closure to spread onto the item element. The per-pane
 /// `row_rects` vec is cleared at the start of each view's render.
 pub(crate) fn rect_recorder(
@@ -127,7 +126,7 @@ pub(crate) fn pane_bounds_recorder(
     }
 }
 
-/// FASE F: record the pane's window-space rect every frame so the OLE drop target
+/// Phase F: record the pane's window-space rect every frame so the OLE drop target
 /// can route external file drops to the correct pane directory.  The recorded zones
 /// are committed to `dnd.zones` at the start of the next render frame (one-frame lag
 /// is invisible; layout is stable between frames).
@@ -246,7 +245,7 @@ impl Render for App {
             self.drain_bg_results_state_only();
             self.tick_eco_mode(window);
         }
-        // FASE C: reset per-frame item rects only when idle. During rubber-band drag
+        // Phase C: reset per-frame item rects only when idle. During rubber-band drag
         // the pane content may be cached, so clearing here can leave hit-testing with
         // no geometry until the pane decides to repaint.
         if self.rubber.is_none() && !self.drag_hover_maybe_active() {
@@ -283,7 +282,7 @@ impl Render for App {
                 }
             }
         }
-        // FASE F (Windows): publish last frame's pane drop-zones to the OLE drop
+        // Phase F (Windows): publish last frame's pane drop-zones to the OLE drop
         // target, then clear the vec so this frame re-populates it via on_prepaint.
         // One frame of lag is harmless — layout is stable between frames.
         #[cfg(windows)]
@@ -356,7 +355,7 @@ impl Render for App {
         // + focused via the overlay-focus arbiter; no render-time dialog open.)
         let sidebar_width_dirty = self.sidebar_width_dirty;
         self.sidebar_width_dirty = false;
-        let (fg, muted, status_border, root_bg) = {
+        let (fg, _muted, _status_border, root_bg) = {
             let t = cx.theme();
             (t.foreground, t.muted_foreground, t.border, t.background)
         };
@@ -365,47 +364,6 @@ impl Render for App {
         let windows_glass = active_theme == "Atlas Windows Glass";
         let figma_glass = active_theme == "Atlas Figma Glass";
         let glass_theme = active_theme.ends_with(" Glass") || active_theme == "Atlas Frost";
-        // Most recent background operation, rendered as a floating overlay pill
-        // bar with a cancel button. `active_ops` updates via OpProgress events.
-        let op_progress = self
-            .state
-            .ops
-            .active_ops
-            .iter()
-            .max_by_key(|(id, _)| **id)
-            .map(|(id, op)| {
-                let file = op
-                    .current_file
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                let mut text = if op.label.is_empty() {
-                    format!("{file} — {}/{}", op.done.min(op.total), op.total)
-                } else {
-                    format!(
-                        "{} {file} — {}/{}",
-                        op.label,
-                        op.done.min(op.total),
-                        op.total
-                    )
-                };
-                if op.bytes_total > 0 {
-                    text.push_str(&format!(
-                        " · {} / {}",
-                        format_size(op.bytes_done),
-                        format_size(op.bytes_total)
-                    ));
-                }
-                let n_ops = self.state.ops.active_ops.len();
-                if n_ops > 1 {
-                    text.push_str(&format!(
-                        " ({})",
-                        rust_i18n::t!("root_operations", count = n_ops)
-                    ));
-                }
-                (*id, text, op.cancel.clone())
-            });
-
         let center_content = {
             let _perf = crate::perf::span("app.render.center_dock");
             // Re-assert pane focus every App frame (the dock now lives in its own
@@ -520,7 +478,7 @@ impl Render for App {
                     .into_any_element()
             });
 
-        // FASE5: inspector panel (right of body) + overlay layers (above root).
+        // Phase5: inspector panel (right of body) + overlay layers (above root).
         let preview_visible = self.preview_visible_for_focused();
         let preview_closing = self.preview_panel_closing.is_some_and(|started| {
             started.elapsed() < std::time::Duration::from_millis(crate::ui::motion::PANEL_MS)
@@ -620,7 +578,7 @@ impl Render for App {
             self.render_overlays(window, cx)
         };
         let marquee = self.render_rubber_marquee(cx);
-        // floating search pill hidden for now (per request). Re-enable by
+        // Floating search pill hidden for now (per request). Re-enable by
         // restoring `(!self.state.overlay.show_goto_bar).then(...)`.
         let search_pill: Option<gpui::AnyElement> = None;
 
@@ -747,7 +705,7 @@ impl Render for App {
                 this.focus_prev_tab();
                 cx.notify();
             }))
-            // FASE D: overlays / panels / toggles.
+            // Phase D: overlays / panels / toggles.
             .on_action(cx.listener(|this, _: &crate::OpenPalette, _w, cx| {
                 this.process_actions(vec![Action::OpenPalette]);
                 cx.notify();
@@ -848,7 +806,7 @@ impl Render for App {
                 this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
-            // FASE D: pane structure.
+            // Phase D: pane structure.
             .on_action(cx.listener(|this, _: &crate::CloseFocusedPane, _w, cx| {
                 this.process_actions(vec![Action::CloseFocusedPane]);
                 cx.notify();
@@ -865,7 +823,7 @@ impl Render for App {
                 this.process_actions(vec![Action::SplitVerticalFocused]);
                 cx.notify();
             }))
-            // FASE D: history / location / refresh.
+            // Phase D: history / location / refresh.
             .on_action(cx.listener(|this, _: &crate::Undo, _w, cx| {
                 this.process_actions(vec![Action::Undo]);
                 cx.notify();
@@ -898,7 +856,7 @@ impl Render for App {
                 this.process_actions(vec![Action::NavigateUp(t)]);
                 cx.notify();
             }))
-            // FASE D: clipboard / delete on the current selection.
+            // Phase D: clipboard / delete on the current selection.
             .on_action(cx.listener(|this, _: &crate::DeleteToTrash, _w, cx| {
                 if this
                     .state
@@ -989,7 +947,7 @@ impl Render for App {
                         }
                         // Remote tab: use an empty sentinel; the action handler
                         // detects Location::Remote and routes to the cloud worker.
-                        #[cfg(feature = "cloud")]
+                        #[cfg(feature = "provider-host")]
                         if matches!(t.location, atlas_model::location::Location::Remote { .. }) {
                             return Some(PathBuf::new());
                         }
@@ -1129,11 +1087,11 @@ impl Render for App {
                     )
                     .children(inspector_container),
             )
-            // FASE5: overlay layers (goto bar, palette, settings, paste conflict, …).
+            // Phase5: overlay layers (goto bar, palette, settings, paste conflict, …).
             .children(overlays)
-            // FASE C: the rubber-band selection rectangle, painted over the panes.
+            // Phase C: the rubber-band selection rectangle, painted over the panes.
             .children(marquee)
-            // FASE C: global rubber-band motor (invisible canvas, registers window-wide
+            // Phase C: global rubber-band motor (invisible canvas, registers window-wide
             // mouse move/up listeners that fire even outside the pane hitbox).
             .child(rubber_layer(cx.entity()))
             .child(ctrl_scroll_layer(cx.entity()))
@@ -1141,40 +1099,6 @@ impl Render for App {
             .child(drag_hover_layer(cx.entity()))
             // Floating glass search pill (Figma "Window/Search Global"), bottom-center.
             .children(search_pill)
-            // Operation progress toast: appears bottom-right while a transfer is active.
-            .children(op_progress.map(|(op_id, text, cancel)| {
-                div()
-                    .absolute()
-                    .bottom_4()
-                    .right_4()
-                    .px_3()
-                    .py_2()
-                    .rounded_lg()
-                    .bg(glass_chrome_fill())
-                    .text_xs()
-                    .text_color(muted)
-                    .shadow_md()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(div().child(text))
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!("op-cancel-{op_id}")))
-                                    .px_2()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .border_1()
-                                    .border_color(status_border)
-                                    .hover(|h| h.bg(status_border))
-                                    .child(rust_i18n::t!("root_cancel"))
-                                    .on_mouse_down(MouseButton::Left, move |_ev, _w, _cx| {
-                                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                                    }),
-                            ),
-                    )
-            }))
     }
 }
 

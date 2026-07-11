@@ -182,6 +182,9 @@ pub struct OpState {
     pub label: String,
     /// Set to request cancellation; the worker checks it per file and per chunk.
     pub cancel: Arc<AtomicBool>,
+    /// Wall-clock start used by the transfer UI to derive a stable average
+    /// throughput and ETA without coupling presentation state to the engine.
+    pub started_at: std::time::Instant,
 }
 
 pub struct OperationManager {
@@ -222,6 +225,7 @@ impl OperationManager {
                 current_file: PathBuf::new(),
                 label,
                 cancel: cancel.clone(),
+                started_at: std::time::Instant::now(),
             },
         );
         (op_id, cancel)

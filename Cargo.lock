@@ -693,11 +693,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-icon-extension"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atlas-model",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "zip",
+]
+
+[[package]]
 name = "atlas-model"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "dirs",
+ "rust-i18n 3.1.5",
  "serde",
  "serde_json",
  "toml 0.8.23",
@@ -742,6 +755,7 @@ dependencies = [
  "resvg",
  "rfd",
  "rust-i18n 3.1.5",
+ "semver",
  "serde",
  "serde_json",
  "smol",
@@ -757,6 +771,7 @@ name = "atlas-win-space"
 version = "0.1.0"
 dependencies = [
  "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

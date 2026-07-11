@@ -37,6 +37,7 @@ Expand-Archive -LiteralPath $zip -DestinationPath $unpack
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 Copy-Item $binary (Join-Path $output "atlas-cloud-extension.exe")
 Copy-Item (Join-Path $repo "extensions\cloud\extension.toml") $output
+Copy-Item (Join-Path $repo "extensions\cloud\icon.svg") $output
 Copy-Item (Join-Path $repo "extensions\cloud\THIRD-PARTY-NOTICES.txt") $output
 $rclone = Get-ChildItem $unpack -Filter rclone.exe -Recurse |
     Select-Object -First 1 -ExpandProperty FullName

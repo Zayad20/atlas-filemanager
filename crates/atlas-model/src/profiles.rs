@@ -198,7 +198,7 @@ pub fn default_sections() -> Vec<SidebarSection> {
         #[cfg(windows)]
         SidebarSection::new(SectionKind::Linux),
         SidebarSection::new(SectionKind::Drives),
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         SidebarSection::new(SectionKind::Cloud),
         SidebarSection::new(SectionKind::Recent),
     ]
@@ -310,7 +310,7 @@ impl ProfileManager {
     /// Ensure every profile exposes the Network/Cloud sidebar section. Profiles
     /// persisted before the cloud feature existed lack it, which would otherwise
     /// hide all configured remotes. Inserts it just before "Recent".
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     pub fn ensure_cloud_section(&mut self) {
         for p in &mut self.profiles {
             if p.sidebar_sections

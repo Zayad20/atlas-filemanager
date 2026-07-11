@@ -1,6 +1,6 @@
 //! `IDataObject` implementation for Atlas drag-out.
 //!
-//! # Formats offered (Fase 1 — real files)
+//! # Formats offered (Phase 1 — real files)
 //! - `CF_HDROP`                — HGLOBAL with `DROPFILES` + UTF-16 path list
 //! - `CFSTR_PREFERREDDROPEFFECT` — HGLOBAL with `DROPEFFECT` (COPY|MOVE)
 //! - `AtlasInternalSource`       — HGLOBAL with single `0u32` (signals intra-Atlas)
@@ -9,7 +9,7 @@
 //! - `CFSTR_PERFORMEDDROPEFFECT` — stored in `performed_effect`; caller reads it
 //!   after `DoDragDrop` returns to decide whether to delete source files.
 //!
-//! # Future (Fase 5 — virtual / archive)
+//! # Future (Phase 5 — virtual / archive)
 //! Add `CFSTR_FILEDESCRIPTORW` + `CFSTR_FILECONTENTS` (TYMED_ISTREAM) here.
 #![allow(unsafe_code)]
 // reason: COM vtable, HGLOBAL and raw-pointer manipulation are inherently unsafe.

@@ -10,14 +10,18 @@ use atlas_model::ext_state::PendingCommand;
 /// Bundled extensions seeded into the extensions dir on first run.
 pub const FILE_TOOLS_MANIFEST: &str =
     include_str!("../../../../extensions/file-tools/extension.toml");
+pub const FILE_TOOLS_ICON: &[u8] = include_bytes!("../../../../extensions/file-tools/icon.svg");
 
 /// Bundled media-thumbnailer extension (video + PSD/raster grid thumbnails).
 pub const MEDIA_THUMBS_MANIFEST: &str =
     include_str!("../../../../extensions/media-thumbs/extension.toml");
+pub const MEDIA_THUMBS_ICON: &[u8] = include_bytes!("../../../../extensions/media-thumbs/icon.svg");
 
 /// Bundled document-preview extension (inspector previews for document formats).
 pub const DOCUMENT_PREVIEWS_MANIFEST: &str =
     include_str!("../../../../extensions/document-previews/extension.toml");
+pub const DOCUMENT_PREVIEWS_ICON: &[u8] =
+    include_bytes!("../../../../extensions/document-previews/icon.svg");
 
 /// Hidden shared tool-provider extension (portable binaries by OS/arch).
 pub const RUNTIME_TOOLS_MANIFEST: &str =
@@ -55,7 +59,7 @@ pub enum ExtAction {
 impl App {
     pub(crate) fn reload_ext_registry(&mut self) {
         self.ext_registry = atlas_core::ext::Registry::load(&self.state.ext.enabled);
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         if self.ext_registry.has_sidebar_section("cloud") {
             self.state.profiles.ensure_cloud_section();
         }
@@ -90,7 +94,7 @@ impl App {
                 self.state.ext.pending = None;
             }
             ExtAction::SetEnabled { id, enabled } => {
-                #[cfg(feature = "cloud")]
+                #[cfg(feature = "provider-host")]
                 if id == "cloud" && !enabled {
                     let (reply, done) = std::sync::mpsc::channel();
                     let _ = self
@@ -103,7 +107,7 @@ impl App {
             }
             ExtAction::Install => self.install_extension(),
             ExtAction::Uninstall(id) => {
-                #[cfg(feature = "cloud")]
+                #[cfg(feature = "provider-host")]
                 if id == "cloud" {
                     let (reply, done) = std::sync::mpsc::channel();
                     let _ = self
@@ -123,28 +127,9 @@ impl App {
                 self.state.ext.last_error = None;
                 let tx = self.tx.clone();
                 self.rt.spawn(async move {
-                    let mut result = atlas_core::ext::marketplace::fetch_registry()
+                    let result = atlas_core::ext::marketplace::fetch_registry()
                         .await
                         .map_err(|e| e.to_string());
-
-                    if let Ok(registry) = &mut result {
-                        let cache_dir = std::env::temp_dir().join("atlas_ext_icons");
-                        let _ = std::fs::create_dir_all(&cache_dir);
-                        for (id, ext) in &mut registry.extensions {
-                            if let Some(url) = &ext.icon_url {
-                                let local_path = cache_dir.join(format!("{}.png", id));
-                                if atlas_core::ext::marketplace::download_icon(url, &local_path)
-                                    .await
-                                    .is_ok()
-                                {
-                                    ext.icon_url = Some(format!(
-                                        "file:///{}",
-                                        local_path.display().to_string().replace('\\', "/")
-                                    ));
-                                }
-                            }
-                        }
-                    }
 
                     let _ = tx.send(atlas_model::app_state::BgResult::ExtRegistryFetched(result));
                 });
@@ -189,6 +174,7 @@ impl App {
                     registry.extensions.into_values().collect();
                 list.sort_by(|a, b| a.name.cmp(&b.name));
                 self.state.ext.remote = Some(list);
+                self.state.ext.marketplace_visible = 40;
             }
             Err(e) => {
                 self.state.ext.last_error = Some(format!("Marketplace: {e}"));

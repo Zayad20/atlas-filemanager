@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 #[derive(Debug, Clone)]
@@ -47,9 +48,9 @@ pub struct FileEntry {
     pub size: Option<u64>,
     pub modified: Option<SystemTime>,
     pub extension: Option<String>,
-    pub display_size: String,
-    pub display_date: String,
-    pub display_type: String,
+    pub display_size: Arc<str>,
+    pub display_date: Arc<str>,
+    pub display_type: Arc<str>,
     pub _is_hidden: bool,
     pub _is_symlink: bool,
     /// When `Some(archive_path)`, this entry is a virtual item inside that archive
@@ -57,4 +58,45 @@ pub struct FileEntry {
     pub archive_root: Option<PathBuf>,
     /// Populated only for entries listed from `Location::RecycleBin`.
     pub recycle_info: Option<RecycleBinInfo>,
+}
+
+pub fn file_category(kind: &FileKind, ext: Option<&str>) -> String {
+    match kind {
+        FileKind::Dir => rust_i18n::t!("file_kind_folder").into_owned(),
+        FileKind::Symlink => rust_i18n::t!("file_kind_symlink").into_owned(),
+        FileKind::File => {
+            let Some(e) = ext else {
+                return rust_i18n::t!("file_kind_file").into_owned();
+            };
+            match e.to_ascii_lowercase().as_str() {
+                "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "tif" | "tiff"
+                | "avif" | "heic" | "heif" | "svg" => rust_i18n::t!("file_kind_image").into_owned(),
+                "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "wma" | "opus" => {
+                    rust_i18n::t!("file_kind_audio").into_owned()
+                }
+                "mp4" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "m4v" | "flv" => {
+                    rust_i18n::t!("file_kind_video").into_owned()
+                }
+                "rs" | "js" | "jsx" | "ts" | "tsx" | "py" | "go" | "java" | "c" | "cc" | "cpp"
+                | "cxx" | "h" | "hpp" | "cs" | "php" | "rb" | "swift" | "kt" | "kts" | "sh"
+                | "ps1" | "bat" | "lua" | "dart" | "zig" | "nim" | "r" | "scala" | "ex" | "exs"
+                | "clj" | "hs" | "ml" => rust_i18n::t!("file_kind_code").into_owned(),
+                "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "tgz" | "zst" => {
+                    rust_i18n::t!("file_kind_archive").into_owned()
+                }
+                "doc" | "docx" | "odt" | "rtf" | "pdf" | "txt" | "md" | "markdown" | "rst"
+                | "tex" => rust_i18n::t!("file_kind_document").into_owned(),
+                "xls" | "xlsx" | "csv" | "tsv" | "ods" | "numbers" => {
+                    rust_i18n::t!("file_kind_spreadsheet").into_owned()
+                }
+                "ppt" | "pptx" | "odp" | "key" => {
+                    rust_i18n::t!("file_kind_presentation").into_owned()
+                }
+                "exe" | "msi" | "app" | "dmg" | "deb" | "rpm" => {
+                    rust_i18n::t!("file_kind_application").into_owned()
+                }
+                _ => rust_i18n::t!("file_kind_file").into_owned(),
+            }
+        }
+    }
 }

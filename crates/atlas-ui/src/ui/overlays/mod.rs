@@ -1,4 +1,4 @@
-//! FASE5 — Overlays as gpui layers (port of the egui overlay modules).
+//! Phase5 — Overlays as gpui layers (port of the egui overlay modules).
 //!
 //! Returned as extra absolutely-positioned children of the root `v_flex`, painted
 //! above everything via `deferred()` (so they sit over the panes/inspector). Each
@@ -80,17 +80,22 @@ impl App {
         if self.state.overlay.renaming_profile {
             layers.push(self.render_rename_profile(window, cx));
         }
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         if self.state.cloud.show_add_dialog {
             layers.push(self.render_add_cloud(window, cx));
         }
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         if self.state.cloud.renaming_remote_id.is_some() {
             layers.push(self.render_rename_remote(window, cx));
         }
-        #[cfg(feature = "cloud")]
-        if self.state.cloud.show_transfers && !self.state.cloud.transfers.is_empty() {
-            layers.push(self.render_cloud_transfers_bar(window, cx));
+        let has_local_transfers = !self.state.ops.active_ops.is_empty();
+        #[cfg(feature = "provider-host")]
+        let has_visible_cloud_transfers =
+            self.state.cloud.show_transfers && !self.state.cloud.transfers.is_empty();
+        #[cfg(not(feature = "provider-host"))]
+        let has_visible_cloud_transfers = false;
+        if has_local_transfers || has_visible_cloud_transfers {
+            layers.push(self.render_transfer_center(window, cx));
         }
         if !self.state.overlay.op_errors.is_empty() {
             layers.push(self.render_op_errors(window, cx));
@@ -174,7 +179,7 @@ impl App {
     // ── transfer conflict ──────────────────────────────────────────────────────
 }
 
-#[cfg(feature = "cloud")]
+#[cfg(feature = "provider-host")]
 pub(crate) mod add_cloud;
 mod batch_rename;
 mod create_tag;
@@ -182,11 +187,10 @@ mod ext_manager;
 mod getting_started;
 mod properties;
 mod rename_profile;
-#[cfg(feature = "cloud")]
+#[cfg(feature = "provider-host")]
 mod rename_remote;
 mod scrim;
 mod settings;
 mod toasts;
 mod transfer_conflict;
-#[cfg(feature = "cloud")]
 mod transfers_bar;

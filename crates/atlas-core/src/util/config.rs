@@ -118,12 +118,12 @@ pub fn save_ext_enabled(enabled: &std::collections::HashMap<String, bool>) {
 
 /// Configured cloud remotes (non-secret definitions only; credentials live in
 /// rclone's own config). Empty when the feature is off or none are set.
-#[cfg(feature = "cloud")]
+#[cfg(feature = "provider-host")]
 pub fn load_cloud_remotes() -> Vec<crate::cloud::CloudRemote> {
     read_or_default("cloud_remotes.json")
 }
 
-#[cfg(feature = "cloud")]
+#[cfg(feature = "provider-host")]
 pub fn save_cloud_remotes(remotes: &[crate::cloud::CloudRemote]) {
     write_json("cloud_remotes.json", &remotes.to_vec());
 }

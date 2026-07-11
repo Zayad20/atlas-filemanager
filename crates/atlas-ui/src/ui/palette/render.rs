@@ -60,6 +60,45 @@ enum KeyRow {
     },
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct PaletteColors {
+    pub popover: Hsla,
+    pub fg: Hsla,
+    pub muted: Hsla,
+    pub muted_bg: Hsla,
+    pub accent: Hsla,
+    pub accent_fg: Hsla,
+    pub border: Hsla,
+}
+
+struct PaletteHeaderProps<'a> {
+    spec: &'a PaletteSpec,
+    section_id: &'static str,
+    section_icon: Option<AtlasIcon>,
+    title: SharedString,
+    is_collapsed: bool,
+    selected: bool,
+    colors: PaletteColors,
+}
+
+struct PaletteItemProps<'a> {
+    spec: &'a PaletteSpec,
+    item: &'a PaletteItem,
+    i: usize,
+    selected: bool,
+    expanded: bool,
+    indent: bool,
+    colors: PaletteColors,
+}
+
+struct PaletteKeyProps<'a> {
+    kind: PaletteKind,
+    ev: &'a KeyDownEvent,
+    rows: &'a [KeyRow],
+    close_action: &'a Action,
+    input: &'a Entity<InputState>,
+}
+
 /// An item title with the query-matched characters tinted (and bolded) so the
 /// eye lands on why each row matched.
 fn highlighted_title(
@@ -281,18 +320,27 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (popover, fg, muted, muted_bg, accent, accent_fg, border) = {
+        let colors = {
             let t = cx.theme();
-            (
-                t.popover,
-                t.popover_foreground,
-                t.muted_foreground,
-                t.muted,
-                t.accent,
-                t.accent_foreground,
-                t.border,
-            )
+            PaletteColors {
+                popover: t.popover,
+                fg: t.popover_foreground,
+                muted: t.muted_foreground,
+                muted_bg: t.muted,
+                accent: t.accent,
+                accent_fg: t.accent_foreground,
+                border: t.border,
+            }
         };
+        let PaletteColors {
+            popover,
+            fg,
+            muted,
+            muted_bg: _,
+            accent: _,
+            accent_fg: _,
+            border,
+        } = colors;
         let view = cx.entity();
         let focus = self.overlay_focus(cx);
         let kind = spec.kind;
@@ -387,13 +435,15 @@ impl App {
                 let i = gi;
                 gi += 1;
                 rows.push(self.palette_section_header(
-                    &spec,
-                    section.id,
-                    section.icon,
-                    title.clone(),
-                    is_collapsed,
-                    i == selected_idx,
-                    (muted, fg, border),
+                    PaletteHeaderProps {
+                        spec: &spec,
+                        section_id: section.id,
+                        section_icon: section.icon,
+                        title: title.clone(),
+                        is_collapsed,
+                        selected: i == selected_idx,
+                        colors,
+                    },
                     cx,
                 ));
             }
@@ -404,13 +454,15 @@ impl App {
                 let i = gi;
                 gi += 1;
                 rows.push(self.palette_item_row(
-                    &spec,
-                    item,
-                    i,
-                    i == selected_idx,
-                    expanded,
-                    has_header,
-                    (fg, muted, muted_bg, accent, accent_fg, border),
+                    PaletteItemProps {
+                        spec: &spec,
+                        item,
+                        i,
+                        selected: i == selected_idx,
+                        expanded,
+                        indent: has_header,
+                        colors,
+                    },
                     window,
                     cx,
                 ));
@@ -459,7 +511,7 @@ impl App {
             .iter()
             .filter(|r| matches!(r, KeyRow::Item { .. }))
             .count();
-        let footer = palette_footer(&spec.footer, result_count, muted, muted_bg, border, window);
+        let footer = palette_footer(&spec.footer, result_count, colors, window);
         let viewport_h = f32::from(window.bounds().size.height);
         let max_panel_h = viewport_h * PANEL_MAX_VIEWPORT_RATIO;
         let chrome_h = PANEL_SEARCH_HEIGHT
@@ -541,11 +593,13 @@ impl App {
             .capture_key_down(cx.listener(move |this, ev: &KeyDownEvent, window, cx| {
                 if this.handle_command_shortcut_key(ev)
                     || this.handle_palette_key(
-                        kind,
-                        ev,
-                        &rows_for_keys,
-                        &close_for_keys,
-                        &input_for_keys,
+                        PaletteKeyProps {
+                            kind,
+                            ev,
+                            rows: &rows_for_keys,
+                            close_action: &close_for_keys,
+                            input: &input_for_keys,
+                        },
                         window,
                         cx,
                     )
@@ -596,23 +650,16 @@ impl App {
 
     /// A section header: chevron + optional icon + title. Selectable like any
     /// row; click, Enter or Tab toggle its collapse.
-    #[allow(clippy::too_many_arguments)] // private builder; splitting adds noise
     fn palette_section_header(
         &mut self,
-        spec: &PaletteSpec,
-        section_id: &'static str,
-        section_icon: Option<AtlasIcon>,
-        title: SharedString,
-        is_collapsed: bool,
-        selected: bool,
-        (muted, fg, border): (Hsla, Hsla, Hsla),
+        props: PaletteHeaderProps,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let kind = spec.kind;
+        let kind = props.spec.kind;
         let view = cx.entity();
-        let text_color = if selected { fg } else { muted };
+        let text_color = if props.selected { props.colors.fg } else { props.colors.muted };
         h_flex()
-            .id(SharedString::from(format!("{}-sec-{section_id}", spec.id)))
+            .id(SharedString::from(format!("{}-sec-{}", props.spec.id, props.section_id)))
             .w_full()
             .px_2()
             .py_1()
@@ -623,10 +670,10 @@ impl App {
             .text_xs()
             .text_color(text_color)
             .cursor_pointer()
-            .when(selected, |s| s.bg(border))
-            .when(!selected, |s| s.hover(|h| h.bg(border)))
+            .when(props.selected, |s| s.bg(props.colors.border))
+            .when(!props.selected, |s| s.hover(|h| h.bg(props.colors.border)))
             .child(icon(
-                if is_collapsed {
+                if props.is_collapsed {
                     AtlasIcon::CaretRight
                 } else {
                     AtlasIcon::CaretDown
@@ -634,11 +681,11 @@ impl App {
                 12.0,
                 text_color,
             ))
-            .children(section_icon.map(|ic| icon(ic, 14.0, text_color)))
-            .child(title)
+            .children(props.section_icon.map(|ic| icon(ic, 14.0, text_color)))
+            .child(props.title)
             .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
                 view.update(cx, |this, cx| {
-                    this.toggle_palette_section(kind, section_id);
+                    this.toggle_palette_section(kind, props.section_id);
                     cx.notify();
                 });
             })
@@ -653,50 +700,43 @@ impl App {
     }
 
     /// One selectable row: icon · title/description · buttons · shortcut badges.
-    #[allow(clippy::too_many_arguments)] // private builder; splitting adds noise
     fn palette_item_row(
         &mut self,
-        spec: &PaletteSpec,
-        item: &PaletteItem,
-        i: usize,
-        selected: bool,
-        expanded: bool,
-        indent: bool,
-        (fg, muted, muted_bg, accent, accent_fg, border): (Hsla, Hsla, Hsla, Hsla, Hsla, Hsla),
+        props: PaletteItemProps,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let view = cx.entity();
-        let kind = spec.kind;
-        let group_name = SharedString::from(format!("{}-row-{i}", spec.id));
-        let icon_color = if selected { accent_fg } else { muted };
-        let desc_color = if selected { accent_fg } else { muted };
-        if let Some(file_icon) = &item.file_icon {
+        let kind = props.spec.kind;
+        let group_name = SharedString::from(format!("{}-row-{}", props.spec.id, props.i));
+        let icon_color = if props.selected { props.colors.accent_fg } else { props.colors.muted };
+        let desc_color = if props.selected { props.colors.accent_fg } else { props.colors.muted };
+        if let Some(file_icon) = &props.item.file_icon {
             self.maybe_request_file_icon(file_icon);
         }
-        let icon_el = item
+        let icon_el = props.item
             .file_icon
             .as_ref()
             .map(|file_icon| self.file_icon(file_icon).element(16.0, icon_color))
-            .or_else(|| item.icon.map(|ic| icon(ic, 16.0, icon_color)));
+            .or_else(|| props.item.icon.map(|ic| icon(ic, 16.0, icon_color)));
         // Matched characters: accent on normal rows, bold-bright on selected.
         let title_el = highlighted_title(
-            item,
-            if selected { accent_fg } else { fg },
-            if selected { accent_fg } else { accent },
+            props.item,
+            if props.selected { props.colors.accent_fg } else { props.colors.fg },
+            if props.selected { props.colors.accent_fg } else { props.colors.accent },
             window,
         );
 
         // Title + description: inline ("name › path", always visible) or
         // stacked (second line, shown when selected or globally expanded).
-        let text_col = if item.inline_description {
+        let text_col = if props.item.inline_description {
             let mut row = h_flex()
                 .min_w(px(0.))
                 .flex_1()
                 .gap_1()
                 .items_center()
                 .child(div().flex_shrink_0().child(title_el));
-            if let Some(desc) = item.description.clone() {
+            if let Some(desc) = props.item.description.clone() {
                 row = row
                     .child(icon(AtlasIcon::CaretRight, 11.0, desc_color))
                     .child(
@@ -711,13 +751,13 @@ impl App {
             }
             row.into_any_element()
         } else {
-            let show_desc = item.description.is_some() && (selected || expanded);
+            let show_desc = props.item.description.is_some() && (props.selected || props.expanded);
             v_flex()
                 .min_w(px(0.))
                 .flex_1()
                 .child(div().truncate().child(title_el))
                 .when(show_desc, |col| {
-                    col.children(item.description.clone().map(|desc| {
+                    col.children(props.item.description.clone().map(|desc| {
                         div()
                             .text_xs()
                             .text_color(desc_color)
@@ -729,7 +769,7 @@ impl App {
                 .into_any_element()
         };
 
-        let buttons: Vec<AnyElement> = item
+        let buttons: Vec<AnyElement> = props.item
             .buttons
             .iter()
             .map(|b| {
@@ -737,26 +777,26 @@ impl App {
                 let btn_action = b.action.clone();
                 let btn_close = b.closes_palette.then(|| kind.close_action());
                 let btn_tooltip = b.tooltip.clone();
-                let color = if selected {
-                    accent_fg
+                let color = if props.selected {
+                    props.colors.accent_fg
                 } else if b.active {
-                    accent
+                    props.colors.accent
                 } else {
-                    muted
+                    props.colors.muted
                 };
                 div()
                     .id(SharedString::from(format!(
-                        "{}-row-{i}-btn-{}",
-                        spec.id, b.id
+                        "{}-row-{}-btn-{}",
+                        props.spec.id, props.i, b.id
                     )))
                     .p(px(2.))
                     .rounded_sm()
                     .cursor_pointer()
-                    .when(!selected && !b.active, |s| {
+                    .when(!props.selected && !b.active, |s| {
                         s.invisible()
                             .group_hover(group_name.clone(), gpui::Styled::visible)
                     })
-                    .hover(|h| h.bg(border))
+                    .hover(|h| h.bg(props.colors.border))
                     .tooltip(move |window, cx| Tooltip::new(btn_tooltip.clone()).build(window, cx))
                     .child(icon(b.icon, 14.0, color))
                     .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
@@ -774,37 +814,37 @@ impl App {
             })
             .collect();
 
-        let badges: Vec<AnyElement> = item
+        let badges: Vec<AnyElement> = props.item
             .shortcuts
             .iter()
             .filter_map(|hint| {
                 shortcut_badge(
                     hint,
-                    selected,
-                    muted_bg,
-                    muted,
-                    accent_fg,
+                    props.selected,
+                    props.colors.muted_bg,
+                    props.colors.muted,
+                    props.colors.accent_fg,
                     window,
                     Some(view.clone()),
                 )
             })
             .collect();
 
-        let row_action = item.action.clone();
+        let row_action = props.item.action.clone();
         let row_close = kind.close_action();
         let row_view = view;
         div()
-            .id(SharedString::from(format!("{}-row-{i}", spec.id)))
+            .id(SharedString::from(format!("{}-row-{}", props.spec.id, props.i)))
             .group(group_name)
             .w_full()
-            .when(indent, |s| s.pl(px(SECTION_INDENT)))
-            .when(!indent, |s| s.pl_2())
+            .when(props.indent, |s| s.pl(px(SECTION_INDENT)))
+            .when(!props.indent, |s| s.pl_2())
             .pr_2()
             .py_1()
             .rounded_sm()
             .cursor_pointer()
-            .when(selected, |s| s.bg(accent).text_color(accent_fg))
-            .when(!selected, |s| s.hover(|h| h.bg(border)))
+            .when(props.selected, |s| s.bg(props.colors.accent).text_color(props.colors.accent_fg))
+            .when(!props.selected, |s| s.hover(|h| h.bg(props.colors.border)))
             .child(
                 h_flex()
                     .gap_2()
@@ -827,48 +867,43 @@ impl App {
     /// Navigation/confirm/dismiss/expand for the palettes. Text editing &
     /// clipboard are owned by the native `TextInput`; this only handles the
     /// keys that drive the row list. Returns `true` when consumed.
-    #[allow(clippy::too_many_arguments)] // keyboard sink; the args are the row model
     fn handle_palette_key(
         &mut self,
-        kind: PaletteKind,
-        ev: &KeyDownEvent,
-        rows: &[KeyRow],
-        close_action: &Action,
-        input: &Entity<InputState>,
+        props: PaletteKeyProps,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let row_count = rows.len();
-        match ev.keystroke.key.as_str() {
+        let row_count = props.rows.len();
+        match props.ev.keystroke.key.as_str() {
             "escape" => {
-                self.palette_escape(kind, close_action, input, window, cx);
+                self.palette_escape(props.kind, props.close_action, props.input, window, cx);
                 true
             }
             "enter" => {
-                let idx = kind
+                let idx = props.kind
                     .state(self)
                     .selected_idx
                     .min(row_count.saturating_sub(1));
-                match rows.get(idx) {
+                match props.rows.get(idx) {
                     Some(KeyRow::Item { action, .. }) => {
-                        self.process_actions(vec![action.clone(), close_action.clone()]);
+                        self.process_actions(vec![action.clone(), props.close_action.clone()]);
                         self.flush_dirty_panes(cx);
                     }
                     Some(KeyRow::Header(section_id)) => {
-                        self.toggle_palette_section(kind, section_id);
+                        self.toggle_palette_section(props.kind, section_id);
                     }
                     None => {}
                 }
                 true
             }
             "down" => {
-                let state = kind.state(self);
+                let state = props.kind.state(self);
                 state.selected_idx = (state.selected_idx + 1).min(row_count.saturating_sub(1));
                 state.scroll_to_selected = true;
                 true
             }
             "up" => {
-                let state = kind.state(self);
+                let state = props.kind.state(self);
                 state.selected_idx = state.selected_idx.saturating_sub(1);
                 state.scroll_to_selected = true;
                 true
@@ -876,7 +911,7 @@ impl App {
             // Fallback only: when the input is focused, Tab arrives as the
             // `IndentInline` action (see `capture_action` above), not here.
             "tab" => {
-                self.palette_tab_key(kind, rows, input, window, cx);
+                self.palette_tab_key(props.kind, props.rows, props.input, window, cx);
                 true
             }
             _ => false,
@@ -957,9 +992,7 @@ impl App {
 fn palette_footer(
     footer: &FooterSpec,
     result_count: usize,
-    muted: Hsla,
-    muted_bg: Hsla,
-    border: Hsla,
+    colors: PaletteColors,
     window: &Window,
 ) -> Option<AnyElement> {
     let default_hints;
@@ -996,7 +1029,7 @@ fn palette_footer(
         let mut cluster = h_flex().gap_1().items_center();
         for key in &hint.keys {
             cluster = cluster.children(shortcut_badge(
-                key, false, muted_bg, muted, muted, window, None,
+                key, false, colors.muted_bg, colors.muted, colors.muted, window, None,
             ));
         }
         cluster = cluster.child(hint.label.clone());
@@ -1010,9 +1043,9 @@ fn palette_footer(
         .px_3()
         .py_1()
         .border_t_1()
-        .border_color(border)
+        .border_color(colors.border)
         .text_xs()
-        .text_color(muted)
+        .text_color(colors.muted)
         .child(div().child(rust_i18n::t!("palette_results_count", count = result_count)))
         .child(clusters);
     Some(bar.into_any_element())

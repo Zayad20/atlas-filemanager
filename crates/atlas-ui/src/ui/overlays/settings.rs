@@ -1108,7 +1108,7 @@ impl App {
                 this.settings_input = None;
             },
             scrim_focus,
-            // FASE I: subtle fade-in for the settings panel.
+            // Phase I: subtle fade-in for the settings panel.
             div()
                 .id("settings-panel")
                 .w(px(720.))

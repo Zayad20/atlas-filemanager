@@ -18,6 +18,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const CHUNK_SIZE: usize = 1024 * 1024;
+/// Small files use one native blocking copy. This avoids dispatching multiple
+/// blocking-pool read/write operations per file while keeping large copies on
+/// the cancellable, byte-progress path.
+const NATIVE_SMALL_FILE_MAX: u64 = 8 * 1024 * 1024;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
 /// Abort after this many consecutive identical errors (dead destination,
 /// unplugged network share…) instead of spamming one toast per file.
@@ -363,6 +367,7 @@ struct TransferCtx {
     last_progress: Instant,
     cancel: Arc<AtomicBool>,
     errors: Vec<OpError>,
+    started_at: Instant,
 }
 
 impl TransferCtx {
@@ -386,28 +391,40 @@ impl TransferCtx {
     }
 }
 
-/// Total size in bytes of every file under `paths` (blocking walk).
-fn scan_bytes(paths: &[PathBuf]) -> u64 {
-    let mut total = 0u64;
+/// File count and total size under `paths` (blocking walk). Keeping both in the
+/// same pass makes directory progress accurate without another metadata walk.
+fn scan_stats(paths: &[PathBuf]) -> (u64, u64) {
+    let mut files = 0u64;
+    let mut bytes = 0u64;
     for p in paths {
         if p.is_dir() {
             for entry in walkdir::WalkDir::new(p).into_iter().flatten() {
                 if let Ok(meta) = entry.metadata() {
                     if meta.is_file() {
-                        total += meta.len();
+                        files += 1;
+                        bytes += meta.len();
                     }
                 }
             }
         } else if let Ok(meta) = p.metadata() {
-            total += meta.len();
+            if meta.is_file() {
+                files += 1;
+                bytes += meta.len();
+            }
         }
     }
-    total
+    (files, bytes)
 }
 
 /// Free space on the volume containing `dest`, if it can be determined.
 fn available_space(dest: &Path) -> Option<u64> {
+    #[cfg(windows)]
+    {
+        return atlas_win_space::available_space(dest);
+    }
+    #[cfg(not(windows))]
     let disks = sysinfo::Disks::new_with_refreshed_list();
+    #[cfg(not(windows))]
     disks
         .iter()
         .filter(|d| starts_with_ci(dest, d.mount_point()))
@@ -436,6 +453,126 @@ enum FileOutcome {
     Cancelled,
 }
 
+struct ParallelTreeResult {
+    errors: Vec<(PathBuf, std::io::Error)>,
+    cancelled: bool,
+}
+
+/// Copy a new tree of small files with conservative bounded parallelism.
+/// Existing destinations and mixed large-file trees stay on the sequential
+/// path, where merge/conflict semantics and chunk-level cancellation apply.
+async fn try_copy_small_tree_parallel(
+    src: &Path,
+    dst: &Path,
+    ctx: &mut TransferCtx,
+) -> Option<FileOutcome> {
+    if !src.is_dir() || dst.exists() {
+        return None;
+    }
+    let source = src.to_path_buf();
+    let destination = dst.to_path_buf();
+    let cancel = ctx.cancel.clone();
+    let worker_cancel = cancel.clone();
+    let worker_count = if source.to_string_lossy().starts_with(r"\\")
+        || destination.to_string_lossy().starts_with(r"\\")
+    {
+        2
+    } else {
+        4
+    };
+    let (progress_tx, progress_rx) = flume::bounded(64);
+    let mut worker = tokio::task::spawn_blocking(move || -> Option<ParallelTreeResult> {
+        use rayon::prelude::*;
+        use std::sync::atomic::AtomicU64;
+
+        let mut directories = Vec::new();
+        let mut files = Vec::new();
+        for entry in walkdir::WalkDir::new(&source).min_depth(1) {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => return None,
+            };
+            let relative = entry.path().strip_prefix(&source).ok()?.to_path_buf();
+            let target = destination.join(relative);
+            if entry.file_type().is_dir() {
+                directories.push(target);
+            } else if entry.file_type().is_file() {
+                let size = entry.metadata().ok()?.len();
+                if size > NATIVE_SMALL_FILE_MAX {
+                    return None;
+                }
+                files.push((entry.path().to_path_buf(), target, size));
+            }
+        }
+        if files.len() < 32 {
+            return None;
+        }
+        if std::fs::create_dir(&destination).is_err() {
+            return None;
+        }
+        directories.sort_unstable_by_key(|path| path.components().count());
+        for directory in directories {
+            if let Err(error) = std::fs::create_dir(&directory) {
+                return Some(ParallelTreeResult {
+                    errors: vec![(directory, error)],
+                    cancelled: false,
+                });
+            }
+        }
+
+        let bytes_done = AtomicU64::new(0);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(worker_count)
+            .thread_name(|index| format!("atlas-copy-{index}"))
+            .build()
+            .ok()?;
+        let outcomes = pool.install(|| {
+            files
+                .par_iter()
+                .filter_map(|(source, target, size)| {
+                    if worker_cancel.load(Ordering::Relaxed) {
+                        return None;
+                    }
+                    match std::fs::copy(source, target) {
+                        Ok(_) => {
+                            let done = bytes_done.fetch_add(*size, Ordering::Relaxed) + *size;
+                            let _ = progress_tx.try_send((done, source.clone()));
+                            None
+                        }
+                        Err(error) => Some((source.clone(), error)),
+                    }
+                })
+                .collect()
+        });
+        Some(ParallelTreeResult {
+            errors: outcomes,
+            cancelled: worker_cancel.load(Ordering::Relaxed),
+        })
+    });
+
+    let base_bytes = ctx.bytes_done;
+    let result = loop {
+        tokio::select! {
+            result = &mut worker => break result.ok().flatten(),
+            update = progress_rx.recv_async() => {
+                if let Ok((done, path)) = update {
+                    ctx.bytes_done = base_bytes.saturating_add(done);
+                    ctx.current_file = path;
+                    ctx.send_progress(false);
+                }
+            }
+        }
+    }?;
+    for (path, error) in result.errors {
+        ctx.errors.push(op_error(&path, &error));
+    }
+    if result.cancelled || cancel.load(Ordering::Relaxed) {
+        Some(FileOutcome::Cancelled)
+    } else {
+        Some(FileOutcome::Done)
+    }
+}
+
 /// Chunked single-file copy: byte-level progress + cancellation. A cancelled
 /// copy removes its partial destination.
 async fn copy_file_chunked(
@@ -444,6 +581,78 @@ async fn copy_file_chunked(
     ctx: &mut TransferCtx,
 ) -> std::io::Result<FileOutcome> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let source_len = tokio::fs::metadata(ext_path(src)).await?.len();
+    if source_len <= NATIVE_SMALL_FILE_MAX {
+        if ctx.cancelled() {
+            return Ok(FileOutcome::Cancelled);
+        }
+        let source = ext_path(src);
+        let target = ext_path(dst);
+        let result = tokio::task::spawn_blocking(move || std::fs::copy(source, target))
+            .await
+            .map_err(std::io::Error::other)?;
+        match result {
+            Ok(copied) => {
+                ctx.bytes_done += copied;
+                ctx.send_progress(false);
+                return Ok(FileOutcome::Done);
+            }
+            Err(error) => {
+                let _ = tokio::fs::remove_file(ext_path(dst)).await;
+                return Err(error);
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        let source = src.to_path_buf();
+        let target = dst.to_path_buf();
+        let cancel = ctx.cancel.clone();
+        let worker_cancel = cancel.clone();
+        let (progress_tx, progress_rx) = flume::bounded(8);
+        let mut native = tokio::task::spawn_blocking(move || {
+            if !worker_cancel.load(Ordering::Relaxed)
+                && atlas_win_space::try_block_clone(&source, &target).unwrap_or(false)
+            {
+                let _ = progress_tx.try_send((source_len, source_len));
+                return Ok(source_len);
+            }
+            atlas_win_space::copy_file2(&source, &target, &worker_cancel, |done, total| {
+                let _ = progress_tx.try_send((done, total));
+            })
+        });
+        let base_bytes = ctx.bytes_done;
+        let native_result = loop {
+            tokio::select! {
+                result = &mut native => break result.map_err(std::io::Error::other)?,
+                update = progress_rx.recv_async() => {
+                    if let Ok((done, _total)) = update {
+                        ctx.bytes_done = base_bytes.saturating_add(done.min(source_len));
+                        ctx.send_progress(false);
+                    }
+                }
+            }
+        };
+        match native_result {
+            Ok(copied) => {
+                ctx.bytes_done = base_bytes.saturating_add(copied);
+                ctx.send_progress(false);
+                return Ok(FileOutcome::Done);
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::Interrupted
+                    || cancel.load(Ordering::Relaxed) =>
+            {
+                let _ = tokio::fs::remove_file(ext_path(dst)).await;
+                return Ok(FileOutcome::Cancelled);
+            }
+            Err(error) => {
+                tracing::debug!(?error, path = %src.display(), "CopyFile2 unavailable; using chunked fallback");
+                ctx.bytes_done = base_bytes;
+                let _ = tokio::fs::remove_file(ext_path(dst)).await;
+            }
+        }
+    }
     let mut reader = tokio::fs::File::open(ext_path(src)).await?;
     let mut writer = tokio::fs::File::create(ext_path(dst)).await?;
     let mut buf = vec![0u8; CHUNK_SIZE];
@@ -476,6 +685,9 @@ async fn copy_file_chunked(
 async fn copy_recursive(src: &Path, dst: &Path, ctx: &mut TransferCtx) -> FileOutcome {
     if ctx.cancelled() {
         return FileOutcome::Cancelled;
+    }
+    if let Some(outcome) = try_copy_small_tree_parallel(src, dst, ctx).await {
+        return outcome;
     }
     if src.is_dir() {
         if dst.exists() && !dst.is_dir() {
@@ -568,11 +780,11 @@ pub async fn execute(
         .filter(|p| kind == TransferKind::Copy || !same_volume(&p.src, &p.dst))
         .map(|p| p.src.clone())
         .collect();
-    let needed = {
+    let (files_total, needed) = {
         let scan = scan_sources.clone();
-        tokio::task::spawn_blocking(move || scan_bytes(&scan))
+        tokio::task::spawn_blocking(move || scan_stats(&scan))
             .await
-            .unwrap_or(0)
+            .unwrap_or((pairs.len() as u64, 0))
     };
     if needed > 0 {
         if let Some(free) = pairs
@@ -604,7 +816,7 @@ pub async fn execute(
         tx: tx.clone(),
         op_id,
         files_done: 0,
-        files_total: pairs.len() as u64,
+        files_total: files_total.max(pairs.len() as u64),
         bytes_done: 0,
         bytes_total: needed,
         current_file: PathBuf::new(),
@@ -612,6 +824,7 @@ pub async fn execute(
         last_progress: Instant::now(),
         cancel,
         errors: Vec::new(),
+        started_at: Instant::now(),
     };
 
     let mut repeated: (OpErrorKind, usize) = (OpErrorKind::Msg(String::new()), 0);
@@ -751,6 +964,28 @@ pub async fn execute(
     }
 
     report.errors.append(&mut ctx.errors);
+    let elapsed = ctx.started_at.elapsed();
+    let bytes_per_second = if elapsed.is_zero() {
+        0
+    } else {
+        ctx.bytes_done
+            .saturating_mul(1_000)
+            .checked_div(elapsed.as_millis().max(1) as u64)
+            .unwrap_or(0)
+    };
+    tracing::info!(
+        op_id,
+        kind = ?kind,
+        files_done = ctx.files_done,
+        files_total = ctx.files_total,
+        bytes_done = ctx.bytes_done,
+        bytes_total = ctx.bytes_total,
+        elapsed_ms = elapsed.as_millis(),
+        bytes_per_second,
+        errors = report.errors.len(),
+        cancelled = report.cancelled,
+        "transfer benchmark"
+    );
     let _ = tx.send(BgResult::TransferComplete {
         id: op_id,
         kind,
@@ -958,6 +1193,65 @@ mod tests {
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert_eq!(report.completed, vec![(src, dest.join("a.txt"))]);
         assert_eq!(fs::read_to_string(dest.join("a.txt")).unwrap(), "hello");
+    }
+
+    #[tokio::test]
+    async fn native_small_file_path_copies_exact_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("small.bin");
+        let dst = tmp.path().join("small-copy.bin");
+        let bytes = vec![0x5A; 64 * 1024];
+        fs::write(&src, &bytes).unwrap();
+
+        let report = run(
+            vec![TransferPair {
+                src: src.clone(),
+                dst: dst.clone(),
+                on_conflict: Resolution::Rename,
+            }],
+            TransferKind::Copy,
+            not_cancelled(),
+        )
+        .await;
+
+        assert!(report.errors.is_empty());
+        assert_eq!(fs::read(dst).unwrap(), bytes);
+    }
+
+    #[tokio::test]
+    async fn parallel_small_tree_copies_every_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("parallel-source");
+        let dst = tmp.path().join("parallel-copy");
+        fs::create_dir(&src).unwrap();
+        for index in 0..64 {
+            let directory = src.join(format!("group-{}", index % 4));
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(
+                directory.join(format!("{index:03}.bin")),
+                vec![index as u8; 4096],
+            )
+            .unwrap();
+        }
+
+        let report = run(
+            vec![TransferPair {
+                src: src.clone(),
+                dst: dst.clone(),
+                on_conflict: Resolution::Rename,
+            }],
+            TransferKind::Copy,
+            not_cancelled(),
+        )
+        .await;
+
+        assert!(report.errors.is_empty());
+        for index in 0..64 {
+            let copied = dst
+                .join(format!("group-{}", index % 4))
+                .join(format!("{index:03}.bin"));
+            assert_eq!(fs::read(copied).unwrap(), vec![index as u8; 4096]);
+        }
     }
 
     #[tokio::test]

@@ -355,12 +355,12 @@ impl App {
             || self.tag_picker_menu.is_some()
             || self.state.ext.show_manager
             || {
-                #[cfg(feature = "cloud")]
+                #[cfg(feature = "provider-host")]
                 {
                     self.state.cloud.show_add_dialog
                         || self.state.cloud.renaming_remote_id.is_some()
                 }
-                #[cfg(not(feature = "cloud"))]
+                #[cfg(not(feature = "provider-host"))]
                 {
                     false
                 }

@@ -80,7 +80,7 @@ impl App {
             .into_any_element()
     }
 
-    /// FASE C: the visible selection rectangle for the active drag, in window coords
+    /// Phase C: the visible selection rectangle for the active drag, in window coords
     /// (same space as `row_rects`), painted as a deferred layer over the panes. Hidden
     /// until the drag actually moves, so a plain click doesn't flash a box.
     pub(crate) fn render_rubber_marquee(&self, _cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -184,51 +184,51 @@ impl App {
                     cx.notify();
                 });
             })
-            .child(nav_button(
-                "pane-back",
+            .child(nav_button(NavButtonProps {
+                id: "pane-back",
                 pane_id,
-                AtlasIcon::ArrowLeft,
-                rust_i18n::t!("tooltip_nav_back_title").to_string(),
-                rust_i18n::t!("tooltip_nav_back_desc").to_string(),
-                &["alt-left"],
-                can_back,
-                Action::NavigateBack(pane_id),
-                view.clone(),
-                recent_locations.clone(),
-                fg,
-                button_hover,
+                glyph: AtlasIcon::ArrowLeft,
+                tooltip_title: rust_i18n::t!("tooltip_nav_back_title").to_string(),
+                tooltip_desc: rust_i18n::t!("tooltip_nav_back_desc").to_string(),
+                shortcuts: &["alt-left"],
+                enabled: can_back,
+                action: Action::NavigateBack(pane_id),
+                view: view.clone(),
+                recent: recent_locations.clone(),
+                icon_color: fg,
+                hover_bg: button_hover,
                 windows_theme,
-            ))
-            .child(nav_button(
-                "pane-forward",
+            }))
+            .child(nav_button(NavButtonProps {
+                id: "pane-forward",
                 pane_id,
-                AtlasIcon::ArrowRight,
-                rust_i18n::t!("tooltip_nav_forward_title").to_string(),
-                rust_i18n::t!("tooltip_nav_forward_desc").to_string(),
-                &["alt-right"],
-                can_forward,
-                Action::NavigateForward(pane_id),
-                view.clone(),
-                recent_locations.clone(),
-                fg,
-                button_hover,
+                glyph: AtlasIcon::ArrowRight,
+                tooltip_title: rust_i18n::t!("tooltip_nav_forward_title").to_string(),
+                tooltip_desc: rust_i18n::t!("tooltip_nav_forward_desc").to_string(),
+                shortcuts: &["alt-right"],
+                enabled: can_forward,
+                action: Action::NavigateForward(pane_id),
+                view: view.clone(),
+                recent: recent_locations.clone(),
+                icon_color: fg,
+                hover_bg: button_hover,
                 windows_theme,
-            ))
-            .child(nav_button(
-                "pane-up",
+            }))
+            .child(nav_button(NavButtonProps {
+                id: "pane-up",
                 pane_id,
-                AtlasIcon::ArrowUp,
-                rust_i18n::t!("tooltip_nav_up_title").to_string(),
-                rust_i18n::t!("tooltip_nav_up_desc").to_string(),
-                &["alt-up"],
-                up_location.is_some(),
-                Action::NavigateUp(pane_id),
-                view.clone(),
-                recent_locations.clone(),
-                fg,
-                button_hover,
+                glyph: AtlasIcon::ArrowUp,
+                tooltip_title: rust_i18n::t!("tooltip_nav_up_title").to_string(),
+                tooltip_desc: rust_i18n::t!("tooltip_nav_up_desc").to_string(),
+                shortcuts: &["alt-up"],
+                enabled: up_location.is_some(),
+                action: Action::NavigateUp(pane_id),
+                view: view.clone(),
+                recent: recent_locations.clone(),
+                icon_color: fg,
+                hover_bg: button_hover,
                 windows_theme,
-            ))
+            }))
             .child(bookmark_button(
                 pane_id,
                 view.clone(),
@@ -941,8 +941,7 @@ struct BookmarkTarget {
     index: Option<usize>,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn nav_button(
+struct NavButtonProps {
     id: &'static str,
     pane_id: TabId,
     glyph: AtlasIcon,
@@ -956,55 +955,57 @@ fn nav_button(
     icon_color: Hsla,
     hover_bg: Hsla,
     windows_theme: bool,
-) -> impl IntoElement {
-    let menu_view = view.clone();
-    let menu_recent = recent.clone();
-    let hover_id = DragHoverId::Chrome(id, pane_id);
-    let hover_command = match action.clone() {
+}
+
+fn nav_button(props: NavButtonProps) -> impl IntoElement {
+    let menu_view = props.view.clone();
+    let menu_recent = props.recent.clone();
+    let hover_id = DragHoverId::Chrome(props.id, props.pane_id);
+    let hover_command = match props.action.clone() {
         Action::NavigateBack(tile) => DragHoverCommand::NavigateBack(tile),
         Action::NavigateForward(tile) => DragHoverCommand::NavigateForward(tile),
         Action::NavigateUp(tile) => DragHoverCommand::NavigateUp(tile),
         other => DragHoverCommand::Process(other),
     };
     div()
-        .id(SharedString::from(format!("{id}-{}", pane_id.0)))
+        .id(SharedString::from(format!("{}-{}", props.id, props.pane_id.0)))
         .flex_none()
-        .size(crate::ui::rem_px(if windows_theme { 34.0 } else { 26.0 }))
-        .rounded(px(if windows_theme { 8.0 } else { 7.0 }))
+        .size(crate::ui::rem_px(if props.windows_theme { 34.0 } else { 26.0 }))
+        .rounded(px(if props.windows_theme { 8.0 } else { 7.0 }))
         .flex()
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .when(!enabled, |s| s.opacity(0.35))
-        .hover(move |s| s.bg(hover_bg))
+        .when(!props.enabled, |s| s.opacity(0.35))
+        .hover(move |s| s.bg(props.hover_bg))
         .child(theme_icon(
-            glyph,
-            if windows_theme { 18.0 } else { 15.0 },
-            icon_color.opacity(0.88),
-            windows_theme,
+            props.glyph,
+            if props.windows_theme { 18.0 } else { 15.0 },
+            props.icon_color.opacity(0.88),
+            props.windows_theme,
         ))
-        .when(enabled, |s| {
+        .when(props.enabled, |s| {
             s.on_prepaint(drag_hover_recorder(
                 hover_id,
                 DragHoverKind::Folder,
                 hover_command,
-                &view,
+                &props.view,
             ))
         })
         .tooltip(move |window, cx| {
             shortcut_tooltip(
-                tooltip_title.clone(),
-                tooltip_desc.clone(),
-                shortcuts,
+                props.tooltip_title.clone(),
+                props.tooltip_desc.clone(),
+                props.shortcuts,
                 window,
                 cx,
             )
         })
         .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
             cx.stop_propagation();
-            if enabled {
-                view.update(cx, |this, cx| {
-                    this.process_actions(vec![action.clone()]);
+            if props.enabled {
+                props.view.update(cx, |this, cx| {
+                    this.process_actions(vec![props.action.clone()]);
                     this.flush_dirty_panes(cx);
                 });
             }
@@ -1019,7 +1020,7 @@ fn nav_button(
             }
         })
         .context_menu(move |menu, _window, _cx| {
-            nav_context_menu(menu, pane_id, menu_view.clone(), menu_recent.clone())
+            nav_context_menu(menu, props.pane_id, menu_view.clone(), menu_recent.clone())
         })
 }
 
@@ -1130,7 +1131,7 @@ fn location_icon(location: &Location) -> AtlasIcon {
         Location::Archive { .. } => AtlasIcon::File,
         Location::Tag(_) => AtlasIcon::Tag,
         Location::RecycleBin => AtlasIcon::Trash,
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         Location::Remote { .. } => AtlasIcon::Cloud,
     }
 }
@@ -1147,7 +1148,7 @@ fn location_label(location: &Location) -> SharedString {
             }
         }
         Location::Tag(_) | Location::RecycleBin => display.display().to_string().into(),
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         Location::Remote { .. } => display.display().to_string().into(),
     }
 }
@@ -1190,24 +1191,23 @@ fn breadcrumb(
             ));
         }
         let target = cumulative.clone();
-        row = row.child(breadcrumb_segment(
-            view,
+        row = row.child(breadcrumb_segment(BreadcrumbSegmentProps {
+            view: view.clone(),
             tile,
-            SharedString::from(format!("crumb-{}-{}", tile.0, i)),
+            id: SharedString::from(format!("crumb-{}-{}", tile.0, i)),
             label,
-            Location::Directory(target.clone()),
-            Some(target),
+            location: Location::Directory(target.clone()),
+            drop_dest: Some(target),
             fg,
             layer_base,
             windows_theme,
-        ));
+        }));
     }
     row
 }
 
-#[allow(clippy::too_many_arguments)]
-fn breadcrumb_segment(
-    view: &Entity<App>,
+struct BreadcrumbSegmentProps {
+    view: Entity<App>,
     tile: TabId,
     id: SharedString,
     label: String,
@@ -1216,43 +1216,45 @@ fn breadcrumb_segment(
     fg: Hsla,
     layer_base: Hsla,
     windows_theme: bool,
-) -> gpui::Stateful<gpui::Div> {
-    let down_v = view.clone();
-    let down_location = location.clone();
-    let hover_bg = layer_color(layer_base, 0.04, 0.42);
-    let hover_id = match &location {
-        Location::Directory(path) => DragHoverId::Folder(tile, path.clone()),
-        Location::Archive { archive, inner } => DragHoverId::Folder(tile, archive.join(inner)),
-        _ => DragHoverId::Chrome("breadcrumb", tile),
+}
+
+fn breadcrumb_segment(props: BreadcrumbSegmentProps) -> gpui::Stateful<gpui::Div> {
+    let down_v = props.view.clone();
+    let down_location = props.location.clone();
+    let hover_bg = layer_color(props.layer_base, 0.04, 0.42);
+    let hover_id = match &props.location {
+        Location::Directory(path) => DragHoverId::Folder(props.tile, path.clone()),
+        Location::Archive { archive, inner } => DragHoverId::Folder(props.tile, archive.join(inner)),
+        _ => DragHoverId::Chrome("breadcrumb", props.tile),
     };
     let command = DragHoverCommand::Process(Action::NavigateLocation {
-        tab: tile,
-        location: location.clone(),
+        tab: props.tile,
+        location: props.location.clone(),
     });
     let mut el = div()
-        .id(id)
+        .id(props.id.clone())
         .flex_none()
         .relative()
-        .h(crate::ui::rem_px(if windows_theme { 32.0 } else { 26.0 }))
-        .max_w(crate::ui::rem_px(if windows_theme { 260.0 } else { 220.0 }))
-        .px(crate::ui::rem_px(if windows_theme { 10.0 } else { 8.0 }))
-        .rounded(px(if windows_theme { 7.0 } else { 6.0 }))
+        .h(crate::ui::rem_px(if props.windows_theme { 32.0 } else { 26.0 }))
+        .max_w(crate::ui::rem_px(if props.windows_theme { 260.0 } else { 220.0 }))
+        .px(crate::ui::rem_px(if props.windows_theme { 10.0 } else { 8.0 }))
+        .rounded(px(if props.windows_theme { 7.0 } else { 6.0 }))
         .flex()
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .text_color(fg)
+        .text_color(props.fg)
         .overflow_hidden()
         .text_ellipsis()
         .whitespace_nowrap()
-        .child(SharedString::from(label))
+        .child(SharedString::from(props.label))
         .hover(move |s| s.bg(hover_bg))
         .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
             let location = down_location.clone();
             down_v.update(cx, |this, cx| {
-                this.state.focused_tile = tile;
+                this.state.focused_tile = props.tile;
                 this.process_actions(vec![Action::NavigateLocation {
-                    tab: tile,
+                    tab: props.tile,
                     location,
                 }]);
                 cx.notify();
@@ -1260,9 +1262,9 @@ fn breadcrumb_segment(
             cx.stop_propagation();
         });
 
-    if let Some(dest) = drop_dest {
-        let drop_v = view.clone();
-        let drop_v_external = view.clone();
+    if let Some(dest) = props.drop_dest {
+        let drop_v = props.view.clone();
+        let drop_v_external = props.view.clone();
         let drop_target = dest.clone();
         let drop_target_external = dest.clone();
         el = el
@@ -1271,7 +1273,7 @@ fn breadcrumb_segment(
                 DragHoverKind::Folder,
                 command,
                 DragHoverDropCommand::TransferTo(dest),
-                view,
+                &props.view,
             ))
             .on_drop::<crate::ui::root::DraggedFiles>(move |d, _window, cx| {
                 let paths = d.paths.clone();
@@ -1300,7 +1302,7 @@ fn breadcrumb_segment(
             hover_id,
             DragHoverKind::Folder,
             command,
-            view,
+            &props.view,
         ));
     }
 
@@ -1379,40 +1381,40 @@ fn archive_breadcrumb(
         }
         sep = true;
         let target = cumulative.clone();
-        row = row.child(breadcrumb_segment(
-            view,
+        row = row.child(breadcrumb_segment(BreadcrumbSegmentProps {
+            view: view.clone(),
             tile,
-            SharedString::from(format!("crumb-r{}-{}", tile.0, i)),
+            id: SharedString::from(format!("crumb-r{}-{}", tile.0, i)),
             label,
-            Location::Directory(target.clone()),
-            Some(target),
+            location: Location::Directory(target.clone()),
+            drop_dest: Some(target),
             fg,
             layer_base,
             windows_theme,
-        ));
+        }));
     }
 
     if sep {
         row = row.child(div().text_color(muted).child("›"));
     }
     let archive_target = archive.to_path_buf();
-    row = row.child(breadcrumb_segment(
-        view,
+    row = row.child(breadcrumb_segment(BreadcrumbSegmentProps {
+        view: view.clone(),
         tile,
-        SharedString::from(format!("crumb-archive-{}", tile.0)),
-        archive
+        id: SharedString::from(format!("crumb-archive-{}", tile.0)),
+        label: archive
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| archive.display().to_string()),
-        Location::Archive {
+        location: Location::Archive {
             archive: archive_target,
             inner: PathBuf::new(),
         },
-        None,
+        drop_dest: None,
         fg,
         layer_base,
         windows_theme,
-    ));
+    }));
 
     // Inner path components within the archive.
     let mut inner_so_far = std::path::PathBuf::new();
@@ -1422,20 +1424,20 @@ fn archive_breadcrumb(
         row = row.child(div().text_color(muted).child("›"));
         let archive_path = archive.to_path_buf();
         let inner_target = inner_so_far.clone();
-        row = row.child(breadcrumb_segment(
-            view,
+        row = row.child(breadcrumb_segment(BreadcrumbSegmentProps {
+            view: view.clone(),
             tile,
-            SharedString::from(format!("crumb-a{}-{}", tile.0, j)),
-            raw,
-            Location::Archive {
+            id: SharedString::from(format!("crumb-a{}-{}", tile.0, j)),
+            label: raw,
+            location: Location::Archive {
                 archive: archive_path.clone(),
                 inner: inner_target,
             },
-            None,
+            drop_dest: None,
             fg,
             layer_base,
             windows_theme,
-        ));
+        }));
     }
 
     row

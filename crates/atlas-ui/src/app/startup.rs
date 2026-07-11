@@ -158,7 +158,7 @@ impl App {
                     _ => continue,
                 };
             // A restored Access-mode remote tab can't reconnect before rclone is up.
-            #[cfg(feature = "cloud")]
+            #[cfg(feature = "provider-host")]
             if matches!(location, atlas_model::location::Location::Remote { .. }) {
                 continue;
             }
@@ -291,13 +291,28 @@ impl App {
             "file-tools",
             crate::app::ext::FILE_TOOLS_MANIFEST,
         );
+        let _ = atlas_core::ext::install::ensure_asset(
+            "file-tools",
+            "icon.svg",
+            crate::app::ext::FILE_TOOLS_ICON,
+        );
         let _ = atlas_core::ext::install::ensure_bundled(
             "media-thumbs",
             crate::app::ext::MEDIA_THUMBS_MANIFEST,
         );
+        let _ = atlas_core::ext::install::ensure_asset(
+            "media-thumbs",
+            "icon.svg",
+            crate::app::ext::MEDIA_THUMBS_ICON,
+        );
         let _ = atlas_core::ext::install::ensure_bundled(
             "document-previews",
             crate::app::ext::DOCUMENT_PREVIEWS_MANIFEST,
+        );
+        let _ = atlas_core::ext::install::ensure_asset(
+            "document-previews",
+            "icon.svg",
+            crate::app::ext::DOCUMENT_PREVIEWS_ICON,
         );
         let runtime_tools_src =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions/runtime-tools");
@@ -309,7 +324,7 @@ impl App {
         state.ext.enabled = atlas_core::util::config::load_ext_enabled();
         let ext_started = std::time::Instant::now();
         let ext_registry = atlas_core::ext::Registry::load(&state.ext.enabled);
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         if ext_registry.has_sidebar_section("cloud") {
             state.profiles.ensure_cloud_section();
         }
@@ -321,9 +336,9 @@ impl App {
 
         // Spawn the cloud worker (rclone sidecar is started lazily on first use)
         // and restore previously-configured remotes for the sidebar.
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         let cloud_tx = atlas_core::cloud::spawn(&rt, tx.clone());
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         {
             state.cloud.remotes = atlas_core::util::config::load_cloud_remotes();
             // Auto-mount remotes the user flagged. Not added to `navigate_on_mount`,
@@ -414,9 +429,9 @@ impl App {
             palette_scroll: gpui::ScrollHandle::new(),
             ext_registry,
             tag_db_tx,
-            #[cfg(feature = "cloud")]
+            #[cfg(feature = "provider-host")]
             cloud_tx,
-            // FASE5: preview texture caches + overlay focus start empty.
+            // Phase5: preview texture caches + overlay focus start empty.
             preview_textures: HashMap::new(),
             multi_textures: HashMap::new(),
 
@@ -428,7 +443,7 @@ impl App {
             preview_drag: None,
             overlay_focus: None,
             batch_rename_field: BatchRenameField::Pattern,
-            // FASE4: grid thumbnail cache starts empty.
+            // Phase4: grid thumbnail cache starts empty.
             thumb_textures: HashMap::new(),
             ext_thumb_inflight: HashSet::new(),
             // Icon theme resolved above from the active profile (selection or
@@ -437,7 +452,7 @@ impl App {
             icon_cache: HashMap::new(),
             icon_tx,
             icon_rx,
-            // FASE A: dock built lazily on first render from the restored pane_tree.
+            // Phase A: dock built lazily on first render from the restored pane_tree.
             file_panel_cache: HashMap::new(),
             space_lens: HashMap::new(),
             pane_tabs_cache: HashMap::new(),
@@ -449,10 +464,12 @@ impl App {
             palette_host: None,
             palette_closing: None,
             layout_revision: 0,
-            // FASE C: rubber-band selection state.
+            // Phase C: rubber-band selection state.
             rubber: None,
             row_rects: HashMap::new(),
             miller_row_rects: HashMap::new(),
+            details_hit: HashMap::new(),
+            details_hover: None,
             miller_column_bounds: HashMap::new(),
             dropzone_selected: HashSet::new(),
             dropzone_rects: Vec::new(),
@@ -523,9 +540,9 @@ impl App {
             tab_closing: HashMap::new(),
             pane_items_appear: HashMap::new(),
             ext_manager_input: None,
-            #[cfg(feature = "cloud")]
+            #[cfg(feature = "provider-host")]
             cloud_add_inputs: None,
-            #[cfg(feature = "cloud")]
+            #[cfg(feature = "provider-host")]
             rename_remote_input: None,
             pending_rename: None,
             pending_select: None,

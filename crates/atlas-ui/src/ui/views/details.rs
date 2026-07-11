@@ -1,9 +1,11 @@
 //! Details view (table): `render_pane` (dispatch + Details body) + row/header cells.
 #![allow(clippy::too_many_lines)] // reason: cohesive view renderer kept whole
 
-use crate::app::{App, ColResizeState, DetailsColumn, RubberTarget};
+use crate::app::{App, ColResizeState, DetailsColumn, DetailsHitModel, RubberTarget};
 use crate::input::action::Action;
-use crate::ui::drag_hover::DragHoverId;
+use crate::ui::drag_hover::{
+    DragHoverCommand, DragHoverDropCommand, DragHoverId, DragHoverKind, DragHoverTarget,
+};
 use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
 use crate::ui::icons::{icon, AtlasIcon};
@@ -13,14 +15,26 @@ use atlas_model::pane::TabId;
 use atlas_model::settings::ViewMode;
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, img, point, px, size, uniform_list, AnyElement, Bounds, Context, Corners, Div,
-    Entity, Font, Hsla, MouseButton, Pixels, ShapedLine, SharedString, Stateful, TextAlign,
-    TextRun, Window,
+    canvas, div, img, point, px, size, AnyElement, Context, Corners, DispatchPhase, Div, Entity,
+    Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, ShapedLine, SharedString, Stateful,
+    TextAlign, TextRun, Window,
 };
 use gpui_component::input::InputState;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{v_flex, ActiveTheme, ElementExt};
 use std::sync::Arc;
+
+#[derive(Clone, Copy)]
+pub(crate) struct DetailsColors {
+    pub fg: Hsla,
+    pub accent: Hsla,
+    pub accent_fg: Hsla,
+    pub hover: Hsla,
+    pub muted: Hsla,
+    pub header_bg: Hsla,
+    pub stripe_bg: Hsla,
+    pub border: Hsla,
+}
 
 #[derive(Clone)]
 struct DetailsColumnDrag {
@@ -191,6 +205,17 @@ impl App {
             };
         let count = filtered_visible.len();
 
+        let colors = DetailsColors {
+            fg,
+            accent,
+            accent_fg,
+            hover,
+            muted,
+            header_bg,
+            stripe_bg,
+            border,
+        };
+
         let header = details_header(
             &layout,
             &view,
@@ -201,10 +226,7 @@ impl App {
             &type_labels,
             dragging,
             drag_x,
-            muted,
-            accent,
-            border,
-            header_bg,
+            &colors,
         );
 
         let inner = if count == 0 {
@@ -234,56 +256,59 @@ impl App {
                 viewport_h,
                 row_h,
             );
-            
-            let list_view = view.clone();
+
+            let _list_view = view.clone();
             let fv = filtered_visible.clone();
             let row_layout = Arc::clone(&layout);
-            
+
             let start_idx = (scroll_y / row_h).floor().max(0.0) as usize;
             let end_idx = ((scroll_y + viewport_h) / row_h).ceil() as usize + 1;
             let end_idx = end_idx.min(count);
             let total_height = count as f32 * row_h;
-            
-            let mut row_divs = Vec::with_capacity(end_idx - start_idx);
+
             let mut overlays = Vec::new();
-            
+
             let Some(ts) = self.state.tab_states.get(&pane_id) else {
                 return div().into_any_element();
             };
-            let record_rects = self.dock_split_animations.is_empty()
-                && self.pane_layout_animations.is_empty();
-                
-            let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
-            let row_icon_size = ROW_ICON_SIZE * zoom_scale;
-            let row_pad_x = ROW_PAD_X * zoom_scale;
-            
+            let record_rects =
+                self.dock_split_animations.is_empty() && self.pane_layout_animations.is_empty();
+
             for i in start_idx..end_idx {
-                let Some(&entry_idx) = fv.get(i) else { continue };
-                let Some(entry) = ts.entries.get(entry_idx) else { continue };
-                
-                let rename_input = crate::ui::views::rename::active_input(
-                    self, pane_id, entry_idx,
-                );
+                let Some(&entry_idx) = fv.get(i) else {
+                    continue;
+                };
+                let Some(entry) = ts.entries.get(entry_idx) else {
+                    continue;
+                };
+
+                let rename_input = crate::ui::views::rename::active_input(self, pane_id, entry_idx);
                 let selected = ts.selection.selected.contains(&entry_idx)
-                    && !crate::ui::views::rename::suppress_row_chrome(
-                        self, pane_id, entry_idx,
-                    );
+                    && !crate::ui::views::rename::suppress_row_chrome(self, pane_id, entry_idx);
                 let flashing = matches!(entry.kind, FileKind::Dir)
                     && self.drag_hover.blink_id.as_ref()
-                        == Some(&DragHoverId::Folder(
-                            pane_id,
-                            entry.path.clone(),
-                        ));
+                        == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
                 let odd = i % 2 == 1;
-                let dimmed = crate::ui::views::rename::dim_other_entry(self, pane_id, entry_idx);
-                let icon_tex = self.file_icon_for_entry(&entry.path, &entry.kind, entry.extension.as_deref()).texture();
-                let has_tex = icon_tex.is_some();
-                
+                let icon_tex = self
+                    .file_icon_for_entry(&entry.path, &entry.kind, entry.extension.as_deref())
+                    .texture();
+
                 if let Some(input) = rename_input {
                     let overlay = render_rename_row(
-                        entry, entry_idx, odd, selected, pane_id, &view,
-                        accent, accent_fg, hover, muted, stripe_bg, input, flashing,
-                        record_rects, icon_tex, &row_layout, window, font_size
+                        entry,
+                        entry_idx,
+                        odd,
+                        selected,
+                        pane_id,
+                        &view,
+                        &colors,
+                        input,
+                        flashing,
+                        record_rects,
+                        icon_tex,
+                        &row_layout,
+                        window,
+                        font_size,
                     );
                     overlays.push(
                         div()
@@ -292,149 +317,147 @@ impl App {
                             .left_0()
                             .w_full()
                             .h(px(row_h))
-                            .child(overlay)
+                            .child(overlay),
                     );
-                } else {
-                    let name = SharedString::from(entry.name.clone());
-                    let path = entry.path.clone();
-                    let is_dir = matches!(entry.kind, FileKind::Dir);
-                    let size = entry.size;
-                    let modified = entry.modified;
-                    
-                    let mut row_div = div()
-                        .id(("row", entry_idx))
-                        .absolute()
-                        .top(px(i as f32 * row_h))
-                        .left_0()
-                        .w_full()
-                        .h(px(row_h))
-                        .rounded_sm()
-                        .when(dimmed, |s| s.opacity(0.45))
-                        .when(selected, |s| s.bg(accent))
-                        .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
-                        .when(!selected && odd, |s| s.bg(stripe_bg))
-                        .when(!selected, |s| s.hover(|h| h.bg(hover)))
-                        .on_click(crate::ui::views::on_entry_click(&view, pane_id, entry_idx))
-                        .on_mouse_down(
-                            MouseButton::Right,
-                            crate::ui::views::on_entry_ctx_menu(&view, pane_id, entry_idx),
-                        )
-                        .tooltip(move |window, cx| {
-                            crate::ui::tooltips::entry_hover_tooltip(
-                                name.clone(),
-                                path.clone(),
-                                is_dir,
-                                size,
-                                modified,
-                                window,
-                                cx,
-                            )
-                        });
-                        
-                    if record_rects {
-                        row_div = row_div.on_prepaint(crate::ui::root::rect_recorder(pane_id, entry_idx, &view));
-                    }
-                    
-                    if selected {
-                        let v = view.clone();
-                        let p = entry.path.clone();
-                        row_div = row_div
-                            .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
-                                cx.stop_propagation();
-                            })
-                            .on_drag(
-                                crate::ui::drag::file_drag_value(vec![p.clone()]),
-                                crate::ui::drag::file_drag_handler_for_item(
-                                    v,
-                                    pane_id,
-                                    entry_idx,
-                                    p,
-                                ),
-                            );
-                    } else {
-                        let v = view.clone();
-                        row_div = row_div.on_mouse_down(MouseButton::Left, move |ev, _window, cx| {
-                            let (pos, additive) = (
-                                ev.position,
-                                ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift,
-                            );
-                            v.update(cx, |this, cx| {
-                                this.begin_rubber(pane_id, pos, additive);
-                                cx.notify();
-                            });
-                            cx.stop_propagation();
-                        });
-                    }
-                    
-                    if is_dir {
-                        row_div = crate::ui::views::folder_drop_target(row_div, &view, pane_id, entry.path.clone());
-                    }
-                    
-                    if !has_tex {
-                        let fallback_icon = FileIcon::Builtin {
-                            kind: entry.kind.clone(),
-                            extension: entry.extension.clone(),
-                        };
-                        row_div = row_div.child(
-                            div()
-                                .absolute()
-                                .left(px(row_pad_x))
-                                .top(px((row_h - row_icon_size) * 0.5))
-                                .w(px(row_icon_size))
-                                .h(px(row_icon_size))
-                                .child(fallback_icon.element(ROW_ICON_SIZE, muted))
-                        );
-                    }
-                    
-                    row_divs.push(row_div);
                 }
             }
-            
+
             let canvas_view = view.clone();
+            let hit_view = view.clone();
             let row_layout_c = Arc::clone(&layout);
             let fv_c = fv.clone();
             let font_c = row_font.clone();
-            
             let monolithic_canvas = canvas(
                 move |bounds, window, _cx| {
                     let _perf = crate::perf::span("details.canvas.shape");
                     let ts = window.text_system();
+                    let viewport_bounds = gpui::Bounds {
+                        origin: point(bounds.origin.x, bounds.origin.y + px(scroll_y)),
+                        size: size(bounds.size.width, px(viewport_h)),
+                    };
+                    let hit_model = DetailsHitModel {
+                        bounds: viewport_bounds,
+                        scroll_y,
+                        row_h,
+                        visible: fv_c.clone(),
+                        start_idx,
+                        end_idx,
+                        total_count: count,
+                    };
+                    hit_view.update(_cx, |this, _| {
+                        this.details_hit.insert(pane_id, hit_model.clone());
+                        if this.drag_hover_maybe_active() {
+                            let targets = this
+                                .state
+                                .tab_states
+                                .get(&pane_id)
+                                .map(|tab_state| {
+                                    (start_idx..end_idx)
+                                        .filter_map(|visible_pos| {
+                                            let entry_idx = *fv_c.get(visible_pos)?;
+                                            let entry = tab_state.entries.get(entry_idx)?;
+                                            matches!(entry.kind, FileKind::Dir).then(|| {
+                                                let id = DragHoverId::Folder(
+                                                    pane_id,
+                                                    entry.path.clone(),
+                                                );
+                                                DragHoverTarget {
+                                                    id,
+                                                    bounds: hit_model.row_bounds(visible_pos),
+                                                    kind: DragHoverKind::Folder,
+                                                    command: DragHoverCommand::NavigatePathIn(
+                                                        pane_id,
+                                                        entry.path.clone(),
+                                                    ),
+                                                    drop_command: Some(
+                                                        DragHoverDropCommand::TransferTo(
+                                                            entry.path.clone(),
+                                                        ),
+                                                    ),
+                                                }
+                                            })
+                                        })
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default();
+                            for target in targets {
+                                this.register_drag_hover_target(target);
+                            }
+                        }
+                    });
                     let app = canvas_view.read(_cx);
                     let Some(tab_state) = app.state.tab_states.get(&pane_id) else {
-                        return MonolithicCanvasState { rows: Vec::new(), layout: (*row_layout_c).clone() };
+                        return MonolithicCanvasState {
+                            rows: Vec::new(),
+                            layout: (*row_layout_c).clone(),
+                        };
                     };
-                    
-                    let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
-                    let name_col_w = px(row_layout_c.name_col_w.min((f32::from(bounds.size.width) - row_layout_c.name_x).max(0.0)));
-                    
+
+                    let _zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
+                    let name_col_w = px(row_layout_c
+                        .name_col_w
+                        .min((f32::from(bounds.size.width) - row_layout_c.name_x).max(0.0)));
+
                     let mut rows = Vec::with_capacity(end_idx - start_idx);
-                    
+
                     for i in start_idx..end_idx {
-                        let Some(&entry_idx) = fv_c.get(i) else { continue };
-                        let Some(entry) = tab_state.entries.get(entry_idx) else { continue };
-                        
-                        if crate::ui::views::rename::active_input(app, pane_id, entry_idx).is_some() {
+                        let Some(&entry_idx) = fv_c.get(i) else {
+                            continue;
+                        };
+                        let Some(entry) = tab_state.entries.get(entry_idx) else {
+                            continue;
+                        };
+
+                        if crate::ui::views::rename::active_input(app, pane_id, entry_idx).is_some()
+                        {
                             continue;
                         }
-                        
+
                         let selected = tab_state.selection.selected.contains(&entry_idx)
-                            && !crate::ui::views::rename::suppress_row_chrome(app, pane_id, entry_idx);
-                        let dimmed = crate::ui::views::rename::dim_other_entry(app, pane_id, entry_idx);
-                        
+                            && !crate::ui::views::rename::suppress_row_chrome(
+                                app, pane_id, entry_idx,
+                            );
+                        let dimmed =
+                            crate::ui::views::rename::dim_other_entry(app, pane_id, entry_idx);
+                        let flashing = matches!(entry.kind, FileKind::Dir)
+                            && app.drag_hover.blink_id.as_ref()
+                                == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
+                        let hovered = app.details_hover == Some((pane_id, entry_idx));
+
                         let name_color = if selected { accent_fg } else { fg };
-                        let name_color = if dimmed { name_color.opacity(0.45) } else { name_color };
-                        let meta_color = if selected { accent_fg } else { muted };
-                        let meta_color = if dimmed { meta_color.opacity(0.45) } else { meta_color };
-                        
-                        let name_run = TextRun {
-                            len: entry.name.len(), font: font_c.clone(), color: name_color,
-                            background_color: None, underline: None, strikethrough: None,
+                        let name_color = if dimmed {
+                            name_color.opacity(0.45)
+                        } else {
+                            name_color
                         };
-                        let mut name_s = ts.shape_line(entry.name.clone().into(), font_size, &[name_run], None);
-                        
+                        let meta_color = if selected { accent_fg } else { muted };
+                        let meta_color = if dimmed {
+                            meta_color.opacity(0.45)
+                        } else {
+                            meta_color
+                        };
+
+                        let name_run = TextRun {
+                            len: entry.name.len(),
+                            font: font_c.clone(),
+                            color: name_color,
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        };
+                        let mut name_s =
+                            ts.shape_line(entry.name.clone().into(), font_size, &[name_run], None);
+
                         let ellipsis_s = if name_s.width() > name_col_w {
                             let ellipsis: SharedString = "…".into();
-                            let e_run = TextRun { len: ellipsis.len(), font: font_c.clone(), color: name_color, background_color: None, underline: None, strikethrough: None };
+                            let e_run = TextRun {
+                                len: ellipsis.len(),
+                                font: font_c.clone(),
+                                color: name_color,
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            };
                             let es = ts.shape_line(ellipsis, font_size, &[e_run], None);
                             let cutoff = (name_col_w - es.width()).max(px(0.));
                             let split_idx = name_s.index_for_x(cutoff).unwrap_or(0);
@@ -444,7 +467,7 @@ impl App {
                         } else {
                             None
                         };
-                        
+
                         let mut meta_cols = Vec::new();
                         for col in &row_layout_c.columns {
                             if col.x < f32::from(bounds.size.width) && col.w > 1.0 {
@@ -454,8 +477,12 @@ impl App {
                                     DetailsColumn::Type => entry.display_type.clone().into(),
                                 };
                                 let run = TextRun {
-                                    len: text.len(), font: font_c.clone(), color: meta_color,
-                                    background_color: None, underline: None, strikethrough: None,
+                                    len: text.len(),
+                                    font: font_c.clone(),
+                                    color: meta_color,
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
                                 };
                                 meta_cols.push(DetailsPaintColumn {
                                     column: col.column,
@@ -463,17 +490,38 @@ impl App {
                                 });
                             }
                         }
-                        
-                        let icon_tex = app.file_icon_for_entry(&entry.path, &entry.kind, entry.extension.as_deref()).texture();
-                        
+
+                        let icon_tex = app
+                            .file_icon_for_entry(
+                                &entry.path,
+                                &entry.kind,
+                                entry.extension.as_deref(),
+                            )
+                            .texture();
+                        let fallback_icon_path = if icon_tex.is_none() {
+                            Some(match entry.kind {
+                                FileKind::Dir => AtlasIcon::Folder.path(),
+                                _ => AtlasIcon::File.path(),
+                            })
+                        } else {
+                            None
+                        };
+
                         rows.push(MonolithicRowState {
                             idx: i,
+                            selected,
+                            hovered,
+                            flashing,
+                            odd: i % 2 == 1,
                             dimmed,
-                            name_s, ellipsis_s, meta_cols,
+                            name_s,
+                            ellipsis_s,
+                            meta_cols,
                             icon_tex,
+                            fallback_icon_path,
                         });
                     }
-                    
+
                     MonolithicCanvasState {
                         rows,
                         layout: (*row_layout_c).clone(),
@@ -485,67 +533,229 @@ impl App {
                     let row_icon_size = ROW_ICON_SIZE * zoom_scale;
                     let row_pad_x = ROW_PAD_X * zoom_scale;
                     let cell_pad = CELL_PAD * zoom_scale;
-                    
+
                     for row in &state.rows {
                         let y = bounds.origin.y + px(row.idx as f32 * row_h);
-                        
+                        let row_bounds = gpui::Bounds {
+                            origin: point(bounds.origin.x, y),
+                            size: size(bounds.size.width, px(row_h)),
+                        };
+
+                        let bg = if row.selected {
+                            Some(accent)
+                        } else if row.flashing {
+                            Some(accent.opacity(0.38))
+                        } else if row.hovered {
+                            Some(hover)
+                        } else if row.odd {
+                            Some(stripe_bg)
+                        } else {
+                            None
+                        };
+                        if let Some(mut color) = bg {
+                            if row.dimmed {
+                                color = color.opacity(color.a * 0.45);
+                            }
+                            window.paint_quad(gpui::fill(row_bounds, color));
+                        }
+
                         let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
-                        
+
                         if let Some(tex) = &row.icon_tex {
-                            // GPUI Images don't support opacity parameter directly in paint_image,
-                            // but GPUI does support color tinting via opacity on render pipeline.
-                            // The easiest way is just to paint the image. We don't worry about dimmed image opacity for now.
                             let _ = window.paint_image(
                                 gpui::Bounds {
-                                    origin: gpui::point(bounds.origin.x + px(row_pad_x), y + px((row_h - row_icon_size) * 0.5)),
+                                    origin: gpui::point(
+                                        bounds.origin.x + px(row_pad_x),
+                                        y + px((row_h - row_icon_size) * 0.5),
+                                    ),
                                     size: gpui::size(px(row_icon_size), px(row_icon_size)),
                                 },
-                                Corners::default(), tex.clone(), 0, false,
+                                Corners::default(),
+                                tex.clone(),
+                                0,
+                                false,
+                            );
+                        } else if let Some(path) = row.fallback_icon_path {
+                            let _ = window.paint_svg(
+                                gpui::Bounds {
+                                    origin: point(
+                                        bounds.origin.x + px(row_pad_x),
+                                        y + px((row_h - row_icon_size) * 0.5),
+                                    ),
+                                    size: size(px(row_icon_size), px(row_icon_size)),
+                                },
+                                SharedString::from(path),
+                                None,
+                                Default::default(),
+                                muted,
+                                cx,
                             );
                         }
-                        
+
                         let name_x = bounds.origin.x + px(state.layout.name_x);
-                        window.paint_layer(
-                            gpui::Bounds {
-                                origin: gpui::point(name_x, y),
-                                size: gpui::size(px(state.layout.name_col_w), px(row_h)),
-                            },
-                            |window| {
-                                let _ = row.name_s.paint(gpui::point(name_x, text_y), px(row_h), TextAlign::Left, None, window, cx);
-                                if let Some(ref es) = row.ellipsis_s {
-                                    let _ = es.paint(gpui::point(name_x + row.name_s.width(), text_y), px(row_h), TextAlign::Left, None, window, cx);
-                                }
-                            },
+
+                        let _ = row.name_s.paint(
+                            gpui::point(name_x, text_y),
+                            px(row_h),
+                            TextAlign::Left,
+                            None,
+                            window,
+                            cx,
                         );
-                        
+                        if let Some(ref es) = row.ellipsis_s {
+                            let _ = es.paint(
+                                gpui::point(name_x + row.name_s.width(), text_y),
+                                px(row_h),
+                                TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            );
+                        }
+
                         for paint_col in &row.meta_cols {
-                            let Some(layout_col) = state.layout.columns.iter().find(|col| col.column == paint_col.column) else { continue };
+                            let Some(layout_col) = state
+                                .layout
+                                .columns
+                                .iter()
+                                .find(|col| col.column == paint_col.column)
+                            else {
+                                continue;
+                            };
                             let col_x = bounds.origin.x + px(layout_col.x);
                             let col_w = layout_col.w;
                             let text_x = col_x + px(cell_pad.min(col_w));
-                            window.paint_layer(
-                                gpui::Bounds {
-                                    origin: gpui::point(col_x, y),
-                                    size: gpui::size(px(col_w), px(row_h)),
-                                },
-                                |window| {
-                                    let _ = paint_col.line.paint(gpui::point(text_x, text_y), px(row_h), TextAlign::Left, None, window, cx);
-                                },
+
+                            let _ = paint_col.line.paint(
+                                gpui::point(text_x, text_y),
+                                px(row_h),
+                                TextAlign::Left,
+                                None,
+                                window,
+                                cx,
                             );
                         }
                     }
-                }
+                },
             );
-            
+            let event_view = view.clone();
+            let details_event_layer = canvas(
+                |_, _, _| {},
+                move |_, (), window, _cx| {
+                    let move_view = event_view.clone();
+                    window.on_mouse_event::<MouseMoveEvent>(move |ev, phase, window, cx| {
+                        if phase != DispatchPhase::Bubble || ev.dragging() {
+                            return;
+                        }
+                        let pos = ev.position;
+                        move_view.update(cx, |this, cx| {
+                            let hover_entry = this.details_hover_at(pane_id, pos);
+                            if this.details_hover != hover_entry {
+                                // The monolithic Details canvas has one hover target for all
+                                // rows. Reset the managed tooltip before changing rows so the
+                                // old card disappears now and the new row earns a fresh delay.
+                                gpui_component::tooltip::Tooltip::dismiss(window, cx);
+                                this.details_hover = hover_entry;
+                                this.notify_pane(pane_id, cx);
+                            }
+                        });
+                    });
+
+                    let down_view = event_view.clone();
+                    window.on_mouse_event::<MouseDownEvent>(move |ev, phase, window, cx| {
+                        if phase != DispatchPhase::Bubble {
+                            return;
+                        }
+                        let pos = ev.position;
+                        if !down_view.read(cx).details_contains_point(pane_id, pos) {
+                            return;
+                        }
+                        down_view.update(cx, |this, cx| {
+                            let hit = this.details_entry_at(pane_id, pos);
+                            match ev.button {
+                                MouseButton::Left => this.details_left_mouse_down(
+                                    pane_id,
+                                    hit,
+                                    pos,
+                                    ev.modifiers.shift,
+                                    ev.modifiers.control || ev.modifiers.platform,
+                                    ev.click_count,
+                                    cx,
+                                ),
+                                MouseButton::Right => {
+                                    this.details_right_mouse_down(pane_id, hit, pos, window, cx)
+                                }
+                                _ => {}
+                            }
+                        });
+                        cx.stop_propagation();
+                    });
+                },
+            );
+            let details_drag_layer = div()
+                .id(("details-drag-layer", pane_id.0))
+                .absolute()
+                .top_0()
+                .left_0()
+                .w_full()
+                .h(px(total_height))
+                .opacity(0.0)
+                .on_drag(
+                    crate::ui::drag::file_drag_value(Vec::new()),
+                    crate::ui::drag::file_drag_handler_for_details_content(view.clone(), pane_id),
+                );
+            let details_tooltip = self
+                .details_hover
+                .and_then(|(hover_pane, entry_idx)| (hover_pane == pane_id).then_some(entry_idx))
+                .and_then(|entry_idx| {
+                    self.state
+                        .tab_states
+                        .get(&pane_id)
+                        .and_then(|ts| ts.entries.get(entry_idx))
+                })
+                .map(|entry| {
+                    (
+                        entry.name.clone(),
+                        entry.path.clone(),
+                        matches!(entry.kind, FileKind::Dir),
+                        entry.size,
+                        entry.modified,
+                    )
+                });
+
+            let tooltip_target_id = self
+                .details_hover
+                .filter(|(hover_pane, _)| *hover_pane == pane_id)
+                .map(|(_, entry_idx)| entry_idx as u64)
+                .unwrap_or(u64::MAX);
+
             div()
+                // Re-key only the viewport-level hover target when the hit-tested row
+                // changes. The scroll child keeps its stable id and external scroll state.
+                .id(SharedString::from(format!(
+                    "details-tooltip-target-{}-{tooltip_target_id}",
+                    pane_id.0
+                )))
                 .size_full()
                 .relative()
                 .overflow_hidden()
                 .min_w(px(0.))
                 .min_h(px(0.))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    crate::ui::views::on_pane_rubber_mouse_down(&view, pane_id),
+                .when_some(
+                    details_tooltip,
+                    |el, (name, path, is_dir, size, modified)| {
+                        el.tooltip(move |window, cx| {
+                            crate::ui::tooltips::entry_hover_tooltip(
+                                name.clone(),
+                                path.clone(),
+                                is_dir,
+                                size,
+                                modified,
+                                window,
+                                cx,
+                            )
+                        })
+                    },
                 )
                 .child(
                     div()
@@ -561,16 +771,31 @@ impl App {
                                 .w_full()
                                 .h(px(total_height))
                                 .relative()
-                                .children(row_divs)
-                                .child(monolithic_canvas.absolute().top_0().left_0().w_full().h_full())
-                                .children(overlays)
+                                .child(
+                                    monolithic_canvas
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .w_full()
+                                        .h_full(),
+                                )
+                                .child(
+                                    details_event_layer
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .w_full()
+                                        .h_full(),
+                                )
+                                .child(details_drag_layer)
+                                .children(overlays),
                         )
-                        .pr(crate::ui::rem_px(16.))
+                        .pr(crate::ui::rem_px(16.)),
                 )
                 .vertical_scrollbar(&base_scroll)
                 .into_any_element()
         };
-                let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
+        let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
         let zone_view = view.clone();
         let prepaint_view = view.clone();
         let bounds_view = view.clone();
@@ -601,7 +826,7 @@ impl App {
                 });
             }
         })
-        // FASE F: register this pane's window-space rect each frame for OLE drop routing.
+        // PHASE F: register this pane's window-space rect each frame for OLE drop routing.
         .when(cfg!(windows), |el| {
             el.on_prepaint(zone_recorder(pane_id, &zone_view))
         })
@@ -627,9 +852,9 @@ impl App {
 /// Semantic category label for the Type column and filter overlay.
 pub fn entry_type_label(entry: &FileEntry) -> String {
     if !entry.display_type.is_empty() {
-        return entry.display_type.clone();
+        return entry.display_type.to_string();
     }
-    file_category(&entry.kind, entry.extension.as_deref())
+    atlas_model::file_entry::file_category(&entry.kind, entry.extension.as_deref())
 }
 
 /// Fill the `display_*` fields of a fresh listing. Called on the background
@@ -638,58 +863,19 @@ pub fn entry_type_label(entry: &FileEntry) -> String {
 pub(crate) fn format_entries(entries: &mut [FileEntry]) {
     for e in entries.iter_mut() {
         e.display_size = if matches!(e.kind, FileKind::Dir) {
-            String::new()
+            "".into()
         } else {
             e.size
                 .map(atlas_core::util::display::format_size)
                 .unwrap_or_default()
+                .into()
         };
         e.display_date = e
             .modified
             .map(atlas_core::util::display::format_date)
-            .unwrap_or_default();
-        e.display_type = entry_type_label(e);
-    }
-}
-
-fn file_category(kind: &FileKind, ext: Option<&str>) -> String {
-    match kind {
-        FileKind::Dir => rust_i18n::t!("file_kind_folder").into_owned(),
-        FileKind::Symlink => rust_i18n::t!("file_kind_symlink").into_owned(),
-        FileKind::File => {
-            let Some(e) = ext else {
-                return rust_i18n::t!("file_kind_file").into_owned();
-            };
-            match e.to_ascii_lowercase().as_str() {
-                "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "tif" | "tiff"
-                | "avif" | "heic" | "heif" | "svg" => rust_i18n::t!("file_kind_image").into_owned(),
-                "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "wma" | "opus" => {
-                    rust_i18n::t!("file_kind_audio").into_owned()
-                }
-                "mp4" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "m4v" | "flv" => {
-                    rust_i18n::t!("file_kind_video").into_owned()
-                }
-                "rs" | "js" | "jsx" | "ts" | "tsx" | "py" | "go" | "java" | "c" | "cc" | "cpp"
-                | "cxx" | "h" | "hpp" | "cs" | "php" | "rb" | "swift" | "kt" | "kts" | "sh"
-                | "ps1" | "bat" | "lua" | "dart" | "zig" | "nim" | "r" | "scala" | "ex" | "exs"
-                | "clj" | "hs" | "ml" => rust_i18n::t!("file_kind_code").into_owned(),
-                "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "tgz" | "zst" => {
-                    rust_i18n::t!("file_kind_archive").into_owned()
-                }
-                "doc" | "docx" | "odt" | "rtf" | "pdf" | "txt" | "md" | "markdown" | "rst"
-                | "tex" => rust_i18n::t!("file_kind_document").into_owned(),
-                "xls" | "xlsx" | "csv" | "tsv" | "ods" | "numbers" => {
-                    rust_i18n::t!("file_kind_spreadsheet").into_owned()
-                }
-                "ppt" | "pptx" | "odp" | "key" => {
-                    rust_i18n::t!("file_kind_presentation").into_owned()
-                }
-                "exe" | "msi" | "app" | "dmg" | "deb" | "rpm" => {
-                    rust_i18n::t!("file_kind_application").into_owned()
-                }
-                _ => rust_i18n::t!("file_kind_file").into_owned(),
-            }
-        }
+            .unwrap_or_default()
+            .into();
+        e.display_type = entry_type_label(e).into();
     }
 }
 
@@ -747,7 +933,6 @@ impl App {
 /// The Details header: one absolutely-positioned strip sharing the exact `x`/`w`
 /// geometry of the canvas rows below it, so labels and data never drift and the
 /// continuous collapse hides the same columns in lockstep.
-#[allow(clippy::too_many_arguments)]
 fn details_header(
     layout: &DetailsRowLayout,
     view: &Entity<App>,
@@ -758,10 +943,7 @@ fn details_header(
     type_labels: &[String],
     dragging: Option<DetailsColumn>,
     drag_x: f32,
-    muted: Hsla,
-    accent: Hsla,
-    border: Hsla,
-    header_bg: Hsla,
+    colors: &DetailsColors,
 ) -> AnyElement {
     let move_view = view.clone();
     let drop_view = view.clone();
@@ -770,9 +952,9 @@ fn details_header(
         .relative()
         .w_full()
         .h(crate::ui::rem_px(DETAILS_ROW_H))
-        .bg(header_bg)
+        .bg(colors.header_bg)
         .text_xs()
-        .text_color(muted)
+        .text_color(colors.muted)
         // Swallow mouse-down so starting a header drag/sort never begins a rubber-band
         // selection on the pane underneath.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -815,8 +997,7 @@ fn details_header(
                             &rust_i18n::t!("column_name"),
                             sort_col,
                             sort_dir,
-                            muted,
-                            accent,
+                            colors,
                         )),
                 ),
         );
@@ -830,8 +1011,7 @@ fn details_header(
             has_type_filter,
             type_labels,
             dragging == Some(col.column),
-            muted,
-            accent,
+            colors,
         ));
     }
     // Resize handles as direct children of the header (NOT inside the draggable
@@ -842,8 +1022,8 @@ fn details_header(
         layout.name_right,
         pane_id,
         view,
-        border,
-        accent,
+        colors.border,
+        colors.accent,
     ));
     for col in &layout.columns {
         root = root.child(col_resize_handle(
@@ -852,8 +1032,8 @@ fn details_header(
             col.x + col.w,
             pane_id,
             view,
-            border,
-            accent,
+            colors.border,
+            colors.accent,
         ));
     }
     // The floating grabbed header: drawn here at a fixed y so it only tracks the
@@ -872,9 +1052,9 @@ fn details_header(
                 .px(crate::ui::rem_px(CELL_PAD))
                 .rounded_md()
                 .border_1()
-                .border_color(accent)
-                .bg(header_bg)
-                .text_color(accent)
+                .border_color(colors.accent)
+                .bg(colors.header_bg)
+                .text_color(colors.accent)
                 .shadow_md()
                 .child(details_column_label(col.column)),
         );
@@ -894,7 +1074,6 @@ fn details_column_label(column: DetailsColumn) -> String {
 /// reorder drag source (the floating box is the gpui drag image), and a right-edge
 /// resize handle. While this column is the one being dragged it's hidden in place,
 /// leaving a gap the others slide around.
-#[allow(clippy::too_many_arguments)]
 fn details_header_cell(
     col: DetailsColumnLayout,
     view: &Entity<App>,
@@ -904,8 +1083,7 @@ fn details_header_cell(
     has_type_filter: bool,
     type_labels: &[String],
     is_dragging: bool,
-    muted: Hsla,
-    accent: Hsla,
+    colors: &DetailsColors,
 ) -> AnyElement {
     let column = col.column;
     let content = match column {
@@ -922,8 +1100,7 @@ fn details_header_cell(
                 &details_column_label(column),
                 sort_col,
                 sort_dir,
-                muted,
-                accent,
+                colors,
             )
             .into_any_element()
         }
@@ -934,8 +1111,7 @@ fn details_header_cell(
             sort_dir,
             has_type_filter,
             type_labels.to_vec(),
-            muted,
-            accent,
+            colors,
         )
         .into_any_element(),
     };
@@ -1025,8 +1201,7 @@ fn sort_cell(
     label: &str,
     cur_col: &SortColumn,
     cur_dir: &SortDir,
-    muted: Hsla,
-    accent: Hsla,
+    colors: &DetailsColors,
 ) -> Stateful<Div> {
     let is_active = col == *cur_col;
     let next_dir = if is_active && *cur_dir == SortDir::Asc {
@@ -1034,14 +1209,14 @@ fn sort_cell(
     } else {
         SortDir::Asc
     };
-    let label_color = if is_active { accent } else { muted };
+    let label_color = if is_active { colors.accent } else { colors.muted };
     let sort_icon = if is_active {
         let kind = if *cur_dir == SortDir::Asc {
             AtlasIcon::ArrowUp
         } else {
             AtlasIcon::ArrowDown
         };
-        Some(icon(kind, 9.0, accent))
+        Some(icon(kind, 9.0, colors.accent))
     } else {
         None
     };
@@ -1067,7 +1242,6 @@ fn sort_cell(
 
 /// Type column header: left-click sorts by extension, right-click opens the
 /// searchable multi-select filter overlay.
-#[allow(clippy::too_many_arguments)]
 fn type_header_cell(
     view: &Entity<App>,
     pane_id: TabId,
@@ -1075,8 +1249,7 @@ fn type_header_cell(
     cur_dir: &SortDir,
     has_filter: bool,
     type_labels: Vec<String>,
-    muted: Hsla,
-    accent: Hsla,
+    colors: &DetailsColors,
 ) -> Stateful<Div> {
     let col = SortColumn::Extension;
     let is_active = col == *cur_col;
@@ -1086,9 +1259,9 @@ fn type_header_cell(
         SortDir::Asc
     };
     let label_color = if has_filter || is_active {
-        accent
+        colors.accent
     } else {
-        muted
+        colors.muted
     };
     let sort_icon = if is_active {
         let kind = if *cur_dir == SortDir::Asc {
@@ -1096,7 +1269,7 @@ fn type_header_cell(
         } else {
             AtlasIcon::ArrowDown
         };
-        Some(icon(kind, 9.0, accent))
+        Some(icon(kind, 9.0, colors.accent))
     } else {
         None
     };
@@ -1117,7 +1290,7 @@ fn type_header_cell(
                     .w(crate::ui::rem_px(5.))
                     .h(crate::ui::rem_px(5.))
                     .rounded_full()
-                    .bg(accent),
+                    .bg(colors.accent),
             )
         })
         .when_some(sort_icon, |el, ico| el.child(ico))
@@ -1171,13 +1344,6 @@ struct DetailsRowLayout {
     name_right: f32,
     /// Metadata columns in visual order (left→right, after Name).
     columns: Vec<DetailsColumnLayout>,
-}
-
-struct DetailsRowCanvasState {
-    name_s: ShapedLine,
-    ellipsis_s: Option<ShapedLine>,
-    columns: Vec<DetailsPaintColumn>,
-    layout: DetailsRowLayout,
 }
 
 struct DetailsPaintColumn {
@@ -1297,7 +1463,6 @@ fn blend_layouts(from: &DetailsRowLayout, to: &DetailsRowLayout, t: f32) -> Deta
 /// Shapes text in prepaint (cached by gpui's text system), paints via GPU
 /// commands in paint — no per-column div/flex layout.
 /// Falls back to render_row when renaming (input element required).
-#[allow(clippy::too_many_arguments)]
 fn render_rename_row(
     entry: &FileEntry,
     entry_idx: usize,
@@ -1305,11 +1470,7 @@ fn render_rename_row(
     _selected: bool,
     pane_id: TabId,
     view: &Entity<App>,
-    accent: Hsla,
-    _accent_fg: Hsla,
-    _hover: Hsla,
-    muted: Hsla,
-    stripe_bg: Hsla,
+    colors: &DetailsColors,
     rename_input: Entity<InputState>,
     flashing: bool,
     record_rects: bool,
@@ -1350,8 +1511,8 @@ fn render_rename_row(
             .items_center()
             .pl(px(cell_pad))
             .overflow_hidden()
-            .text_color(muted)
-            .child(text)
+            .text_color(colors.muted)
+            .child(SharedString::from(text))
     });
 
     div()
@@ -1365,8 +1526,8 @@ fn render_rename_row(
         .overflow_hidden()
         .rounded_sm()
         .cursor_pointer()
-        .when(flashing, |s| s.bg(accent.opacity(0.38)))
-        .when(!flashing && odd, |s| s.bg(stripe_bg))
+        .when(flashing, |s| s.bg(colors.accent.opacity(0.38)))
+        .when(!flashing && odd, |s| s.bg(colors.stripe_bg))
         .child(
             div()
                 .absolute()
@@ -1380,7 +1541,7 @@ fn render_rename_row(
                         .h(px(row_icon_size))
                         .flex_none()
                         .into_any_element(),
-                    None => fallback_icon.element(ROW_ICON_SIZE, muted),
+                    None => fallback_icon.element(ROW_ICON_SIZE, colors.muted),
                 }),
         )
         .child(
@@ -1416,9 +1577,88 @@ struct MonolithicCanvasState {
 
 struct MonolithicRowState {
     idx: usize,
+    selected: bool,
+    hovered: bool,
+    flashing: bool,
+    odd: bool,
     dimmed: bool,
     name_s: ShapedLine,
     ellipsis_s: Option<ShapedLine>,
     meta_cols: Vec<DetailsPaintColumn>,
     icon_tex: Option<std::sync::Arc<gpui::RenderImage>>,
+    fallback_icon_path: Option<&'static str>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hit_model() -> DetailsHitModel {
+        DetailsHitModel {
+            bounds: gpui::Bounds {
+                origin: point(px(10.0), px(100.0)),
+                size: size(px(300.0), px(96.0)),
+            },
+            scroll_y: 48.0,
+            row_h: 24.0,
+            visible: Arc::new(vec![3, 5, 8, 13, 21, 34, 55]),
+            start_idx: 2,
+            end_idx: 6,
+            total_count: 7,
+        }
+    }
+
+    #[test]
+    fn details_hit_row_from_window_point_with_scroll() {
+        let model = hit_model();
+        let pos = point(px(24.0), px(101.0));
+
+        assert_eq!(model.hit_visible_pos(pos), Some(2));
+        assert_eq!(model.hit_entry(pos), Some(8));
+    }
+
+    #[test]
+    fn details_hit_background_returns_none() {
+        let model = hit_model();
+
+        assert_eq!(model.hit_entry(point(px(9.0), px(120.0))), None);
+        assert_eq!(model.hit_entry(point(px(24.0), px(197.0))), None);
+    }
+
+    #[test]
+    fn details_hit_clips_to_visible_range() {
+        let mut model = hit_model();
+
+        assert_eq!(model.hit_entry(point(px(24.0), px(125.0))), Some(13));
+        model.end_idx = 5;
+        assert_eq!(model.hit_entry(point(px(24.0), px(195.0))), None);
+    }
+
+    #[test]
+    fn details_row_bounds_are_window_space() {
+        let model = hit_model();
+        let bounds = model.row_bounds(3);
+
+        assert_eq!(bounds.origin.x, px(10.0));
+        assert_eq!(bounds.origin.y, px(124.0));
+        assert_eq!(bounds.size.height, px(24.0));
+    }
+
+    #[test]
+    fn details_content_offset_hits_entry_for_drag_layer() {
+        let model = hit_model();
+
+        assert_eq!(
+            model.hit_entry_at_content_offset(point(px(30.0), px(0.0))),
+            Some(3)
+        );
+        assert_eq!(
+            model.hit_entry_at_content_offset(point(px(30.0), px(72.0))),
+            Some(13)
+        );
+        assert_eq!(
+            model.hit_entry_at_content_offset(point(px(30.0), px(200.0))),
+            None
+        );
+    }
 }

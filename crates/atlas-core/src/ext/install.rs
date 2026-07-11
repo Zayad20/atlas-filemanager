@@ -78,6 +78,19 @@ pub fn ensure_bundled(id: &str, manifest_toml: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Seed or update one official bundled asset when its packaged bytes change.
+pub fn ensure_asset(id: &str, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
+    let path = super::extensions_dir().join(id).join(name);
+    let current = std::fs::read(&path).unwrap_or_default();
+    if current != bytes {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, bytes)?;
+    }
+    Ok(())
+}
+
 /// Seed a bundled extension and copy any bundled assets that are not already present.
 pub fn ensure_bundled_with_assets(id: &str, manifest_toml: &str, src: &Path) -> anyhow::Result<()> {
     ensure_bundled(id, manifest_toml)?;

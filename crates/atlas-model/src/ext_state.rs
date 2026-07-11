@@ -30,6 +30,8 @@ pub struct ExtState {
     pub manager_tab: ExtManagerTab,
     /// Cached marketplace catalogue from R2 registry.json.
     pub remote: Option<Vec<RemoteExtension>>,
+    /// Rows mounted from the remote catalogue. Paging bounds icon/network work.
+    pub marketplace_visible: usize,
     /// True while a registry fetch is in flight.
     pub remote_loading: bool,
     /// Extension IDs currently being downloaded + installed.

@@ -19,7 +19,7 @@ impl App {
         };
         lens.update();
         if lens.loading || !self.state.settings.disable_animations {
-            // active-pane RAF for bubble drift; throttle later if idle CPU matters.
+            // Active-pane RAF for bubble drift; throttle later if idle CPU matters.
             window.request_animation_frame();
         }
 

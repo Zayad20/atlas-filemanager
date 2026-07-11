@@ -52,9 +52,9 @@ pub(crate) enum OverlayClaim {
     RenamingProfile,
     GettingStarted,
     CreatingTag,
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     CloudAdd,
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     CloudRename,
     /// Covers show_settings, transfer_conflict and properties — all use a neutral focus handle.
     TextlessModal,
@@ -110,11 +110,11 @@ impl App {
         if self.state.profile_ui.creating_tag {
             return Some(OverlayClaim::CreatingTag);
         }
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         if self.state.cloud.show_add_dialog {
             return Some(OverlayClaim::CloudAdd);
         }
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         if self.state.cloud.renaming_remote_id.is_some() {
             return Some(OverlayClaim::CloudRename);
         }
@@ -214,9 +214,9 @@ impl App {
                 }
             }
             OverlayClaim::CreatingTag => Some(self.create_tag_focus(window, cx)),
-            #[cfg(feature = "cloud")]
+            #[cfg(feature = "provider-host")]
             OverlayClaim::CloudAdd => Some(self.cloud_add_focus(window, cx)),
-            #[cfg(feature = "cloud")]
+            #[cfg(feature = "provider-host")]
             OverlayClaim::CloudRename => Some(self.rename_remote_focus(window, cx)),
             OverlayClaim::TextlessModal => Some(self.overlay_focus(cx)),
             OverlayClaim::InlineRename => {

@@ -1,6 +1,6 @@
 id = "file-tools"
 name = "File Tools"
-version = "0.2.0"
+version = "0.2.4"
 author = "Atlas Team"
 description = "Resize images, convert media, and compress PDFs using local tools"
 kind = "declarative"

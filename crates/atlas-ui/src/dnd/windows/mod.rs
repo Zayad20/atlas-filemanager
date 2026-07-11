@@ -78,7 +78,7 @@ static ORIGINAL_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 struct PendingDrag {
     hwnd: isize,
     paths: Vec<PathBuf>,
-    /// `Some` when dragging from inside an archive (Fase 5).
+    /// `Some` when dragging from inside an archive (Phase 5).
     archive_items: Option<Vec<(PathBuf, PathBuf)>>,
     /// Where to report move-completion / errors back to the App.
     queue: Option<DndQueue>,
@@ -334,7 +334,7 @@ pub fn start_drag_copy_only(hwnd_raw: isize, paths: &[PathBuf]) {
     let _ = start_drag_real(hwnd_raw, paths, DROPEFFECT_COPY);
 }
 
-/// Fase 5: Start an OLE drag of virtual files (inside an archive).
+/// Phase 5: Start an OLE drag of virtual files (inside an archive).
 ///
 /// Extracts `items` (archive_path, inner_path pairs) to a session-unique temp
 /// directory synchronously, then delegates to `start_drag_and_handle`.

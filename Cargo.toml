@@ -14,6 +14,7 @@ members = [
     "crates/atlas-ui",
     "crates/atlas-publisher",
     "crates/atlas-cloud-extension",
+    "crates/atlas-icon-extension",
 ]
 exclude = ["vendor/zed-reference", "vendor/gpui-component-fork"]
 resolver = "2"
@@ -80,11 +81,11 @@ icon = ["packaging/icons/atlas.ico", "packaging/icons/atlas.png"]
 ignored = ["kamadak-exif"]
 
 [features]
-default = ["cloud", "rar", "sevenz"]
+default = ["provider-host", "rar", "sevenz"]
 dhat-heap = ["dhat"]
 # Host support for optional virtual-file-provider extensions. The rclone backend
 # is built only by `atlas-cloud-extension`.
-cloud = ["atlas-ui/cloud"]
+provider-host = ["atlas-ui/provider-host"]
 # RAR archive navigation via bundled UnRAR.exe CLI.
 rar = ["atlas-ui/rar"]
 sevenz = ["atlas-ui/sevenz"]

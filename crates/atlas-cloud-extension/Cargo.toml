@@ -6,7 +6,7 @@ license = "AGPL-3.0-or-later"
 
 [dependencies]
 atlas-core = { workspace = true, features = ["cloud-backend"] }
-atlas-model = { workspace = true, features = ["cloud"] }
+atlas-model = { workspace = true, features = ["provider-host"] }
 anyhow.workspace = true
 serde_json.workspace = true
 serde.workspace = true

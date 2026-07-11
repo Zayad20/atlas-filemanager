@@ -50,7 +50,7 @@ gpui::actions!(
         OpenSelected,
         SelectAllItems,
         RenameSelected,
-        // FASE D: overlays / panels / view toggles.
+        // Phase D: overlays / panels / view toggles.
         OpenPalette,
         OpenGotoBar,
         OpenSearchInPlace,
@@ -61,12 +61,12 @@ gpui::actions!(
         OpenSettings,
         OpenExtManager,
         CloseOverlays,
-        // FASE D: pane structure.
+        // Phase D: pane structure.
         CloseFocusedPane,
         FocusNextPane,
         SplitHorizontal,
         SplitVertical,
-        // FASE D: history / location / refresh.
+        // Phase D: history / location / refresh.
         Undo,
         Redo,
         RefreshTab,
@@ -89,21 +89,21 @@ gpui::actions!(
     ]
 );
 
-#[cfg(feature = "cloud")]
+#[cfg(feature = "provider-host")]
 #[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
 #[action(namespace = atlas, no_json)]
 pub struct RemoveCloudRemote {
     pub id: String,
 }
 
-#[cfg(feature = "cloud")]
+#[cfg(feature = "provider-host")]
 #[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
 #[action(namespace = atlas, no_json)]
 pub struct StartRenameCloudRemote {
     pub id: String,
 }
 
-#[cfg(all(feature = "cloud", windows))]
+#[cfg(all(feature = "provider-host", windows))]
 #[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
 #[action(namespace = atlas, no_json)]
 pub struct InstallWinFspForRemote {
@@ -245,18 +245,18 @@ pub fn run(
             KeyBinding::new("f2", RenameSelected, Some("Atlas")),
             KeyBinding::new("ctrl-tab", NextTab, Some("Atlas")),
             KeyBinding::new("ctrl-shift-tab", PrevTab, Some("Atlas")),
-            // FASE D: overlays / panels / toggles.
+            // Phase D: overlays / panels / toggles.
             KeyBinding::new("ctrl-f", OpenSearchInPlace, Some("Atlas")),
             KeyBinding::new("space", ToggleInspector, Some("Atlas")),
             KeyBinding::new("escape", CloseOverlays, Some("Atlas")),
-            // FASE D: pane structure.
+            // Phase D: pane structure.
             KeyBinding::new("alt-tab", FocusNextPane, Some("Atlas")),
-            // FASE D: history / location / refresh.
+            // Phase D: history / location / refresh.
             KeyBinding::new("f5", RefreshTab, Some("Atlas")),
             KeyBinding::new("ctrl-r", RefreshTab, Some("Atlas")),
             KeyBinding::new("ctrl-l", EditLocation, Some("Atlas")),
             KeyBinding::new("alt-up", NavParent, Some("Atlas")),
-            // FASE D: clipboard / delete.
+            // Phase D: clipboard / delete.
             KeyBinding::new("ctrl-c", gpui_component::input::Copy, Some("Atlas")),
             KeyBinding::new("ctrl-x", gpui_component::input::Cut, Some("Atlas")),
             KeyBinding::new("ctrl-v", gpui_component::input::Paste, Some("Atlas")),

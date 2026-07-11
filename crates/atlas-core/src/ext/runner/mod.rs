@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 use super::registry::CommandRef;
 use atlas_model::app_state::BgResult;
+use atlas_model::ext_model::{ExtKind, SidecarCommandRequest, SidecarCommandResponse};
 use atlas_model::pane::TabId;
 
 fn approved_program(tools: &HashMap<String, PathBuf>, name: &str) -> Option<PathBuf> {
@@ -75,6 +76,11 @@ pub fn run(
     paths: Vec<PathBuf>,
     answers: HashMap<String, String>,
 ) {
+    if cmd.kind == ExtKind::Sidecar {
+        run_sidecar_command(rt, bg_tx, cmd, paths, answers);
+        return;
+    }
+
     let run_tmpl = cmd.command.run.clone();
     if run_tmpl.trim().is_empty() {
         return;
@@ -115,6 +121,62 @@ pub fn run(
             ext_id,
             error: errors.into_iter().find(|e| !e.is_empty()),
             dirs: dirs.into_iter().collect(),
+        });
+    });
+}
+
+fn run_sidecar_command(
+    rt: &tokio::runtime::Handle,
+    bg_tx: flume::Sender<BgResult>,
+    cmd: CommandRef,
+    paths: Vec<PathBuf>,
+    answers: HashMap<String, String>,
+) {
+    let ext_id = cmd.ext_id.clone();
+    rt.spawn_blocking(move || {
+        let result = (|| -> anyhow::Result<SidecarCommandResponse> {
+            let sidecar = cmd
+                .sidecar
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("sidecar extension has no process configuration"))?;
+            let program =
+                super::provider_sidecar::confined_program(&cmd.ext_dir, &sidecar.command)?;
+            let mut child = std::process::Command::new(program)
+                .args(&sidecar.args)
+                .current_dir(&cmd.ext_dir)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
+            let request = SidecarCommandRequest {
+                version: 1,
+                command_id: cmd.command.id.clone(),
+                paths,
+                answers,
+                data_dir: cmd.ext_dir.clone(),
+            };
+            if let Some(mut stdin) = child.stdin.take() {
+                serde_json::to_writer(&mut stdin, &request)?;
+                use std::io::Write as _;
+                stdin.write_all(b"\n")?;
+            }
+            let output = child.wait_with_output()?;
+            anyhow::ensure!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+            Ok(serde_json::from_slice(&output.stdout)?)
+        })();
+
+        let (error, dirs) = match result {
+            Ok(response) => (response.error, response.changed_dirs),
+            Err(error) => (Some(error.to_string()), Vec::new()),
+        };
+        let _ = bg_tx.send(BgResult::ExtCommandDone {
+            ext_id,
+            error,
+            dirs,
         });
     });
 }

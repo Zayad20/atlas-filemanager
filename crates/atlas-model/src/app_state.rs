@@ -173,50 +173,50 @@ pub enum BgResult {
     },
     // --- cloud extension ---
     /// rclone binary download progress while fetching it on first use.
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     CloudRcloneProgress {
         done: u64,
         total: u64,
     },
     /// rclone daemon is up and the provider is ready.
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     CloudReady,
     /// A non-fatal cloud error to surface in the UI.
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     CloudError(String),
     /// WinFsp download progress `(bytes_done, bytes_total)`.
-    #[cfg(all(feature = "cloud", windows))]
+    #[cfg(all(feature = "provider-host", windows))]
     WinFspProgress {
         done: u64,
         total: u64,
     },
     /// WinFsp installed successfully; retry the pending mount.
-    #[cfg(all(feature = "cloud", windows))]
+    #[cfg(all(feature = "provider-host", windows))]
     WinFspInstalled {
         /// Remote to mount now that WinFsp is available (if any).
         retry_id: Option<crate::cloud_model::RemoteId>,
     },
     /// A remote's backend config was created successfully.
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     RemoteConfigured(crate::cloud_model::CloudRemote),
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     RemoteConfigFailed {
         id: crate::cloud_model::RemoteId,
         error: String,
     },
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     RemoteRemoved(crate::cloud_model::RemoteId),
     /// A remote's runtime (mount/connection) status changed.
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     RemoteStatusChanged {
         id: crate::cloud_model::RemoteId,
         status: crate::cloud_model::RemoteStatus,
     },
     /// Full transfer-list snapshot from the Transfer Manager.
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     TransferUpdate(crate::cloud_model::TransferSnapshot),
     /// Storage usage `(used, total)` bytes reported for a remote.
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     RemoteQuota {
         id: crate::cloud_model::RemoteId,
         used: u64,
@@ -224,7 +224,7 @@ pub enum BgResult {
     },
     /// A remote directory's contents changed (e.g. after an upload); re-list any
     /// Access-mode tab showing `(id, path)`.
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     RemoteChanged {
         id: crate::cloud_model::RemoteId,
         paths: Vec<String>,
@@ -250,7 +250,7 @@ pub struct AppState {
     pub sidebar_drop_zone: Vec<StagedDrop>,
     pub tag_cache: crate::tag_cache::TagCache,
     pub ext: crate::ext_state::ExtState,
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     pub cloud: crate::cloud_state::CloudState,
 }
 
@@ -511,7 +511,7 @@ impl AppState {
             drag_pending: false,
             tag_cache: crate::tag_cache::TagCache::default(),
             ext: crate::ext_state::ExtState::default(),
-            #[cfg(feature = "cloud")]
+            #[cfg(feature = "provider-host")]
             cloud: crate::cloud_state::CloudState::default(),
         }
     }
@@ -576,9 +576,9 @@ mod tests {
             kind: FileKind::File,
             size: Some(1),
             modified: None,
-            display_size: String::new(),
-            display_date: String::new(),
-            display_type: String::new(),
+            display_size: String::new().into(),
+            display_date: String::new().into(),
+            display_type: String::new().into(),
             _is_hidden: false,
             _is_symlink: false,
             archive_root: None,

@@ -6,6 +6,7 @@ use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 use windows_sys::Wdk::Storage::FileSystem::{MFT_ENUM_DATA, USN_RECORD};
 use windows_sys::Win32::Foundation::{
@@ -24,6 +25,177 @@ use windows_sys::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_TYPENAME}
 
 const BUFFER_SIZE: usize = 1024 * 1024;
 const SNAPSHOT_MS: u128 = 250;
+
+/// Copy one file through Windows' native CopyFile2 pipeline. This lets the OS
+/// select filesystem/SMB offload paths while retaining progress and cooperative
+/// cancellation. The caller owns fallback and partial-file cleanup.
+pub fn copy_file2<F: FnMut(u64, u64)>(
+    source: &Path,
+    destination: &Path,
+    cancel: &AtomicBool,
+    mut progress: F,
+) -> std::io::Result<u64> {
+    use windows_sys_copy::Win32::Storage::FileSystem::{
+        CopyFile2, COPYFILE2_CALLBACK_CHUNK_FINISHED, COPYFILE2_EXTENDED_PARAMETERS,
+        COPYFILE2_MESSAGE, COPYFILE2_PROGRESS_CANCEL, COPYFILE2_PROGRESS_CONTINUE,
+        COPY_FILE_NO_BUFFERING, COPY_FILE_REQUEST_COMPRESSED_TRAFFIC,
+    };
+
+    struct Context<'a, F> {
+        cancel: &'a AtomicBool,
+        progress: &'a mut F,
+    }
+
+    unsafe extern "system" fn callback<F: FnMut(u64, u64)>(
+        message: *const COPYFILE2_MESSAGE,
+        raw_context: *const core::ffi::c_void,
+    ) -> i32 {
+        let context = unsafe { &mut *(raw_context.cast_mut().cast::<Context<'_, F>>()) };
+        if context.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return COPYFILE2_PROGRESS_CANCEL;
+        }
+        let message = unsafe { &*message };
+        if message.Type == COPYFILE2_CALLBACK_CHUNK_FINISHED {
+            let chunk = unsafe { message.Info.ChunkFinished };
+            (context.progress)(chunk.uliTotalBytesTransferred, chunk.uliTotalFileSize);
+        }
+        COPYFILE2_PROGRESS_CONTINUE
+    }
+
+    let source_len = source.metadata()?.len();
+    let mut source_wide = wide(source.as_os_str());
+    let mut destination_wide = wide(destination.as_os_str());
+    let mut context = Context {
+        cancel,
+        progress: &mut progress,
+    };
+    let mut flags = 0;
+    if source_len >= 1024 * 1024 * 1024 {
+        flags |= COPY_FILE_NO_BUFFERING;
+    }
+    if source.to_string_lossy().starts_with(r"\\")
+        || destination.to_string_lossy().starts_with(r"\\")
+    {
+        flags |= COPY_FILE_REQUEST_COMPRESSED_TRAFFIC;
+    }
+    let parameters = COPYFILE2_EXTENDED_PARAMETERS {
+        dwSize: size_of::<COPYFILE2_EXTENDED_PARAMETERS>() as u32,
+        dwCopyFlags: flags,
+        pfCancel: null_mut(),
+        pProgressRoutine: Some(callback::<F>),
+        pvCallbackContext: (&raw mut context).cast(),
+    };
+    let result = unsafe {
+        CopyFile2(
+            source_wide.as_mut_ptr(),
+            destination_wide.as_mut_ptr(),
+            &parameters,
+        )
+    };
+    if result >= 0 {
+        progress(source_len, source_len);
+        Ok(source_len)
+    } else if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "CopyFile2 cancelled",
+        ))
+    } else {
+        Err(std::io::Error::from_raw_os_error(result & 0xFFFF))
+    }
+}
+
+/// Fast free-space query for the volume containing `path`.
+pub fn available_space(path: &Path) -> Option<u64> {
+    use windows_sys_copy::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let existing = path.ancestors().find(|candidate| candidate.exists())?;
+    let wide_path = wide(existing.as_os_str());
+    let mut available = 0u64;
+    let result =
+        unsafe { GetDiskFreeSpaceExW(wide_path.as_ptr(), &mut available, null_mut(), null_mut()) };
+    (result != 0).then_some(available)
+}
+
+/// Try an explicit same-volume copy-on-write block clone. Returns `Ok(false)`
+/// when the filesystem/server does not support extent duplication, allowing a
+/// transparent fallback to CopyFile2.
+pub fn try_block_clone(source: &Path, destination: &Path) -> std::io::Result<bool> {
+    use std::fs::{self, File};
+    use std::io::{Seek, SeekFrom};
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys_copy::Win32::Storage::FileSystem::GetDiskFreeSpaceW;
+    use windows_sys_copy::Win32::System::Ioctl::{
+        DUPLICATE_EXTENTS_DATA, FSCTL_DUPLICATE_EXTENTS_TO_FILE,
+    };
+    use windows_sys_copy::Win32::System::IO::DeviceIoControl;
+
+    let source_len = source.metadata()?.len();
+    if source_len < 16 * 1024 * 1024 {
+        return Ok(false);
+    }
+    let existing = destination
+        .ancestors()
+        .find(|candidate| candidate.exists())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "destination volume"))?;
+    let volume_wide = wide(existing.as_os_str());
+    let mut sectors_per_cluster = 0u32;
+    let mut bytes_per_sector = 0u32;
+    let cluster_ok = unsafe {
+        GetDiskFreeSpaceW(
+            volume_wide.as_ptr(),
+            &mut sectors_per_cluster,
+            &mut bytes_per_sector,
+            null_mut(),
+            null_mut(),
+        )
+    };
+    if cluster_ok == 0 {
+        return Ok(false);
+    }
+    let cluster_size = u64::from(sectors_per_cluster) * u64::from(bytes_per_sector);
+    let clone_bytes = source_len / cluster_size * cluster_size;
+    if clone_bytes == 0 {
+        return Ok(false);
+    }
+
+    let mut source_file = File::open(source)?;
+    let mut destination_file = File::create(destination)?;
+    destination_file.set_len(source_len)?;
+    let data = DUPLICATE_EXTENTS_DATA {
+        FileHandle: source_file.as_raw_handle(),
+        SourceFileOffset: 0,
+        TargetFileOffset: 0,
+        ByteCount: clone_bytes as i64,
+    };
+    let mut returned = 0u32;
+    let cloned = unsafe {
+        DeviceIoControl(
+            destination_file.as_raw_handle(),
+            FSCTL_DUPLICATE_EXTENTS_TO_FILE,
+            (&raw const data).cast(),
+            size_of::<DUPLICATE_EXTENTS_DATA>() as u32,
+            null_mut(),
+            0,
+            &mut returned,
+            null_mut(),
+        )
+    };
+    if cloned == 0 {
+        drop(destination_file);
+        let _ = fs::remove_file(destination);
+        return Ok(false);
+    }
+
+    if clone_bytes < source_len {
+        source_file.seek(SeekFrom::Start(clone_bytes))?;
+        destination_file.seek(SeekFrom::Start(clone_bytes))?;
+        std::io::copy(&mut source_file, &mut destination_file)?;
+    }
+    destination_file.sync_data()?;
+    fs::set_permissions(destination, source.metadata()?.permissions())?;
+    Ok(true)
+}
 
 #[derive(Clone, Debug)]
 pub struct WinSpaceItem {

@@ -37,6 +37,14 @@ pub struct Tooltip {
 }
 
 impl Tooltip {
+    /// Immediately dismiss the managed tooltip for this window, including any
+    /// pending show or grace-period task.
+    pub fn dismiss(window: &mut Window, cx: &mut App) {
+        if let Some(overlay) = Root::tooltip_overlay(window, cx) {
+            overlay.update(cx, |overlay, cx| overlay.hide(cx));
+        }
+    }
+
     /// Create a Tooltip with a text content.
     pub fn new(text: impl Into<Text>) -> Self {
         Self {

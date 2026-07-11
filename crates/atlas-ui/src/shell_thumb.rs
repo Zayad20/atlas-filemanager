@@ -22,7 +22,7 @@ use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::UI::Shell::{IShellItem, IShellItemImageFactory, SHCreateItemFromParsingName};
 
 // SIIGBF flag constants (from Windows SDK ShObjIdl_core.h).
-// declare locally — named constants appeared later in windows-rs; avoids tracking
+// Declare locally — named constants appeared later in windows-rs; avoids tracking
 //           which exact crate release exports them.
 const SIIGBF_THUMBNAILONLY: i32 = 0x0000_0008;
 

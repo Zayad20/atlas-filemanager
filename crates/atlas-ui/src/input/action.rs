@@ -289,7 +289,7 @@ pub enum Action {
         dest: PathBuf,
     },
     // ── Cloud / network mounting (feature `cloud`) ──
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     Cloud(crate::app::cloud::CloudAction),
     // ── Extensions ──
     Ext(crate::app::ext::ExtAction),

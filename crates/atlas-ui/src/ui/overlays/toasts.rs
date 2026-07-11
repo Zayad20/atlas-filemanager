@@ -128,7 +128,7 @@ impl App {
         deferred(
             div()
                 .absolute()
-                .bottom(crate::ui::rem_px(24.))
+                .top(crate::ui::rem_px(24.))
                 .right(crate::ui::rem_px(24.))
                 .child(
                     v_flex()

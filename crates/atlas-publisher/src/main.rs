@@ -106,14 +106,31 @@ async fn main() -> Result<()> {
                 )
                 .await?;
 
-            // 5. Upload icon if exists
+            // 5. Upload a versioned icon. Prefer SVG for crisp UI rendering.
             let mut icon_url = None;
-            let icon_path = path.join("icon.png");
-            if icon_path.exists() {
-                let icon_key = format!("extensions/{}/icon.png", manifest.id);
+            let svg_path = path.join("icon.svg");
+            let png_path = path.join("icon.png");
+            let icon = if svg_path.exists() {
+                Some((svg_path, "svg", "image/svg+xml"))
+            } else if png_path.exists() {
+                ensure_png(&png_path)?;
+                Some((png_path, "png", "image/png"))
+            } else {
+                None
+            };
+            if let Some((icon_path, extension, content_type)) = icon {
+                let icon_key = format!(
+                    "extensions/{}/versions/{}/icon.{extension}",
+                    manifest.id, manifest.version
+                );
                 println!("Uploading icon to R2: {}", icon_key);
                 client
-                    .upload_file(&icon_path, &icon_key, "image/png", "public, max-age=86400")
+                    .upload_file(
+                        &icon_path,
+                        &icon_key,
+                        content_type,
+                        "public, max-age=31536000, immutable",
+                    )
                     .await?;
                 icon_url = Some(client.build_public_url(&icon_key));
             }
@@ -227,4 +244,16 @@ fn sha256_file(path: &Path) -> Result<String> {
     }
 
     Ok(hex::encode(hasher.finalize()))
+}
+
+fn ensure_png(path: &Path) -> Result<()> {
+    let mut file = std::fs::File::open(path)?;
+    let mut signature = [0_u8; 8];
+    file.read_exact(&mut signature)?;
+    anyhow::ensure!(
+        signature == [137, 80, 78, 71, 13, 10, 26, 10],
+        "{} is named icon.png but is not a PNG file",
+        path.display()
+    );
+    Ok(())
 }

@@ -1,14 +1,16 @@
 //! `atlas-model`: framework-neutral application state.
 //!
 //! IDs, serializable state, requests/results — no filesystem, cloud, extension or
-//! UI runtime. Moved here from the legacy `src/state` tree (Fase J); the binary
+//! UI runtime. Moved here from the legacy `src/state` tree (Phase J); the binary
 //! re-exports it as `crate::state` via a shim so existing paths keep resolving.
+
+rust_i18n::i18n!("../atlas-ui/locales", fallback = "en");
 
 pub mod app_state;
 pub mod batch_rename;
-#[cfg(feature = "cloud")]
+#[cfg(feature = "provider-host")]
 pub mod cloud_model;
-#[cfg(feature = "cloud")]
+#[cfg(feature = "provider-host")]
 pub mod cloud_state;
 pub mod ext_model;
 pub mod ext_state;

@@ -35,6 +35,8 @@ scratch_*.py
 
 # Internal/stale diagnostics; translate and move into docs/ before publishing.
 docs/diagnostics/
+# Machine-specific transfer benchmark results; regenerate with the harness.
+docs/transfer-benchmarks.md
 
 # Unrelated local checkouts / generated side projects
 website/

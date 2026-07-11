@@ -13,7 +13,7 @@ enum TabSource {
     #[default]
     Directory,
     Tag(TagId),
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     Remote {
         id: String,
         path: String,
@@ -109,7 +109,7 @@ impl From<TabDataRaw> for TabData {
                         inner,
                     },
                     TabSource::Tag(id) => Location::Tag(id),
-                    #[cfg(feature = "cloud")]
+                    #[cfg(feature = "provider-host")]
                     TabSource::Remote { id, path: rpath } => Location::Remote { id, path: rpath },
                 }
             }

@@ -551,7 +551,7 @@ impl App {
                             if is_archive {
                                 self.navigate_into_archive(tile, path, std::path::PathBuf::new());
                             } else {
-                                #[cfg(feature = "cloud")]
+                                #[cfg(feature = "provider-host")]
                                 if self.open_remote_paths_for(tile, &[path.clone()]) {
                                     continue;
                                 }
@@ -603,7 +603,7 @@ impl App {
                     self.save_folder_view_pref(folder_pref_write);
                 }
                 Action::Open(paths) => {
-                    #[cfg(feature = "cloud")]
+                    #[cfg(feature = "provider-host")]
                     if self.open_remote_paths(&paths) {
                         continue;
                     }
@@ -615,7 +615,7 @@ impl App {
                     }
                 }
                 Action::Copy(paths) => {
-                    #[cfg(feature = "cloud")]
+                    #[cfg(feature = "provider-host")]
                     if let Some((remote_id, _)) = self.focused_remote_tab() {
                         self.set_clipboard_with_remote(paths, false, Some(remote_id));
                         continue;
@@ -628,7 +628,7 @@ impl App {
                     }
                 }
                 Action::Cut(paths) => {
-                    #[cfg(feature = "cloud")]
+                    #[cfg(feature = "provider-host")]
                     if let Some((remote_id, _)) = self.focused_remote_tab() {
                         self.set_clipboard_with_remote(paths, true, Some(remote_id));
                         continue;
@@ -663,7 +663,7 @@ impl App {
                         self.purge_selected_from_recycle_bin();
                         continue;
                     }
-                    #[cfg(feature = "cloud")]
+                    #[cfg(feature = "provider-host")]
                     if let Some((remote_id, current_path)) = self.focused_remote_tab() {
                         let tile = self.state.focused_tile;
                         let entries: Vec<(String, bool)> = paths
@@ -695,7 +695,7 @@ impl App {
                     self.delete_files(paths, to_trash);
                 }
                 Action::Rename { from, to } => {
-                    #[cfg(feature = "cloud")]
+                    #[cfg(feature = "provider-host")]
                     if let Some((remote_id, current_path)) = self.focused_remote_tab() {
                         let from_str = from.to_string_lossy().replace('\\', "/");
                         let to_str = to.to_string_lossy().replace('\\', "/");
@@ -712,7 +712,7 @@ impl App {
                     self.rename_file(from, to);
                 }
                 Action::CreateFolder { parent, name } => {
-                    #[cfg(feature = "cloud")]
+                    #[cfg(feature = "provider-host")]
                     if let Some((remote_id, current_path)) = self.focused_remote_tab() {
                         let parent_str = parent.to_string_lossy().replace('\\', "/");
                         let folder_path = if parent_str.is_empty() {
@@ -853,7 +853,7 @@ impl App {
                     }
                 }
                 Action::Paste { dest } => {
-                    #[cfg(feature = "cloud")]
+                    #[cfg(feature = "provider-host")]
                     {
                         let remote_dest = self.focused_remote_tab();
                         let clipboard_remote = self
@@ -1226,7 +1226,7 @@ impl App {
                 Action::ExtractArchiveTo { tab, items, dest } => {
                     self.extract_archive_items(tab, items, dest);
                 }
-                #[cfg(feature = "cloud")]
+                #[cfg(feature = "provider-host")]
                 Action::Cloud(c) => self.handle_cloud_action(c),
                 Action::Ext(e) => self.handle_ext_action(e),
 

@@ -151,10 +151,7 @@ impl App {
             let list_view = view.clone();
             let inner_scroll_view = view.clone();
             div()
-                .id(SharedString::from(format!(
-                    "anim-grid-scroll-{}",
-                    pane_id.0
-                )))
+                .id(("anim-grid-scroll", pane_id.0))
                 .size_full()
                 .overflow_y_scroll()
                 .track_scroll(&base_scroll)
@@ -211,14 +208,14 @@ impl App {
                             && !crate::ui::views::rename::suppress_row_chrome(
                                 app, pane_id, entry_idx,
                             );
-                        let cell = render_cell(
+                        let cell = render_cell(GridCellProps {
                             entry,
                             entry_idx,
                             selected,
                             pane_id,
-                            &list_view,
+                            view: &list_view,
                             thumb,
-                            thumb,
+                            cell_w: thumb,
                             file_icon,
                             accent,
                             accent_fg,
@@ -228,9 +225,9 @@ impl App {
                             record_rects,
                             rename_input,
                             is_animating,
-                            crate::ui::views::rename::dim_other_entry(app, pane_id, entry_idx),
+                            dimmed: crate::ui::views::rename::dim_other_entry(app, pane_id, entry_idx),
                             window,
-                        );
+                        });
                         cell
                     },
                 ))
@@ -243,7 +240,7 @@ impl App {
         let pane_view = view;
         crate::ui::views::pane_background_interactions(
             v_flex()
-                .id(SharedString::from(format!("pane-{}", pane_id.0)))
+                .id(("pane", pane_id.0))
                 .size_full()
                 .overflow_hidden()
                 .min_w(gpui::px(0.))
@@ -271,7 +268,7 @@ impl App {
                         this.notify_pane(pane_id, cx);
                     }
                 }
-                // FASE F: register this pane's bounds for OLE drop routing.
+                // Phase F: register this pane's bounds for OLE drop routing.
                 this.push_pane_zone(pane_id, bounds);
             });
         })
@@ -334,7 +331,6 @@ impl App {
                 #[cfg(not(target_os = "windows"))]
                 let use_shell = false;
 
-                #[cfg(not(target_os = "windows"))]
                 let ext_cmd = if !thumbable && entry.kind == FileKind::File {
                     entry.extension.as_deref().and_then(|ext| {
                         self.ext_registry
@@ -344,11 +340,9 @@ impl App {
                 } else {
                     None
                 };
+
                 #[cfg(target_os = "windows")]
-                let ext_cmd: Option<(
-                    String,
-                    std::collections::HashMap<String, std::path::PathBuf>,
-                )> = None;
+                let use_shell = use_shell && ext_cmd.is_none();
 
                 if thumbable || use_shell || ext_cmd.is_some() {
                     all_visible.push(entry.path.clone());
@@ -404,6 +398,13 @@ fn is_image_ext(ext: &str) -> bool {
     )
 }
 
+fn is_video_ext(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "mov" | "mp4" | "m4v" | "mkv" | "webm" | "wmv"
+    )
+}
+
 /// Whether this entry should get a downscaled thumbnail (an image file).
 fn is_thumbnailable(entry: &FileEntry) -> bool {
     matches!(entry.kind, FileKind::File) && entry.extension.as_deref().is_some_and(is_image_ext)
@@ -442,16 +443,12 @@ fn is_windows_shell_thumbnail_ext(ext: &str) -> bool {
     )
 }
 
-/// One grid cell: thumbnail (or a scaled glyph fallback while it loads / for
-/// non-images) + truncated name, fixed to the thumbnail size. The texture is a
-/// cached, downscaled `RenderImage` (see `ui::thumbs`) — never a full-res decode.
-#[allow(clippy::too_many_arguments)]
-fn render_cell(
-    entry: &FileEntry,
+struct GridCellProps<'a> {
+    entry: &'a FileEntry,
     entry_idx: usize,
     selected: bool,
     pane_id: TabId,
-    view: &Entity<App>,
+    view: &'a Entity<App>,
     thumb: f32,
     cell_w: f32,
     file_icon: FileIcon,
@@ -464,15 +461,37 @@ fn render_cell(
     rename_input: Option<gpui::Entity<gpui_component::input::InputState>>,
     is_animating: bool,
     dimmed: bool,
-    window: &mut Window,
-) -> AnyElement {
+    window: &'a mut Window,
+}
+
+/// One grid cell: thumbnail (or a scaled glyph fallback while it loads / for
+/// non-images) + truncated name, fixed to the thumbnail size. The texture is a
+/// cached, downscaled `RenderImage` (see `ui::thumbs`) — never a full-res decode.
+fn render_cell(props: GridCellProps) -> AnyElement {
+    let GridCellProps {
+        entry,
+        entry_idx,
+        selected,
+        pane_id,
+        view,
+        thumb,
+        cell_w,
+        file_icon,
+        accent,
+        accent_fg,
+        hover,
+        border,
+        flashing,
+        record_rects,
+        rename_input,
+        is_animating,
+        dimmed,
+        window,
+    } = props;
     let name = entry.name.clone();
     let font_size = window.rem_size() * 0.75;
     v_flex()
-        .id(SharedString::from(format!(
-            "cell-{}-{}",
-            pane_id.0, entry_idx
-        )))
+        .id(("cell", entry_idx))
         .when(record_rects && !is_animating, |s| {
             s.on_prepaint(rect_recorder(pane_id, entry_idx, view))
         })
@@ -498,6 +517,10 @@ fn render_cell(
                 .justify_center();
             match file_icon {
                 FileIcon::PreviewTexture(tex) => {
+                    let has_media_border = entry
+                        .extension
+                        .as_deref()
+                        .is_some_and(|ext| is_image_ext(ext) || is_video_ext(ext));
                     let natural = tex.size(0);
                     let natural_w = (i32::from(natural.width).max(1)) as f32;
                     let natural_h = (i32::from(natural.height).max(1)) as f32;
@@ -511,8 +534,9 @@ fn render_cell(
                             .w(crate::ui::rem_px(render_w))
                             .h(crate::ui::rem_px(render_h))
                             .rounded(px(crate::ui::RADIUS))
-                            .border_1()
-                            .border_color(border.opacity(0.55))
+                            .when(has_media_border, |s| {
+                                s.border_1().border_color(border.opacity(0.55))
+                            })
                             .overflow_hidden()
                             .child(img(tex).size_full()),
                     )

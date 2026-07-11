@@ -108,7 +108,7 @@ impl App {
         // Remote sentinel dest (`remote:<id>/…`): route to the cloud uploader
         // instead of the local pipeline. Centralized here so every entry point
         // (paste, DnD, spring-load drops) gets it for free.
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         if self.try_remote_upload(
             &req.sources,
             &req.dest,
@@ -337,7 +337,7 @@ impl App {
         let Some((paths, target_names, is_cut, origin)) = source else {
             return;
         };
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         if self.try_remote_upload(&paths, &dest, is_cut) {
             return;
         }
@@ -361,7 +361,7 @@ impl App {
         dest: PathBuf,
         origin: TransferOrigin,
     ) {
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         if self.try_remote_upload(&paths, &dest, false) {
             return;
         }
@@ -382,7 +382,7 @@ impl App {
         origin: TransferOrigin,
     ) {
         // Moving into a remote uploads then trashes the local source on success.
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         if self.try_remote_upload(&paths, &dest, true) {
             return;
         }

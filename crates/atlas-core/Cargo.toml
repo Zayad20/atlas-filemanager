@@ -5,13 +5,14 @@ edition = "2021"
 license = "AGPL-3.0-or-later"
 
 [features]
-# Host-side virtual-provider API.
-cloud = [
+default = ["provider-host"]
+# Host-side virtual-provider API, independent of any concrete provider.
+provider-host = [
     "dep:async-trait",
-    "atlas-model/cloud",
+    "atlas-model/provider-host",
 ]
 # rclone implementation used only by the external Cloud extension.
-cloud-backend = ["cloud", "dep:futures-util"]
+cloud-backend = ["provider-host", "dep:futures-util"]
 rar = ["dep:unrar"]
 sevenz = ["dep:sevenz-rust2"]
 

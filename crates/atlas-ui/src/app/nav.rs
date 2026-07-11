@@ -181,7 +181,7 @@ impl App {
     /// Navigate to a local directory (Push). Access-mode remote tabs are redirected
     /// through the cloud worker.
     pub(crate) fn navigate(&mut self, tab_id: TileId, path: PathBuf) {
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         if let Some(Location::Remote { id, .. }) =
             self.tab_data_for(tab_id).map(|td| td.location.clone())
         {
@@ -270,7 +270,7 @@ impl App {
             Location::RecycleBin => {
                 self.spawn_list_recycle_bin(tab_id, col, dir);
             }
-            #[cfg(feature = "cloud")]
+            #[cfg(feature = "provider-host")]
             Location::Remote { id, path } => {
                 self.spawn_list_remote(tab_id, id, path);
             }

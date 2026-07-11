@@ -14,7 +14,7 @@ use atlas_core::util::config::{save_profiles, save_session, save_settings};
 
 pub mod actions;
 mod bg;
-#[cfg(feature = "cloud")]
+#[cfg(feature = "provider-host")]
 pub mod cloud;
 pub mod devices;
 pub mod ext;
@@ -71,17 +71,17 @@ pub struct App {
     /// Channel to the `SQLite` tag-db worker (writes fire-and-forget, reads reply via `tx`).
     pub(crate) tag_db_tx: flume::Sender<atlas_core::fs::tag_db::TagDbCmd>,
     /// Channel to the cloud worker (rclone sidecar + transfers). Replies via `tx`.
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     pub(crate) cloud_tx: flume::Sender<atlas_core::cloud::CloudCmd>,
-    // FASE5: UI-side preview texture caches (state holds only neutral RGBA).
-    // FASE5: single-preview texture per tab, keyed by its source path for invalidation.
+    // Phase5: UI-side preview texture caches (state holds only neutral RGBA).
+    // Phase5: single-preview texture per tab, keyed by its source path for invalidation.
     pub(crate) preview_textures: HashMap<TileId, (PathBuf, std::sync::Arc<gpui::RenderImage>)>,
-    // FASE5: decoded multi-selection thumbnail textures per tab.
+    // Phase5: decoded multi-selection thumbnail textures per tab.
     pub(crate) multi_textures: HashMap<TileId, Vec<(PathBuf, std::sync::Arc<gpui::RenderImage>)>>,
     // Selectable code/text preview editors per tab. Keyed by path/content so the
     // inspector can preserve selection while rendering read-only preview text.
 
-    // FASE6: per-tab image-preview interaction state (scroll=zoom, drag=pan, Space=expand).
+    // Phase6: per-tab image-preview interaction state (scroll=zoom, drag=pan, Space=expand).
     // Pure UI/interaction state, kept out of `AppState` like the other render caches.
     pub(crate) preview_view: HashMap<TileId, PreviewView>,
     pub(crate) preview_panel_anim_seq: u64,
@@ -185,18 +185,20 @@ pub struct App {
     /// stagger-animate item rows in only while within `ITEM_APPEAR_WINDOW` of this,
     /// so scrolling later never re-triggers the appear. Set alongside `appear_seq`.
     pub(crate) pane_items_appear: HashMap<TileId, Instant>,
-    // FASE C: rubber-band (select box) drag state, UI-side. `row_rects` holds the
+    // Phase C: rubber-band (select box) drag state, UI-side. `row_rects` holds the
     // window-space rect of each *visible* item, rebuilt every frame via on_prepaint;
     // the active drag intersects its rectangle against them to drive the selection.
     pub(crate) rubber: Option<RubberDrag>,
     pub(crate) row_rects: HashMap<TileId, Vec<(usize, gpui::Bounds<gpui::Pixels>)>>,
     pub(crate) miller_row_rects: HashMap<(TileId, usize), Vec<(usize, gpui::Bounds<gpui::Pixels>)>>,
+    pub(crate) details_hit: HashMap<TileId, DetailsHitModel>,
+    pub(crate) details_hover: Option<(TileId, usize)>,
     pub(crate) miller_column_bounds: HashMap<(TileId, usize), gpui::Bounds<gpui::Pixels>>,
     pub(crate) dropzone_selected: HashSet<PathBuf>,
     pub(crate) dropzone_rects: Vec<(PathBuf, gpui::Bounds<gpui::Pixels>)>,
     pub(crate) dropzone_bounds: Option<gpui::Bounds<gpui::Pixels>>,
     pub(crate) dropzone_drag_paths: HashSet<PathBuf>,
-    // FASE F: pane drop-zones for the OLE drop target. Each frame's render path
+    // Phase F: pane drop-zones for the OLE drop target. Each frame's render path
     // pushes one DropZone per visible pane (via on_prepaint) into this vec; at the
     // start of the next frame the vec is committed to `dnd.zones` (Windows only) so
     // the COM vtable can resolve drop positions to the correct pane directory.
@@ -222,10 +224,10 @@ pub struct App {
     pub(crate) settings_section: usize,
     pub(crate) ext_manager_input: Option<Entity<InputState>>,
     /// Inputs for the add-remote dialog; created on open, cleared on close.
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     pub(crate) cloud_add_inputs: Option<crate::ui::overlays::add_cloud::CloudAddInputs>,
     /// Input backing the rename-cloud-remote dialog.
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     pub(crate) rename_remote_input: Option<Entity<InputState>>,
     /// In-flight inline rename (one row at a time). Holds the native input being edited.
     pub(crate) rename_edit: Option<RenameEdit>,
@@ -781,6 +783,63 @@ pub struct RubberDrag {
     pub(crate) started: bool,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct DetailsHitModel {
+    pub(crate) bounds: gpui::Bounds<gpui::Pixels>,
+    pub(crate) scroll_y: f32,
+    pub(crate) row_h: f32,
+    pub(crate) visible: std::sync::Arc<Vec<usize>>,
+    pub(crate) start_idx: usize,
+    pub(crate) end_idx: usize,
+    pub(crate) total_count: usize,
+}
+
+impl DetailsHitModel {
+    pub(crate) fn hit_visible_pos(&self, pos: gpui::Point<gpui::Pixels>) -> Option<usize> {
+        if !self.bounds.contains(&pos) {
+            return None;
+        }
+        let y = f32::from(pos.y) - f32::from(self.bounds.top()) + self.scroll_y;
+        if y < 0.0 {
+            return None;
+        }
+        let visible_pos = (y / self.row_h).floor() as usize;
+        (visible_pos >= self.start_idx
+            && visible_pos < self.end_idx
+            && visible_pos < self.total_count)
+            .then_some(visible_pos)
+    }
+
+    pub(crate) fn hit_entry(&self, pos: gpui::Point<gpui::Pixels>) -> Option<usize> {
+        self.hit_visible_pos(pos)
+            .and_then(|visible_pos| self.visible.get(visible_pos).copied())
+    }
+
+    pub(crate) fn hit_entry_at_content_offset(
+        &self,
+        offset: gpui::Point<gpui::Pixels>,
+    ) -> Option<usize> {
+        let y = f32::from(offset.y);
+        if y < 0.0 {
+            return None;
+        }
+        let visible_pos = (y / self.row_h).floor() as usize;
+        (visible_pos < self.total_count)
+            .then_some(visible_pos)
+            .and_then(|visible_pos| self.visible.get(visible_pos).copied())
+    }
+
+    pub(crate) fn row_bounds(&self, visible_pos: usize) -> gpui::Bounds<gpui::Pixels> {
+        gpui::Bounds {
+            origin: gpui::point(
+                self.bounds.origin.x,
+                self.bounds.origin.y + gpui::px(visible_pos as f32 * self.row_h - self.scroll_y),
+            ),
+            size: gpui::size(self.bounds.size.width, gpui::px(self.row_h)),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RubberTarget {
     Pane(TileId),
@@ -788,7 +847,7 @@ pub enum RubberTarget {
     Dropzone,
 }
 
-// FASE5: pub(crate) so the gpui inspector module (crate::ui::inspector) can reuse
+// Phase5: pub(crate) so the gpui inspector module (crate::ui::inspector) can reuse
 // the same debounce as the legacy egui sync path.
 pub const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(90);
 /// How often the foreground loop drains background results. Keep this out of the
@@ -1308,7 +1367,7 @@ impl App {
         save_session(&self.state.pane_tree);
         save_profiles(&self.state.profiles);
         atlas_core::util::config::save_ext_enabled(&self.state.ext.enabled);
-        #[cfg(feature = "cloud")]
+        #[cfg(feature = "provider-host")]
         atlas_core::util::config::save_cloud_remotes(&self.state.cloud.remotes);
     }
 
@@ -1321,7 +1380,7 @@ impl App {
         }
     }
 
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     pub fn on_exit(&mut self) {
         self.cleanup_cloud_on_exit();
     }

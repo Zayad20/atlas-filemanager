@@ -400,7 +400,7 @@ impl App {
                             .and_then(|tab| match &tab.location {
                                 Location::Tag(tag) => Some(DragHoverDropCommand::AssignTag(*tag)),
                                 Location::RecycleBin => Some(DragHoverDropCommand::TrashPaths),
-                                #[cfg(feature = "cloud")]
+                                #[cfg(feature = "provider-host")]
                                 Location::Remote { id, path } => {
                                     Some(DragHoverDropCommand::TransferTo(
                                         crate::app::cloud::remote_sentinel(id, path),
@@ -410,6 +410,11 @@ impl App {
                             })
                     })
             })
+    }
+
+    pub(crate) fn active_drag_hover_drop_command(&self) -> Option<DragHoverDropCommand> {
+        let pos = self.drag_hover.cursor?;
+        self.drag_hover_drop_command_at(f32::from(pos.x), f32::from(pos.y))
     }
 
     pub(crate) fn pane_drop_dest_at(&self, x: f32, y: f32) -> Option<PathBuf> {
@@ -534,10 +539,10 @@ impl App {
                 // swallowing the drop.
                 self.toast_error(rust_i18n::t!("dnd_archive_drop_blocked").into_owned());
             }
-            #[cfg(feature = "cloud")]
+            #[cfg(feature = "provider-host")]
             Location::Remote { id, path } => {
                 self.clear_committed_dropzone_drag(&paths);
-                // drop into a remote always uploads as copy; move-on-drop
+                // Drop into a remote always uploads as copy; move-on-drop
                 // (delete local source) when someone asks for it.
                 let dest = crate::app::cloud::remote_sentinel(&id, &path);
                 self.try_remote_upload(&paths, &dest, false);

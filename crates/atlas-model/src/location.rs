@@ -10,7 +10,7 @@ pub enum Location {
     },
     Tag(TagId),
     RecycleBin,
-    #[cfg(feature = "cloud")]
+    #[cfg(feature = "provider-host")]
     Remote {
         id: String,
         path: String,
@@ -40,7 +40,7 @@ impl Location {
             }
             Self::Tag(id) => PathBuf::from(format!("tag:{}", id.0)),
             Self::RecycleBin => PathBuf::from("Recycle Bin"),
-            #[cfg(feature = "cloud")]
+            #[cfg(feature = "provider-host")]
             Self::Remote { id, path } => PathBuf::from(format!("{id}:{path}")),
         }
     }
@@ -84,7 +84,7 @@ impl Location {
                 }
             }
             Self::Tag(_) | Self::RecycleBin => None,
-            #[cfg(feature = "cloud")]
+            #[cfg(feature = "provider-host")]
             Self::Remote { .. } => None,
         }
     }

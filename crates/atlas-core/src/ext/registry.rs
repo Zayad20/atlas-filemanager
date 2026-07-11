@@ -62,14 +62,7 @@ impl Registry {
                 if extensions.iter().any(|e| e.manifest.id == manifest.id) {
                     continue;
                 }
-                let enabled = enabled.get(&manifest.id).copied().unwrap_or(true)
-                    && manifest.kind != ExtKind::Wasm;
-                if manifest.kind == ExtKind::Wasm {
-                    tracing::warn!(
-                        "extension {} disabled: WASM runtime is not available",
-                        manifest.id
-                    );
-                }
+                let enabled = enabled.get(&manifest.id).copied().unwrap_or(true);
                 extensions.push(Extension {
                     manifest,
                     dir: ext_dir,
@@ -87,7 +80,7 @@ impl Registry {
     }
 
     // Only consumed by cloud-gated UI today; keep available without the feature.
-    #[cfg_attr(not(feature = "cloud"), allow(dead_code))]
+    #[cfg_attr(not(feature = "provider-host"), allow(dead_code))]
     pub fn is_enabled(&self, id: &str) -> bool {
         self.get(id).is_some_and(|e| e.enabled)
     }
@@ -127,7 +120,7 @@ impl Registry {
     /// Resolve a specific command to a runnable `CommandRef`.
     pub fn command(&self, ext_id: &str, cmd_id: &str) -> Option<CommandRef> {
         let ext = self.get(ext_id)?;
-        if !ext.enabled || ext.manifest.kind == ExtKind::Wasm {
+        if !ext.enabled {
             return None;
         }
         let command = ext.manifest.commands.iter().find(|c| c.id == cmd_id)?;
@@ -246,6 +239,7 @@ impl Registry {
             ext_id: ext.manifest.id.clone(),
             ext_dir: ext.dir.clone(),
             kind: ext.manifest.kind,
+            sidecar: ext.manifest.sidecar.clone(),
             command: cmd.clone(),
             tools,
         }

@@ -15,7 +15,7 @@ use crate::ui::icons::{icon, AtlasIcon};
 use atlas_model::ext_state::ExtManagerTab;
 use gpui::prelude::*;
 use gpui::AnimationExt;
-use gpui::{div, px, AnyElement, Context, MouseButton, SharedString, Window};
+use gpui::{div, px, AnyElement, Context, Hsla, MouseButton, SharedString, Window};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
@@ -85,6 +85,12 @@ impl App {
                 .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
                     view.update(cx, |this, cx| {
                         this.state.ext.manager_tab = tab;
+                        if tab == ExtManagerTab::Marketplace
+                            && this.state.ext.remote.is_none()
+                            && !this.state.ext.remote_loading
+                        {
+                            this.handle_ext_action(ExtAction::FetchRegistry);
+                        }
                         cx.notify();
                     });
                 })
@@ -140,18 +146,16 @@ impl App {
                             .items_center()
                             // Icon
                             .child({
-                                let icon_path = ext.dir.join("icon.png");
-                                if icon_path.exists() {
-                                    gpui::img(format!(
-                                        "file:///{}",
-                                        icon_path.display().to_string().replace('\\', "/")
-                                    ))
-                                    .size(px(32.))
-                                    .rounded_md()
-                                    .flex_none()
-                                    .into_any_element()
+                                let svg_path = ext.dir.join("icon.svg");
+                                let icon_path = if svg_path.exists() {
+                                    svg_path
                                 } else {
-                                    div().size(px(32.)).flex_none().into_any_element()
+                                    ext.dir.join("icon.png")
+                                };
+                                if icon_path.exists() {
+                                    extension_icon(icon_path, 36., fg)
+                                } else {
+                                    div().size(px(36.)).flex_none().into_any_element()
                                 }
                             })
                             // Left: info
@@ -289,12 +293,13 @@ impl App {
 
         // ── Marketplace tab content ────────────────────────────────────────────
         let remote_loading = self.state.ext.remote_loading;
-        let installed_ids: std::collections::HashSet<String> = self
+        let installed_versions: std::collections::HashMap<String, String> = self
             .ext_registry
             .extensions
             .iter()
-            .map(|e| e.manifest.id.clone())
+            .map(|e| (e.manifest.id.clone(), e.manifest.version.clone()))
             .collect();
+        let marketplace_visible = self.state.ext.marketplace_visible.max(40);
         let currently_installing = self.state.ext.installing.clone();
 
         let marketplace_rows: Vec<AnyElement> = if remote_loading {
@@ -358,8 +363,10 @@ impl App {
                             .child(rust_i18n::t!("ext_no_remote").to_string())
                             .into_any_element()]
                     } else {
-                        filtered
+                        let has_more = filtered.len() > marketplace_visible;
+                        let mut rows: Vec<AnyElement> = filtered
                             .into_iter()
+                            .take(marketplace_visible)
                             .map(|remote| {
                                 let id = remote.id.clone();
                                 let name = remote.name.clone();
@@ -369,7 +376,18 @@ impl App {
                                 let icon_url = remote.icon_url.clone();
                                 let download_url = remote.download_url.clone();
                                 let sha256 = remote.sha256.clone();
-                                let is_installed = installed_ids.contains(&id);
+                                let installed_version = installed_versions.get(&id);
+                                let is_installed = installed_version.is_some();
+                                let has_update =
+                                    installed_version.is_some_and(|installed| {
+                                        match (
+                                            semver::Version::parse(installed),
+                                            semver::Version::parse(&version),
+                                        ) {
+                                            (Ok(installed), Ok(remote)) => remote > installed,
+                                            _ => version != *installed,
+                                        }
+                                    });
                                 let is_installing = currently_installing.contains(&id);
                                 let view2 = view.clone();
 
@@ -384,13 +402,9 @@ impl App {
                                     .items_center()
                                     // Icon
                                     .child(if let Some(url) = icon_url.clone() {
-                                        gpui::img(url)
-                                            .size(px(32.))
-                                            .rounded_md()
-                                            .flex_none()
-                                            .into_any_element()
+                                        extension_icon(std::path::PathBuf::from(url), 36., fg)
                                     } else {
-                                        div().size(px(32.)).flex_none().into_any_element()
+                                        div().size(px(36.)).flex_none().into_any_element()
                                     })
                                     // Info
                                     .child(
@@ -449,7 +463,7 @@ impl App {
                                             .text_color(muted)
                                             .child(rust_i18n::t!("ext_installing").to_string())
                                             .into_any_element()
-                                    } else if is_installed {
+                                    } else if is_installed && !has_update {
                                         div()
                                             .id(SharedString::from(format!("mkt-installed-{id}")))
                                             .px_2()
@@ -476,7 +490,14 @@ impl App {
                                             .text_color(accent_fg)
                                             .cursor_pointer()
                                             .hover(|d| d.opacity(0.8))
-                                            .child(rust_i18n::t!("ext_install").to_string())
+                                            .child(
+                                                rust_i18n::t!(if has_update {
+                                                    "ext_update"
+                                                } else {
+                                                    "ext_install"
+                                                })
+                                                .to_string(),
+                                            )
                                             .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
                                                 view2.update(cx, |this, cx| {
                                                     this.handle_ext_action(
@@ -493,7 +514,33 @@ impl App {
                                     })
                                     .into_any_element()
                             })
-                            .collect()
+                            .collect();
+                        if has_more {
+                            let view_more = view.clone();
+                            rows.push(
+                                div()
+                                    .id("ext-load-more")
+                                    .my_3()
+                                    .mx_auto()
+                                    .px_3()
+                                    .py_1()
+                                    .rounded(px(crate::ui::RADIUS))
+                                    .border_1()
+                                    .border_color(border)
+                                    .text_xs()
+                                    .cursor_pointer()
+                                    .hover(|d| d.bg(border))
+                                    .child(rust_i18n::t!("ext_load_more").to_string())
+                                    .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
+                                        view_more.update(cx, |this, cx| {
+                                            this.state.ext.marketplace_visible += 40;
+                                            cx.notify();
+                                        });
+                                    })
+                                    .into_any_element(),
+                            );
+                        }
+                        rows
                     }
                 }
             }
@@ -695,5 +742,27 @@ impl App {
             sheet_panel,
             cx,
         )
+    }
+}
+
+fn extension_icon(path: std::path::PathBuf, size: f32, color: Hsla) -> AnyElement {
+    let path_text = path.to_string_lossy();
+    if path_text.starts_with("http://") || path_text.starts_with("https://") {
+        gpui::img(path_text.into_owned())
+            .size(px(size))
+            .flex_none()
+            .into_any_element()
+    } else if path.extension().is_some_and(|ext| ext == "svg") {
+        gpui::svg()
+            .external_path(path_text.into_owned())
+            .size(px(size))
+            .text_color(color)
+            .flex_none()
+            .into_any_element()
+    } else {
+        gpui::img(path)
+            .size(px(size))
+            .flex_none()
+            .into_any_element()
     }
 }
