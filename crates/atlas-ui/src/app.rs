@@ -192,6 +192,8 @@ pub struct App {
     pub(crate) row_rects: HashMap<TileId, Vec<(usize, gpui::Bounds<gpui::Pixels>)>>,
     pub(crate) miller_row_rects: HashMap<(TileId, usize), Vec<(usize, gpui::Bounds<gpui::Pixels>)>>,
     pub(crate) details_hit: HashMap<TileId, DetailsHitModel>,
+    /// Per-pane circular row slot buffer for Details (shape on miss only).
+    pub(crate) details_row_rings: HashMap<TileId, crate::ui::views::details_ring::DetailsRowRing>,
     pub(crate) details_hover: Option<(TileId, usize)>,
     pub(crate) miller_column_bounds: HashMap<(TileId, usize), gpui::Bounds<gpui::Pixels>>,
     pub(crate) dropzone_selected: HashSet<PathBuf>,

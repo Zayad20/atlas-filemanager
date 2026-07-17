@@ -469,6 +469,7 @@ impl App {
             row_rects: HashMap::new(),
             miller_row_rects: HashMap::new(),
             details_hit: HashMap::new(),
+            details_row_rings: HashMap::new(),
             details_hover: None,
             miller_column_bounds: HashMap::new(),
             dropzone_selected: HashSet::new(),

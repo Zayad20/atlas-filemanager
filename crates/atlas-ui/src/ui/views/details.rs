@@ -1,11 +1,9 @@
 //! Details view (table): `render_pane` (dispatch + Details body) + row/header cells.
 #![allow(clippy::too_many_lines)] // reason: cohesive view renderer kept whole
 
-use crate::app::{App, ColResizeState, DetailsColumn, DetailsHitModel, RubberTarget};
+use crate::app::{App, ColResizeState, DetailsColumn, RubberTarget};
 use crate::input::action::Action;
-use crate::ui::drag_hover::{
-    DragHoverCommand, DragHoverDropCommand, DragHoverId, DragHoverKind, DragHoverTarget,
-};
+use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
 use crate::ui::icons::{icon, AtlasIcon};
@@ -15,9 +13,8 @@ use atlas_model::pane::TabId;
 use atlas_model::settings::ViewMode;
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, img, point, px, size, AnyElement, Context, Corners, DispatchPhase, Div, Entity,
-    Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, ShapedLine, SharedString, Stateful,
-    TextAlign, TextRun, Window,
+    div, img, px, AnyElement, Context, Div, Entity, Hsla, MouseButton, Pixels, SharedString,
+    Stateful, Window,
 };
 use gpui_component::input::InputState;
 use gpui_component::scroll::ScrollableElement;
@@ -246,7 +243,25 @@ impl App {
             let scroll = self.scroll_handle_for(pane_id);
             let base_scroll = scroll.0.borrow().base_handle.clone();
             let scroll_view = view.clone();
-            let viewport_h = f32::from(base_scroll.bounds().size.height);
+            // First frames after a split often report 0-height scroll bounds (layout
+            // not committed yet). Shaping with viewport_h=0 builds an empty canvas and
+            // used to stick for the whole seam animation via cache force-reuse.
+            let measured_h = f32::from(base_scroll.bounds().size.height);
+            let viewport_h = if measured_h > row_h {
+                measured_h
+            } else {
+                self.pane_layout_bounds
+                    .get(&pane_id)
+                    .map(|b| f32::from(b.size.height))
+                    .filter(|h| *h > row_h)
+                    .or_else(|| {
+                        self.pane_tabs_bounds
+                            .get(&pane_id)
+                            .map(|b| f32::from(b.size.height))
+                            .filter(|h| *h > row_h)
+                    })
+                    .unwrap_or(row_h * 24.0)
+            };
             let scroll_y = (-f32::from(base_scroll.offset().y)).max(0.0);
             prime_details_file_icons(
                 self,
@@ -322,376 +337,30 @@ impl App {
                 }
             }
 
-            let canvas_view = view.clone();
-            let hit_view = view.clone();
-            let row_layout_c = Arc::clone(&layout);
-            let fv_c = fv.clone();
-            let font_c = row_font.clone();
-            let monolithic_canvas = canvas(
-                move |bounds, window, _cx| {
-                    let _perf = crate::perf::span("details.canvas.shape");
-                    let ts = window.text_system();
-                    let viewport_bounds = gpui::Bounds {
-                        origin: point(bounds.origin.x, bounds.origin.y + px(scroll_y)),
-                        size: size(bounds.size.width, px(viewport_h)),
-                    };
-                    let hit_model = DetailsHitModel {
-                        bounds: viewport_bounds,
-                        scroll_y,
-                        row_h,
-                        visible: fv_c.clone(),
-                        start_idx,
-                        end_idx,
-                        total_count: count,
-                    };
-                    hit_view.update(_cx, |this, _| {
-                        this.details_hit.insert(pane_id, hit_model.clone());
-                        if this.drag_hover_maybe_active() {
-                            let targets = this
-                                .state
-                                .tab_states
-                                .get(&pane_id)
-                                .map(|tab_state| {
-                                    (start_idx..end_idx)
-                                        .filter_map(|visible_pos| {
-                                            let entry_idx = *fv_c.get(visible_pos)?;
-                                            let entry = tab_state.entries.get(entry_idx)?;
-                                            matches!(entry.kind, FileKind::Dir).then(|| {
-                                                let id = DragHoverId::Folder(
-                                                    pane_id,
-                                                    entry.path.clone(),
-                                                );
-                                                DragHoverTarget {
-                                                    id,
-                                                    bounds: hit_model.row_bounds(visible_pos),
-                                                    kind: DragHoverKind::Folder,
-                                                    command: DragHoverCommand::NavigatePathIn(
-                                                        pane_id,
-                                                        entry.path.clone(),
-                                                    ),
-                                                    drop_command: Some(
-                                                        DragHoverDropCommand::TransferTo(
-                                                            entry.path.clone(),
-                                                        ),
-                                                    ),
-                                                }
-                                            })
-                                        })
-                                        .collect::<Vec<_>>()
-                                })
-                                .unwrap_or_default();
-                            for target in targets {
-                                this.register_drag_hover_target(target);
-                            }
-                        }
-                    });
-                    let app = canvas_view.read(_cx);
-                    let Some(tab_state) = app.state.tab_states.get(&pane_id) else {
-                        return MonolithicCanvasState {
-                            rows: Vec::new(),
-                            layout: (*row_layout_c).clone(),
-                        };
-                    };
+            // Body: custom Element (ring + paint + input).
+            let body_el = if USE_DETAILS_BODY_ELEMENT {
+                crate::ui::views::details_element::DetailsBodyElement::new(
+                    pane_id,
+                    view.downgrade(),
+                    fv.clone(),
+                    row_h,
+                    scroll_y,
+                    viewport_h,
+                    start_idx,
+                    end_idx,
+                    (*layout).clone(),
+                    colors,
+                    row_font.clone(),
+                    font_size,
+                )
+                .absolute()
+                .inset_0()
+                .into_any_element()
+            } else {
+                // A/B only: empty body when flag off (set true for production path).
+                div().absolute().inset_0().into_any_element()
+            };
 
-                    let _zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
-                    let name_col_w = px(row_layout_c
-                        .name_col_w
-                        .min((f32::from(bounds.size.width) - row_layout_c.name_x).max(0.0)));
-
-                    let mut rows = Vec::with_capacity(end_idx - start_idx);
-
-                    for i in start_idx..end_idx {
-                        let Some(&entry_idx) = fv_c.get(i) else {
-                            continue;
-                        };
-                        let Some(entry) = tab_state.entries.get(entry_idx) else {
-                            continue;
-                        };
-
-                        if crate::ui::views::rename::active_input(app, pane_id, entry_idx).is_some()
-                        {
-                            continue;
-                        }
-
-                        let selected = tab_state.selection.selected.contains(&entry_idx)
-                            && !crate::ui::views::rename::suppress_row_chrome(
-                                app, pane_id, entry_idx,
-                            );
-                        let dimmed =
-                            crate::ui::views::rename::dim_other_entry(app, pane_id, entry_idx);
-                        let flashing = matches!(entry.kind, FileKind::Dir)
-                            && app.drag_hover.blink_id.as_ref()
-                                == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
-                        let hovered = app.details_hover == Some((pane_id, entry_idx));
-
-                        let name_color = if selected { accent_fg } else { fg };
-                        let name_color = if dimmed {
-                            name_color.opacity(0.45)
-                        } else {
-                            name_color
-                        };
-                        let meta_color = if selected { accent_fg } else { muted };
-                        let meta_color = if dimmed {
-                            meta_color.opacity(0.45)
-                        } else {
-                            meta_color
-                        };
-
-                        let name_run = TextRun {
-                            len: entry.name.len(),
-                            font: font_c.clone(),
-                            color: name_color,
-                            background_color: None,
-                            underline: None,
-                            strikethrough: None,
-                        };
-                        let mut name_s =
-                            ts.shape_line(entry.name.clone().into(), font_size, &[name_run], None);
-
-                        let ellipsis_s = if name_s.width() > name_col_w {
-                            let ellipsis: SharedString = "…".into();
-                            let e_run = TextRun {
-                                len: ellipsis.len(),
-                                font: font_c.clone(),
-                                color: name_color,
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
-                            };
-                            let es = ts.shape_line(ellipsis, font_size, &[e_run], None);
-                            let cutoff = (name_col_w - es.width()).max(px(0.));
-                            let split_idx = name_s.index_for_x(cutoff).unwrap_or(0);
-                            let (prefix, _) = name_s.split_at(split_idx);
-                            name_s = prefix;
-                            Some(es)
-                        } else {
-                            None
-                        };
-
-                        let mut meta_cols = Vec::new();
-                        for col in &row_layout_c.columns {
-                            if col.x < f32::from(bounds.size.width) && col.w > 1.0 {
-                                let text: SharedString = match col.column {
-                                    DetailsColumn::Size => entry.display_size.clone().into(),
-                                    DetailsColumn::Modified => entry.display_date.clone().into(),
-                                    DetailsColumn::Type => entry.display_type.clone().into(),
-                                };
-                                let run = TextRun {
-                                    len: text.len(),
-                                    font: font_c.clone(),
-                                    color: meta_color,
-                                    background_color: None,
-                                    underline: None,
-                                    strikethrough: None,
-                                };
-                                meta_cols.push(DetailsPaintColumn {
-                                    column: col.column,
-                                    line: ts.shape_line(text, font_size, &[run], None),
-                                });
-                            }
-                        }
-
-                        let icon_tex = app
-                            .file_icon_for_entry(
-                                &entry.path,
-                                &entry.kind,
-                                entry.extension.as_deref(),
-                            )
-                            .texture();
-                        let fallback_icon_path = if icon_tex.is_none() {
-                            Some(match entry.kind {
-                                FileKind::Dir => AtlasIcon::Folder.path(),
-                                _ => AtlasIcon::File.path(),
-                            })
-                        } else {
-                            None
-                        };
-
-                        rows.push(MonolithicRowState {
-                            idx: i,
-                            selected,
-                            hovered,
-                            flashing,
-                            odd: i % 2 == 1,
-                            dimmed,
-                            name_s,
-                            ellipsis_s,
-                            meta_cols,
-                            icon_tex,
-                            fallback_icon_path,
-                        });
-                    }
-
-                    MonolithicCanvasState {
-                        rows,
-                        layout: (*row_layout_c).clone(),
-                    }
-                },
-                move |bounds, state, window, cx| {
-                    let _perf = crate::perf::span("details.canvas.paint");
-                    let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
-                    let row_icon_size = ROW_ICON_SIZE * zoom_scale;
-                    let row_pad_x = ROW_PAD_X * zoom_scale;
-                    let cell_pad = CELL_PAD * zoom_scale;
-
-                    for row in &state.rows {
-                        let y = bounds.origin.y + px(row.idx as f32 * row_h);
-                        let row_bounds = gpui::Bounds {
-                            origin: point(bounds.origin.x, y),
-                            size: size(bounds.size.width, px(row_h)),
-                        };
-
-                        let bg = if row.selected {
-                            Some(accent)
-                        } else if row.flashing {
-                            Some(accent.opacity(0.38))
-                        } else if row.hovered {
-                            Some(hover)
-                        } else if row.odd {
-                            Some(stripe_bg)
-                        } else {
-                            None
-                        };
-                        if let Some(mut color) = bg {
-                            if row.dimmed {
-                                color = color.opacity(color.a * 0.45);
-                            }
-                            window.paint_quad(gpui::fill(row_bounds, color));
-                        }
-
-                        let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
-
-                        if let Some(tex) = &row.icon_tex {
-                            let _ = window.paint_image(
-                                gpui::Bounds {
-                                    origin: gpui::point(
-                                        bounds.origin.x + px(row_pad_x),
-                                        y + px((row_h - row_icon_size) * 0.5),
-                                    ),
-                                    size: gpui::size(px(row_icon_size), px(row_icon_size)),
-                                },
-                                Corners::default(),
-                                tex.clone(),
-                                0,
-                                false,
-                            );
-                        } else if let Some(path) = row.fallback_icon_path {
-                            let _ = window.paint_svg(
-                                gpui::Bounds {
-                                    origin: point(
-                                        bounds.origin.x + px(row_pad_x),
-                                        y + px((row_h - row_icon_size) * 0.5),
-                                    ),
-                                    size: size(px(row_icon_size), px(row_icon_size)),
-                                },
-                                SharedString::from(path),
-                                None,
-                                Default::default(),
-                                muted,
-                                cx,
-                            );
-                        }
-
-                        let name_x = bounds.origin.x + px(state.layout.name_x);
-
-                        let _ = row.name_s.paint(
-                            gpui::point(name_x, text_y),
-                            px(row_h),
-                            TextAlign::Left,
-                            None,
-                            window,
-                            cx,
-                        );
-                        if let Some(ref es) = row.ellipsis_s {
-                            let _ = es.paint(
-                                gpui::point(name_x + row.name_s.width(), text_y),
-                                px(row_h),
-                                TextAlign::Left,
-                                None,
-                                window,
-                                cx,
-                            );
-                        }
-
-                        for paint_col in &row.meta_cols {
-                            let Some(layout_col) = state
-                                .layout
-                                .columns
-                                .iter()
-                                .find(|col| col.column == paint_col.column)
-                            else {
-                                continue;
-                            };
-                            let col_x = bounds.origin.x + px(layout_col.x);
-                            let col_w = layout_col.w;
-                            let text_x = col_x + px(cell_pad.min(col_w));
-
-                            let _ = paint_col.line.paint(
-                                gpui::point(text_x, text_y),
-                                px(row_h),
-                                TextAlign::Left,
-                                None,
-                                window,
-                                cx,
-                            );
-                        }
-                    }
-                },
-            );
-            let event_view = view.clone();
-            let details_event_layer = canvas(
-                |_, _, _| {},
-                move |_, (), window, _cx| {
-                    let move_view = event_view.clone();
-                    window.on_mouse_event::<MouseMoveEvent>(move |ev, phase, window, cx| {
-                        if phase != DispatchPhase::Bubble || ev.dragging() {
-                            return;
-                        }
-                        let pos = ev.position;
-                        move_view.update(cx, |this, cx| {
-                            let hover_entry = this.details_hover_at(pane_id, pos);
-                            if this.details_hover != hover_entry {
-                                // The monolithic Details canvas has one hover target for all
-                                // rows. Reset the managed tooltip before changing rows so the
-                                // old card disappears now and the new row earns a fresh delay.
-                                gpui_component::tooltip::Tooltip::dismiss(window, cx);
-                                this.details_hover = hover_entry;
-                                this.notify_pane(pane_id, cx);
-                            }
-                        });
-                    });
-
-                    let down_view = event_view.clone();
-                    window.on_mouse_event::<MouseDownEvent>(move |ev, phase, window, cx| {
-                        if phase != DispatchPhase::Bubble {
-                            return;
-                        }
-                        let pos = ev.position;
-                        if !down_view.read(cx).details_contains_point(pane_id, pos) {
-                            return;
-                        }
-                        down_view.update(cx, |this, cx| {
-                            let hit = this.details_entry_at(pane_id, pos);
-                            match ev.button {
-                                MouseButton::Left => this.details_left_mouse_down(
-                                    pane_id,
-                                    hit,
-                                    pos,
-                                    ev.modifiers.shift,
-                                    ev.modifiers.control || ev.modifiers.platform,
-                                    ev.click_count,
-                                    cx,
-                                ),
-                                MouseButton::Right => {
-                                    this.details_right_mouse_down(pane_id, hit, pos, window, cx)
-                                }
-                                _ => {}
-                            }
-                        });
-                        cx.stop_propagation();
-                    });
-                },
-            );
             let details_drag_layer = div()
                 .id(("details-drag-layer", pane_id.0))
                 .absolute()
@@ -771,22 +440,7 @@ impl App {
                                 .w_full()
                                 .h(px(total_height))
                                 .relative()
-                                .child(
-                                    monolithic_canvas
-                                        .absolute()
-                                        .top_0()
-                                        .left_0()
-                                        .w_full()
-                                        .h_full(),
-                                )
-                                .child(
-                                    details_event_layer
-                                        .absolute()
-                                        .top_0()
-                                        .left_0()
-                                        .w_full()
-                                        .h_full(),
-                                )
+                                .child(body_el)
                                 .child(details_drag_layer)
                                 .children(overlays),
                         )
@@ -816,10 +470,10 @@ impl App {
                 let new_h = f32::from(bounds.size.height);
                 v.update(cx, |this, _cx| {
                     if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
-                        if (ts.last_pane_width - new_w).abs() > 0.5 {
+                        if (ts.last_pane_width - new_w).abs() > 1.5 {
                             ts.last_pane_width = new_w;
                         }
-                        if (ts.last_pane_height - new_h).abs() > 0.5 {
+                        if (ts.last_pane_height - new_h).abs() > 1.5 {
                             ts.last_pane_height = new_h;
                         }
                     }
@@ -1209,7 +863,11 @@ fn sort_cell(
     } else {
         SortDir::Asc
     };
-    let label_color = if is_active { colors.accent } else { colors.muted };
+    let label_color = if is_active {
+        colors.accent
+    } else {
+        colors.muted
+    };
     let sort_icon = if is_active {
         let kind = if *cur_dir == SortDir::Asc {
             AtlasIcon::ArrowUp
@@ -1314,41 +972,46 @@ fn type_header_cell(
 
 /// Fixed height for canvas rows — eliminates per-row flex layout cost.
 pub(crate) const DETAILS_ROW_H: f32 = 24.0;
-const ROW_PAD_X: f32 = 8.0;
+pub(crate) const ROW_PAD_X: f32 = 8.0;
 const ROW_ICON_W: f32 = 20.0;
-const ROW_ICON_SIZE: f32 = 16.0;
+pub(crate) const ROW_ICON_SIZE: f32 = 16.0;
 const ROW_GAP: f32 = 8.0;
 const ROW_NAME_X: f32 = ROW_PAD_X + ROW_ICON_W + ROW_GAP;
 const ROW_NAME_MIN_W: f32 = 88.0;
-const ROW_TEXT_Y_NUDGE: f32 = -1.0;
+pub(crate) const ROW_TEXT_Y_NUDGE: f32 = -1.0;
 /// Left inset of metadata text from its column's left edge (separator), so text
 /// sits *inside* the column instead of hugging the divider. Applied identically
 /// to the header label and the row data → they stay aligned.
-const CELL_PAD: f32 = 11.0;
+pub(crate) const CELL_PAD: f32 = 11.0;
+
+/// A/B: `true` = `DetailsBodyElement` (custom Element + ring); `false` = legacy dual-canvas.
+pub(crate) const USE_DETAILS_BODY_ELEMENT: bool = true;
 
 #[derive(Clone, Copy)]
-struct DetailsColumnLayout {
-    column: DetailsColumn,
+pub(crate) struct DetailsColumnLayout {
+    pub column: DetailsColumn,
     /// Left edge, row/header-relative (origin = pane left).
-    x: f32,
+    pub x: f32,
     /// Column width.
-    w: f32,
+    pub w: f32,
 }
 
 #[derive(Clone)]
-struct DetailsRowLayout {
-    name_x: f32,
+pub(crate) struct DetailsRowLayout {
+    pub name_x: f32,
     /// Width of the Name text area (Name column width minus the icon gutter).
-    name_col_w: f32,
+    pub name_col_w: f32,
     /// Right edge of the Name column = left edge of the first metadata column.
-    name_right: f32,
+    pub name_right: f32,
     /// Metadata columns in visual order (left→right, after Name).
-    columns: Vec<DetailsColumnLayout>,
+    pub columns: Vec<DetailsColumnLayout>,
 }
 
-struct DetailsPaintColumn {
-    column: DetailsColumn,
-    line: ShapedLine,
+pub(crate) fn hsla_key_bits(c: Hsla) -> u32 {
+    c.h.to_bits()
+        ^ c.s.to_bits().rotate_left(8)
+        ^ c.l.to_bits().rotate_left(16)
+        ^ c.a.to_bits().rotate_left(24)
 }
 
 fn prime_details_file_icons(
@@ -1372,7 +1035,7 @@ fn prime_details_file_icons(
                 Some(crate::ui::file_icons::FileIconRef {
                     path: entry.path.clone(),
                     kind: entry.kind.clone(),
-                    extension: entry.extension.clone(),
+                    extension: entry.extension.as_ref().map(|s| s.to_string()),
                 })
             })
             .collect::<Vec<_>>()
@@ -1493,7 +1156,7 @@ fn render_rename_row(
     let name = entry.name.clone();
     let fallback_icon = FileIcon::Builtin {
         kind: entry.kind.clone(),
-        extension: entry.extension.clone(),
+        extension: entry.extension.as_ref().map(|s| s.to_string()),
     };
     let meta_cells = layout.columns.iter().map(|col| {
         let text = match col.column {
@@ -1570,28 +1233,11 @@ fn render_rename_row(
         .into_any_element()
 }
 
-struct MonolithicCanvasState {
-    rows: Vec<MonolithicRowState>,
-    layout: DetailsRowLayout,
-}
-
-struct MonolithicRowState {
-    idx: usize,
-    selected: bool,
-    hovered: bool,
-    flashing: bool,
-    odd: bool,
-    dimmed: bool,
-    name_s: ShapedLine,
-    ellipsis_s: Option<ShapedLine>,
-    meta_cols: Vec<DetailsPaintColumn>,
-    icon_tex: Option<std::sync::Arc<gpui::RenderImage>>,
-    fallback_icon_path: Option<&'static str>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::DetailsHitModel;
+    use gpui::{point, size};
 
     fn hit_model() -> DetailsHitModel {
         DetailsHitModel {

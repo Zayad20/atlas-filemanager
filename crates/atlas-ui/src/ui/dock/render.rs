@@ -173,6 +173,8 @@ impl App {
         self.pane_tabs_fp.retain(|id, _| tiles.get(*id).is_some());
         self.pane_tabs_bounds
             .retain(|id, _| tiles.get(*id).is_some());
+        self.details_row_rings
+            .retain(|id, _| tiles.get(*id).is_some());
 
         let root = self.state.pane_tree.root;
         let content = root

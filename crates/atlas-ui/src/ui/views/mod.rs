@@ -16,6 +16,8 @@ use gpui_component::ElementExt;
 use std::path::PathBuf;
 
 pub mod details;
+pub mod details_element;
+pub mod details_ring;
 pub mod grid;
 pub mod list;
 pub mod miller;
