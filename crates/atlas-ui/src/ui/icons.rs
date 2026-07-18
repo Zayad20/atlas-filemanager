@@ -226,7 +226,7 @@ pub(crate) fn theme_icon(
 }
 
 #[inline]
-fn windows_icon_glyph(kind: AtlasIcon) -> &'static str {
+pub(crate) fn windows_icon_glyph(kind: AtlasIcon) -> &'static str {
     match kind {
         AtlasIcon::House => "\u{E80F}",
         AtlasIcon::Monitor => "\u{E7F4}",

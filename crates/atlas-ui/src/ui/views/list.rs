@@ -27,7 +27,7 @@ impl App {
         crate::perf::count("render.view.list");
         let view = cx.entity();
         let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
-        let (fg, accent, accent_fg, hover, muted, header_bg) = {
+        let (fg, accent, accent_fg, hover, muted, border, header_bg) = {
             let t = cx.theme();
             (
                 t.foreground,
@@ -35,6 +35,7 @@ impl App {
                 t.accent_foreground,
                 t.list_active,
                 t.muted_foreground,
+                t.border,
                 if figma_glass {
                     glass_header_fill()
                 } else {
@@ -42,7 +43,11 @@ impl App {
                 },
             )
         };
-        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, header_bg);
+        let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+        let row_font = window.text_style().font();
+        let crumb_strip = self.render_crumb_strip(
+            pane_id, &view, fg, muted, header_bg, border, hover, accent, row_font, font_size,
+        );
         let count = self
             .state
             .tab_states
@@ -222,9 +227,13 @@ impl App {
             move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {
                 crate::perf::count("prepaint.list_pane");
                 let new_w = f32::from(bounds.size.width);
-                v.update(cx, |this, cx| {
-                    if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
-                        if (ts.last_pane_width - new_w).abs() > 0.5 {
+                let should_update = v.read(cx).state.tab_states.get(&pane_id)
+                    .map(|ts| (ts.last_pane_width - new_w).abs() > 0.5)
+                    .unwrap_or(false);
+
+                if should_update {
+                    v.update(cx, |this, cx| {
+                        if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
                             let old_w = ts.last_pane_width;
                             crate::perf::event(|| {
                                 format!(
@@ -235,8 +244,8 @@ impl App {
                             ts.last_pane_width = new_w;
                             this.notify_pane(pane_id, cx);
                         }
-                    }
-                });
+                    });
+                }
             }
         })
         // Phase F: register this pane's window-space rect each frame for OLE drop routing.

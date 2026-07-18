@@ -24,6 +24,12 @@ pub fn build_index(current_root: PathBuf, injector: nucleo::Injector<IndexEntry>
     });
 }
 
+/// Lightweight directory-only warm index used by Goto (never repointed by scoped searches).
+pub fn build_warm_navigation_index(injector: nucleo::Injector<IndexEntry>) {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    build_index(home, injector);
+}
+
 /// Scope cap: a drilled-into folder is walked deeper than the global index but
 /// still bounded so pathological trees (node_modules…) don't hang the walker.
 const SCOPED_MAX_DEPTH: usize = 6;

@@ -55,7 +55,11 @@ impl App {
                 },
             )
         };
-        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, header_bg);
+        let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+        let row_font = window.text_style().font();
+        let crumb_strip = self.render_crumb_strip(
+            pane_id, &view, fg, muted, header_bg, border, hover, accent, row_font, font_size,
+        );
         // `thumb` stays in rem units (same meaning as before the zoom refactor) —
         // it flows into `render_cell`/`FileIcon::element`, which resolve it via
         // `rem_px()`. The virtualization math below runs against real measured
@@ -225,7 +229,9 @@ impl App {
                             record_rects,
                             rename_input,
                             is_animating,
-                            dimmed: crate::ui::views::rename::dim_other_entry(app, pane_id, entry_idx),
+                            dimmed: crate::ui::views::rename::dim_other_entry(
+                                app, pane_id, entry_idx,
+                            ),
                             window,
                         });
                         cell

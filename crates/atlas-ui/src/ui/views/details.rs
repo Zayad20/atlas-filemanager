@@ -5,7 +5,7 @@ use crate::app::{App, ColResizeState, DetailsColumn, RubberTarget};
 use crate::input::action::Action;
 use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
-use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
+use crate::ui::glass::{backdrop_tint, glass_header_fill};
 use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::root::{ctrl_scroll, pane_bounds_recorder, rect_recorder, zone_recorder};
 use atlas_model::file_entry::{FileEntry, FileKind, SortColumn, SortDir};
@@ -136,14 +136,25 @@ impl App {
                 t.border,
             )
         };
-        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, header_bg);
+        let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+        let row_font = window.text_style().font();
+
+        let crumb_strip = self.render_crumb_strip(
+            pane_id,
+            &view,
+            fg,
+            muted,
+            header_bg,
+            border,
+            hover,
+            accent,
+            row_font.clone(),
+            font_size,
+        );
         let (sort_col, sort_dir) = self
             .tab_data_for(pane_id)
             .map(|t| (t.sort_col.clone(), t.sort_dir.clone()))
             .unwrap_or_default();
-
-        let font_size = window.text_style().font_size.to_pixels(window.rem_size());
-        let row_font = window.text_style().font();
 
         let col_widths = self.col_widths;
         let column_order = self.details_column_order;
@@ -224,8 +235,11 @@ impl App {
             dragging,
             drag_x,
             &colors,
+            row_font.clone(),
+            font_size,
         );
 
+        let total_height = count as f32 * row_h;
         let inner = if count == 0 {
             let msg = self.empty_pane_message(pane_id, rust_i18n::t!("empty_folder").into_owned());
             v_flex()
@@ -279,7 +293,7 @@ impl App {
             let start_idx = (scroll_y / row_h).floor().max(0.0) as usize;
             let end_idx = ((scroll_y + viewport_h) / row_h).ceil() as usize + 1;
             let end_idx = end_idx.min(count);
-            let total_height = count as f32 * row_h;
+            let end_idx = end_idx.min(count);
 
             let mut overlays = Vec::new();
 
@@ -450,6 +464,7 @@ impl App {
                 .into_any_element()
         };
         let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
+
         let zone_view = view.clone();
         let prepaint_view = view.clone();
         let bounds_view = view.clone();
@@ -462,43 +477,38 @@ impl App {
             &pane_view,
             pane_id,
         )
+        .child(crumb_strip)
+        .child(header)
+        .child(inner)
+        .child(filter_pill)
+        .child(controls_pill)
         .on_prepaint({
             let v = prepaint_view;
             move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {
                 crate::perf::count("prepaint.details_pane");
                 let new_w = f32::from(bounds.size.width);
                 let new_h = f32::from(bounds.size.height);
-                v.update(cx, |this, _cx| {
-                    if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
-                        if (ts.last_pane_width - new_w).abs() > 1.5 {
+                let should_update = {
+                    if let Some(ts) = v.read(cx).state.tab_states.get(&pane_id) {
+                        (ts.last_pane_width - new_w).abs() > 1.5 || (ts.last_pane_height - new_h).abs() > 1.5
+                    } else {
+                        false
+                    }
+                };
+                if should_update {
+                    v.update(cx, |this, _cx| {
+                        if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
                             ts.last_pane_width = new_w;
-                        }
-                        if (ts.last_pane_height - new_h).abs() > 1.5 {
                             ts.last_pane_height = new_h;
                         }
-                    }
-                });
+                    });
+                }
             }
         })
-        // PHASE F: register this pane's window-space rect each frame for OLE drop routing.
         .when(cfg!(windows), |el| {
             el.on_prepaint(zone_recorder(pane_id, &zone_view))
         })
-        .child(crumb_strip)
-        .child(header)
-        .child(
-            div()
-                .flex_1()
-                .min_h(px(0.))
-                .relative()
-                .when(figma_glass, |s| s.bg(glass_fill()))
-                .rounded_bl(px(12.0))
-                .rounded_br(px(12.0))
-                .on_prepaint(pane_bounds_recorder(pane_id, &bounds_view))
-                .child(inner)
-                .child(filter_pill)
-                .child(controls_pill),
-        )
+        .on_prepaint(pane_bounds_recorder(pane_id, &bounds_view))
         .into_any_element()
     }
 }
@@ -598,122 +608,24 @@ fn details_header(
     dragging: Option<DetailsColumn>,
     drag_x: f32,
     colors: &DetailsColors,
-) -> AnyElement {
-    let move_view = view.clone();
-    let drop_view = view.clone();
-    let mut root = div()
-        .id(SharedString::from(format!("details-header-{}", pane_id.0)))
-        .relative()
-        .w_full()
-        .h(crate::ui::rem_px(DETAILS_ROW_H))
-        .bg(colors.header_bg)
-        .text_xs()
-        .text_color(colors.muted)
-        // Swallow mouse-down so starting a header drag/sort never begins a rubber-band
-        // selection on the pane underneath.
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        // Live drag-reorder: as the grabbed header moves over the strip, drop it
-        // into the slot under the cursor and slide the others to make room.
-        .on_drag_move::<DetailsColumnDrag>(move |e, window, cx| {
-            let dragged = e.drag(cx).column;
-            let local_x = f32::from(e.event.position.x - e.bounds.origin.x);
-            let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
-            move_view.update(cx, |this, cx| {
-                this.reorder_details_live(dragged, local_x, zoom_scale);
-                this.notify_pane(pane_id, cx);
-            });
-        })
-        .on_drop::<DetailsColumnDrag>(move |_drag, _window, cx| {
-            drop_view.update(cx, |this, cx| {
-                this.finish_details_reorder();
-                this.notify_all_panes(cx);
-            });
-        })
-        // Name (sortable + resizable), pinned to the shared name slot.
-        .child(
-            div()
-                .absolute()
-                .left(px(layout.name_x))
-                .top_0()
-                .bottom_0()
-                .w(px(layout.name_col_w))
-                .flex()
-                .items_center()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .overflow_hidden()
-                        .child(sort_cell(
-                            view,
-                            pane_id,
-                            SortColumn::Name,
-                            &rust_i18n::t!("column_name"),
-                            sort_col,
-                            sort_dir,
-                            colors,
-                        )),
-                ),
-        );
-    for col in &layout.columns {
-        root = root.child(details_header_cell(
-            *col,
-            view,
-            pane_id,
-            sort_col,
-            sort_dir,
-            has_type_filter,
-            type_labels,
-            dragging == Some(col.column),
-            colors,
-        ));
-    }
-    // Resize handles as direct children of the header (NOT inside the draggable
-    // cells) so grabbing one resizes instead of starting a reorder drag.
-    root = root.child(col_resize_handle(
-        "name",
-        layout.name_right,
-        layout.name_right,
+    font: gpui::Font,
+    font_size: gpui::Pixels,
+) -> gpui::AnyElement {
+    crate::ui::views::details_header_element::DetailsHeaderElement::new(
         pane_id,
-        view,
-        colors.border,
-        colors.accent,
-    ));
-    for col in &layout.columns {
-        root = root.child(col_resize_handle(
-            col.column.key(),
-            col.w,
-            col.x + col.w,
-            pane_id,
-            view,
-            colors.border,
-            colors.accent,
-        ));
-    }
-    // The floating grabbed header: drawn here at a fixed y so it only tracks the
-    // cursor horizontally (the gpui drag image itself is invisible).
-    if let Some(col) = dragging.and_then(|d| layout.columns.iter().find(|c| c.column == d)) {
-        let w = col.w;
-        root = root.child(
-            div()
-                .absolute()
-                .top_0()
-                .left(px((drag_x - w * 0.5).max(0.0)))
-                .h(crate::ui::rem_px(DETAILS_ROW_H))
-                .w(px(w))
-                .flex()
-                .items_center()
-                .px(crate::ui::rem_px(CELL_PAD))
-                .rounded_md()
-                .border_1()
-                .border_color(colors.accent)
-                .bg(colors.header_bg)
-                .text_color(colors.accent)
-                .shadow_md()
-                .child(details_column_label(col.column)),
-        );
-    }
-    root.into_any_element()
+        view.downgrade(),
+        layout.clone(),
+        colors.clone(),
+        font,
+        font_size,
+        sort_col.clone(),
+        sort_dir.clone(),
+        has_type_filter,
+        type_labels.to_vec(),
+        dragging,
+        drag_x,
+    )
+    .into_any_element()
 }
 
 fn details_column_label(column: DetailsColumn) -> String {

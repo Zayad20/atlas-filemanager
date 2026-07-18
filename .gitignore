@@ -15,6 +15,8 @@ crates/atlas-core/vendor/unrar-bin/*
 *.log
 atlas_err.log
 atlas_out.log
+perf-logs/
+perf-details-element.summary.txt
 nul
 **/nul
 

@@ -391,6 +391,8 @@ impl App {
             .scoped::<crate::app::profiles::DetailsColumns>();
 
         let nucleo = NucleoPool::new();
+        let goto_warm_nucleo = NucleoPool::new();
+        atlas_core::fs::index::build_warm_navigation_index(goto_warm_nucleo.injector());
         let goto_root = state
             .active_tab_data()
             .and_then(|td| td.location.fs_dir().map(std::path::Path::to_path_buf))
@@ -411,6 +413,8 @@ impl App {
             })
             .collect();
 
+        // transfer_journal resume is WIP and not wired into atlas-core yet.
+
         Self {
             state,
             startup_started,
@@ -423,7 +427,12 @@ impl App {
             miller_scroll_handles: HashMap::new(),
             watchers,
             nucleo,
+            goto_warm_nucleo,
             goto_index_root: Some((goto_root, false)),
+            goto_service_cache: None,
+            goto_service_inflight: None,
+            goto_service_failed: None,
+            goto_service_generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             goto_prefill: None,
             fuzzy_scorer: atlas_core::search::fuzzy::FuzzyScorer::new(),
             palette_scroll: gpui::ScrollHandle::new(),
@@ -470,6 +479,12 @@ impl App {
             miller_row_rects: HashMap::new(),
             details_hit: HashMap::new(),
             details_row_rings: HashMap::new(),
+            grid_hit: HashMap::new(),
+            grid_hover: None,
+            list_hit: HashMap::new(),
+            list_hover: None,
+            grid_flip_states: std::rc::Rc::new(std::cell::RefCell::new(HashMap::new())),
+
             details_hover: None,
             miller_column_bounds: HashMap::new(),
             dropzone_selected: HashSet::new(),
@@ -489,6 +504,7 @@ impl App {
             renaming_profile_idx: None,
             settings_input: None,
             settings_section: 0,
+            settings_font_families: None,
             rename_edit: None,
             rename_visual_suppress: None,
             content_results: Vec::new(),
@@ -505,6 +521,8 @@ impl App {
             dnd: dnd_opt,
             #[cfg(windows)]
             shell_menu,
+            dropped_in_background: false,
+            sidebar_hit_model: None,
             was_inactive: false,
             inactive_since: None,
             eco_cleared: false,
@@ -520,6 +538,7 @@ impl App {
             ext_manager_scroll: gpui::ScrollHandle::new(),
             pane_zoom_sliders: HashMap::new(),
             pane_zoom_slider_subs: HashMap::new(),
+            open_view_selectors: HashSet::new(),
             preview_editor: None,
             tag_picker_menu: None,
             tag_picker_input: None,
@@ -541,6 +560,7 @@ impl App {
             tab_closing: HashMap::new(),
             pane_items_appear: HashMap::new(),
             ext_manager_input: None,
+            ext_prompt_inputs: Vec::new(),
             #[cfg(feature = "provider-host")]
             cloud_add_inputs: None,
             #[cfg(feature = "provider-host")]

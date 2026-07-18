@@ -15,6 +15,9 @@ mod imp {
     static CONFIG: OnceLock<Config> = OnceLock::new();
     static FRAME: AtomicU64 = AtomicU64::new(0);
     static COUNTERS: OnceLock<Mutex<HashMap<&'static str, u64>>> = OnceLock::new();
+    /// Wall-time accumulators (microseconds) for the current frame.
+    /// Spans always add here even when under the log threshold, so N×0.3ms panes are visible.
+    static TIMINGS_US: OnceLock<Mutex<HashMap<&'static str, u64>>> = OnceLock::new();
     static LAST_FRAME: OnceLock<Mutex<Instant>> = OnceLock::new();
 
     fn truthy(name: &str) -> bool {
@@ -67,42 +70,19 @@ mod imp {
         *counters.entry(name).or_default() += amount;
     }
 
-    pub(crate) fn frame_summary(frame: u64, detail: impl FnOnce() -> String) {
-        let cfg = config();
-        if !cfg.events {
+    /// Accumulate microseconds under a stable name (summed across all call sites this frame).
+    pub(crate) fn time_us(name: &'static str, us: u64) {
+        if !config().enabled || us == 0 {
             return;
         }
-        let now = Instant::now();
-        let gap_ms = {
-            let mut last = LAST_FRAME.get_or_init(|| Mutex::new(now)).lock().unwrap();
-            let gap = now.duration_since(*last).as_secs_f64() * 1000.0;
-            *last = now;
-            gap
-        };
-        let counters = COUNTERS
+        let mut timings = TIMINGS_US
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
-            .unwrap()
-            .drain()
-            .collect::<Vec<_>>();
-        if counters.is_empty() && frame > 1 {
-            return;
-        }
-        let mut counters = counters;
-        counters.sort_by_key(|(name, _)| *name);
-        let counters = counters
-            .into_iter()
-            .map(|(name, value)| format!("{name}={value}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        eprintln!(
-            "[atlas-perf +{:>8.1}ms] frame_summary frame={frame} gap_ms={gap_ms:.1} {} {}",
-            cfg.started.elapsed().as_secs_f64() * 1000.0,
-            detail(),
-            counters
-        );
+            .unwrap();
+        *timings.entry(name).or_default() += us;
     }
 
+    /// RAII scope that always feeds `time_us` (and optionally logs if over threshold).
     pub(crate) fn span(name: &'static str) -> Option<Span> {
         (cfg!(feature = "tracy") || config().enabled).then(|| Span {
             name,
@@ -132,6 +112,58 @@ mod imp {
         })
     }
 
+    pub(crate) fn frame_summary(frame: u64, detail: impl FnOnce() -> String) {
+        let cfg = config();
+        if !cfg.events {
+            return;
+        }
+        let now = Instant::now();
+        let gap_ms = {
+            let mut last = LAST_FRAME.get_or_init(|| Mutex::new(now)).lock().unwrap();
+            let gap = now.duration_since(*last).as_secs_f64() * 1000.0;
+            *last = now;
+            gap
+        };
+        let counters = COUNTERS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .drain()
+            .collect::<Vec<_>>();
+        let timings = TIMINGS_US
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .drain()
+            .collect::<Vec<_>>();
+        if counters.is_empty() && timings.is_empty() && frame > 1 {
+            return;
+        }
+        let mut counters = counters;
+        counters.sort_by_key(|(name, _)| *name);
+        let mut timings = timings;
+        // Emit largest time consumers first for human scanning.
+        timings.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        let counter_s = counters
+            .into_iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        // us -> ms with 2 decimals for readability in frame_summary.
+        let timing_s = timings
+            .into_iter()
+            .map(|(name, us)| format!("{name}_ms={:.2}", us as f64 / 1000.0))
+            .collect::<Vec<_>>()
+            .join(" ");
+        eprintln!(
+            "[atlas-perf +{:>8.1}ms] frame_summary frame={frame} gap_ms={gap_ms:.1} {} {} {}",
+            cfg.started.elapsed().as_secs_f64() * 1000.0,
+            detail(),
+            counter_s,
+            timing_s
+        );
+    }
+
     pub(crate) fn event(detail: impl FnOnce() -> String) {
         let cfg = config();
         if cfg.events {
@@ -141,6 +173,19 @@ mod imp {
                 detail()
             );
         }
+    }
+
+    /// Isolation flags for A/B: skip chrome so gap reflects dock/panes only.
+    pub(crate) fn skip_sidebar() -> bool {
+        truthy("ATLAS_PERF_SKIP_SIDEBAR")
+    }
+
+    pub(crate) fn skip_overlays() -> bool {
+        truthy("ATLAS_PERF_SKIP_OVERLAYS")
+    }
+
+    pub(crate) fn skip_inspector() -> bool {
+        truthy("ATLAS_PERF_SKIP_INSPECTOR")
     }
 
     pub(crate) struct Span {
@@ -155,6 +200,13 @@ mod imp {
         fn drop(&mut self) {
             let cfg = config();
             let elapsed = self.start.elapsed();
+            // Always accumulate (even sub-threshold) so multi-pane sums show up.
+            if cfg.enabled {
+                let us = elapsed.as_micros() as u64;
+                if us > 0 {
+                    time_us(self.name, us);
+                }
+            }
             if elapsed < cfg.threshold {
                 return;
             }
@@ -193,6 +245,9 @@ pub(crate) fn count(_name: &'static str) {}
 pub(crate) fn count_by(_name: &'static str, _amount: u64) {}
 
 #[cfg(not(any(feature = "perf-log", feature = "tracy")))]
+pub(crate) fn time_us(_name: &'static str, _us: u64) {}
+
+#[cfg(not(any(feature = "perf-log", feature = "tracy")))]
 pub(crate) fn frame_summary(_frame: u64, _detail: impl FnOnce() -> String) {}
 
 #[cfg(not(any(feature = "perf-log", feature = "tracy")))]
@@ -207,6 +262,21 @@ pub(crate) fn span_detail(_name: &'static str, _detail: impl FnOnce() -> String)
 
 #[cfg(not(any(feature = "perf-log", feature = "tracy")))]
 pub(crate) fn event(_detail: impl FnOnce() -> String) {}
+
+#[cfg(not(any(feature = "perf-log", feature = "tracy")))]
+pub(crate) fn skip_sidebar() -> bool {
+    false
+}
+
+#[cfg(not(any(feature = "perf-log", feature = "tracy")))]
+pub(crate) fn skip_overlays() -> bool {
+    false
+}
+
+#[cfg(not(any(feature = "perf-log", feature = "tracy")))]
+pub(crate) fn skip_inspector() -> bool {
+    false
+}
 
 #[cfg(not(any(feature = "perf-log", feature = "tracy")))]
 pub(crate) struct Span;

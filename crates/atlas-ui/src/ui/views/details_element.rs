@@ -140,6 +140,7 @@ impl Element for DetailsBodyElement {
     ) -> Self::PrepaintState {
         let _perf = crate::perf::span("details.element.prepaint");
         crate::perf::count("details.element.prepaint");
+        // Per-pane wall time also rolls into the frame sum via Span::drop → time_us.
 
         let pane_id = self.pane_id;
         let visible = self.visible.clone();
@@ -178,6 +179,8 @@ impl Element for DetailsBodyElement {
 
         let ts = window.text_system();
 
+        // Summed across all panes → details.element.ring_ms in frame_summary.
+        let _ring_perf = crate::perf::span("details.element.ring");
         let rows = app_entity.update(cx, |app, _| {
             app.details_hit.insert(pane_id, hit_model.clone());
             if app.drag_hover_maybe_active() {
@@ -251,8 +254,7 @@ impl Element for DetailsBodyElement {
 
                     let selected = tab_state.selection.selected.contains(&entry_idx)
                         && !crate::ui::views::rename::suppress_row_chrome(app, pane_id, entry_idx);
-                    let dimmed =
-                        crate::ui::views::rename::dim_other_entry(app, pane_id, entry_idx);
+                    let dimmed = crate::ui::views::rename::dim_other_entry(app, pane_id, entry_idx);
                     let flashing = matches!(entry.kind, FileKind::Dir)
                         && app.drag_hover.blink_id.as_ref()
                             == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
@@ -300,11 +302,7 @@ impl Element for DetailsBodyElement {
                     );
 
                     let icon_tex = app
-                        .file_icon_for_entry(
-                            &entry.path,
-                            &entry.kind,
-                            entry.extension.as_deref(),
-                        )
+                        .file_icon_for_entry(&entry.path, &entry.kind, entry.extension.as_deref())
                         .texture();
                     let fallback_icon_path = if icon_tex.is_none() {
                         Some(match entry.kind {
@@ -406,13 +404,7 @@ impl Element for DetailsBodyElement {
                     }
                 });
                 ring.touch_flags(
-                    row_i,
-                    shape_key,
-                    b.selected,
-                    b.hovered,
-                    b.flashing,
-                    b.odd,
-                    b.dimmed,
+                    row_i, shape_key, b.selected, b.hovered, b.flashing, b.odd, b.dimmed,
                 );
             }
 
@@ -518,21 +510,16 @@ impl Element for DetailsBodyElement {
                     origin: point(name_x, y),
                     size: size(px(name_col_w.max(0.0)), px(row_h)),
                 };
-                window.with_content_mask(
-                    Some(ContentMask {
-                        bounds: name_clip,
-                    }),
-                    |window| {
-                        let _ = row.name_s.paint(
-                            point(name_x, text_y),
-                            px(row_h),
-                            TextAlign::Left,
-                            None,
-                            window,
-                            cx,
-                        );
-                    },
-                );
+                window.with_content_mask(Some(ContentMask { bounds: name_clip }), |window| {
+                    let _ = row.name_s.paint(
+                        point(name_x, text_y),
+                        px(row_h),
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                });
 
                 for meta in &row.meta_cols {
                     let Some(layout_col) = prepaint
@@ -550,21 +537,16 @@ impl Element for DetailsBodyElement {
                         origin: point(col_x, y),
                         size: size(px(col_w.max(0.0)), px(row_h)),
                     };
-                    window.with_content_mask(
-                        Some(ContentMask {
-                            bounds: meta_clip,
-                        }),
-                        |window| {
-                            let _ = meta.line.paint(
-                                point(text_x, text_y),
-                                px(row_h),
-                                TextAlign::Left,
-                                None,
-                                window,
-                                cx,
-                            );
-                        },
-                    );
+                    window.with_content_mask(Some(ContentMask { bounds: meta_clip }), |window| {
+                        let _ = meta.line.paint(
+                            point(text_x, text_y),
+                            px(row_h),
+                            TextAlign::Left,
+                            None,
+                            window,
+                            cx,
+                        );
+                    });
                 }
             }
 

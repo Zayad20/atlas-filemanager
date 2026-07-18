@@ -54,7 +54,7 @@ impl App {
         }
         let view = cx.entity();
         let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
-        let (fg, accent, accent_fg, hover, muted, header_bg) = {
+        let (fg, accent, accent_fg, hover, muted, border, header_bg) = {
             let t = cx.theme();
             (
                 t.foreground,
@@ -62,6 +62,7 @@ impl App {
                 t.accent_foreground,
                 t.list_active,
                 t.muted_foreground,
+                t.border,
                 if figma_glass {
                     glass_header_fill()
                 } else {
@@ -69,7 +70,11 @@ impl App {
                 },
             )
         };
-        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, header_bg);
+        let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+        let row_font = window.text_style().font();
+        let crumb_strip = self.render_crumb_strip(
+            pane_id, &view, fg, muted, header_bg, border, hover, accent, row_font, font_size,
+        );
 
         // Snapshot each column's rows up-front; Miller dirs are browsed one level at a
         // time, so a column is rarely huge — a scrollable v_flex per column is enough.

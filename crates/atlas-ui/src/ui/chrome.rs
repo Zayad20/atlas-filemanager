@@ -7,9 +7,7 @@ use crate::ui::drag_hover::{
     drag_hover_recorder, drag_hover_recorder_with_drop, DragHoverCommand, DragHoverDropCommand,
     DragHoverId, DragHoverKind,
 };
-use crate::ui::glass::{
-    glass_fill, glass_header_fill, glass_shadows_enabled, layer_color, GlassExt,
-};
+use crate::ui::glass::{glass_fill, glass_shadows_enabled, layer_color, GlassExt};
 use crate::ui::icons::{is_windows_theme, theme_icon, AtlasIcon};
 use crate::ui::search_shell::search_icon;
 use crate::ui::tooltips::shortcut_tooltip;
@@ -97,155 +95,60 @@ impl App {
         view: &Entity<App>,
         fg: Hsla,
         muted: Hsla,
+        bg: Hsla,
         border: Hsla,
+        hover: Hsla,
+        accent: Hsla,
+        font: gpui::Font,
+        font_size: gpui::Pixels,
     ) -> AnyElement {
-        let pane_archive_inner = self.tab_data_for(pane_id).and_then(|t| {
-            t.location
-                .as_archive()
-                .map(|(archive, inner)| (archive.to_path_buf(), inner.to_path_buf()))
-        });
         let pane_location = self.tab_data_for(pane_id).map(|t| t.location.clone());
-        let (can_back, can_forward, up_location, recent_locations, bookmark_target) = self
+        let (can_back, can_forward, can_up, bookmarked) = self
             .tab_data_for(pane_id)
             .map(|t| {
                 (
                     !t.history.is_empty(),
                     !t.history_forward.is_empty(),
-                    t.location.ascend(),
-                    self.recent_locations_for_pane(pane_id)
-                        .into_iter()
-                        .map(|loc| (self.resolved_location_label(&loc), loc))
-                        .collect::<Vec<_>>(),
-                    self.bookmark_target_for_pane(pane_id),
+                    t.location.ascend().is_some(),
+                    self.bookmark_target_for_pane(pane_id).is_some(),
                 )
             })
             .unwrap_or_default();
         let windows_theme = is_windows_theme(&self.state.profiles.active().theme);
-        let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
-        let crumbs: Option<AnyElement> = if let Some((archive, inner)) = pane_archive_inner.as_ref()
-        {
-            Some(
-                archive_breadcrumb(
-                    view,
-                    pane_id,
-                    archive,
-                    inner,
-                    fg,
-                    muted,
-                    border,
-                    windows_theme,
-                )
-                .into_any_element(),
-            )
+
+        let segments = if let Some(Location::Directory(p)) = pane_location {
+            crate::ui::views::crumb_strip_element::path_segments(&p)
         } else {
-            pane_location.as_ref().map(|location| match location {
-                Location::Directory(p) => {
-                    breadcrumb(view, pane_id, p, fg, muted, border, windows_theme)
-                        .into_any_element()
-                }
-                // Virtual locations (tag results, recycle bin, remotes) have no
-                // filesystem ancestors to climb — show a static labelled crumb
-                // instead of a clickable path that would navigate nowhere.
-                other => h_flex()
-                    .min_w(px(0.))
-                    .gap(crate::ui::rem_px(6.))
-                    .items_center()
-                    .text_color(fg)
-                    .child(crate::ui::icons::icon(location_icon(other), 13.0, muted))
-                    .child(div().truncate().child(self.resolved_location_label(other)))
-                    .into_any_element(),
-            })
+            // For virtual locations, just a single segment with the label.
+            let label = pane_location
+                .as_ref()
+                .map(|loc| self.resolved_location_label(loc).to_string())
+                .unwrap_or_default();
+            vec![crate::ui::views::crumb_strip_element::CrumbSeg {
+                label,
+                location: pane_location.unwrap_or(Location::RecycleBin),
+            }]
         };
-        let button_hover = layer_color(border, 0.04, 0.42);
-        let strip_bg = if figma_glass {
-            glass_header_fill()
-        } else {
-            border.opacity(0.03)
-        };
-        let finder_view = view.clone();
-        h_flex()
-            .w_full()
-            .h(crate::ui::rem_px(if windows_theme { 44.0 } else { 36.0 }))
-            .px_3()
-            .min_w(px(0.))
-            .gap(crate::ui::rem_px(if windows_theme { 9.0 } else { 6.0 }))
-            .items_center()
-            .bg(strip_bg)
-            .border_b_1()
-            .border_color(border.opacity(0.45))
-            .when(!windows_theme, |s| s.text_sm())
-            .when(windows_theme, |s| s.text_base())
-            .text_color(muted)
-            .cursor_pointer()
-            .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                finder_view.update(cx, |this, cx| {
-                    this.activate_tab(pane_id);
-                    this.open_location_finder_or_editor();
-                    cx.notify();
-                });
-            })
-            .child(nav_button(NavButtonProps {
-                id: "pane-back",
-                pane_id,
-                glyph: AtlasIcon::ArrowLeft,
-                tooltip_title: rust_i18n::t!("tooltip_nav_back_title").to_string(),
-                tooltip_desc: rust_i18n::t!("tooltip_nav_back_desc").to_string(),
-                shortcuts: &["alt-left"],
-                enabled: can_back,
-                action: Action::NavigateBack(pane_id),
-                view: view.clone(),
-                recent: recent_locations.clone(),
-                icon_color: fg,
-                hover_bg: button_hover,
-                windows_theme,
-            }))
-            .child(nav_button(NavButtonProps {
-                id: "pane-forward",
-                pane_id,
-                glyph: AtlasIcon::ArrowRight,
-                tooltip_title: rust_i18n::t!("tooltip_nav_forward_title").to_string(),
-                tooltip_desc: rust_i18n::t!("tooltip_nav_forward_desc").to_string(),
-                shortcuts: &["alt-right"],
-                enabled: can_forward,
-                action: Action::NavigateForward(pane_id),
-                view: view.clone(),
-                recent: recent_locations.clone(),
-                icon_color: fg,
-                hover_bg: button_hover,
-                windows_theme,
-            }))
-            .child(nav_button(NavButtonProps {
-                id: "pane-up",
-                pane_id,
-                glyph: AtlasIcon::ArrowUp,
-                tooltip_title: rust_i18n::t!("tooltip_nav_up_title").to_string(),
-                tooltip_desc: rust_i18n::t!("tooltip_nav_up_desc").to_string(),
-                shortcuts: &["alt-up"],
-                enabled: up_location.is_some(),
-                action: Action::NavigateUp(pane_id),
-                view: view.clone(),
-                recent: recent_locations.clone(),
-                icon_color: fg,
-                hover_bg: button_hover,
-                windows_theme,
-            }))
-            .child(bookmark_button(
-                pane_id,
-                view.clone(),
-                bookmark_target.clone(),
-                fg,
-                button_hover,
-                windows_theme,
-            ))
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(1.))
-                    .h(crate::ui::rem_px(if windows_theme { 22.0 } else { 18.0 }))
-                    .bg(border.opacity(0.35)),
-            )
-            .children(crumbs)
-            .into_any_element()
+
+        crate::ui::views::crumb_strip_element::CrumbStripElement::new(
+            pane_id,
+            view.downgrade(),
+            segments,
+            can_back,
+            can_forward,
+            can_up,
+            bookmarked,
+            font,
+            font_size,
+            windows_theme,
+            fg,
+            muted,
+            bg,
+            border,
+            hover,
+            accent,
+        )
+        .into_any_element()
     }
 
     /// User-facing label for a location: tag names resolved from the tag cache
@@ -968,9 +871,16 @@ fn nav_button(props: NavButtonProps) -> impl IntoElement {
         other => DragHoverCommand::Process(other),
     };
     div()
-        .id(SharedString::from(format!("{}-{}", props.id, props.pane_id.0)))
+        .id(SharedString::from(format!(
+            "{}-{}",
+            props.id, props.pane_id.0
+        )))
         .flex_none()
-        .size(crate::ui::rem_px(if props.windows_theme { 34.0 } else { 26.0 }))
+        .size(crate::ui::rem_px(if props.windows_theme {
+            34.0
+        } else {
+            26.0
+        }))
         .rounded(px(if props.windows_theme { 8.0 } else { 7.0 }))
         .flex()
         .items_center()
@@ -1224,7 +1134,9 @@ fn breadcrumb_segment(props: BreadcrumbSegmentProps) -> gpui::Stateful<gpui::Div
     let hover_bg = layer_color(props.layer_base, 0.04, 0.42);
     let hover_id = match &props.location {
         Location::Directory(path) => DragHoverId::Folder(props.tile, path.clone()),
-        Location::Archive { archive, inner } => DragHoverId::Folder(props.tile, archive.join(inner)),
+        Location::Archive { archive, inner } => {
+            DragHoverId::Folder(props.tile, archive.join(inner))
+        }
         _ => DragHoverId::Chrome("breadcrumb", props.tile),
     };
     let command = DragHoverCommand::Process(Action::NavigateLocation {
@@ -1235,9 +1147,21 @@ fn breadcrumb_segment(props: BreadcrumbSegmentProps) -> gpui::Stateful<gpui::Div
         .id(props.id.clone())
         .flex_none()
         .relative()
-        .h(crate::ui::rem_px(if props.windows_theme { 32.0 } else { 26.0 }))
-        .max_w(crate::ui::rem_px(if props.windows_theme { 260.0 } else { 220.0 }))
-        .px(crate::ui::rem_px(if props.windows_theme { 10.0 } else { 8.0 }))
+        .h(crate::ui::rem_px(if props.windows_theme {
+            32.0
+        } else {
+            26.0
+        }))
+        .max_w(crate::ui::rem_px(if props.windows_theme {
+            260.0
+        } else {
+            220.0
+        }))
+        .px(crate::ui::rem_px(if props.windows_theme {
+            10.0
+        } else {
+            8.0
+        }))
         .rounded(px(if props.windows_theme { 7.0 } else { 6.0 }))
         .flex()
         .items_center()

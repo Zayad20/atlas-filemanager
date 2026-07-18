@@ -272,13 +272,17 @@ impl Render for FilePanel {
                     .child(content)
                     .on_prepaint(move |bounds, _window, cx| {
                         if let Some(app) = bounds_app.upgrade() {
-                            app.update(cx, |app, _cx| {
-                                if app.dock_split_animations.is_empty()
-                                    && app.state.tab_states.contains_key(&pane_id)
-                                {
+                            let should_update = {
+                                let app_ref = app.read(cx);
+                                app_ref.dock_split_animations.is_empty()
+                                    && app_ref.state.tab_states.contains_key(&pane_id)
+                                    && app_ref.pane_layout_bounds.get(&pane_id) != Some(&bounds)
+                            };
+                            if should_update {
+                                app.update(cx, |app, _cx| {
                                     app.pane_layout_bounds.insert(pane_id, bounds);
-                                }
-                            });
+                                });
+                            }
                         }
                     });
 

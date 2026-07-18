@@ -1,15 +1,14 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, relative, AnimationExt, AnyElement, Context, Entity, Focusable, MouseButton,
-    SharedString, Window,
+    div, px, relative, AnimationExt, AnyElement, Context, Entity, Focusable, MouseButton, Window,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme as _, ElementExt as _};
 
 use crate::app::{App, PaneAnimation, PaneAnimationKind};
-use crate::input::action::Action;
+
 use crate::ui::dock::drag::{tab_drag_entity, TabDrag};
 use crate::ui::glass::{backdrop_tint, glass_chip_fill, glass_fill, GlassExt};
-use crate::ui::icons::{icon, is_windows_theme, theme_icon, AtlasIcon};
+use crate::ui::icons::{icon, is_windows_theme, AtlasIcon};
 use crate::ui::pane_panel::FilePanel;
 use atlas_core::util::display::display_name;
 use atlas_model::layout_tree::{Container, LinearDir, Tile, TileId};
@@ -19,12 +18,6 @@ use std::time::Instant;
 #[derive(Clone, Copy, Debug)]
 enum SplitMotion {
     Opening(PaneAnimation),
-    Closing(Instant),
-}
-
-#[derive(Clone, Copy, Debug)]
-enum TabMotion {
-    Opening(Instant),
     Closing(Instant),
 }
 
@@ -700,13 +693,17 @@ impl App {
             .overflow_hidden()
             .child(gpui::AnyView::from(view).cached(style))
             .on_prepaint(move |bounds, _window, cx| {
-                app.update(cx, |this, _cx| {
-                    if this.dock_split_animations.is_empty()
-                        && this.state.pane_tree.tiles.get(id).is_some()
-                    {
+                let should_update = {
+                    let app_ref = app.read(cx);
+                    app_ref.dock_split_animations.is_empty()
+                        && app_ref.state.pane_tree.tiles.get(id).is_some()
+                        && app_ref.pane_tabs_bounds.get(&id) != Some(&bounds)
+                };
+                if should_update {
+                    app.update(cx, |this, _cx| {
                         this.pane_tabs_bounds.insert(id, bounds);
-                    }
-                });
+                    });
+                }
             })
             .into_any_element()
     }
@@ -837,8 +834,11 @@ impl App {
                     .border_1()
                     .border_color(cx.theme().border.opacity(0.55))
             })
+            // tabs.bar region is applied inside render_tab_strip (TabsBar surface).
             .child(self.render_tab_strip(children, active, window, cx))
-            .child(div().flex_1().min_h(px(0.)).min_w(px(0.)).child(content));
+            .child(div().flex_1().min_h(px(0.)).min_w(px(0.)).child(
+                crate::ui::layout_region::layout_region("pane.content", content),
+            ));
 
         let is_mod = window.modifiers().alt;
         let activate_drag_app = cx.entity().clone();
@@ -923,7 +923,7 @@ impl App {
         &mut self,
         children: Vec<TileId>,
         active: Option<TileId>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let border = cx.theme().border;
@@ -959,31 +959,13 @@ impl App {
         } else {
             border.opacity(0.22)
         };
-        let strip_h = if windows_theme { 46.0 } else { 34.0 };
-        let tab_h = if windows_theme { 38.0 } else { 26.0 };
-        let tab_min_w = if windows_theme { 118.0 } else { 56.0 };
-        let tab_max_w = if windows_theme { 210.0 } else { 220.0 };
-        let tab_gap = if windows_theme { 8.0 } else { 6.0 };
-        let close_size = if windows_theme { 22.0 } else { 18.0 };
-        let close_icon = if windows_theme { 11.0 } else { 10.0 };
-        let app = cx.entity();
-        let mut strip = h_flex()
-            .h(crate::ui::rem_px(strip_h))
-            .min_w(px(0.))
-            .items_center()
-            .gap(crate::ui::rem_px(4.))
-            .px_2()
-            .bg(tab_bar_bg)
-            .rounded_tl(px(12.0))
-            .rounded_tr(px(12.0))
-            .border_b_1()
-            .border_color(border.opacity(0.42));
 
-        for pane_id in children {
-            let (label, path, tag_color, is_recycle_bin) = self
-                .tab_data_for(pane_id)
+        use crate::ui::views::tabs_bar_element::{TabBarItem, TabsBarElement};
+        let mut items = Vec::with_capacity(children.len());
+        for pane_id in &children {
+            let (label, tag_color) = self
+                .tab_data_for(*pane_id)
                 .map(|t| {
-                    let is_recycle_bin = t.location == Location::RecycleBin;
                     let tag_color = match &t.location {
                         Location::Tag(id) => Some(
                             self.state
@@ -1000,258 +982,39 @@ impl App {
                         ),
                         _ => display_name(&t.location.display_path()),
                     };
-                    (
-                        label,
-                        t.location.fs_dir().map(|p| p.to_path_buf()),
-                        tag_color,
-                        is_recycle_bin,
-                    )
+                    (label, tag_color)
                 })
-                .unwrap_or_else(|| {
-                    (
-                        rust_i18n::t!("fallback_tab_title").to_string(),
-                        None,
-                        None,
-                        false,
-                    )
-                });
-
-            let tex = if windows_theme {
-                if is_recycle_bin {
-                    self.shell_recycle_bin_icon()
-                } else {
-                    path.as_ref().and_then(|p| self.grid_thumbnail(p))
-                }
-            } else {
-                None
-            };
-            let request_recycle_icon = windows_theme && is_recycle_bin && tex.is_none();
-            let is_active = Some(pane_id) == active;
-            let animation = (!self.state.settings.disable_animations)
-                .then(|| self.pane_animation_for(pane_id))
-                .flatten()
-                .filter(|animation| matches!(animation.kind, PaneAnimationKind::NewTab));
-            let motion = if let Some(started) = self.tab_closing.get(&pane_id).copied() {
-                Some(TabMotion::Closing(started))
-            } else {
-                animation.map(|animation| TabMotion::Opening(animation.started))
-            };
-            let activate_app = app.clone();
-            let close_app = app.clone();
-            let tab_glow = match motion {
-                Some(TabMotion::Opening(started)) => Some(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .h(crate::ui::rem_px(2.))
-                        .rounded(px(2.))
-                        .bg(accent)
-                        .with_animation(
-                            crate::ui::motion::keyed(
-                                "custom-tab-glow",
-                                pane_id.0,
-                                ("open", started),
-                            ),
-                            crate::ui::motion::animation(crate::ui::motion::PANEL_MS),
-                            move |this, t| this.opacity((1.0 - t).clamp(0.0, 1.0)),
-                        ),
-                ),
-                _ => None,
-            };
-            let tab = h_flex()
-                .id(SharedString::from(format!("custom-tab-{}", pane_id.0)))
-                .relative()
-                .max_w(crate::ui::rem_px(tab_max_w))
-                .min_w(crate::ui::rem_px(tab_min_w))
-                .h(crate::ui::rem_px(tab_h))
-                .items_center()
-                .gap(crate::ui::rem_px(tab_gap))
-                .px_3()
-                .overflow_hidden()
-                .rounded(cx.theme().radius)
-                .cursor_pointer()
-                .bg(if is_active {
-                    active_bg
-                } else {
-                    cx.theme().transparent
-                })
-                .text_color(if is_active { active_fg } else { tab_fg })
-                .hover(move |s| {
-                    if is_active {
-                        s.bg(active_bg)
-                    } else {
-                        s.bg(hover_bg)
-                    }
-                })
-                .on_drag(
-                    TabDrag {
-                        pane_id,
-                        content: self.get_or_make_file_panel(pane_id, cx).clone().into(),
-                        size: self.pane_view_bounds.get(&pane_id).map(|b| b.size),
-                    },
-                    {
-                        let drag_app = app.clone();
-                        move |drag, _pos, _window, cx| {
-                            drag_app.update(cx, |this, cx| {
-                                if this.state.dragging_pane != Some(drag.pane_id) {
-                                    this.animate_pane_drag(drag.pane_id, true);
-                                    this.state.dragging_pane = Some(drag.pane_id);
-                                    cx.notify();
-                                }
-                            });
-                            tab_drag_entity(drag.pane_id, drag.content.clone(), drag.size, cx)
-                        }
-                    },
-                )
-                .on_drop::<TabDrag>({
-                    let drop_app = app.clone();
-                    move |drag, _window, cx| {
-                        drop_app.update(cx, |this, cx| {
-                            this.move_tab_before(drag.pane_id, pane_id);
-                            cx.notify();
-                        });
-                    }
-                })
-                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                    activate_app.update(cx, |this, cx| {
-                        this.process_actions(vec![Action::FocusTab(pane_id)]);
-                        cx.notify();
-                    });
-                })
-                .when_some(path.clone(), |s, drop_dest| {
-                    s.on_prepaint(crate::ui::drag_hover::drag_hover_recorder_with_drop(
-                        crate::ui::drag_hover::DragHoverId::Chrome("Tab", pane_id),
-                        crate::ui::drag_hover::DragHoverKind::Nav,
-                        crate::ui::drag_hover::DragHoverCommand::Process(
-                            crate::input::action::Action::FocusTab(pane_id),
-                        ),
-                        crate::ui::drag_hover::DragHoverDropCommand::TransferTo(drop_dest),
-                        &app,
-                    ))
-                })
-                .when(path.is_none(), |s| {
-                    s.on_prepaint(crate::ui::drag_hover::drag_hover_recorder(
-                        crate::ui::drag_hover::DragHoverId::Chrome("Tab", pane_id),
-                        crate::ui::drag_hover::DragHoverKind::Nav,
-                        crate::ui::drag_hover::DragHoverCommand::Process(
-                            crate::input::action::Action::FocusTab(pane_id),
-                        ),
-                        &app,
-                    ))
-                })
-                .when(request_recycle_icon, |s| {
-                    let icon_app = app.clone();
-                    s.on_prepaint(move |_bounds, _window, cx| {
-                        icon_app.update(cx, |this, _cx| {
-                            this.request_shell_recycle_bin_icon();
-                        });
-                    })
-                })
-                .when_some(tex, |s, tex| {
-                    s.child(gpui::img(tex).size(crate::ui::rem_px(16.0)))
-                })
-                .when_some(tag_color, |s, color| {
-                    let rgb = gpui::rgb(
-                        (u32::from(color[0]) << 16)
-                            | (u32::from(color[1]) << 8)
-                            | u32::from(color[2]),
-                    );
-                    s.child(
-                        div()
-                            .flex_none()
-                            .size(crate::ui::rem_px(9.))
-                            .rounded_full()
-                            .bg(rgb),
-                    )
-                })
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .truncate()
-                        .when(!windows_theme, |s| s.text_xs())
-                        .when(windows_theme, |s| s.text_sm())
-                        .child(SharedString::from(label)),
-                )
-                .child(
-                    div()
-                        .size(crate::ui::rem_px(close_size))
-                        .rounded(px(5.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_color(muted)
-                        .hover(|s| s.bg(border.opacity(0.5)))
-                        .child(theme_icon(AtlasIcon::X, close_icon, muted, windows_theme))
-                        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                            close_app.update(cx, |this, cx| {
-                                this.process_actions(vec![Action::CloseTab(pane_id)]);
-                                cx.notify();
-                            });
-                            cx.stop_propagation();
-                        }),
-                )
-                .children(tab_glow);
-            let tab = if let Some(motion) = motion {
-                let (key, closing) = match motion {
-                    TabMotion::Opening(started) => (("open", started), false),
-                    TabMotion::Closing(started) => (("close", started), true),
-                };
-                tab.with_animation(
-                    crate::ui::motion::keyed("custom-tab-intro", pane_id.0, key),
-                    crate::ui::motion::animation(crate::ui::motion::PANEL_MS),
-                    move |this, t| {
-                        let visible = if closing { 1.0 - t } else { t };
-                        let this = this.opacity(0.20 + 0.80 * visible);
-                        let x_offset = if closing {
-                            px(8.0 * t)
-                        } else {
-                            px(8.0 * (1.0 - visible))
-                        };
-                        this.w(crate::ui::rem_px(tab_min_w * visible))
-                            .min_w(crate::ui::rem_px(tab_min_w * visible))
-                            .max_w(crate::ui::rem_px(tab_max_w * visible))
-                            .gap(crate::ui::rem_px(tab_gap * visible))
-                            .px(crate::ui::rem_px(12.0 * visible))
-                            .paint_offset(gpui::point(x_offset, px(0.)))
-                    },
-                )
-                .into_any_element()
-            } else {
-                tab.into_any_element()
-            };
-            strip = strip.child(tab);
+                .unwrap_or_else(|| (rust_i18n::t!("fallback_tab_title").to_string(), None));
+            items.push(TabBarItem {
+                pane_id: *pane_id,
+                label,
+                is_active: Some(*pane_id) == active,
+                tag_rgb: tag_color,
+            });
         }
-
-        if let Some(anchor) = active {
-            let new_app = app;
-            strip = strip.child(
-                div()
-                    .id(SharedString::from(format!("custom-tab-new-{}", anchor.0)))
-                    .size(crate::ui::rem_px(if windows_theme { 32.0 } else { 24.0 }))
-                    .rounded(px(6.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hover_bg))
-                    .child(theme_icon(
-                        AtlasIcon::Plus,
-                        if windows_theme { 15.0 } else { 13.0 },
-                        muted,
-                        windows_theme,
-                    ))
-                    .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                        new_app.update(cx, |this, cx| {
-                            this.process_actions(vec![Action::NewTab(anchor)]);
-                            cx.notify();
-                        });
-                    }),
-            );
-        }
-        strip.into_any_element()
+        let font = window.text_style().font();
+        let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+        crate::ui::layout_region::layout_region(
+            "tabs.bar",
+            TabsBarElement::new(
+                cx.entity().downgrade(),
+                items,
+                active,
+                font,
+                font_size,
+                windows_theme,
+                tab_bar_bg,
+                active_bg,
+                hover_bg,
+                active_fg,
+                tab_fg,
+                muted,
+                border,
+                accent,
+            )
+            .w_full(),
+        )
+        .into_any_element()
     }
 
     fn with_split_drop_zones(

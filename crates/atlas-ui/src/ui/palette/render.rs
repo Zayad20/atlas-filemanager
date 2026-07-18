@@ -657,9 +657,16 @@ impl App {
     ) -> AnyElement {
         let kind = props.spec.kind;
         let view = cx.entity();
-        let text_color = if props.selected { props.colors.fg } else { props.colors.muted };
+        let text_color = if props.selected {
+            props.colors.fg
+        } else {
+            props.colors.muted
+        };
         h_flex()
-            .id(SharedString::from(format!("{}-sec-{}", props.spec.id, props.section_id)))
+            .id(SharedString::from(format!(
+                "{}-sec-{}",
+                props.spec.id, props.section_id
+            )))
             .w_full()
             .px_2()
             .py_1()
@@ -709,12 +716,21 @@ impl App {
         let view = cx.entity();
         let kind = props.spec.kind;
         let group_name = SharedString::from(format!("{}-row-{}", props.spec.id, props.i));
-        let icon_color = if props.selected { props.colors.accent_fg } else { props.colors.muted };
-        let desc_color = if props.selected { props.colors.accent_fg } else { props.colors.muted };
+        let icon_color = if props.selected {
+            props.colors.accent_fg
+        } else {
+            props.colors.muted
+        };
+        let desc_color = if props.selected {
+            props.colors.accent_fg
+        } else {
+            props.colors.muted
+        };
         if let Some(file_icon) = &props.item.file_icon {
             self.maybe_request_file_icon(file_icon);
         }
-        let icon_el = props.item
+        let icon_el = props
+            .item
             .file_icon
             .as_ref()
             .map(|file_icon| self.file_icon(file_icon).element(16.0, icon_color))
@@ -722,8 +738,16 @@ impl App {
         // Matched characters: accent on normal rows, bold-bright on selected.
         let title_el = highlighted_title(
             props.item,
-            if props.selected { props.colors.accent_fg } else { props.colors.fg },
-            if props.selected { props.colors.accent_fg } else { props.colors.accent },
+            if props.selected {
+                props.colors.accent_fg
+            } else {
+                props.colors.fg
+            },
+            if props.selected {
+                props.colors.accent_fg
+            } else {
+                props.colors.accent
+            },
             window,
         );
 
@@ -769,7 +793,8 @@ impl App {
                 .into_any_element()
         };
 
-        let buttons: Vec<AnyElement> = props.item
+        let buttons: Vec<AnyElement> = props
+            .item
             .buttons
             .iter()
             .map(|b| {
@@ -814,7 +839,8 @@ impl App {
             })
             .collect();
 
-        let badges: Vec<AnyElement> = props.item
+        let badges: Vec<AnyElement> = props
+            .item
             .shortcuts
             .iter()
             .filter_map(|hint| {
@@ -834,7 +860,10 @@ impl App {
         let row_close = kind.close_action();
         let row_view = view;
         div()
-            .id(SharedString::from(format!("{}-row-{}", props.spec.id, props.i)))
+            .id(SharedString::from(format!(
+                "{}-row-{}",
+                props.spec.id, props.i
+            )))
             .group(group_name)
             .w_full()
             .when(props.indent, |s| s.pl(px(SECTION_INDENT)))
@@ -843,7 +872,9 @@ impl App {
             .py_1()
             .rounded_sm()
             .cursor_pointer()
-            .when(props.selected, |s| s.bg(props.colors.accent).text_color(props.colors.accent_fg))
+            .when(props.selected, |s| {
+                s.bg(props.colors.accent).text_color(props.colors.accent_fg)
+            })
             .when(!props.selected, |s| s.hover(|h| h.bg(props.colors.border)))
             .child(
                 h_flex()
@@ -880,7 +911,8 @@ impl App {
                 true
             }
             "enter" => {
-                let idx = props.kind
+                let idx = props
+                    .kind
                     .state(self)
                     .selected_idx
                     .min(row_count.saturating_sub(1));
@@ -1029,7 +1061,13 @@ fn palette_footer(
         let mut cluster = h_flex().gap_1().items_center();
         for key in &hint.keys {
             cluster = cluster.children(shortcut_badge(
-                key, false, colors.muted_bg, colors.muted, colors.muted, window, None,
+                key,
+                false,
+                colors.muted_bg,
+                colors.muted,
+                colors.muted,
+                window,
+                None,
             ));
         }
         cluster = cluster.child(hint.label.clone());

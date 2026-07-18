@@ -47,10 +47,20 @@ pub struct App {
     /// Runtime fuzzy-search index. Kept out of model/state so state never owns
     /// search engine internals.
     pub(crate) nucleo: NucleoPool,
+    /// Small directory-only index that is never repointed by scoped searches.
+    pub(crate) goto_warm_nucleo: NucleoPool,
     /// Directory the goto's nucleo index was built from and whether it is a
     /// scoped (drill-in) index; a path-prefixed query re-scopes when either
     /// differs.
     pub(crate) goto_index_root: Option<(PathBuf, bool)>,
+    /// Last service-backed Goto query. Avoids repeating named-pipe work on every paint frame.
+    pub(crate) goto_service_cache: Option<(
+        String,
+        std::sync::Arc<Vec<atlas_core::search::nucleo_pool::IndexEntry>>,
+    )>,
+    pub(crate) goto_service_inflight: Option<String>,
+    pub(crate) goto_service_failed: Option<String>,
+    pub(crate) goto_service_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Pre-fill for the goto input on its next open (Ctrl+L: current dir).
     pub(crate) goto_prefill: Option<String>,
     /// One-shot fuzzy ranker for the command/ext palettes (matcher reused).
@@ -65,6 +75,8 @@ pub struct App {
     pub(crate) ext_manager_scroll: gpui::ScrollHandle,
     pub(crate) pane_zoom_sliders: HashMap<TileId, Entity<gpui_component::slider::SliderState>>,
     pub(crate) pane_zoom_slider_subs: HashMap<TileId, gpui::Subscription>,
+    /// View-selector popovers whose open state must survive switching render trees.
+    pub(crate) open_view_selectors: HashSet<TileId>,
     /// Runtime extension registry. Kept out of `AppState` because loading it scans
     /// extension folders and PATH.
     pub(crate) ext_registry: atlas_core::ext::Registry,
@@ -194,6 +206,13 @@ pub struct App {
     pub(crate) details_hit: HashMap<TileId, DetailsHitModel>,
     /// Per-pane circular row slot buffer for Details (shape on miss only).
     pub(crate) details_row_rings: HashMap<TileId, crate::ui::views::details_ring::DetailsRowRing>,
+    pub(crate) grid_hit: HashMap<TileId, GridHitModel>,
+    pub(crate) grid_hover: Option<(TileId, usize)>,
+    pub(crate) list_hit: HashMap<TileId, GridHitModel>,
+    pub(crate) list_hover: Option<(TileId, usize)>,
+    pub(crate) grid_flip_states: std::rc::Rc<
+        std::cell::RefCell<std::collections::HashMap<atlas_model::pane::TabId, GridFlipState>>,
+    >,
     pub(crate) details_hover: Option<(TileId, usize)>,
     pub(crate) miller_column_bounds: HashMap<(TileId, usize), gpui::Bounds<gpui::Pixels>>,
     pub(crate) dropzone_selected: HashSet<PathBuf>,
@@ -224,7 +243,12 @@ pub struct App {
     pub(crate) renaming_profile_idx: Option<usize>,
     pub(crate) settings_input: Option<Entity<InputState>>,
     pub(crate) settings_section: usize,
+    /// System font families are relatively expensive to enumerate, so cache
+    /// them after settings first opens.
+    pub(crate) settings_font_families: Option<std::sync::Arc<Vec<gpui::SharedString>>>,
     pub(crate) ext_manager_input: Option<Entity<InputState>>,
+    /// Native inputs for the parameters of the pending extension command.
+    pub(crate) ext_prompt_inputs: Vec<Entity<InputState>>,
     /// Inputs for the add-remote dialog; created on open, cleared on close.
     #[cfg(feature = "provider-host")]
     pub(crate) cloud_add_inputs: Option<crate::ui::overlays::add_cloud::CloudAddInputs>,
@@ -272,6 +296,11 @@ pub struct App {
     pub(crate) shell_menu: Option<crate::shell_menu::ShellMenuHandle>,
     // Open right-click menu state: Atlas items + (Windows) native shell items.
     // `None` when closed. Cross-platform; on non-Windows only Atlas items show.
+    pub(crate) dropped_in_background: bool,
+
+    // Sidebar interaction model for monolithic custom element rendering
+    pub(crate) sidebar_hit_model: Option<SidebarHitModel>,
+
     pub(crate) was_inactive: bool,
     pub(crate) inactive_since: Option<Instant>,
     pub(crate) eco_cleared: bool,
@@ -486,15 +515,24 @@ impl DockSplitAnimation {
         let mut to = from.clone();
         if closing_ix < to.len() {
             let end = 0.01;
-            let delta = (to[closing_ix] - end).max(0.0);
             to[closing_ix] = end;
-            if let Some((ix, _)) = to
+            let survivor_sum = to
                 .iter()
                 .enumerate()
                 .filter(|(ix, _)| *ix != closing_ix)
-                .max_by(|(_, a), (_, b)| a.total_cmp(b))
-            {
-                to[ix] += delta;
+                .map(|(_, share)| *share)
+                .sum::<f32>();
+            if survivor_sum > f32::EPSILON {
+                // Preserve every survivor's relative size while they collectively
+                // absorb the closing pane. Giving the whole delta to one sibling
+                // made only that pane animate and left the rest visually stuck.
+                let survivor_target = to.len() as f32 - end;
+                let scale = survivor_target / survivor_sum;
+                for (ix, share) in to.iter_mut().enumerate() {
+                    if ix != closing_ix {
+                        *share *= scale;
+                    }
+                }
             }
         }
         normalize_split_shares(&mut to);
@@ -510,7 +548,7 @@ impl DockSplitAnimation {
         let t = (self.started.elapsed().as_secs_f32() / Self::DURATION.as_secs_f32()).min(1.0);
         let eased = split_spring(t * Self::DURATION.as_secs_f32());
         let eased = if self.closing {
-            eased.clamp(0.0, 1.0)
+            Self::closing_progress(t)
         } else {
             eased
         };
@@ -522,6 +560,13 @@ impl DockSplitAnimation {
             .collect::<Vec<_>>();
         normalize_split_shares(&mut shares);
         shares
+    }
+
+    /// Progress used by both the closing split geometry and its visual treatment.
+    /// Keeping this in one place prevents the pane from fading out before its slot
+    /// has finished collapsing.
+    pub(crate) fn closing_progress(t: f32) -> f32 {
+        split_spring(t.clamp(0.0, 1.0) * Self::DURATION.as_secs_f32()).clamp(0.0, 1.0)
     }
 
     pub(crate) fn done(&self) -> bool {
@@ -582,6 +627,22 @@ mod tests {
             .chain(&anim.to)
             .all(|share| share.is_finite()));
         assert!(anim.from.iter().chain(&anim.to).all(|share| *share > 0.0));
+    }
+
+    #[test]
+    fn split_close_distributes_space_across_all_survivors() {
+        let anim = DockSplitAnimation::closing(vec![1.0, 1.0, 1.0], 2);
+
+        assert!((anim.to[0] - 1.495).abs() < 0.001);
+        assert!((anim.to[1] - 1.495).abs() < 0.001);
+        assert!((anim.to[2] - 0.01).abs() < 0.001);
+    }
+
+    #[test]
+    fn split_close_preserves_survivor_proportions() {
+        let anim = DockSplitAnimation::closing(vec![1.0, 2.0, 3.0], 2);
+
+        assert!((anim.to[1] / anim.to[0] - 2.0).abs() < 0.001);
     }
 }
 
@@ -786,6 +847,36 @@ pub struct RubberDrag {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) enum SidebarHit {
+    SectionHeader(usize),
+    NavRow(std::path::PathBuf),
+    VirtualNavRow(atlas_model::location::Location),
+    TagRow(atlas_model::tag_cache::TagId),
+    DriveRow(std::path::PathBuf),
+    CloudRow(std::path::PathBuf),
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct SidebarHitModel {
+    pub(crate) bounds: gpui::Bounds<gpui::Pixels>,
+    pub(crate) zones: Vec<(gpui::Bounds<gpui::Pixels>, SidebarHit)>,
+}
+
+impl SidebarHitModel {
+    pub(crate) fn hit(&self, pos: gpui::Point<gpui::Pixels>) -> Option<SidebarHit> {
+        if !self.bounds.contains(&pos) {
+            return None;
+        }
+        for (rect, hit) in &self.zones {
+            if rect.contains(&pos) {
+                return Some(hit.clone());
+            }
+        }
+        None
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct DetailsHitModel {
     pub(crate) bounds: gpui::Bounds<gpui::Pixels>,
     pub(crate) scroll_y: f32,
@@ -1420,4 +1511,95 @@ fn collect_tag_migration(
         }
     }
     out
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ActiveGridAnimation {
+    pub(crate) start_time: std::time::Instant,
+    pub(crate) start_offset: gpui::Point<gpui::Pixels>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct GridFlipState {
+    pub(crate) last_item_bounds: std::collections::HashMap<usize, gpui::Bounds<gpui::Pixels>>,
+    pub(crate) animations: std::collections::HashMap<usize, ActiveGridAnimation>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct GridHitModel {
+    pub(crate) bounds: gpui::Bounds<gpui::Pixels>,
+    pub(crate) scroll_y: f32,
+    pub(crate) cell_w: f32,
+    pub(crate) cell_h: f32,
+    pub(crate) cols: usize,
+    pub(crate) pitch_y: f32,
+    pub(crate) pitch_x: f32,
+    pub(crate) visible: std::sync::Arc<Vec<usize>>,
+    pub(crate) start_idx: usize,
+    pub(crate) end_idx: usize,
+    pub(crate) total_count: usize,
+}
+
+impl GridHitModel {
+    pub(crate) fn hit_visible_pos(&self, pos: gpui::Point<gpui::Pixels>) -> Option<usize> {
+        if !self.bounds.contains(&pos) {
+            return None;
+        }
+        let y = f32::from(pos.y) - f32::from(self.bounds.top()) + self.scroll_y;
+        let x = f32::from(pos.x) - f32::from(self.bounds.left());
+        if y < 0.0 || x < 0.0 {
+            return None;
+        }
+        let row = (y / self.pitch_y).floor() as usize;
+        let col = (x / self.pitch_x).floor() as usize;
+        if col >= self.cols {
+            return None;
+        }
+        let visible_pos = row * self.cols + col;
+        (visible_pos >= self.start_idx
+            && visible_pos < self.end_idx
+            && visible_pos < self.total_count)
+            .then_some(visible_pos)
+    }
+
+    pub(crate) fn hit_entry(&self, pos: gpui::Point<gpui::Pixels>) -> Option<usize> {
+        self.hit_visible_pos(pos)
+            .and_then(|visible_pos| self.visible.get(visible_pos).copied())
+    }
+
+    pub(crate) fn hit_entry_at_content_offset(
+        &self,
+        offset: gpui::Point<gpui::Pixels>,
+    ) -> Option<usize> {
+        let y = f32::from(offset.y);
+        let x = f32::from(offset.x);
+        if y < 0.0 || x < 0.0 {
+            return None;
+        }
+        let row = (y / self.pitch_y).floor() as usize;
+        let col = (x / self.pitch_x).floor() as usize;
+        if col >= self.cols {
+            return None;
+        }
+        let visible_pos = row * self.cols + col;
+        (visible_pos >= self.start_idx
+            && visible_pos < self.end_idx
+            && visible_pos < self.total_count)
+            .then_some(visible_pos)
+            .and_then(|visible_pos| self.visible.get(visible_pos).copied())
+    }
+
+    pub(crate) fn cell_bounds(&self, visible_pos: usize) -> gpui::Bounds<gpui::Pixels> {
+        let row = visible_pos / self.cols;
+        let col = visible_pos % self.cols;
+        let y = (row as f32) * self.pitch_y - self.scroll_y;
+        let x = (col as f32) * self.pitch_x;
+        gpui::Bounds {
+            origin: gpui::point(
+                self.bounds.left() + gpui::px(x),
+                self.bounds.top() + gpui::px(y),
+            ),
+            size: gpui::size(gpui::px(self.cell_w), gpui::px(self.cell_h)),
+        }
+    }
 }

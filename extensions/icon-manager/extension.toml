@@ -1,0 +1,20 @@
+id = "icon-manager"
+name = "Icon Theme Manager"
+version = "0.2.0"
+author = "Atlas Team"
+description = "Downloads and activates VS Code icon themes from Open VSX."
+kind = "sidecar"
+
+[sidecar]
+command = "atlas-icon-extension.exe"
+
+[[commands]]
+id = "icon-manager.download-theme"
+title = "Download and activate icon theme…"
+per_file = false
+accepts = { any = true }
+
+[[commands.prompts]]
+name = "theme"
+label = "Open VSX extension (publisher/name)"
+default = "PKief/material-icon-theme"

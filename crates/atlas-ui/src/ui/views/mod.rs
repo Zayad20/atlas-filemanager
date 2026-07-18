@@ -15,14 +15,17 @@ use gpui::{ClickEvent, Div, Entity, MouseButton, MouseDownEvent, Stateful, Windo
 use gpui_component::ElementExt;
 use std::path::PathBuf;
 
+pub mod crumb_strip_element;
 pub mod details;
 pub mod details_element;
+pub mod details_header_element;
 pub mod details_ring;
 pub mod grid;
 pub mod list;
 pub mod miller;
 mod rename;
 pub mod space_lens;
+pub mod tabs_bar_element;
 pub mod virtual_grid;
 
 /// Shared entry click handler: double-click activates, single click selects

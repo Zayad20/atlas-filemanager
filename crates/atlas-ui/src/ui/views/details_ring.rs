@@ -109,9 +109,7 @@ impl DetailsRowRing {
             return None;
         }
         let ix = self.index(row);
-        self.slots[ix]
-            .as_ref()
-            .filter(|s| s.row == row)
+        self.slots[ix].as_ref().filter(|s| s.row == row)
     }
 
     /// Collect a dense list for one paint pass (clones Arc layouts inside ShapedLine).

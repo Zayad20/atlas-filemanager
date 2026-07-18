@@ -371,112 +371,120 @@ impl Render for App {
             self.sync_pane_focus(window, cx);
             // Host the dock in its own view so split/resize animations
             // (`request_animation_frame`) re-render only the dock, not all of App.
-            self.ensure_dock_host(cx).into_any_element()
+            crate::ui::layout_region::layout_region(
+                "dock",
+                self.ensure_dock_host(cx).into_any_element(),
+            )
+            .into_any_element()
         };
-        let sidebar = self.state.settings.show_sidebar.then(|| {
-            let target_width = if self.state.settings.sidebar_collapsed {
-                if windows_theme {
-                    64.0
+        // ATLAS_PERF_SKIP_SIDEBAR=1: omit sidebar build/paint for isolation runs.
+        let sidebar =
+            (self.state.settings.show_sidebar && !crate::perf::skip_sidebar()).then(|| {
+                let target_width = if self.state.settings.sidebar_collapsed {
+                    if windows_theme {
+                        64.0
+                    } else {
+                        56.0
+                    }
                 } else {
-                    56.0
+                    self.state.settings.sidebar_width
+                };
+                if sidebar_width_dirty {
+                    match self.sidebar_render_width {
+                        Some(from)
+                            if !self.state.settings.disable_animations
+                                && !suppress_resize_animations
+                                && (from - target_width).abs() > f32::EPSILON =>
+                        {
+                            self.sidebar_width_animation =
+                                Some(crate::app::SidebarWidthAnimation::new(from, target_width));
+                        }
+                        _ => {
+                            self.sidebar_width_animation = None;
+                        }
+                    }
                 }
-            } else {
-                self.state.settings.sidebar_width
-            };
-            if sidebar_width_dirty {
-                match self.sidebar_render_width {
-                    Some(from)
-                        if !self.state.settings.disable_animations
-                            && !suppress_resize_animations
-                            && (from - target_width).abs() > f32::EPSILON =>
-                    {
-                        self.sidebar_width_animation =
-                            Some(crate::app::SidebarWidthAnimation::new(from, target_width));
+                let width = match self.sidebar_width_animation {
+                    Some(anim) if anim.is_alive() => {
+                        window.request_animation_frame();
+                        anim.width()
                     }
                     _ => {
                         self.sidebar_width_animation = None;
+                        target_width
                     }
-                }
-            }
-            let width = match self.sidebar_width_animation {
-                Some(anim) if anim.is_alive() => {
-                    window.request_animation_frame();
-                    anim.width()
-                }
-                _ => {
-                    self.sidebar_width_animation = None;
-                    target_width
-                }
-            };
-            self.sidebar_render_width = Some(width);
-            let panel = if let Some(panel) = &self.sidebar_panel {
-                panel.clone()
-            } else {
-                let app = cx.entity();
-                let profile_names: Vec<String> = self
-                    .state
-                    .profiles
-                    .profiles
-                    .iter()
-                    .map(|p| p.name.clone())
-                    .collect();
-                let active_profile = self.state.profiles.active_idx;
-                let panel = cx.new(|cx| {
-                    crate::ui::sidebar::SidebarPanel::new(
-                        app,
-                        profile_names,
-                        active_profile,
-                        window,
-                        cx,
-                    )
-                });
-                self.sidebar_panel = Some(panel.clone());
-                panel
-            };
-            let panel_bg = if figma_glass {
-                glass_sidebar_fill()
-            } else if windows_glass {
-                cx.theme().sidebar
-            } else if windows_theme {
-                hsla(0., 0., 1., 0.20)
-            } else if glass_theme {
-                cx.theme().sidebar.opacity(0.42)
-            } else {
-                backdrop_tint(cx.theme().secondary, 0.10)
-            };
-            let shell = div()
-                .w(px(width))
-                .h_full()
-                .flex_none()
-                .overflow_hidden()
-                .when(figma_glass, |s| s.glass_surface(panel_bg).shadow_lg())
-                .when(!figma_glass, |s| {
-                    s.rounded(cx.theme().radius_lg).bg(panel_bg)
-                });
-            shell.child(panel).into_any_element()
-        });
-        let sidebar_resizer = (self.state.settings.show_sidebar
-            && !self.state.settings.sidebar_collapsed)
-            .then(|| {
-                div()
-                    .absolute()
-                    .left(-px(6.))
-                    .top_0()
-                    .w(px(12.))
+                };
+                self.sidebar_render_width = Some(width);
+                let panel = if let Some(panel) = &self.sidebar_panel {
+                    panel.clone()
+                } else {
+                    let app = cx.entity();
+                    let profile_names: Vec<String> = self
+                        .state
+                        .profiles
+                        .profiles
+                        .iter()
+                        .map(|p| p.name.clone())
+                        .collect();
+                    let active_profile = self.state.profiles.active_idx;
+                    let panel = cx.new(|cx| {
+                        crate::ui::sidebar::SidebarPanel::new(
+                            app,
+                            profile_names,
+                            active_profile,
+                            window,
+                            cx,
+                        )
+                    });
+                    self.sidebar_panel = Some(panel.clone());
+                    panel
+                };
+                let panel_bg = if figma_glass {
+                    glass_sidebar_fill()
+                } else if windows_glass {
+                    cx.theme().sidebar
+                } else if windows_theme {
+                    hsla(0., 0., 1., 0.20)
+                } else if glass_theme {
+                    cx.theme().sidebar.opacity(0.42)
+                } else {
+                    backdrop_tint(cx.theme().secondary, 0.10)
+                };
+                let shell = div()
+                    .w(px(width))
                     .h_full()
-                    .cursor_col_resize()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
-                            this.sidebar_resize = Some(crate::app::SidebarResizeState {
-                                start_x: f32::from(ev.position.x),
-                                start_width: this.state.settings.sidebar_width,
-                            });
-                            cx.stop_propagation();
-                        }),
-                    )
+                    .flex_none()
+                    .overflow_hidden()
+                    .when(figma_glass, |s| s.glass_surface(panel_bg).shadow_lg())
+                    .when(!figma_glass, |s| {
+                        s.rounded(cx.theme().radius_lg).bg(panel_bg)
+                    });
+                crate::ui::layout_region::layout_region("sidebar", shell.child(panel))
                     .into_any_element()
             });
+        let sidebar_resizer = (self.state.settings.show_sidebar
+            && !self.state.settings.sidebar_collapsed
+            && !crate::perf::skip_sidebar())
+        .then(|| {
+            div()
+                .absolute()
+                .left(-px(6.))
+                .top_0()
+                .w(px(12.))
+                .h_full()
+                .cursor_col_resize()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                        this.sidebar_resize = Some(crate::app::SidebarResizeState {
+                            start_x: f32::from(ev.position.x),
+                            start_width: this.state.settings.sidebar_width,
+                        });
+                        cx.stop_propagation();
+                    }),
+                )
+                .into_any_element()
+        });
 
         // Phase5: inspector panel (right of body) + overlay layers (above root).
         let preview_visible = self.preview_visible_for_focused();
@@ -508,74 +516,84 @@ impl Render for App {
                 .max(180.0)
                 .min((f32::from(viewport.width) - 96.0).max(180.0))
         };
-        let inspector_container = preview_should_render.then(|| {
-            crate::perf::count("render.inspector");
-            let resize_handle =
-                (preview_visible && !preview_expanded && !preview_closing).then(|| {
-                    div()
-                        .absolute()
-                        .left(-px(6.0))
-                        .top_0()
-                        .w(px(12.0))
-                        .h_full()
-                        .cursor_col_resize()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
-                                this.inspector_resize = Some(crate::app::InspectorResizeState {
-                                    start_x: f32::from(ev.position.x),
-                                    start_width: this.state.settings.inspector_width,
-                                });
-                                cx.stop_propagation();
-                            }),
+        let inspector_container =
+            (preview_should_render && !crate::perf::skip_inspector()).then(|| {
+                crate::perf::count("render.inspector");
+                let resize_handle = (preview_visible && !preview_expanded && !preview_closing)
+                    .then(|| {
+                        div()
+                            .absolute()
+                            .left(-px(6.0))
+                            .top_0()
+                            .w(px(12.0))
+                            .h_full()
+                            .cursor_col_resize()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                                    this.inspector_resize =
+                                        Some(crate::app::InspectorResizeState {
+                                            start_x: f32::from(ev.position.x),
+                                            start_width: this.state.settings.inspector_width,
+                                        });
+                                    cx.stop_propagation();
+                                }),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left(px(5.5))
+                                    .top_0()
+                                    .w(px(1.0))
+                                    .h_full()
+                                    .bg(cx.theme().border.opacity(0.7)),
+                            )
+                            .occlude()
+                    });
+                let panel = div()
+                    .relative()
+                    .h_full()
+                    .w(px(inspector_width))
+                    .flex_shrink_0()
+                    .overflow_hidden()
+                    .child(self.render_inspector(window, cx))
+                    .children(resize_handle);
+                let panel: gpui::AnyElement = if self.state.settings.disable_animations {
+                    panel.into_any_element()
+                } else if suppress_resize_animations {
+                    panel.into_any_element()
+                } else {
+                    let closing = preview_closing && !preview_visible;
+                    panel
+                        .with_animation(
+                            SharedString::from(format!(
+                                "preview-panel-{}-{}",
+                                self.preview_panel_anim_seq, closing
+                            )),
+                            crate::ui::motion::animation(crate::ui::motion::PANEL_MS),
+                            move |this, t| {
+                                let openness = if closing { 1.0 - t } else { t };
+                                this.w(px(inspector_width * openness))
+                                    .opacity(openness)
+                                    .paint_offset(gpui::point(px(10.0 * (1.0 - openness)), px(0.0)))
+                            },
                         )
-                        .child(
-                            div()
-                                .absolute()
-                                .left(px(5.5))
-                                .top_0()
-                                .w(px(1.0))
-                                .h_full()
-                                .bg(cx.theme().border.opacity(0.7)),
-                        )
-                        .occlude()
-                });
-            let panel = div()
-                .relative()
-                .h_full()
-                .w(px(inspector_width))
-                .flex_shrink_0()
-                .overflow_hidden()
-                .child(self.render_inspector(window, cx))
-                .children(resize_handle);
-            let panel: gpui::AnyElement = if self.state.settings.disable_animations {
-                panel.into_any_element()
-            } else if suppress_resize_animations {
-                panel.into_any_element()
-            } else {
-                let closing = preview_closing && !preview_visible;
-                panel
-                    .with_animation(
-                        SharedString::from(format!(
-                            "preview-panel-{}-{}",
-                            self.preview_panel_anim_seq, closing
-                        )),
-                        crate::ui::motion::animation(crate::ui::motion::PANEL_MS),
-                        move |this, t| {
-                            let openness = if closing { 1.0 - t } else { t };
-                            this.w(px(inspector_width * openness))
-                                .opacity(openness)
-                                .paint_offset(gpui::point(px(10.0 * (1.0 - openness)), px(0.0)))
-                        },
-                    )
-                    .into_any_element()
-            };
-            panel
-        });
-        let overlays = {
+                        .into_any_element()
+                };
+                crate::ui::layout_region::layout_region("inspector", panel).into_any_element()
+            });
+        let overlays = if crate::perf::skip_overlays() {
+            crate::perf::count("render.overlays.skipped");
+            Vec::new()
+        } else {
             crate::perf::count("render.overlays");
             let _perf = crate::perf::span("app.render.overlays");
             self.render_overlays(window, cx)
+                .into_iter()
+                .map(|el| {
+                    crate::ui::layout_region::layout_region("overlays", el).into_any_element()
+                })
+                .collect()
         };
         let marquee = self.render_rubber_marquee(cx);
         // Floating search pill hidden for now (per request). Re-enable by
