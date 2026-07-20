@@ -5,9 +5,7 @@ const WSL_LOCALHOST: &str = r"\\wsl.localhost\";
 const WSL_CACHE_TTL: Duration = Duration::from_secs(5);
 const WSL_READY_TTL: Duration = Duration::from_secs(30);
 
-thread_local! {
-    static WSL_ROOT_CACHE: std::cell::RefCell<Option<(Instant, Vec<PathBuf>)>> = const { std::cell::RefCell::new(None) };
-}
+
 
 fn wsl_tail(path: &Path) -> Option<&str> {
     let s = path.to_str()?;
@@ -72,27 +70,51 @@ fn is_user_wsl_distro(name: &str) -> bool {
     !name.to_ascii_lowercase().starts_with("docker-desktop")
 }
 
+use std::sync::{Arc, Mutex, OnceLock};
+
+static WSL_ROOT_CACHE: OnceLock<Arc<Mutex<Option<(Instant, Vec<PathBuf>, bool)>>>> = OnceLock::new();
+
 #[cfg(windows)]
 pub fn list_wsl_roots() -> Vec<PathBuf> {
-    WSL_ROOT_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if let Some((last_update, roots)) = &*cache {
-            if last_update.elapsed() < WSL_CACHE_TTL {
-                return roots.clone();
-            }
+    let cache_arc = WSL_ROOT_CACHE.get_or_init(|| Arc::new(Mutex::new(None))).clone();
+    let mut cache = cache_arc.lock().unwrap();
+    
+    if let Some((last_update, roots, is_updating)) = &mut *cache {
+        if last_update.elapsed() < WSL_CACHE_TTL {
+            return roots.clone();
         }
-        let roots = list_wsl_roots_unc()
-            .into_iter()
-            .chain(list_wsl_roots_command())
-            .fold(Vec::new(), |mut roots, path| {
-                if !roots.contains(&path) {
-                    roots.push(path);
+        if !*is_updating {
+            *is_updating = true;
+            let cache_clone = cache_arc.clone();
+            std::thread::spawn(move || {
+                let new_roots = list_wsl_roots_unc()
+                    .into_iter()
+                    .chain(list_wsl_roots_command())
+                    .fold(Vec::new(), |mut roots, path| {
+                        if !roots.contains(&path) {
+                            roots.push(path);
+                        }
+                        roots
+                    });
+                if let Ok(mut c) = cache_clone.lock() {
+                    *c = Some((Instant::now(), new_roots, false));
                 }
-                roots
             });
-        *cache = Some((Instant::now(), roots.clone()));
-        roots
-    })
+        }
+        return roots.clone();
+    }
+    
+    let roots = list_wsl_roots_unc()
+        .into_iter()
+        .chain(list_wsl_roots_command())
+        .fold(Vec::new(), |mut roots, path| {
+            if !roots.contains(&path) {
+                roots.push(path);
+            }
+            roots
+        });
+    *cache = Some((Instant::now(), roots.clone(), false));
+    roots
 }
 
 #[cfg(windows)]

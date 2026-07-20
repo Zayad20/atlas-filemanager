@@ -10,7 +10,7 @@ use atlas_model::file_entry::{FileEntry, FileKind};
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
 use gpui::{
-    div, px, uniform_list, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window,
+    div, px, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt};
 
@@ -96,8 +96,67 @@ impl App {
                 .into_any_element()
         } else {
             let scroll = self.scroll_handle_for(pane_id);
+            let base_scroll = scroll.0.borrow().base_handle.clone();
+            let mut scroll_y = (-f32::from(base_scroll.offset().y)).max(0.0);
+            let viewport_h = {
+                let tracked = f32::from(base_scroll.bounds().size.height);
+                if tracked > 1.0 {
+                    tracked
+                } else {
+                    f32::from(window.viewport_size().height)
+                }
+            };
+            let cell_h_px = f32::from(window.line_height()).max(16.0 * zoom_scale) + 4.0 * zoom_scale;
+            let pitch = cell_h_px;
+            let rows = count.div_ceil(cols);
+            let content_h = if rows == 0 {
+                0.0
+            } else {
+                rows as f32 * pitch
+            };
+            let max_scroll = (content_h - viewport_h).max(0.0);
+            if scroll_y > max_scroll {
+                let offset = base_scroll.offset();
+                base_scroll.set_offset(gpui::point(offset.x, gpui::px(-max_scroll)));
+                scroll_y = max_scroll;
+            }
+
+            let start_row = (scroll_y / pitch).floor().max(0.0) as usize;
+            let end_row = ((scroll_y + viewport_h) / pitch).ceil() as usize + 1;
+            let start = (start_row * cols).min(count);
+            let end = ((end_row * cols).min(count)).max(start);
+
+            let missing_icons = {
+                let mut m = Vec::new();
+                if let Some(ts) = self.state.tab_states.get(&pane_id) {
+                    for i in start..end {
+                        if let Some(&idx) = ts.visible.get(i) {
+                            if let Some(e) = ts.entries.get(idx) {
+                                let fref = crate::ui::file_icons::FileIconRef {
+                                    path: e.path.clone(),
+                                    kind: e.kind.clone(),
+                                    extension: e.extension.clone(),
+                                };
+                                m.push(fref);
+                            }
+                        }
+                    }
+                }
+                m
+            };
+            for fref in missing_icons {
+                self.maybe_request_file_icon(&fref);
+            }
+
             let list_view = view.clone();
             let scroll_view = view.clone();
+            
+            let animate_list_reflow = !self.state.settings.disable_animations
+                && !self.suppress_window_resize_animations()
+                && self.dock_split_animations.is_empty()
+                && self.pane_layout_animations.is_empty()
+                && self.file_panel_cache.len() <= if cfg!(debug_assertions) { 4 } else { 6 };
+
             div()
                 .size_full()
                 .on_mouse_down(
@@ -105,106 +164,82 @@ impl App {
                     crate::ui::views::on_pane_rubber_mouse_down(&view, pane_id),
                 )
                 .child(
-                    uniform_list(
-                        SharedString::from(format!("listc-{}", pane_id.0)),
-                        row_count,
-                        move |range, window, cx| {
-                            let start = range.start;
-                            let end = range.end;
-                            crate::perf::count_by(
-                                "list.rows.requested",
-                                end.saturating_sub(start) as u64,
-                            );
-                            let _perf = crate::perf::span_detail("list.rows.build", || {
-                                format!("pane={} range={start}..{end} cols={cols}", pane_id.0)
-                            });
-                            list_view.update(cx, |app, _cx| {
-                                let record_rects = app.dock_split_animations.is_empty()
-                                    && app.pane_layout_animations.is_empty();
-                                let rows_data = {
-                                    let Some(ts) = app.state.tab_states.get(&pane_id) else {
-                                        return Vec::new();
-                                    };
-                                    range
-                                        .map(|row| {
-                                            let mut cells = Vec::with_capacity(cols);
-                                            for c in 0..cols {
-                                                let vi = row * cols + c;
-                                                let Some(&entry_idx) = ts.visible.get(vi) else {
-                                                    break;
-                                                };
-                                                let Some(entry) = ts.entries.get(entry_idx) else {
-                                                    continue;
-                                                };
-                                                let selected =
-                                                    ts.selection.selected.contains(&entry_idx);
-                                                cells.push((entry_idx, entry.clone(), selected));
-                                            }
-                                            cells
-                                        })
-                                        .collect::<Vec<_>>()
+                    div()
+                        .id(("anim-list-scroll", pane_id.0))
+                        .size_full()
+                        .overflow_y_scroll()
+                        .track_scroll(&base_scroll)
+                        .on_scroll_wheel(move |ev, window, cx| {
+                            ctrl_scroll(ev, pane_id, &scroll_view, window, cx)
+                        })
+                        .child(crate::ui::views::virtual_grid::AnimatedVirtualGrid::new(
+                            SharedString::from(format!("anim-list-{}", pane_id.0)),
+                            count,
+                            cols,
+                            gpui::Size {
+                                width: gpui::px(CELL_W * zoom_scale),
+                                height: gpui::px(cell_h_px),
+                            },
+                            gpui::Size {
+                                width: gpui::px(6.0 * zoom_scale),
+                                height: gpui::px(0.0),
+                            },
+                            scroll_y,
+                            viewport_h,
+                            animate_list_reflow,
+                            move |idx, mut is_animating, window, cx| {
+                                let app = list_view.read(cx);
+                                if !app.dock_split_animations.is_empty()
+                                    || !app.pane_layout_animations.is_empty()
+                                {
+                                    is_animating = true;
+                                }
+                                let Some(ts) = app.state.tab_states.get(&pane_id) else {
+                                    return div().into_any_element();
                                 };
-                                rows_data
-                                    .into_iter()
-                                    .map(|row_entries| {
-                                        let mut cells: Vec<AnyElement> = Vec::with_capacity(cols);
-                                        for (entry_idx, entry, selected) in row_entries {
-                                            let file_ref = crate::ui::file_icons::FileIconRef {
-                                                path: entry.path.clone(),
-                                                kind: entry.kind.clone(),
-                                                extension: entry.extension.clone(),
-                                            };
-                                            app.maybe_request_file_icon(&file_ref);
-                                            let file_icon = app.file_icon(&file_ref);
-                                            let flashing = matches!(entry.kind, FileKind::Dir)
-                                                && app.drag_hover.blink_id.as_ref()
-                                                    == Some(&DragHoverId::Folder(
-                                                        pane_id,
-                                                        entry.path.clone(),
-                                                    ));
-                                            let rename_input =
-                                                crate::ui::views::rename::active_input(
-                                                    app, pane_id, entry_idx,
-                                                );
-                                            let selected = selected
-                                                && !crate::ui::views::rename::suppress_row_chrome(
-                                                    app, pane_id, entry_idx,
-                                                );
-                                            cells.push(render_cell_compact(ListCellProps {
-                                                entry: &entry,
-                                                entry_idx,
-                                                selected,
-                                                pane_id,
-                                                view: &list_view,
-                                                accent,
-                                                accent_fg,
-                                                hover,
-                                                flashing,
-                                                record_rects,
-                                                file_icon,
-                                                rename_input,
-                                                dimmed: crate::ui::views::rename::dim_other_entry(
-                                                    app, pane_id, entry_idx,
-                                                ),
-                                                window,
-                                            }));
-                                        }
-                                        let row_el = h_flex()
-                                            .w_full()
-                                            .gap(crate::ui::rem_px(6.))
-                                            .px_2()
-                                            .children(cells);
-                                        row_el.into_any_element()
-                                    })
-                                    .collect::<Vec<_>>()
-                            })
-                        },
-                    )
-                    .track_scroll(&scroll)
-                    .on_scroll_wheel(move |ev, window, cx| {
-                        ctrl_scroll(ev, pane_id, &scroll_view, window, cx)
-                    })
-                    .h_full(),
+                                let Some(&entry_idx) = ts.visible.get(idx) else {
+                                    return div().into_any_element();
+                                };
+                                let Some(entry) = ts.entries.get(entry_idx) else {
+                                    return div().into_any_element();
+                                };
+                                let file_icon = app.file_icon_for_entry(
+                                    &entry.path,
+                                    &entry.kind,
+                                    entry.extension.as_deref(),
+                                );
+                                let record_rects = true;
+                                let flashing = matches!(entry.kind, FileKind::Dir)
+                                    && app.drag_hover.blink_id.as_ref()
+                                        == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
+                                let rename_input =
+                                    crate::ui::views::rename::active_input(app, pane_id, entry_idx);
+                                let selected = ts.selection.selected.contains(&entry_idx)
+                                    && !crate::ui::views::rename::suppress_row_chrome(
+                                        app, pane_id, entry_idx,
+                                    );
+                                
+                                let cell = render_cell_compact(ListCellProps {
+                                    entry,
+                                    entry_idx,
+                                    selected,
+                                    pane_id,
+                                    view: &list_view,
+                                    accent,
+                                    accent_fg,
+                                    hover,
+                                    flashing,
+                                    record_rects,
+                                    file_icon,
+                                    rename_input,
+                                    dimmed: crate::ui::views::rename::dim_other_entry(
+                                        app, pane_id, entry_idx,
+                                    ),
+                                    window,
+                                });
+                                cell
+                            },
+                        ))
                 )
                 .into_any_element()
         };

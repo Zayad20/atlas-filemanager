@@ -201,8 +201,8 @@ pub struct App {
     // window-space rect of each *visible* item, rebuilt every frame via on_prepaint;
     // the active drag intersects its rectangle against them to drive the selection.
     pub(crate) rubber: Option<RubberDrag>,
-    pub(crate) row_rects: HashMap<TileId, Vec<(usize, gpui::Bounds<gpui::Pixels>)>>,
-    pub(crate) miller_row_rects: HashMap<(TileId, usize), Vec<(usize, gpui::Bounds<gpui::Pixels>)>>,
+    pub(crate) row_rects: std::cell::RefCell<HashMap<TileId, Vec<(usize, gpui::Bounds<gpui::Pixels>)>>>,
+    pub(crate) miller_row_rects: std::cell::RefCell<HashMap<(TileId, usize), Vec<(usize, gpui::Bounds<gpui::Pixels>)>>>,
     pub(crate) details_hit: HashMap<TileId, DetailsHitModel>,
     /// Per-pane circular row slot buffer for Details (shape on miss only).
     pub(crate) details_row_rings: HashMap<TileId, crate::ui::views::details_ring::DetailsRowRing>,
@@ -224,7 +224,7 @@ pub struct App {
     // start of the next frame the vec is committed to `dnd.zones` (Windows only) so
     // the COM vtable can resolve drop positions to the correct pane directory.
     // Kept unconditional so the helper fn compiles on all platforms without cfg noise.
-    pub(crate) pending_pane_zones: Vec<crate::dnd::DropZone>,
+    pub(crate) pending_pane_zones: std::cell::RefCell<Vec<crate::dnd::DropZone>>,
     pub(crate) pending_rename: Option<(TileId, PathBuf, bool)>,
     // Native single-line inputs (gpui-component) for the overlays. Created lazily on
     // open, cleared to `None` on close so each open starts empty. Holding the `Entity`
@@ -1196,14 +1196,14 @@ impl App {
     /// closure via the `zone_recorder` helper in `root.rs`.
     ///
     /// No-op on non-Windows (OLE drag-and-drop not used; field always empty).
-    pub(crate) fn push_pane_zone(&mut self, pane_id: TileId, bounds: gpui::Bounds<gpui::Pixels>) {
+    pub(crate) fn push_pane_zone(&self, pane_id: TileId, bounds: gpui::Bounds<gpui::Pixels>) {
         #[cfg(windows)]
         if let Some(dest) = self
             .tab_data_for(pane_id)
             .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
         {
             crate::perf::count("dnd.pending_zone_push");
-            self.pending_pane_zones.push(crate::dnd::DropZone {
+            self.pending_pane_zones.borrow_mut().push(crate::dnd::DropZone {
                 x: f32::from(bounds.origin.x),
                 y: f32::from(bounds.origin.y),
                 w: f32::from(bounds.size.width),
@@ -1467,8 +1467,20 @@ impl App {
     /// Called when the window is about to close. Persists everything only if
     /// autosave is on; a disabled toggle means the user wants the last manual/
     /// theme-triggered save to stick instead of silently overwriting it on exit.
-    pub fn save_on_quit(&self) {
+    pub fn save_on_quit(&mut self) {
         if self.state.settings.autosave_session {
+            // Flush any panes/tabs that are still in their close-animation so they
+            // don't reappear as ghost panels on the next launch.
+            if !self.pane_closing.is_empty() {
+                let pending: Vec<TileId> = self.pane_closing.keys().copied().collect();
+                self.pane_closing.clear();
+                self.remove_panes_from_tree(&pending);
+            }
+            if !self.tab_closing.is_empty() {
+                let pending: Vec<TileId> = self.tab_closing.keys().copied().collect();
+                self.tab_closing.clear();
+                self.remove_panes_from_tree(&pending);
+            }
             self.save();
         }
     }

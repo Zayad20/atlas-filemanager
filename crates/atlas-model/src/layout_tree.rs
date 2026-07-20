@@ -252,7 +252,6 @@ impl<Pane> Tree<Pane> {
 
                 match children.len() {
                     0 => None,
-                    1 => Some(children[0]),
                     _ => {
                         let active = tabs
                             .active

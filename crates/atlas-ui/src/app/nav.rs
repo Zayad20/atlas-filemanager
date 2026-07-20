@@ -133,7 +133,7 @@ impl App {
                 !matches!(&target.id,
                     crate::ui::drag_hover::DragHoverId::Folder(pane, _) if *pane == tab_id)
             });
-            self.row_rects.remove(&tab_id);
+            self.row_rects.borrow_mut().remove(&tab_id);
             #[cfg(windows)]
             if let Some(dnd) = &self.dnd {
                 if let Ok(mut zones) = dnd.zones.lock() {

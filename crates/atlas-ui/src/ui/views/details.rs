@@ -65,7 +65,7 @@ impl App {
             .as_ref()
             .is_some_and(|r| r.target == RubberTarget::Pane(pane_id))
         {
-            self.row_rects.remove(&pane_id);
+            self.row_rects.borrow_mut().remove(&pane_id);
         }
         let view_mode = self
             .tab_data_for(pane_id)

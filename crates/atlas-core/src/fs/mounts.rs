@@ -2,10 +2,13 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use std::sync::{Arc, Mutex, OnceLock};
+
 thread_local! {
     static MOUNT_CACHE: std::cell::RefCell<Option<(Instant, Vec<PathBuf>)>> = const { std::cell::RefCell::new(None) };
-    static DRIVE_CACHE: std::cell::RefCell<Option<(Instant, Vec<DriveInfo>)>> = const { std::cell::RefCell::new(None) };
 }
+
+static DRIVE_CACHE: OnceLock<Arc<Mutex<Option<(Instant, Vec<DriveInfo>, bool)>>>> = OnceLock::new();
 
 /// A mounted volume with capacity info, used to render a fullness bar in the sidebar.
 #[derive(Debug, Clone)]
@@ -32,17 +35,29 @@ impl DriveInfo {
 /// Cross-platform via `sysinfo`: on Windows these are drive roots like `C:\`, on
 /// macOS `/` plus `/Volumes/*`, on Linux the real mounted filesystems.
 pub fn list_drives() -> Vec<DriveInfo> {
-    DRIVE_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if let Some((last_update, drives)) = &*cache {
-            if last_update.elapsed() < Duration::from_secs(5) {
-                return drives.clone();
-            }
+    let cache_arc = DRIVE_CACHE.get_or_init(|| Arc::new(Mutex::new(None))).clone();
+    let mut cache = cache_arc.lock().unwrap();
+
+    if let Some((last_update, drives, is_updating)) = &mut *cache {
+        if last_update.elapsed() < Duration::from_secs(5) {
+            return drives.clone();
         }
-        let drives = list_drives_internal();
-        *cache = Some((Instant::now(), drives.clone()));
-        drives
-    })
+        if !*is_updating {
+            *is_updating = true;
+            let cache_clone = cache_arc.clone();
+            std::thread::spawn(move || {
+                let new_drives = list_drives_internal();
+                if let Ok(mut c) = cache_clone.lock() {
+                    *c = Some((Instant::now(), new_drives, false));
+                }
+            });
+        }
+        return drives.clone();
+    }
+
+    let drives = list_drives_internal();
+    *cache = Some((Instant::now(), drives.clone(), false));
+    drives
 }
 
 fn list_drives_internal() -> Vec<DriveInfo> {

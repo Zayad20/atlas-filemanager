@@ -223,19 +223,21 @@ impl App {
         empty_message: String,
     ) -> Option<String> {
         let load_state = self.state.tab_states.get(&pane_id).map(|t| &t.load_state);
+        let is_local_dir = self
+            .state
+            .pane_tree
+            .tiles
+            .get(pane_id)
+            .and_then(|tile| match tile {
+                Tile::Pane(pane) => Some(&pane.location),
+                _ => None,
+            })
+            .is_some_and(should_suppress_loading);
         match load_state {
-            Some(LoadState::Loading) => {
-                let local_dir = self
-                    .state
-                    .pane_tree
-                    .tiles
-                    .get(pane_id)
-                    .and_then(|tile| match tile {
-                        Tile::Pane(pane) => Some(&pane.location),
-                        _ => None,
-                    })
-                    .is_some_and(should_suppress_loading);
-                (!local_dir).then(|| rust_i18n::t!("miller_loading").into_owned())
+            // Still loading or not yet started — suppress for local dirs (avoids
+            // a flash of "Empty folder" before the async listing arrives).
+            Some(LoadState::Loading) | Some(LoadState::NotLoaded) => {
+                (!is_local_dir).then(|| rust_i18n::t!("miller_loading").into_owned())
             }
             Some(LoadState::Error(error)) => Some(if error.is_empty() {
                 rust_i18n::t!("miller_error").into_owned()

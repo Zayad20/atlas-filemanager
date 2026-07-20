@@ -78,6 +78,7 @@ impl App {
     /// `Tree::ui`). Drops state for panes that no longer exist and guarantees
     /// `focused_tile` points at a live pane.
     pub(crate) fn reconcile_tree_state(&mut self) {
+        self.state.pane_tree.sanitize();
         let _perf = crate::perf::span_detail("pane_tree.reconcile", || {
             format!("tiles={}", self.state.pane_tree.tiles.iter().count())
         });

@@ -1637,7 +1637,7 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                                         .get(&pane)
                                         .and_then(|model| model.hit_entry(pos))
                                         .is_some()
-                                        || this.row_rects.get(&pane).is_some_and(|rects| {
+                                        || this.row_rects.borrow().get(&pane).is_some_and(|rects| {
                                             rects.iter().any(|(_, b)| {
                                                 pos.x >= b.left()
                                                     && pos.x <= b.right()
@@ -1653,7 +1653,7 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                                 }
                                 RubberTarget::MillerColumn(pane, column) => {
                                     let hit = this
-                                        .miller_row_rects
+                                        .miller_row_rects.borrow()
                                         .get(&(pane, column))
                                         .is_some_and(|rects| {
                                             rects.iter().any(|(_, b)| {

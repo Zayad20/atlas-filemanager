@@ -75,9 +75,7 @@ pub(crate) fn rect_recorder(
     let view = view.clone();
     move |bounds, _window, cx| {
         crate::perf::count("prepaint.row_rect");
-        view.update(cx, |this, _| {
-            this.row_rects.entry(pane).or_default().push((idx, bounds));
-        });
+        view.read(cx).row_rects.borrow_mut().entry(pane).or_default().push((idx, bounds));
     }
 }
 
@@ -90,12 +88,11 @@ pub(crate) fn miller_rect_recorder(
     let view = view.clone();
     move |bounds, _window, cx| {
         crate::perf::count("prepaint.miller_row_rect");
-        view.update(cx, |this, _| {
-            this.miller_row_rects
-                .entry((pane, column))
-                .or_default()
-                .push((idx, bounds));
-        });
+        view.read(cx).miller_row_rects
+            .borrow_mut()
+            .entry((pane, column))
+            .or_default()
+            .push((idx, bounds));
     }
 }
 
@@ -106,9 +103,12 @@ pub(crate) fn miller_column_bounds_recorder(
 ) -> impl Fn(gpui::Bounds<gpui::Pixels>, &mut Window, &mut gpui::App) + 'static {
     let view = view.clone();
     move |bounds, _window, cx| {
-        view.update(cx, |this, _| {
-            this.miller_column_bounds.insert((pane, column), bounds);
-        });
+        let should_update = view.read(cx).miller_column_bounds.get(&(pane, column)).copied() != Some(bounds);
+        if should_update {
+            view.update(cx, |this, _| {
+                this.miller_column_bounds.insert((pane, column), bounds);
+            });
+        }
     }
 }
 
@@ -120,9 +120,12 @@ pub(crate) fn pane_bounds_recorder(
     let view = view.clone();
     move |bounds, _window, cx| {
         crate::perf::count("prepaint.pane_bounds");
-        view.update(cx, |this, _| {
-            this.pane_view_bounds.insert(pane, bounds);
-        });
+        let should_update = view.read(cx).pane_view_bounds.get(&pane).copied() != Some(bounds);
+        if should_update {
+            view.update(cx, |this, _| {
+                this.pane_view_bounds.insert(pane, bounds);
+            });
+        }
     }
 }
 
@@ -140,9 +143,7 @@ pub(crate) fn zone_recorder(
     let view = view.clone();
     move |bounds, _window, cx| {
         crate::perf::count("prepaint.zone");
-        view.update(cx, |this, _cx| {
-            this.push_pane_zone(pane_id, bounds);
-        });
+        view.read(cx).push_pane_zone(pane_id, bounds);
     }
 }
 
@@ -197,11 +198,11 @@ impl Render for App {
                 "cause={cause} panes={panes} tabs={tabs} linear={linear} tab_children={tab_children} linear_children={linear_children} panels={} signals={} row_rect_panes={} row_rects={} pane_bounds={} dock_bounds={} pending_zones={} dirty={} dirty_all={} closing={}",
                 self.file_panel_cache.len(),
                 self.pane_signals.len(),
-                self.row_rects.len(),
-                self.row_rects.values().map(Vec::len).sum::<usize>(),
+                self.row_rects.borrow().len(),
+                self.row_rects.borrow().values().map(Vec::len).sum::<usize>(),
                 self.pane_view_bounds.len(),
                 self.dock_linear_bounds.len(),
-                self.pending_pane_zones.len(),
+                self.pending_pane_zones.borrow().len(),
                 self.dirty_panes.len(),
                 self.dirty_all_panes,
                 self.pane_closing.len()
@@ -249,8 +250,8 @@ impl Render for App {
         // the pane content may be cached, so clearing here can leave hit-testing with
         // no geometry until the pane decides to repaint.
         if self.rubber.is_none() && !self.drag_hover_maybe_active() {
-            self.row_rects.clear();
-            self.miller_row_rects.clear();
+            self.row_rects.borrow_mut().clear();
+            self.miller_row_rects.borrow_mut().clear();
             self.miller_column_bounds.clear();
             self.pane_view_bounds.clear();
             self.dropzone_rects.clear();
@@ -288,7 +289,8 @@ impl Render for App {
         #[cfg(windows)]
         if let Some(dnd) = &self.dnd {
             if let Ok(mut z) = dnd.zones.lock() {
-                z.update(std::mem::take(&mut self.pending_pane_zones));
+                let zones = std::mem::take(&mut *self.pending_pane_zones.borrow_mut());
+                z.update(zones);
             }
         }
         // Apply a pending theme switch (profile restore / switch / user selection)

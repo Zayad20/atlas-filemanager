@@ -260,9 +260,13 @@ impl App {
         .on_prepaint(move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {
             crate::perf::count("prepaint.grid_pane");
             let new_w = f32::from(bounds.size.width);
-            prepaint_view.update(cx, |this, cx| {
-                if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
-                    if (ts.last_pane_width - new_w).abs() > 0.5 {
+            let should_update = prepaint_view.read(cx).state.tab_states.get(&pane_id)
+                .map(|ts| (ts.last_pane_width - new_w).abs() > 0.5)
+                .unwrap_or(false);
+
+            if should_update {
+                prepaint_view.update(cx, |this, cx| {
+                    if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
                         let old_w = ts.last_pane_width;
                         crate::perf::event(|| {
                             format!(
@@ -273,10 +277,10 @@ impl App {
                         ts.last_pane_width = new_w;
                         this.notify_pane(pane_id, cx);
                     }
-                }
-                // Phase F: register this pane's bounds for OLE drop routing.
-                this.push_pane_zone(pane_id, bounds);
-            });
+                });
+            }
+            // Phase F: register this pane's bounds for OLE drop routing.
+            prepaint_view.read(cx).push_pane_zone(pane_id, bounds);
         })
         .child(crumb_strip)
         .child(

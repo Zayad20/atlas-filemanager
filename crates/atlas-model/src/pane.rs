@@ -114,6 +114,12 @@ impl From<TabDataRaw> for TabData {
                 }
             }
         };
+        // Sanitize corrupted states where both are false
+        let (show_files, show_folders) = if !r.show_files && !r.show_folders {
+            (true, true)
+        } else {
+            (r.show_files, r.show_folders)
+        };
         Self {
             location,
             sort_col: r.sort_col,
@@ -124,8 +130,8 @@ impl From<TabDataRaw> for TabData {
             thumbnail_size: r.thumbnail_size,
             preview_enabled: r.preview_enabled,
             folders_first: r.folders_first,
-            show_files: r.show_files,
-            show_folders: r.show_folders,
+            show_files,
+            show_folders,
         }
     }
 }
