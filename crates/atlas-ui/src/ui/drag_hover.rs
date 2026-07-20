@@ -263,11 +263,23 @@ impl App {
             return false;
         };
         let now = Instant::now();
+        let in_dropzone = self.dropzone_bounds.is_some_and(|b| contains(b, pos));
         let hit = self
             .pending_drag_hover_targets
             .iter()
             .rev()
-            .find(|target| contains(target.bounds, pos))
+            .find(|target| {
+                if !contains(target.bounds, pos) { return false; }
+                if in_dropzone { return false; }
+                if let DragHoverId::Sidebar(_) = target.id {
+                    if let Some((scroll_bounds, _)) = self.sidebar_scroll_region {
+                        if !contains(scroll_bounds, pos) {
+                            return false;
+                        }
+                    }
+                }
+                true
+            })
             .cloned();
 
         let scrolled = self.tick_edge_scroll(pos, now);
@@ -841,7 +853,7 @@ fn glow_rect(
         .into_any_element()
 }
 
-fn contains(bounds: gpui::Bounds<gpui::Pixels>, pos: gpui::Point<gpui::Pixels>) -> bool {
+pub(crate) fn contains(bounds: gpui::Bounds<gpui::Pixels>, pos: gpui::Point<gpui::Pixels>) -> bool {
     pos.x >= bounds.left()
         && pos.x <= bounds.right()
         && pos.y >= bounds.top()
