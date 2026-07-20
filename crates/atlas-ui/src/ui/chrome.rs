@@ -1016,13 +1016,17 @@ fn nav_button(props: NavButtonProps) -> impl IntoElement {
                 cx,
             )
         })
-        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-            cx.stop_propagation();
-            if props.enabled {
-                props.view.update(cx, |this, cx| {
-                    this.process_actions(vec![props.action.clone()]);
-                    this.flush_dirty_panes(cx);
-                });
+        .on_mouse_down(MouseButton::Left, {
+            let view = props.view.clone();
+            let action = props.action.clone();
+            move |_ev, _window, cx| {
+                cx.stop_propagation();
+                if props.enabled {
+                    view.update(cx, |this, cx| {
+                        this.process_actions(vec![action.clone()]);
+                        this.flush_dirty_panes(cx);
+                    });
+                }
             }
         })
         .on_mouse_up(MouseButton::Right, {
