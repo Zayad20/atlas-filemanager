@@ -10,11 +10,11 @@ linker = "rust-lld.exe"
 
 [alias]
 # Daily loop: fastest compile, smallest feature surface.
-devfast = "run --profile dev-fast --no-default-features"
+devfast = "run --no-default-features"
 # Same fast profile, but with the default app features enabled.
-devfull = "run --profile dev-fast"
+devfull = "run"
 # Fast run with opt-in UI perf logs compiled in.
-devperf = "run --profile dev-fast --features perf-log"
+devperf = "run --features perf-log"
 # Explicit release aliases so final builds stay optimized and intentional.
 rel = "build --release"
 rellean = "build --release --no-default-features"

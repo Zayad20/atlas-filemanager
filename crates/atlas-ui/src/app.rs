@@ -214,8 +214,6 @@ pub struct App {
         std::cell::RefCell<std::collections::HashMap<atlas_model::pane::TabId, GridFlipState>>,
     >,
     pub(crate) details_hover: Option<(TileId, usize)>,
-    pub(crate) crumb_hover: Option<(TileId, crate::ui::views::crumb_strip_element::CrumbHit)>,
-    pub(crate) tab_hover: Option<crate::ui::views::tabs_bar_element::TabHit>,
     pub(crate) miller_column_bounds: HashMap<(TileId, usize), gpui::Bounds<gpui::Pixels>>,
     pub(crate) dropzone_selected: HashSet<PathBuf>,
     pub(crate) dropzone_rects: Vec<(PathBuf, gpui::Bounds<gpui::Pixels>)>,

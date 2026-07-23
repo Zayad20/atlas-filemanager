@@ -108,32 +108,16 @@ tracing-subscriber = "0.3.23"
 workspace = true
 
 [profile.dev]
-opt-level = 1
-codegen-units = 16
-incremental = true
-debug = "line-tables-only"
-
-# Build all dependencies optimized even in debug.
-# Our own crate stays at opt-level 1 for fast incremental rebuilds, but the
-# heavy rendering/decoding deps run at full speed — this is what keeps the dev
-# build feeling smooth.
-[profile.dev.package."*"]
-opt-level = 3
-
-# Fastest local iteration profile. Use this for UI/model work where compile
-# latency matters more than debug runtime throughput:
-#
-#     cargo run --profile dev-fast --no-default-features
-#
-# Keep release separate so the shipped binary remains optimized and stripped.
-[profile.dev-fast]
-inherits = "dev"
 opt-level = 0
-codegen-units = 256
+# Shared by cargo run, devfast, and devfull. Keeping one local profile avoids
+# duplicating the application and dependency graph under target/dev-fast.
+codegen-units = 64
 incremental = true
 debug = "line-tables-only"
 
-[profile.dev-fast.package."*"]
+# Keep dependencies lightly optimized so GPUI remains usable without paying the
+# compile-time and disk cost of a second development profile.
+[profile.dev.package."*"]
 opt-level = 1
 codegen-units = 256
 

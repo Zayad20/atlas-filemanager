@@ -130,127 +130,25 @@ impl App {
             }]
         };
 
-        let history = self.tab_data_for(pane_id).map(|t| t.history.clone()).unwrap_or_default();
-        let history_fwd = self.tab_data_for(pane_id).map(|t| t.history_forward.clone()).unwrap_or_default();
-        let recent_back: Vec<_> = history.into_iter().rev().map(|loc| (self.resolved_location_label(&loc), loc)).collect();
-        let recent_fwd: Vec<_> = history_fwd.into_iter().rev().map(|loc| (self.resolved_location_label(&loc), loc)).collect();
-
-        let nav_buttons = h_flex()
-            .gap_1()
-            .items_center()
-            .child(nav_button(NavButtonProps {
-                id: "nav-back",
-                pane_id,
-                glyph: AtlasIcon::ArrowLeft,
-                tooltip_title: rust_i18n::t!("navigate_back_title").into_owned(),
-                tooltip_desc: rust_i18n::t!("navigate_back_desc").into_owned(),
-                shortcuts: &["Alt", "Left"],
-                enabled: can_back,
-                action: Action::NavigateBack(pane_id),
-                view: view.clone(),
-                recent: recent_back,
-                icon_color: fg,
-                hover_bg: hover,
-                windows_theme,
-            }))
-            .child(nav_button(NavButtonProps {
-                id: "nav-fwd",
-                pane_id,
-                glyph: AtlasIcon::ArrowRight,
-                tooltip_title: rust_i18n::t!("navigate_forward_title").into_owned(),
-                tooltip_desc: rust_i18n::t!("navigate_forward_desc").into_owned(),
-                shortcuts: &["Alt", "Right"],
-                enabled: can_forward,
-                action: Action::NavigateForward(pane_id),
-                view: view.clone(),
-                recent: recent_fwd,
-                icon_color: fg,
-                hover_bg: hover,
-                windows_theme,
-            }))
-            .child(nav_button(NavButtonProps {
-                id: "nav-up",
-                pane_id,
-                glyph: AtlasIcon::ArrowUp,
-                tooltip_title: rust_i18n::t!("navigate_up_title").into_owned(),
-                tooltip_desc: rust_i18n::t!("navigate_up_desc").into_owned(),
-                shortcuts: &["Alt", "Up"],
-                enabled: can_up,
-                action: Action::NavigateUp(pane_id),
-                view: view.clone(),
-                recent: vec![],
-                icon_color: fg,
-                hover_bg: hover,
-                windows_theme,
-            }))
-            .child(bookmark_button(
-                pane_id,
-                view.clone(),
-                self.bookmark_target_for_pane(pane_id),
-                accent,
-                hover,
-                windows_theme,
-            ))
-            .child(
-                div()
-                    .w(gpui::px(1.0))
-                    .h(crate::ui::rem_px(if windows_theme { 18.0 } else { 12.0 }))
-                    .bg(border.opacity(0.35))
-                    .mx(crate::ui::rem_px(4.0)),
-            );
-
-        let app_drop_crumb = view.clone();
-        let app_drop_crumb_ext = view.clone();
-        h_flex()
-            .w_full()
-            .items_center()
-            .child(nav_buttons)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .child(
-                        crate::ui::views::crumb_strip_element::CrumbStripElement::new(
-                            pane_id,
-                            view.downgrade(),
-                            segments,
-                            font,
-                            font_size,
-                            windows_theme,
-                            fg,
-                            muted,
-                            bg,
-                            border,
-                            hover,
-                            accent,
-                        )
-                    )
-                    .on_drop::<crate::ui::root::DraggedFiles>(move |d, window, cx| {
-                        let pos = window.mouse_position();
-                        let paths = d.paths.clone();
-                        app_drop_crumb.update(cx, |this, cx| {
-                            if let Some(target) = this.pending_drag_hover_targets.iter().rev().find(|t| crate::ui::drag_hover::contains(t.bounds, pos)) {
-                                if let Some(cmd) = &target.drop_command {
-                                    this.execute_drag_hover_drop_command(cmd.clone(), paths, true);
-                                    cx.notify();
-                                }
-                            }
-                        });
-                    })
-                    .on_drop::<gpui::ExternalPaths>(move |paths, window, cx| {
-                        let pos = window.mouse_position();
-                        let paths = paths.paths().to_vec();
-                        app_drop_crumb_ext.update(cx, |this, cx| {
-                            if let Some(target) = this.pending_drag_hover_targets.iter().rev().find(|t| crate::ui::drag_hover::contains(t.bounds, pos)) {
-                                if let Some(cmd) = &target.drop_command {
-                                    this.execute_drag_hover_drop_command(cmd.clone(), paths, false);
-                                    cx.notify();
-                                }
-                            }
-                        });
-                    })
-            )
-            .into_any_element()
+        crate::ui::views::crumb_strip_element::CrumbStripElement::new(
+            pane_id,
+            view.downgrade(),
+            segments,
+            can_back,
+            can_forward,
+            can_up,
+            bookmarked,
+            font,
+            font_size,
+            windows_theme,
+            fg,
+            muted,
+            bg,
+            border,
+            hover,
+            accent,
+        )
+        .into_any_element()
     }
 
     /// User-facing label for a location: tag names resolved from the tag cache
@@ -967,14 +865,6 @@ struct NavButtonProps {
 fn nav_button(props: NavButtonProps) -> impl IntoElement {
     let menu_view = props.view.clone();
     let menu_recent = props.recent.clone();
-    let drop_dest = props.recent.first().and_then(|(_, loc)| {
-        if let Location::Directory(path) = loc {
-            Some(path.clone())
-        } else {
-            None
-        }
-    });
-
     let hover_id = DragHoverId::Chrome(props.id, props.pane_id);
     let hover_command = match props.action.clone() {
         Action::NavigateBack(tile) => DragHoverCommand::NavigateBack(tile),
@@ -982,8 +872,7 @@ fn nav_button(props: NavButtonProps) -> impl IntoElement {
         Action::NavigateUp(tile) => DragHoverCommand::NavigateUp(tile),
         other => DragHoverCommand::Process(other),
     };
-
-    let mut el = div()
+    div()
         .id(SharedString::from(format!(
             "{}-{}",
             props.id, props.pane_id.0
@@ -1007,6 +896,14 @@ fn nav_button(props: NavButtonProps) -> impl IntoElement {
             props.icon_color.opacity(0.88),
             props.windows_theme,
         ))
+        .when(props.enabled, |s| {
+            s.on_prepaint(drag_hover_recorder(
+                hover_id,
+                DragHoverKind::Folder,
+                hover_command,
+                &props.view,
+            ))
+        })
         .tooltip(move |window, cx| {
             shortcut_tooltip(
                 props.tooltip_title.clone(),
@@ -1016,20 +913,16 @@ fn nav_button(props: NavButtonProps) -> impl IntoElement {
                 cx,
             )
         })
-        .on_mouse_down(MouseButton::Left, {
-            let view = props.view.clone();
-            let action = props.action.clone();
-            move |_ev, _window, cx| {
-                cx.stop_propagation();
-                if props.enabled {
-                    view.update(cx, |this, cx| {
-                        this.process_actions(vec![action.clone()]);
-                        this.flush_dirty_panes(cx);
-                    });
-                }
+        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+            cx.stop_propagation();
+            if props.enabled {
+                props.view.update(cx, |this, cx| {
+                    this.process_actions(vec![props.action.clone()]);
+                    this.flush_dirty_panes(cx);
+                });
             }
         })
-        .on_mouse_up(MouseButton::Right, {
+        .on_mouse_down(MouseButton::Right, {
             let view = menu_view.clone();
             move |_ev, _window, cx| {
                 view.update(cx, |this, cx| {
@@ -1037,59 +930,10 @@ fn nav_button(props: NavButtonProps) -> impl IntoElement {
                     this.close_ctx_menu(cx);
                 });
             }
-        });
-
-    if let Some(dest) = drop_dest {
-        let drop_v = props.view.clone();
-        let drop_v_external = props.view.clone();
-        let drop_target = dest.clone();
-        let drop_target_external = dest.clone();
-        el = el
-            .when(props.enabled, |s| {
-                s.on_prepaint(drag_hover_recorder_with_drop(
-                    hover_id,
-                    DragHoverKind::Folder,
-                    hover_command,
-                    DragHoverDropCommand::TransferTo(dest.clone()),
-                    &props.view,
-                ))
-            })
-            .on_drop::<crate::ui::root::DraggedFiles>(move |d, _window, cx| {
-                let paths = d.paths.clone();
-                drop_v.update(cx, |this, cx| {
-                    this.execute_drag_hover_drop_command(
-                        DragHoverDropCommand::TransferTo(drop_target.clone()),
-                        paths,
-                        true,
-                    );
-                    cx.notify();
-                });
-            })
-            .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
-                let paths = paths.paths().to_vec();
-                drop_v_external.update(cx, |this, cx| {
-                    this.execute_drag_hover_drop_command(
-                        DragHoverDropCommand::TransferTo(drop_target_external.clone()),
-                        paths,
-                        false,
-                    );
-                    cx.notify();
-                });
-            });
-    } else {
-        el = el.when(props.enabled, |s| {
-            s.on_prepaint(drag_hover_recorder(
-                hover_id,
-                DragHoverKind::Folder,
-                hover_command,
-                &props.view,
-            ))
-        });
-    }
-
-    el.context_menu(move |menu, _window, _cx| {
-        nav_context_menu(menu, props.pane_id, menu_view.clone(), menu_recent.clone())
-    })
+        })
+        .context_menu(move |menu, _window, _cx| {
+            nav_context_menu(menu, props.pane_id, menu_view.clone(), menu_recent.clone())
+        })
 }
 
 fn bookmark_button(

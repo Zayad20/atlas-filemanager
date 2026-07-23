@@ -24,8 +24,8 @@ pub(crate) struct TabBarItem {
     pub tag_rgb: Option<[u8; 3]>,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub(crate) enum TabHit {
+#[derive(Clone, Copy, Debug)]
+enum TabHit {
     Activate(usize),
     Close(usize),
     NewTab,
@@ -274,11 +274,11 @@ impl Element for TabsBarElement {
         let strip_h = prepaint.strip_h;
         let origin = bounds.origin;
 
-        let tab_hover = if let Some(app) = self.app.upgrade() {
-            app.read(cx).tab_hover
-        } else {
-            None
-        };
+        // Hover from live mouse (no extra state).
+        let mouse = window.mouse_position();
+        let mlx = f32::from(mouse.x - origin.x);
+        let mly = f32::from(mouse.y - origin.y);
+        let hover_i = prepaint.geoms.iter().position(|g| g.tab.contains(mlx, mly));
 
         let windows_theme = self.windows_theme;
         let zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
@@ -300,14 +300,21 @@ impl Element for TabsBarElement {
                 },
                 bar_bg,
             );
-
+            paint_fill(
+                window,
+                Bounds {
+                    origin: point(origin.x, origin.y + px(strip_h - 1.0)),
+                    size: size(bounds.size.width, px(1.0)),
+                },
+                border.opacity(0.42),
+            );
 
             for (i, tab) in tabs.iter().enumerate() {
                 let g = &prepaint.geoms[i];
                 let tab_b = g.tab.to_bounds(origin);
                 if tab.is_active {
                     paint_rounded(window, tab_b, radius, active_bg);
-                } else if tab_hover == Some(TabHit::Activate(i)) || tab_hover == Some(TabHit::Close(i)) {
+                } else if hover_i == Some(i) {
                     paint_rounded(window, tab_b, radius, hover_bg);
                 }
 
@@ -344,7 +351,7 @@ impl Element for TabsBarElement {
                     );
                 }
 
-                if tab_hover == Some(TabHit::Close(i)) {
+                if g.close.contains(mlx, mly) {
                     paint_rounded(
                         window,
                         g.close.to_bounds(origin),
@@ -364,7 +371,7 @@ impl Element for TabsBarElement {
                 );
             }
 
-            if tab_hover == Some(TabHit::NewTab) {
+            if prepaint.new_btn.contains(mlx, mly) {
                 paint_rounded(window, prepaint.new_btn.to_bounds(origin), radius, hover_bg);
             }
             paint_theme_icon(
@@ -392,10 +399,7 @@ impl Element for TabsBarElement {
             let tabs_hit = tabs.clone();
             let active_for_new = self.active;
             let hits = Arc::new(hits);
-            let hit_view = app_entity.clone();
-            let hover_view = app_entity;
-            let hover_hits = hits.clone();
-            
+            let hit_view = app_entity;
             window.on_mouse_event::<MouseDownEvent>(move |ev, phase, _window, cx| {
                 if phase != DispatchPhase::Bubble || ev.button != MouseButton::Left {
                     return;
@@ -435,24 +439,6 @@ impl Element for TabsBarElement {
                     }
                 }
                 cx.stop_propagation();
-            });
-
-            window.on_mouse_event::<gpui::MouseMoveEvent>(move |ev, phase, _window, cx| {
-                if phase != DispatchPhase::Bubble {
-                    return;
-                }
-                let mut hit = None;
-                if bounds.contains(&ev.position) {
-                    let lx = f32::from(ev.position.x - bounds.origin.x);
-                    let ly = f32::from(ev.position.y - bounds.origin.y);
-                    hit = hit_first(&hover_hits, lx, ly);
-                }
-                hover_view.update(cx, |this, cx| {
-                    if this.tab_hover != hit {
-                        this.tab_hover = hit;
-                        cx.notify();
-                    }
-                });
             });
         });
     }

@@ -24,8 +24,12 @@ pub(crate) struct CrumbSeg {
     pub location: Location,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub(crate) enum CrumbHit {
+#[derive(Clone, Copy, Debug)]
+enum CrumbHit {
+    Back,
+    Forward,
+    Up,
+    Bookmark,
     Segment(usize),
     Finder,
 }
@@ -35,6 +39,10 @@ pub(crate) struct CrumbStripElement {
     pane_id: TabId,
     app: WeakEntity<App>,
     segments: Arc<Vec<CrumbSeg>>,
+    can_back: bool,
+    can_forward: bool,
+    can_up: bool,
+    bookmarked: bool,
     font: Font,
     font_size: Pixels,
     windows_theme: bool,
@@ -47,9 +55,17 @@ pub(crate) struct CrumbStripElement {
     style: StyleRefinement,
 }
 
+struct NavBtn {
+    slot: Slot,
+    icon: AtlasIcon,
+    enabled: bool,
+    hit: CrumbHit,
+}
+
 pub(crate) struct CrumbPrepaint {
     seg_lines: Vec<ShapedLine>,
     seg_slots: Vec<Slot>,
+    nav: Vec<NavBtn>,
     strip_h: f32,
     radius: f32,
 }
@@ -60,6 +76,10 @@ impl CrumbStripElement {
         pane_id: TabId,
         app: WeakEntity<App>,
         segments: Vec<CrumbSeg>,
+        can_back: bool,
+        can_forward: bool,
+        can_up: bool,
+        bookmarked: bool,
         font: Font,
         font_size: Pixels,
         windows_theme: bool,
@@ -75,6 +95,10 @@ impl CrumbStripElement {
             pane_id,
             app,
             segments: Arc::new(segments),
+            can_back,
+            can_forward,
+            can_up,
+            bookmarked,
             font,
             font_size,
             windows_theme,
@@ -196,6 +220,8 @@ impl Element for CrumbStripElement {
         let zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
         self.font_size = chrome_font_size_crumbs(window, self.windows_theme);
         let strip_h = if self.windows_theme { 44.0 } else { 36.0 } * zoom;
+        let btn = if self.windows_theme { 34.0 } else { 26.0 } * zoom;
+        let gap = if self.windows_theme { 9.0 } else { 6.0 } * zoom;
         let pad_x = 12.0 * zoom;
         let radius = if self.windows_theme { 8.0 } else { 7.0 } * zoom;
         let seg_h = if self.windows_theme { 32.0 } else { 26.0 } * zoom;
@@ -203,7 +229,33 @@ impl Element for CrumbStripElement {
         let chevron_w = 14.0 * zoom;
         let max_seg = if self.windows_theme { 260.0 } else { 220.0 } * zoom;
 
+        let y_btn = (strip_h - btn) * 0.5;
         let mut x = pad_x;
+        let mut nav = Vec::new();
+        for (icon, enabled, hit) in [
+            (AtlasIcon::ArrowLeft, self.can_back, CrumbHit::Back),
+            (AtlasIcon::ArrowRight, self.can_forward, CrumbHit::Forward),
+            (AtlasIcon::ArrowUp, self.can_up, CrumbHit::Up),
+            (
+                if self.bookmarked {
+                    AtlasIcon::StarFill
+                } else {
+                    AtlasIcon::Star
+                },
+                true,
+                CrumbHit::Bookmark,
+            ),
+        ] {
+            nav.push(NavBtn {
+                slot: Slot::new(x, y_btn, btn, btn),
+                icon,
+                enabled,
+                hit,
+            });
+            x += btn + gap;
+        }
+        // divider + gap
+        x += 4.0 * zoom + gap;
 
         let mut seg_lines = Vec::with_capacity(self.segments.len());
         let mut seg_slots = Vec::with_capacity(self.segments.len());
@@ -260,6 +312,7 @@ impl Element for CrumbStripElement {
         CrumbPrepaint {
             seg_lines,
             seg_slots,
+            nav,
             strip_h,
             radius,
         }
@@ -281,25 +334,28 @@ impl Element for CrumbStripElement {
         let pane_id = self.pane_id;
         let app = self.app.clone();
         let segments = self.segments.clone();
+        let can_back = self.can_back;
+        let can_forward = self.can_forward;
+        let can_up = self.can_up;
         let fg = self.fg;
+        let muted = self.muted;
         let bg = self.bg;
         let border = self.border;
         let hover = self.hover;
-        let muted = self.muted;
+        let accent = self.accent;
         let strip_h = prepaint.strip_h;
         let radius = prepaint.radius;
         let origin = bounds.origin;
 
+        let mouse = window.mouse_position();
+        let mlx = f32::from(mouse.x - origin.x);
+        let mly = f32::from(mouse.y - origin.y);
         let windows_theme = self.windows_theme;
         let zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
+        // Old theme_icon sizes for nav (15–18) and chevron (~10–11).
+        let nav_icon_px = if windows_theme { 18.0 } else { 15.0 } * zoom;
         let chevron_px = 11.0 * zoom;
         let seg_pad_x = if windows_theme { 10.0 } else { 8.0 } * zoom;
-
-        let crumb_hover = if let Some(app) = self.app.upgrade() {
-            app.read(cx).crumb_hover
-        } else {
-            None
-        };
 
         style.paint(bounds, window, cx, |window, cx| {
             paint_fill(window, bounds, bg);
@@ -311,6 +367,47 @@ impl Element for CrumbStripElement {
                 },
                 border.opacity(0.45),
             );
+
+            // Nav buttons
+            for nav in &prepaint.nav {
+                let b = nav.slot.to_bounds(origin);
+                if nav.slot.contains(mlx, mly) && nav.enabled {
+                    paint_rounded(window, b, radius, hover);
+                }
+                let color = if nav.enabled {
+                    fg.opacity(0.88)
+                } else {
+                    muted.opacity(0.35)
+                };
+                let icon_color = if matches!(nav.hit, CrumbHit::Bookmark) && self.bookmarked {
+                    accent
+                } else {
+                    color
+                };
+                paint_theme_icon(
+                    window,
+                    cx,
+                    origin,
+                    nav.slot,
+                    nav.icon,
+                    windows_theme,
+                    nav_icon_px,
+                    icon_color,
+                );
+            }
+
+            // Divider after nav
+            if let Some(last_nav) = prepaint.nav.last() {
+                let dx = last_nav.slot.x + last_nav.slot.w + 4.0;
+                paint_fill(
+                    window,
+                    Bounds {
+                        origin: point(origin.x + px(dx), origin.y + px(strip_h * 0.28)),
+                        size: size(px(1.0), px(strip_h * 0.44)),
+                    },
+                    border.opacity(0.35),
+                );
+            }
 
             // Segments + chevrons (chevron centered in the gap between slots)
             for (i, (line, slot)) in prepaint
@@ -336,7 +433,7 @@ impl Element for CrumbStripElement {
                     );
                 }
                 let b = slot.to_bounds(origin);
-                if crumb_hover == Some((self.pane_id, CrumbHit::Segment(i))) {
+                if slot.contains(mlx, mly) {
                     paint_rounded(window, b, radius * 0.85, hover);
                 }
                 let text_x = b.origin.x + px(seg_pad_x);
@@ -359,7 +456,11 @@ impl Element for CrumbStripElement {
                 );
             }
 
+            // Hit map: priority close-ish zones first isn't needed; list order
             let mut hits: Vec<(Slot, CrumbHit)> = Vec::new();
+            for nav in &prepaint.nav {
+                hits.push((nav.slot, nav.hit));
+            }
             for (i, slot) in prepaint.seg_slots.iter().enumerate() {
                 hits.push((*slot, CrumbHit::Segment(i)));
             }
@@ -374,37 +475,7 @@ impl Element for CrumbStripElement {
             };
             let segs = segments.clone();
             let hits = Arc::new(hits);
-            let hover_view = app_entity.clone();
-            let hover_hits = hits.clone();
             let hit_view = app_entity;
-
-            window.on_mouse_event::<gpui::MouseMoveEvent>(move |ev, phase, _window, cx| {
-                if phase != DispatchPhase::Bubble {
-                    return;
-                }
-                if !bounds.contains(&ev.position) {
-                    hover_view.update(cx, |this, cx| {
-                        if this.crumb_hover.is_some() {
-                            this.crumb_hover = None;
-                            cx.notify();
-                        }
-                    });
-                    return;
-                }
-                let lx = f32::from(ev.position.x - bounds.origin.x);
-                let ly = f32::from(ev.position.y - bounds.origin.y);
-                let hit = hit_first(&hover_hits, lx, ly);
-                hover_view.update(cx, |this, cx| {
-                    let new_hover = hit.map(|h| (pane_id, h));
-                    if this.crumb_hover != new_hover {
-                        if new_hover.is_some() || this.crumb_hover.map(|(p, _)| p) == Some(pane_id) {
-                            this.crumb_hover = new_hover;
-                            cx.notify();
-                        }
-                    }
-                });
-            });
-
             window.on_mouse_event::<MouseDownEvent>(move |ev, phase, _window, cx| {
                 if phase != DispatchPhase::Bubble || ev.button != MouseButton::Left {
                     return;
@@ -419,6 +490,39 @@ impl Element for CrumbStripElement {
                 };
                 hit_view.update(cx, |this, cx| {
                     match hit {
+                        CrumbHit::Back if can_back => {
+                            this.process_actions(vec![Action::NavigateBack(pane_id)]);
+                        }
+                        CrumbHit::Forward if can_forward => {
+                            this.process_actions(vec![Action::NavigateForward(pane_id)]);
+                        }
+                        CrumbHit::Up if can_up => {
+                            this.process_actions(vec![Action::NavigateUp(pane_id)]);
+                        }
+                        CrumbHit::Bookmark => {
+                            this.activate_tab(pane_id);
+                            if let Some(path) = this
+                                .tab_data_for(pane_id)
+                                .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
+                            {
+                                let name = path
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| path.display().to_string());
+                                let idx = this
+                                    .state
+                                    .profiles
+                                    .active()
+                                    .bookmarks
+                                    .iter()
+                                    .position(|b| b.path == path);
+                                if let Some(idx) = idx {
+                                    this.process_actions(vec![Action::RemoveBookmark(idx)]);
+                                } else {
+                                    this.process_actions(vec![Action::AddBookmark { name, path }]);
+                                }
+                            }
+                        }
                         CrumbHit::Segment(i) => {
                             if let Some(seg) = segs.get(i) {
                                 this.process_actions(vec![Action::NavigateLocation {
@@ -431,6 +535,7 @@ impl Element for CrumbStripElement {
                             this.activate_tab(pane_id);
                             this.open_location_finder_or_editor();
                         }
+                        _ => {}
                     }
                     cx.notify();
                 });

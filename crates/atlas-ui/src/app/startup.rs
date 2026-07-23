@@ -486,8 +486,6 @@ impl App {
             grid_flip_states: std::rc::Rc::new(std::cell::RefCell::new(HashMap::new())),
 
             details_hover: None,
-            crumb_hover: None,
-            tab_hover: None,
             miller_column_bounds: HashMap::new(),
             dropzone_selected: HashSet::new(),
             dropzone_rects: Vec::new(),

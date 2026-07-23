@@ -2166,8 +2166,7 @@ fn collapsed_nav_row(
             DragHoverDropCommand::TransferTo(path.clone()),
             &app,
         ))
-        .on_drop::<DraggedFiles>(move |d, window, cx| {
-            if drop_app.read(cx).dropzone_bounds.is_some_and(|b| b.contains(&window.mouse_position())) { return; }
+        .on_drop::<DraggedFiles>(move |d, _window, cx| {
             let paths = d.paths.clone();
             drop_app.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
@@ -2178,8 +2177,7 @@ fn collapsed_nav_row(
                 cx.notify();
             });
         })
-        .on_drop::<gpui::ExternalPaths>(move |paths, window, cx| {
-            if drop_app_external.read(cx).dropzone_bounds.is_some_and(|b| b.contains(&window.mouse_position())) { return; }
+        .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
             let paths = paths.paths().to_vec();
             drop_app_external.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
@@ -2325,8 +2323,7 @@ fn collapsed_tag_row(
         ))
         .on_drop::<DraggedFiles>({
             let app = app.clone();
-            move |d, window, cx| {
-                if app.read(cx).dropzone_bounds.is_some_and(|b| b.contains(&window.mouse_position())) { return; }
+            move |d, _window, cx| {
                 let paths = d.paths.clone();
                 app.update(cx, |this, cx| {
                     this.process_actions(vec![Action::AssignTagToFiles { tag: id, paths }]);
@@ -2336,8 +2333,7 @@ fn collapsed_tag_row(
         })
         .on_drop::<gpui::ExternalPaths>({
             let app = app.clone();
-            move |paths, window, cx| {
-                if app.read(cx).dropzone_bounds.is_some_and(|b| b.contains(&window.mouse_position())) { return; }
+            move |paths, _window, cx| {
                 let paths = paths.paths().to_vec();
                 app.update(cx, |this, cx| {
                     this.process_actions(vec![Action::AssignTagToFiles { tag: id, paths }]);
@@ -2775,8 +2771,7 @@ fn tag_row(
         ))
         .on_drop::<DraggedFiles>({
             let app = app.clone();
-            move |d, window, cx| {
-                if app.read(cx).dropzone_bounds.is_some_and(|b| b.contains(&window.mouse_position())) { return; }
+            move |d, _window, cx| {
                 let paths = d.paths.clone();
                 app.update(cx, |this, cx| {
                     this.process_actions(vec![Action::AssignTagToFiles { tag: id, paths }]);
@@ -2786,8 +2781,7 @@ fn tag_row(
         })
         .on_drop::<gpui::ExternalPaths>({
             let app = app.clone();
-            move |paths, window, cx| {
-                if app.read(cx).dropzone_bounds.is_some_and(|b| b.contains(&window.mouse_position())) { return; }
+            move |paths, _window, cx| {
                 let paths = paths.paths().to_vec();
                 app.update(cx, |this, cx| {
                     this.process_actions(vec![Action::AssignTagToFiles { tag: id, paths }]);
@@ -2923,8 +2917,7 @@ fn drive_row(
             DragHoverDropCommand::TransferTo(path.clone()),
             &app,
         ))
-        .on_drop::<DraggedFiles>(move |d, window, cx| {
-            if drop_app.read(cx).dropzone_bounds.is_some_and(|b| b.contains(&window.mouse_position())) { return; }
+        .on_drop::<DraggedFiles>(move |d, _window, cx| {
             let paths = d.paths.clone();
             drop_app.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
@@ -2935,8 +2928,7 @@ fn drive_row(
                 cx.notify();
             });
         })
-        .on_drop::<gpui::ExternalPaths>(move |paths, window, cx| {
-            if drop_app_external.read(cx).dropzone_bounds.is_some_and(|b| b.contains(&window.mouse_position())) { return; }
+        .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
             let paths = paths.paths().to_vec();
             drop_app_external.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
@@ -3196,8 +3188,7 @@ fn nav_row(
             DragHoverDropCommand::TransferTo(path.clone()),
             &app,
         ))
-        .on_drop::<DraggedFiles>(move |d, window, cx| {
-            if drop_app.read(cx).dropzone_bounds.is_some_and(|b| b.contains(&window.mouse_position())) { return; }
+        .on_drop::<DraggedFiles>(move |d, _window, cx| {
             let paths = d.paths.clone();
             drop_app.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
@@ -3208,8 +3199,7 @@ fn nav_row(
                 cx.notify();
             });
         })
-        .on_drop::<gpui::ExternalPaths>(move |paths, window, cx| {
-            if drop_app_external.read(cx).dropzone_bounds.is_some_and(|b| b.contains(&window.mouse_position())) { return; }
+        .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
             let paths = paths.paths().to_vec();
             drop_app_external.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
@@ -3439,8 +3429,7 @@ fn cloud_remote_row(
             let drop_dest_ext = dest;
             let drop_app = app.clone();
             let drop_app_ext = app.clone();
-            row.on_drop::<DraggedFiles>(move |d, window, cx| {
-                if drop_app.read(cx).dropzone_bounds.is_some_and(|b| b.contains(&window.mouse_position())) { return; }
+            row.on_drop::<DraggedFiles>(move |d, _window, cx| {
                 let paths = d.paths.clone();
                 drop_app.update(cx, |this, cx| {
                     this.execute_drag_hover_drop_command(
@@ -3451,8 +3440,7 @@ fn cloud_remote_row(
                     cx.notify();
                 });
             })
-            .on_drop::<gpui::ExternalPaths>(move |paths, window, cx| {
-                if drop_app_ext.read(cx).dropzone_bounds.is_some_and(|b| b.contains(&window.mouse_position())) { return; }
+            .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
                 let paths = paths.paths().to_vec();
                 drop_app_ext.update(cx, |this, cx| {
                     this.execute_drag_hover_drop_command(
