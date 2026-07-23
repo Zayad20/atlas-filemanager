@@ -144,12 +144,7 @@ impl App {
             &view,
             fg,
             muted,
-            header_bg,
             border,
-            hover,
-            accent,
-            row_font.clone(),
-            font_size,
         );
         let (sort_col, sort_dir) = self
             .tab_data_for(pane_id)

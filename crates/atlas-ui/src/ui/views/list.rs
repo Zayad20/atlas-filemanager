@@ -46,7 +46,7 @@ impl App {
         let font_size = window.text_style().font_size.to_pixels(window.rem_size());
         let row_font = window.text_style().font();
         let crumb_strip = self.render_crumb_strip(
-            pane_id, &view, fg, muted, header_bg, border, hover, accent, row_font, font_size,
+            pane_id, &view, fg, muted, border,
         );
         let count = self
             .state

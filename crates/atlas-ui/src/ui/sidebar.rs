@@ -212,14 +212,7 @@ fn profile_menu_profile_row(
     confirming: bool,
     colors: MenuColors,
 ) -> gpui::AnyElement {
-    let MenuColors {
-        fg,
-        muted,
-        accent,
-        accent_fg,
-        hover,
-        ..
-    } = colors;
+    let MenuColors { fg, muted, accent, accent_fg, hover, .. } = colors;
     let row_group = SharedString::from(format!("profile-menu-row-{index}"));
     let row_text = if active { accent_fg } else { fg };
     let row_icon = if active { accent_fg } else { muted };
@@ -313,11 +306,7 @@ fn profile_menu_action_button(
     icon_color: Hsla,
     colors: MenuColors,
 ) -> gpui::AnyElement {
-    let MenuColors {
-        action_hover,
-        danger,
-        ..
-    } = colors;
+    let MenuColors { action_hover, danger, .. } = colors;
     let is_delete = id == "delete";
     let is_rename = id == "rename";
     let is_duplicate = id == "duplicate";
@@ -631,14 +620,7 @@ fn atlas_launcher_row(
     shortcut: Option<gpui::Keystroke>,
     colors: MenuColors,
 ) -> gpui::AnyElement {
-    let MenuColors {
-        fg,
-        muted,
-        accent,
-        accent_fg,
-        hover,
-        ..
-    } = colors;
+    let MenuColors { fg, muted, accent, accent_fg, hover, .. } = colors;
     let row_icon = if selected { accent_fg } else { muted };
     let row_text = if selected { accent_fg } else { fg };
     let mut label_col = v_flex().min_w(px(0.)).flex_1().child(label);
@@ -831,7 +813,6 @@ impl Panel for SidebarPanel {
 impl Render for SidebarPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf::count("render.sidebar");
-        let _perf = crate::perf::span("sidebar.render");
         let Some(app) = self.app.upgrade() else {
             return div().into_any_element();
         };
@@ -1173,8 +1154,8 @@ impl Render for SidebarPanel {
                 cx,
             ));
             if !section.collapsed {
-                let body = render_section_body(
-                    v_flex(),
+                col = render_section_body(
+                    col,
                     &section.kind,
                     &app,
                     style,
@@ -1182,7 +1163,6 @@ impl Render for SidebarPanel {
                     current_location.as_ref(),
                     cx,
                 );
-                col = col.child(body);
             }
         }
 
@@ -1837,11 +1817,7 @@ fn render_collapsed_sections(
     current_location: Option<&Location>,
     cx: &mut Context<SidebarPanel>,
 ) -> gpui::Div {
-    let SidebarStyle {
-        hover,
-        windows_theme,
-        ..
-    } = style;
+    let SidebarStyle { hover, windows_theme, .. } = style;
     let sections: Vec<SidebarSection> = app
         .read(cx)
         .state
@@ -2019,7 +1995,13 @@ fn render_collapsed_sections(
                 for drive in drives {
                     let active = current.is_some_and(|c| c == drive.mount_point.as_path());
                     let shell_tex = sidebar_shell_tex(app, &drive.mount_point, windows_theme, cx);
-                    col = col.child(collapsed_drive_row(drive, shell_tex, app, style, active));
+                    col = col.child(collapsed_drive_row(
+                        drive,
+                        shell_tex,
+                        app,
+                        style,
+                        active,
+                    ));
                     section_has_items = true;
                 }
             }
@@ -2080,7 +2062,11 @@ fn render_collapsed_sections(
                         section_has_items = true;
                     }
                     for remote in remotes {
-                        col = col.child(collapsed_cloud_remote_row(remote, app, style));
+                        col = col.child(collapsed_cloud_remote_row(
+                            remote,
+                            app,
+                            style,
+                        ));
                         section_has_items = true;
                     }
                 }
@@ -2109,14 +2095,7 @@ fn collapsed_nav_row(
     style: SidebarStyle,
     active: bool,
 ) -> impl IntoElement {
-    let SidebarStyle {
-        hover,
-        active_bg,
-        accent,
-        fg,
-        windows_theme,
-        ..
-    } = style;
+    let SidebarStyle { hover, active_bg, accent, fg, windows_theme, .. } = style;
     let app = app.clone();
     let tooltip = label.clone();
     let hover_id = DragHoverId::Sidebar(id.to_string());
@@ -2215,14 +2194,7 @@ fn collapsed_virtual_nav_row(
     style: SidebarStyle,
     active: bool,
 ) -> impl IntoElement {
-    let SidebarStyle {
-        hover,
-        active_bg,
-        accent,
-        fg,
-        windows_theme,
-        ..
-    } = style;
+    let SidebarStyle { hover, active_bg, accent, fg, windows_theme, .. } = style;
     let app = app.clone();
     let tooltip = label.clone();
     let hover_id = DragHoverId::Sidebar(id.to_string());
@@ -2385,14 +2357,7 @@ fn collapsed_cloud_remote_row(
     app: &Entity<AtlasApp>,
     style: SidebarStyle,
 ) -> impl IntoElement {
-    let SidebarStyle {
-        hover,
-        active_bg,
-        accent,
-        fg,
-        windows_theme,
-        ..
-    } = style;
+    let SidebarStyle { hover, active_bg, accent, fg, windows_theme, .. } = style;
     use crate::app::cloud::CloudAction;
     use atlas_model::cloud_model::RemoteStatus;
 
@@ -2449,14 +2414,8 @@ fn render_section_body(
     current: Option<&std::path::Path>,
     current_location: Option<&Location>,
     cx: &mut Context<SidebarPanel>,
-) -> gpui::AnyElement {
-    let SidebarStyle {
-        hover,
-        fg,
-        muted,
-        windows_theme,
-        ..
-    } = style;
+) -> gpui::Div {
+    let SidebarStyle { hover, fg, muted, windows_theme, .. } = style;
     match kind {
         SectionKind::Places => {
             let places: Vec<(&'static str, String, PathBuf)> = [
@@ -2552,7 +2511,14 @@ fn render_section_body(
                     let active = current.is_some_and(|c| c == path.as_path());
                     let shell_tex = sidebar_shell_tex(app, &path, windows_theme, cx);
                     col = col.child(nav_row(
-                        id, name, "folder", path, shell_tex, app, style, active,
+                        id,
+                        name,
+                        "folder",
+                        path,
+                        shell_tex,
+                        app,
+                        style,
+                        active,
                     ));
                 }
             }
@@ -2575,7 +2541,14 @@ fn render_section_body(
                 ));
             } else {
                 for (name, color, id, global) in tags {
-                    col = col.child(tag_row(name, color, id, global, app, style));
+                    col = col.child(tag_row(
+                        name,
+                        color,
+                        id,
+                        global,
+                        app,
+                        style,
+                    ));
                 }
             }
         }
@@ -2606,7 +2579,13 @@ fn render_section_body(
                 for drive in drives {
                     let active = current.is_some_and(|c| c == drive.mount_point.as_path());
                     let shell_tex = sidebar_shell_tex(app, &drive.mount_point, windows_theme, cx);
-                    col = col.child(drive_row(drive, shell_tex, app, style, active));
+                    col = col.child(drive_row(
+                        drive,
+                        shell_tex,
+                        app,
+                        style,
+                        active,
+                    ));
                 }
             }
         }
@@ -2670,7 +2649,9 @@ fn render_section_body(
                 let remotes: Vec<atlas_model::cloud_model::CloudRemote> =
                     app.read(cx).state.cloud.remotes.clone();
                 for remote in remotes {
-                    col = col.child(cloud_remote_row(remote, app, style));
+                    col = col.child(cloud_remote_row(
+                        remote, app, style,
+                    ));
                 }
                 col = col.child(add_cloud_row(app, hover, muted, fg));
             }
@@ -2683,7 +2664,7 @@ fn render_section_body(
             }
         }
     }
-    col.into_any_element()
+    col
 }
 
 /// One clickable tag row that opens its virtual "tag results" tab.
@@ -2695,12 +2676,7 @@ fn tag_row(
     app: &Entity<AtlasApp>,
     style: SidebarStyle,
 ) -> impl IntoElement {
-    let SidebarStyle {
-        hover,
-        fg,
-        windows_theme,
-        ..
-    } = style;
+    let SidebarStyle { hover, fg, windows_theme, .. } = style;
     let app = app.clone();
     let edit_app = app.clone();
     let edit_name = name.clone();
@@ -2808,15 +2784,7 @@ fn drive_row(
     style: SidebarStyle,
     active: bool,
 ) -> gpui::AnyElement {
-    let SidebarStyle {
-        hover,
-        active_bg,
-        accent,
-        fg,
-        muted,
-        windows_theme,
-        ..
-    } = style;
+    let SidebarStyle { hover, active_bg, accent, fg, muted, windows_theme, .. } = style;
     let app = app.clone();
     let frac = drive.used_fraction();
     // Alert color when nearly full, otherwise the accent.
@@ -3121,14 +3089,7 @@ fn nav_row(
     style: SidebarStyle,
     active: bool,
 ) -> impl IntoElement {
-    let SidebarStyle {
-        hover,
-        active_bg,
-        accent,
-        fg,
-        windows_theme,
-        ..
-    } = style;
+    let SidebarStyle { hover, active_bg, accent, fg, windows_theme, .. } = style;
     let app = app.clone();
     let hover_id = DragHoverId::Sidebar(id.to_string());
     let drop_path = path.clone();
@@ -3239,14 +3200,7 @@ fn virtual_nav_row(
     style: SidebarStyle,
     active: bool,
 ) -> impl IntoElement {
-    let SidebarStyle {
-        hover,
-        active_bg,
-        accent,
-        fg,
-        windows_theme,
-        ..
-    } = style;
+    let SidebarStyle { hover, active_bg, accent, fg, windows_theme, .. } = style;
     let app = app.clone();
     let hover_id = DragHoverId::Sidebar(id.to_string());
     let recycle_icon_app = app.clone();
@@ -3329,9 +3283,7 @@ fn cloud_remote_row(
     app: &Entity<AtlasApp>,
     style: SidebarStyle,
 ) -> impl IntoElement {
-    let SidebarStyle {
-        hover, fg, muted, ..
-    } = style;
+    let SidebarStyle { hover, fg, muted, .. } = style;
     use crate::app::cloud::CloudAction;
     use crate::input::action::Action;
     use atlas_model::cloud_model::RemoteStatus;
