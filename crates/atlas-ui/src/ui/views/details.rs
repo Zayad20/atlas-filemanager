@@ -139,13 +139,7 @@ impl App {
         let font_size = window.text_style().font_size.to_pixels(window.rem_size());
         let row_font = window.text_style().font();
 
-        let crumb_strip = self.render_crumb_strip(
-            pane_id,
-            &view,
-            fg,
-            muted,
-            border,
-        );
+        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border);
         let (sort_col, sort_dir) = self
             .tab_data_for(pane_id)
             .map(|t| (t.sort_col.clone(), t.sort_dir.clone()))
@@ -272,23 +266,21 @@ impl App {
                     .unwrap_or(row_h * 24.0)
             };
             let scroll_y = (-f32::from(base_scroll.offset().y)).max(0.0);
-            prime_details_file_icons(
-                self,
-                pane_id,
-                &filtered_visible,
-                scroll_y,
-                viewport_h,
-                row_h,
-            );
-
             let _list_view = view.clone();
             let fv = filtered_visible.clone();
             let row_layout = Arc::clone(&layout);
 
-            let start_idx = (scroll_y / row_h).floor().max(0.0) as usize;
-            let end_idx = ((scroll_y + viewport_h) / row_h).ceil() as usize + 1;
+            // The scroll transform can advance before this virtual Element gets its
+            // next render. Keep a generous paint/shaping runway on both sides so a
+            // fast wheel/trackpad fling never exposes an unpainted (black) frame.
+            let overscan_rows = ((viewport_h * DETAILS_SCROLL_OVERSCAN_VIEWPORTS) / row_h)
+                .ceil()
+                .max(12.0) as usize;
+            let start_idx =
+                ((scroll_y / row_h).floor().max(0.0) as usize).saturating_sub(overscan_rows);
+            let end_idx = ((scroll_y + viewport_h) / row_h).ceil() as usize + overscan_rows;
             let end_idx = end_idx.min(count);
-            let end_idx = end_idx.min(count);
+            prime_details_file_icons_range(self, pane_id, &filtered_visible, start_idx, end_idx);
 
             let mut overlays = Vec::new();
 
@@ -485,7 +477,8 @@ impl App {
                 let new_h = f32::from(bounds.size.height);
                 let should_update = {
                     if let Some(ts) = v.read(cx).state.tab_states.get(&pane_id) {
-                        (ts.last_pane_width - new_w).abs() > 1.5 || (ts.last_pane_height - new_h).abs() > 1.5
+                        (ts.last_pane_width - new_w).abs() > 1.5
+                            || (ts.last_pane_height - new_h).abs() > 1.5
                     } else {
                         false
                     }
@@ -891,6 +884,11 @@ pub(crate) const ROW_TEXT_Y_NUDGE: f32 = -1.0;
 /// to the header label and the row data → they stay aligned.
 pub(crate) const CELL_PAD: f32 = 11.0;
 
+/// Extra virtualized rows retained on either side of the current Details viewport.
+/// This is deliberately expressed in viewports, not a fixed row count, so it also
+/// covers high-DPI / zoomed layouts and large trackpad deltas.
+const DETAILS_SCROLL_OVERSCAN_VIEWPORTS: f32 = 1.5;
+
 /// A/B: `true` = `DetailsBodyElement` (custom Element + ring); `false` = legacy dual-canvas.
 pub(crate) const USE_DETAILS_BODY_ELEMENT: bool = true;
 
@@ -921,20 +919,17 @@ pub(crate) fn hsla_key_bits(c: Hsla) -> u32 {
         ^ c.a.to_bits().rotate_left(24)
 }
 
-fn prime_details_file_icons(
+fn prime_details_file_icons_range(
     app: &mut App,
     pane_id: TabId,
     visible: &[usize],
-    scroll_y: f32,
-    viewport_h: f32,
-    row_h: f32,
+    start: usize,
+    end: usize,
 ) {
     let files = {
         let Some(ts) = app.state.tab_states.get(&pane_id) else {
             return;
         };
-        let start = (scroll_y / row_h).floor().max(0.0) as usize;
-        let end = ((scroll_y + viewport_h) / row_h).ceil() as usize + 1;
         let end = end.min(visible.len());
         (start..end)
             .filter_map(|i| {

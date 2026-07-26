@@ -1350,13 +1350,37 @@ impl App {
 
         if !recursive {
             self.restore_search_original_entries(tile);
-            if let Some(ts) = self.state.tab_states.get_mut(&tile) {
-                ts.filter.clone_from(&query);
-                ts.visible_valid = false;
-                ts.search.status = atlas_model::tab::SearchStatus::Ready;
-                ts.search.error = None;
-            }
-            self.select_first_visible(tile);
+            let Some((generation, entries, show_files, show_folders)) =
+                self.state.tab_states.get_mut(&tile).map(|ts| {
+                    ts.search.generation = ts.search.generation.wrapping_add(1);
+                    ts.search.status = atlas_model::tab::SearchStatus::Searching;
+                    ts.search.error = None;
+                    (
+                        ts.search.generation,
+                        ts.entries.clone(),
+                        ts.show_files,
+                        ts.show_folders,
+                    )
+                })
+            else {
+                return;
+            };
+            let tx = self.tx.clone();
+            self.rt.spawn_blocking(move || {
+                let (visible, counts) = atlas_model::tab::filter_visible_entries(
+                    &entries,
+                    &query,
+                    show_files,
+                    show_folders,
+                );
+                let _ = tx.send(atlas_model::app_state::BgResult::FolderFilterResults {
+                    tab: tile,
+                    gen: generation,
+                    query,
+                    visible,
+                    counts,
+                });
+            });
             return;
         }
 

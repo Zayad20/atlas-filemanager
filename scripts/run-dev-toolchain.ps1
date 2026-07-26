@@ -33,7 +33,7 @@ if ($Backend -eq "cranelift") {
     }
     $command += @(
         "-Z", "codegen-backend",
-        "--config", 'profile.dev.codegen-backend=\"cranelift\"'
+        "--config", "profile.dev.codegen-backend='cranelift'"
     )
 }
 

@@ -336,6 +336,78 @@ impl TabState {
         self.visible_indices();
         self.visible.clone()
     }
+
+    /// Publish a completed off-thread folder filter without making the next UI
+    /// render repeat the scan/sort that produced it.
+    pub fn set_visible_filter_result(
+        &mut self,
+        filter: String,
+        visible: Vec<usize>,
+        counts: VisibleCounts,
+    ) {
+        self.visible = Arc::new(visible);
+        self.visible_filter = filter;
+        self.visible_version = self.entries_version;
+        self.visible_show_files = self.show_files;
+        self.visible_show_folders = self.show_folders;
+        self.counts = counts;
+        self.visible_valid = true;
+    }
+}
+
+/// CPU-only folder filtering used by the UI worker. Keeping it in the model
+/// makes the background and synchronous paths use identical matching/ranking.
+pub fn filter_visible_entries(
+    entries: &[FileEntry],
+    filter: &str,
+    show_files: bool,
+    show_folders: bool,
+) -> (Vec<usize>, VisibleCounts) {
+    let needle = filter.to_lowercase();
+    let mut counts = VisibleCounts::default();
+    let kind_visible = |entry: &FileEntry| {
+        if matches!(entry.kind, FileKind::Dir) {
+            show_folders
+        } else {
+            show_files
+        }
+    };
+    for entry in entries {
+        if matches!(entry.kind, FileKind::Dir) {
+            counts.folders_total += 1;
+        } else {
+            counts.files_total += 1;
+        }
+    }
+
+    let visible: Vec<usize> = if needle.is_empty() {
+        entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| kind_visible(entry))
+            .map(|(idx, _)| idx)
+            .collect()
+    } else {
+        let mut matches: Vec<(usize, i64)> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| kind_visible(entry))
+            .filter_map(|(idx, entry)| {
+                fuzzy_score(&needle, &entry.name_lower).map(|score| (idx, score))
+            })
+            .collect();
+        matches.sort_by(|(ai, ascore), (bi, bscore)| bscore.cmp(ascore).then_with(|| ai.cmp(bi)));
+        matches.into_iter().map(|(idx, _)| idx).collect()
+    };
+
+    for &idx in &visible {
+        if matches!(entries[idx].kind, FileKind::Dir) {
+            counts.folders_shown += 1;
+        } else {
+            counts.files_shown += 1;
+        }
+    }
+    (visible, counts)
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@
 
 use crate::app::{App, RubberTarget};
 use crate::input::action::Action;
+use crate::ui::edge_autoscroll::{self, EdgeDirection};
 use atlas_model::layout_tree::Tile;
 use atlas_model::pane::TabId;
 use atlas_model::settings::ViewMode;
@@ -13,6 +14,7 @@ use gpui::{
 };
 use gpui_component::input::{IndentInline, OutdentInline};
 use gpui_component::{ActiveTheme, WindowExt};
+use std::time::Instant;
 
 impl App {
     pub(crate) fn pane_view_slider_value(&self, pane_id: TabId) -> f32 {
@@ -144,6 +146,17 @@ impl App {
     }
 
     fn rubber_pane_bounds(&self, pane: TabId) -> Option<gpui::Bounds<gpui::Pixels>> {
+        // Details records the actual rows viewport. The generic pane bounds also
+        // include breadcrumb/header chrome, which shifts the marquee's content
+        // coordinates by that chrome height and selects the wrong rows.
+        if self
+            .tab_data_for(pane)
+            .is_some_and(|tab| tab.view_mode == ViewMode::Details)
+        {
+            if let Some(model) = self.details_hit.get(&pane) {
+                return Some(model.bounds);
+            }
+        }
         self.pane_view_bounds
             .get(&pane)
             .or_else(|| self.pane_layout_bounds.get(&pane))
@@ -375,6 +388,45 @@ impl App {
         let (rt, rb) = (oy.min(cy), oy.max(cy));
         match target {
             RubberTarget::Pane(pane) => {
+                // List is laid out by AnimatedVirtualGrid. Its measured item bounds
+                // are the single source of truth: the old arithmetic approximation
+                // used a fixed 24px pitch, while List uses the actual line height
+                // plus padding. That divergence grows one row at a time and makes a
+                // marquee select rows above/below the rectangle (especially at zoom).
+                let list_rect_hits = self
+                    .tab_data_for(pane)
+                    .is_some_and(|tab| tab.view_mode == ViewMode::List)
+                    .then(|| {
+                        let left = f32::from(origin.x).min(f32::from(current.x));
+                        let right = f32::from(origin.x).max(f32::from(current.x));
+                        let top = f32::from(origin.y).min(f32::from(current.y));
+                        let bottom = f32::from(origin.y).max(f32::from(current.y));
+                        self.row_rects
+                            .borrow()
+                            .get(&pane)
+                            .filter(|rects| !rects.is_empty())
+                            .map(|rects| {
+                                rects
+                                    .iter()
+                                    .filter_map(|(idx, bounds)| {
+                                        let (item_left, item_right) =
+                                            (f32::from(bounds.left()), f32::from(bounds.right()));
+                                        let (item_top, item_bottom) =
+                                            (f32::from(bounds.top()), f32::from(bounds.bottom()));
+                                        (left < item_right
+                                            && item_left < right
+                                            && top < item_bottom
+                                            && item_top < bottom)
+                                            .then_some(*idx)
+                                    })
+                                    .collect::<std::collections::HashSet<_>>()
+                            })
+                    })
+                    .flatten();
+                // Keep the content-space fallback for Details/Grid and for List's
+                // first frame before prepaint has published its rectangles.
+                let hits = list_rect_hits
+                    .unwrap_or_else(|| self.rubber_content_hits_for_pane(pane, rl, rr, rt, rb));
                 let Some(r) = self.rubber.as_mut() else {
                     return;
                 };
@@ -383,7 +435,7 @@ impl App {
                 } else {
                     std::collections::HashSet::new()
                 };
-                sel.extend(self.rubber_content_hits_for_pane(pane, rl, rr, rt, rb));
+                sel.extend(hits);
                 if let Some(ts) = self.state.tab_states.get_mut(&pane) {
                     ts.selection.selected = sel;
                 }
@@ -615,34 +667,91 @@ impl App {
         }
     }
 
-    fn rubber_edge_autoscroll(
+    /// Rubber selection needs an explicit outward gesture. Entering an edge zone
+    /// (or beginning a marquee there) is not enough to start scrolling.
+    fn update_rubber_edge_intent(
         &mut self,
-        target: RubberTarget,
-        pos: gpui::Point<gpui::Pixels>,
-    ) -> bool {
-        let Some(bounds) = self.rubber_target_bounds(target) else {
+        previous: gpui::Point<gpui::Pixels>,
+        current: gpui::Point<gpui::Pixels>,
+    ) {
+        const INTENT_DISTANCE: f32 = 4.0;
+        let Some(rubber) = self.rubber.as_mut() else {
+            return;
+        };
+        if !rubber.started {
+            rubber.edge_intent = None;
+            rubber.edge_intent_origin_y = None;
+            return;
+        }
+        let Some(activation) = edge_autoscroll::activation_at(rubber.target_bounds, current) else {
+            rubber.edge_intent = None;
+            rubber.edge_intent_origin_y = None;
+            return;
+        };
+        let direction = activation.direction;
+        if rubber.edge_intent != Some(direction) && rubber.edge_intent_origin_y.is_none() {
+            rubber.edge_intent_origin_y = Some(previous.y);
+        }
+        let origin = rubber.edge_intent_origin_y.unwrap_or(previous.y);
+        let moved_from_origin = match direction {
+            EdgeDirection::Up => f32::from(origin - current.y),
+            EdgeDirection::Down => f32::from(current.y - origin),
+        };
+        let moved_this_event = match direction {
+            EdgeDirection::Up => f32::from(previous.y - current.y),
+            EdgeDirection::Down => f32::from(current.y - previous.y),
+        };
+
+        // A meaningful reversal disarms the stationary frame loop immediately.
+        if rubber.edge_intent == Some(direction) && moved_this_event <= -INTENT_DISTANCE {
+            rubber.edge_intent = None;
+            rubber.edge_intent_origin_y = Some(current.y);
+        } else if moved_from_origin >= INTENT_DISTANCE {
+            rubber.edge_intent = Some(direction);
+        } else if moved_from_origin < 0.0 {
+            rubber.edge_intent = None;
+            rubber.edge_intent_origin_y = Some(current.y);
+        }
+    }
+
+    /// Advance one RubberSelect frame after directional intent has armed it.
+    /// The selection is recomputed after every real offset change, so a stationary
+    /// cursor still selects rows continuously while the viewport moves.
+    fn tick_rubber_edge_autoscroll(&mut self, now: Instant, cx: &mut Context<Self>) -> bool {
+        let Some((target, bounds, current, intent)) = self.rubber.as_ref().map(|rubber| {
+            (
+                rubber.target,
+                rubber.target_bounds,
+                rubber.current,
+                rubber.edge_intent,
+            )
+        }) else {
             return false;
         };
-        const EDGE: f32 = 44.0;
-        let x = f32::from(pos.x);
-        let left = f32::from(bounds.left());
-        let right = f32::from(bounds.right());
-        if x < left || x > right {
+        let Some(activation) = edge_autoscroll::activation_at(bounds, current) else {
+            return false;
+        };
+        if intent != Some(activation.direction)
+            || !self.rubber_target_has_scrollable_content(target)
+        {
             return false;
         }
-        let y = f32::from(pos.y);
-        let top = f32::from(bounds.top());
-        let bottom = f32::from(bounds.bottom());
-        let delta = if y < top + EDGE {
-            let strength = 1.0 - (y - top).clamp(0.0, EDGE) / EDGE;
-            18.0 + 42.0 * strength
-        } else if y > bottom - EDGE {
-            let strength = 1.0 - (bottom - y).clamp(0.0, EDGE) / EDGE;
-            -(18.0 + 42.0 * strength)
-        } else {
+        let elapsed = self
+            .rubber
+            .as_mut()
+            .and_then(|rubber| rubber.last_scroll_frame.replace(now))
+            .map_or(1.0 / 60.0, |last| now.duration_since(last).as_secs_f32());
+        let Some((pane, handle)) = self.rubber_scroll_handle(target) else {
             return false;
         };
-        self.rubber_scroll_pixels(target, delta)
+        if !edge_autoscroll::tick_handle(&handle, activation, elapsed) {
+            return false;
+        }
+        self.dirty_panes.insert(pane);
+        self.apply_rubber();
+        self.notify_pane(pane, cx);
+        cx.notify();
+        true
     }
 
     fn rubber_wheel_delta(ev: &ScrollWheelEvent) -> f32 {
@@ -1084,6 +1193,9 @@ impl App {
             dropzone_base: Default::default(),
             additive,
             started: false,
+            edge_intent: None,
+            edge_intent_origin_y: None,
+            last_scroll_frame: None,
         });
     }
 
@@ -1123,6 +1235,9 @@ impl App {
             dropzone_base: Default::default(),
             additive,
             started: false,
+            edge_intent: None,
+            edge_intent_origin_y: None,
+            last_scroll_frame: None,
         });
     }
 
@@ -1156,6 +1271,9 @@ impl App {
             dropzone_base,
             additive,
             started: false,
+            edge_intent: None,
+            edge_intent_origin_y: None,
+            last_scroll_frame: None,
         });
     }
 
@@ -1408,6 +1526,17 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                 }
             }
 
+            // A rubber drag must keep progressing while the pointer is still.
+            // This runs from paint (where requesting the next frame is legal),
+            // rather than relying on further MouseMove events.
+            let rubber_scrolled = v.update(cx, |this, cx| {
+                this.tick_rubber_edge_autoscroll(Instant::now(), cx)
+            });
+            if rubber_scrolled {
+                crate::perf::event(|| "request_animation_frame rubber_autoscroll".to_string());
+                window.request_animation_frame();
+            }
+
             // ── Global move ──────────────────────────────────────────────────
             let vm = v.clone();
             window.on_mouse_event::<MouseMoveEvent>(move |ev, phase, window, cx| {
@@ -1506,26 +1635,28 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                         return false;
                     }
 
-                    let Some(r) = this.rubber.as_mut() else {
+                    let Some((previous, started, target)) = this.rubber.as_mut().map(|r| {
+                        let previous = r.current;
+                        r.current = pos;
+                        if !r.started {
+                            let dx = f32::from(pos.x) - f32::from(r.origin.x);
+                            let dy = f32::from(pos.y) - f32::from(r.origin.y);
+                            r.started = dx * dx + dy * dy >= 16.0;
+                        }
+                        (previous, r.started, r.target)
+                    }) else {
                         return false;
                     };
-                    r.current = pos;
-                    if !r.started {
-                        let dx = f32::from(pos.x) - f32::from(r.origin.x);
-                        let dy = f32::from(pos.y) - f32::from(r.origin.y);
-                        r.started = dx * dx + dy * dy >= 16.0;
-                    }
-                    if r.started {
+                    if started {
+                        this.update_rubber_edge_intent(previous, pos);
                         this.apply_rubber();
-                        let target = this.rubber.as_ref().map(|r| r.target);
-                        let scrolled =
-                            target.is_some_and(|target| this.rubber_edge_autoscroll(target, pos));
-                        let pane = target.and_then(|target| match target {
+                        let scrolled = this.tick_rubber_edge_autoscroll(Instant::now(), cx);
+                        let pane = match target {
                             RubberTarget::Pane(pane) | RubberTarget::MillerColumn(pane, _) => {
                                 Some(pane)
                             }
                             RubberTarget::Dropzone => None,
-                        });
+                        };
                         if let Some(pane) = pane {
                             this.notify_pane(pane, cx);
                         }
@@ -1637,14 +1768,16 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                                         .get(&pane)
                                         .and_then(|model| model.hit_entry(pos))
                                         .is_some()
-                                        || this.row_rects.borrow().get(&pane).is_some_and(|rects| {
-                                            rects.iter().any(|(_, b)| {
-                                                pos.x >= b.left()
-                                                    && pos.x <= b.right()
-                                                    && pos.y >= b.top()
-                                                    && pos.y <= b.bottom()
-                                            })
-                                        });
+                                        || this.row_rects.borrow().get(&pane).is_some_and(
+                                            |rects| {
+                                                rects.iter().any(|(_, b)| {
+                                                    pos.x >= b.left()
+                                                        && pos.x <= b.right()
+                                                        && pos.y >= b.top()
+                                                        && pos.y <= b.bottom()
+                                                })
+                                            },
+                                        );
                                     if !hit {
                                         if let Some(ts) = this.state.tab_states.get_mut(&pane) {
                                             ts.selection.clear();
@@ -1653,7 +1786,8 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                                 }
                                 RubberTarget::MillerColumn(pane, column) => {
                                     let hit = this
-                                        .miller_row_rects.borrow()
+                                        .miller_row_rects
+                                        .borrow()
                                         .get(&(pane, column))
                                         .is_some_and(|rects| {
                                             rects.iter().any(|(_, b)| {

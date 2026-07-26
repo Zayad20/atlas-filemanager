@@ -5,8 +5,6 @@ const WSL_LOCALHOST: &str = r"\\wsl.localhost\";
 const WSL_CACHE_TTL: Duration = Duration::from_secs(5);
 const WSL_READY_TTL: Duration = Duration::from_secs(30);
 
-
-
 fn wsl_tail(path: &Path) -> Option<&str> {
     let s = path.to_str()?;
     let lower = s.to_ascii_lowercase();
@@ -72,13 +70,16 @@ fn is_user_wsl_distro(name: &str) -> bool {
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-static WSL_ROOT_CACHE: OnceLock<Arc<Mutex<Option<(Instant, Vec<PathBuf>, bool)>>>> = OnceLock::new();
+static WSL_ROOT_CACHE: OnceLock<Arc<Mutex<Option<(Instant, Vec<PathBuf>, bool)>>>> =
+    OnceLock::new();
 
 #[cfg(windows)]
 pub fn list_wsl_roots() -> Vec<PathBuf> {
-    let cache_arc = WSL_ROOT_CACHE.get_or_init(|| Arc::new(Mutex::new(None))).clone();
+    let cache_arc = WSL_ROOT_CACHE
+        .get_or_init(|| Arc::new(Mutex::new(None)))
+        .clone();
     let mut cache = cache_arc.lock().unwrap();
-    
+
     if let Some((last_update, roots, is_updating)) = &mut *cache {
         if last_update.elapsed() < WSL_CACHE_TTL {
             return roots.clone();
@@ -103,7 +104,7 @@ pub fn list_wsl_roots() -> Vec<PathBuf> {
         }
         return roots.clone();
     }
-    
+
     let roots = list_wsl_roots_unc()
         .into_iter()
         .chain(list_wsl_roots_command())

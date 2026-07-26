@@ -14,9 +14,9 @@ use atlas_model::file_entry::{SortColumn, SortDir};
 use atlas_model::pane::TabId;
 use gpui::{
     point, px, size, App as GpuiApp, Bounds, ContentMask, DispatchPhase, Element, ElementId, Font,
-    GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Refineable, ShapedLine, SharedString, Style,
-    StyleRefinement, Styled, TextAlign, WeakEntity, Window,
+    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Refineable, ShapedLine,
+    SharedString, Style, StyleRefinement, Styled, TextAlign, WeakEntity, Window,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -60,6 +60,7 @@ pub(crate) struct DetailsHeaderPrepaint {
     meta_lines: Vec<(DetailsColumn, ShapedLine)>,
     layout: DetailsRowLayout,
     header_h: f32,
+    hitbox: Hitbox,
 }
 
 impl DetailsHeaderElement {
@@ -199,7 +200,7 @@ impl Element for DetailsHeaderElement {
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _request_layout: &mut Style,
         window: &mut Window,
         _cx: &mut GpuiApp,
@@ -213,6 +214,9 @@ impl Element for DetailsHeaderElement {
         self.font_size = chrome_font_size_header(window);
         let font = &self.font;
         let font_size = self.font_size;
+        // Header input is registered on the window from paint; this makes it
+        // respect popup/modal occlusion instead of only checking raw bounds.
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
 
         let name_active = self.sort_col == SortColumn::Name;
         let name_color = if name_active {
@@ -247,6 +251,7 @@ impl Element for DetailsHeaderElement {
             meta_lines,
             layout: self.layout.clone(),
             header_h,
+            hitbox,
         }
     }
 
@@ -459,8 +464,12 @@ impl Element for DetailsHeaderElement {
             let press_dn = press.clone();
             let layout_dn = layout_snap.clone();
             let down_view = app_entity.clone();
-            window.on_mouse_event::<MouseDownEvent>(move |ev, phase, _window, cx| {
+            let down_hitbox = prepaint.hitbox.clone();
+            window.on_mouse_event::<MouseDownEvent>(move |ev, phase, window, cx| {
                 if phase != DispatchPhase::Bubble {
+                    return;
+                }
+                if !down_hitbox.is_hovered(window) {
                     return;
                 }
                 let pos = ev.position;
@@ -526,8 +535,12 @@ impl Element for DetailsHeaderElement {
             // Right-click Type filter (needs Window)
             let layout_rt = layout_snap.clone();
             let right_view = app_entity.clone();
+            let right_hitbox = prepaint.hitbox.clone();
             window.on_mouse_event::<MouseDownEvent>(move |ev, phase, window, cx| {
                 if phase != DispatchPhase::Bubble || ev.button != MouseButton::Right {
+                    return;
+                }
+                if !right_hitbox.is_hovered(window) {
                     return;
                 }
                 let pos = ev.position;

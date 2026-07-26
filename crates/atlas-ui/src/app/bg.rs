@@ -691,6 +691,28 @@ impl App {
                     }
                     info.notify_panes.push(tab);
                 }
+                BgResult::FolderFilterResults {
+                    tab,
+                    gen,
+                    query,
+                    visible,
+                    counts,
+                } => {
+                    if let Some(ts) = self.state.tab_states.get_mut(&tab) {
+                        if ts.search.generation == gen
+                            && ts.search.active
+                            && !ts.search.recursive
+                            && ts.search.query.trim() == query
+                        {
+                            ts.filter.clone_from(&query);
+                            ts.set_visible_filter_result(query, visible, counts);
+                            ts.search.status = atlas_model::tab::SearchStatus::Ready;
+                            ts.search.error = None;
+                            self.select_first_visible(tab);
+                        }
+                    }
+                    info.notify_panes.push(tab);
+                }
                 BgResult::OpComplete {
                     id,
                     result,

@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use atlas_core::fs::list::folder_hover_stats;
 use atlas_core::util::display::{format_date, format_size};
 use gpui::prelude::*;
 use gpui::{div, px, AnyView, App, Keystroke, SharedString, Window};
@@ -50,14 +49,15 @@ pub(crate) fn shortcut_tooltip(
     .build(window, cx)
 }
 
-/// Explorer-style hover card for a file/folder row. Folders show
-/// Created/Subfolders/Subfiles/Size (computed lazily via a non-recursive `read_dir`);
-/// files show Created/Modified/Size using metadata already known by the caller plus
-/// one cheap `fs::metadata` call for the creation time. Everything runs inside the
-/// tooltip closure, only while actually hovering — no background job needed.
+/// Hover card for a file/folder row.
+///
+/// Tooltips render on the UI thread, alongside pointer and scroll event handling.
+/// Only use information already captured by the row here: filesystem calls such as
+/// `read_dir` and `metadata` can block on large folders, network shares, or removable
+/// drives, making hover and scrolling appear to update in bursts.
 pub(crate) fn entry_hover_tooltip(
     name: impl Into<SharedString>,
-    path: PathBuf,
+    _path: PathBuf,
     is_dir: bool,
     size: Option<u64>,
     modified: Option<SystemTime>,
@@ -77,41 +77,7 @@ pub(crate) fn entry_hover_tooltip(
 
         let mut rows = v_flex().text_xs().gap(px(2.)).mt_1();
 
-        if is_dir {
-            if let Some(stats) = folder_hover_stats(&path) {
-                let count = |n: usize| {
-                    if n == 0 {
-                        "--".to_string()
-                    } else {
-                        n.to_string()
-                    }
-                };
-                if let Some(created) = stats.created {
-                    rows = rows.child(div().text_color(muted).child(
-                        rust_i18n::t!("hover_created", date = format_date(created)).to_string(),
-                    ));
-                }
-                rows = rows
-                    .child(
-                        div().text_color(muted).child(
-                            rust_i18n::t!("hover_subfolders", count = count(stats.subfolders))
-                                .to_string(),
-                        ),
-                    )
-                    .child(div().text_color(muted).child(
-                        rust_i18n::t!("hover_subfiles", count = count(stats.subfiles)).to_string(),
-                    ))
-                    .child(div().text_color(muted).child(
-                        rust_i18n::t!("hover_size", size = format_size(stats.size)).to_string(),
-                    ));
-            }
-        } else {
-            let created = std::fs::metadata(&path).ok().and_then(|m| m.created().ok());
-            if let Some(created) = created {
-                rows = rows.child(div().text_color(muted).child(
-                    rust_i18n::t!("hover_created", date = format_date(created)).to_string(),
-                ));
-            }
+        if !is_dir {
             if let Some(modified) = modified {
                 rows = rows.child(div().text_color(muted).child(
                     rust_i18n::t!("inspector_modified", date = format_date(modified)).to_string(),

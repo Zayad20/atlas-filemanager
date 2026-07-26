@@ -12,6 +12,7 @@ use crate::ui::drag_hover::{
     DragHoverCommand, DragHoverDropCommand, DragHoverId, DragHoverKind, DragHoverTarget,
 };
 use crate::ui::icons::AtlasIcon;
+use crate::ui::selection_checkbox;
 use crate::ui::views::details::{
     hsla_key_bits, DetailsColors, DetailsRowLayout, CELL_PAD, DETAILS_ROW_H, ROW_ICON_SIZE,
     ROW_PAD_X, ROW_TEXT_Y_NUDGE,
@@ -21,11 +22,12 @@ use atlas_model::file_entry::FileKind;
 use atlas_model::pane::TabId;
 use gpui::{
     point, px, size, App as GpuiApp, Bounds, ContentMask, Corners, DispatchPhase, Element,
-    ElementId, Font, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, Pixels, Refineable, SharedString, Style, StyleRefinement,
-    Styled, TextAlign, TextRun, WeakEntity, Window,
+    ElementId, Font, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
+    IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Refineable,
+    SharedString, Style, StyleRefinement, Styled, TextAlign, TextRun, WeakEntity, Window,
 };
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Toggle lives in `details::USE_DETAILS_BODY_ELEMENT`.
 pub(crate) struct DetailsBodyElement {
@@ -49,6 +51,9 @@ pub(crate) struct DetailsBodyElement {
 pub(crate) struct DetailsBodyPrepaint {
     rows: Vec<DetailsRowSlot>,
     layout: DetailsRowLayout,
+    show_checkboxes: bool,
+    /// Lets window-level listeners participate in GPUI's occlusion hit-testing.
+    hitbox: Hitbox,
 }
 
 impl DetailsBodyElement {
@@ -155,11 +160,16 @@ impl Element for DetailsBodyElement {
         let colors = self.colors;
         let bounds_w = f32::from(bounds.size.width);
         let visible_rows = end_idx.saturating_sub(start_idx);
+        // This element registers window-level listeners in paint. Give them a
+        // hitbox so popovers/modals using `.occlude()` suppress underlying rows.
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
 
         let Some(app_entity) = self.app.upgrade() else {
             return DetailsBodyPrepaint {
                 rows: Vec::new(),
                 layout,
+                show_checkboxes: false,
+                hitbox,
             };
         };
 
@@ -181,7 +191,7 @@ impl Element for DetailsBodyElement {
 
         // Summed across all panes → details.element.ring_ms in frame_summary.
         let _ring_perf = crate::perf::span("details.element.ring");
-        let rows = app_entity.update(cx, |app, _| {
+        let (rows, show_checkboxes) = app_entity.update(cx, |app, _| {
             app.details_hit.insert(pane_id, hit_model.clone());
             if app.drag_hover_maybe_active() {
                 let targets = app
@@ -238,7 +248,7 @@ impl Element for DetailsBodyElement {
 
             let builds: Vec<RowBuild> = {
                 let Some(tab_state) = app.state.tab_states.get(&pane_id) else {
-                    return Vec::new();
+                    return (Vec::new(), false);
                 };
                 let mut builds = Vec::with_capacity(visible_rows);
                 for i in start_idx..end_idx {
@@ -334,6 +344,11 @@ impl Element for DetailsBodyElement {
                 }
                 builds
             };
+            let show_checkboxes = app
+                .state
+                .tab_states
+                .get(&pane_id)
+                .is_some_and(|tab_state| tab_state.selection.selected.len() > 1);
 
             let cols = layout.columns.clone();
             let ring = app.details_row_rings.entry(pane_id).or_default();
@@ -353,6 +368,9 @@ impl Element for DetailsBodyElement {
                 let shape_key = b.shape_key;
                 let entry_idx = b.entry_idx;
                 let row_i = b.row;
+                let selected_at = (b.selected
+                    && !ring.get(row_i).is_some_and(|previous| previous.selected))
+                .then(Instant::now);
 
                 ring.sync_row(row_i, shape_key, || {
                     let name_run = TextRun {
@@ -393,6 +411,7 @@ impl Element for DetailsBodyElement {
                         entry_idx,
                         shape_key,
                         selected: b.selected,
+                        selected_at,
                         hovered: b.hovered,
                         flashing: b.flashing,
                         odd: b.odd,
@@ -408,12 +427,17 @@ impl Element for DetailsBodyElement {
                 );
             }
 
-            ring.collect_rows(start_idx, end_idx)
+            (ring.collect_rows(start_idx, end_idx), show_checkboxes)
         });
 
         crate::perf::count_by("details.element.rows", rows.len() as u64);
 
-        DetailsBodyPrepaint { rows, layout }
+        DetailsBodyPrepaint {
+            rows,
+            layout,
+            show_checkboxes,
+            hitbox,
+        }
     }
 
     fn paint(
@@ -474,7 +498,20 @@ impl Element for DetailsBodyElement {
 
                 let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
 
-                if let Some(tex) = &row.icon_tex {
+                if row.selected && prepaint.show_checkboxes {
+                    // Windows-like selection affordance: the file-type glyph yields
+                    // to a bright checkbox that pops in, then draws its checkmark.
+                    let icon_center_x =
+                        f32::from(bounds.origin.x) + row_pad_x + row_icon_size * 0.5;
+                    let icon_center_y = f32::from(y) + row_h * 0.5;
+                    selection_checkbox::paint_animated(
+                        window,
+                        cx,
+                        point(px(icon_center_x), px(icon_center_y)),
+                        15.0 * zoom_scale,
+                        row.selected_at,
+                    );
+                } else if let Some(tex) = &row.icon_tex {
                     let _ = window.paint_image(
                         Bounds {
                             origin: point(
@@ -553,13 +590,17 @@ impl Element for DetailsBodyElement {
             // Input: same handlers as the old event canvas.
             if let Some(app_entity) = app.upgrade() {
                 let move_view = app_entity.clone();
+                let move_hitbox = prepaint.hitbox.clone();
                 window.on_mouse_event::<MouseMoveEvent>(move |ev, phase, window, cx| {
                     if phase != DispatchPhase::Bubble || ev.dragging() {
                         return;
                     }
                     let pos = ev.position;
                     move_view.update(cx, |this, cx| {
-                        let hover_entry = this.details_hover_at(pane_id, pos);
+                        let hover_entry = move_hitbox
+                            .is_hovered(window)
+                            .then(|| this.details_hover_at(pane_id, pos))
+                            .flatten();
                         if this.details_hover != hover_entry {
                             gpui_component::tooltip::Tooltip::dismiss(window, cx);
                             this.details_hover = hover_entry;
@@ -569,12 +610,15 @@ impl Element for DetailsBodyElement {
                 });
 
                 let down_view = app_entity;
+                let down_hitbox = prepaint.hitbox.clone();
                 window.on_mouse_event::<MouseDownEvent>(move |ev, phase, window, cx| {
                     if phase != DispatchPhase::Bubble {
                         return;
                     }
                     let pos = ev.position;
-                    if !down_view.read(cx).details_contains_point(pane_id, pos) {
+                    if !down_hitbox.is_hovered(window)
+                        || !down_view.read(cx).details_contains_point(pane_id, pos)
+                    {
                         return;
                     }
                     down_view.update(cx, |this, cx| {

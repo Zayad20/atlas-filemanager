@@ -7,6 +7,7 @@
 use crate::app::DetailsColumn;
 use gpui::{Pixels, ShapedLine};
 use std::sync::Arc;
+use std::time::Instant;
 
 /// One virtualized row's GPU-ready text/icons.
 #[derive(Clone)]
@@ -17,6 +18,9 @@ pub(crate) struct DetailsRowSlot {
     /// Hash of everything that forces a re-shape (text, font, colors baked in runs).
     pub shape_key: u64,
     pub selected: bool,
+    /// Starts only on an observed selection transition, never merely because a
+    /// virtual row was shaped while already selected.
+    pub selected_at: Option<Instant>,
     pub hovered: bool,
     pub flashing: bool,
     pub odd: bool,
@@ -95,6 +99,9 @@ impl DetailsRowRing {
         let ix = self.index(row);
         if let Some(s) = self.slots[ix].as_mut() {
             if s.row == row && s.shape_key == shape_key {
+                if s.selected != selected {
+                    s.selected_at = selected.then(Instant::now);
+                }
                 s.selected = selected;
                 s.hovered = hovered;
                 s.flashing = flashing;

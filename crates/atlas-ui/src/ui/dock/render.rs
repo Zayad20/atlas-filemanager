@@ -1,18 +1,20 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, relative, AnimationExt, AnyElement, Context, Entity, Focusable, MouseButton, Window,
+    div, px, relative, AnimationExt, AnyElement, Context, Entity, Focusable, MouseButton,
+    SharedString, Window,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme as _, ElementExt as _};
 
 use crate::app::{App, PaneAnimation, PaneAnimationKind};
-
+use crate::input::action::Action;
 use crate::ui::dock::drag::{tab_drag_entity, TabDrag};
 use crate::ui::glass::{backdrop_tint, glass_chip_fill, glass_fill, GlassExt};
-use crate::ui::icons::{icon, is_windows_theme, AtlasIcon};
+use crate::ui::icons::{icon, is_windows_theme, theme_icon, AtlasIcon};
 use crate::ui::pane_panel::FilePanel;
 use atlas_core::util::display::display_name;
 use atlas_model::layout_tree::{Container, LinearDir, Tile, TileId};
 use atlas_model::location::Location;
+use atlas_model::pane::PreviewPosition;
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug)]
@@ -728,10 +730,27 @@ impl App {
             child.0.hash(&mut h);
             if let Some(t) = self.tab_data_for(*child) {
                 t.location.display_path().hash(&mut h);
+                t.preview_enabled.hash(&mut h);
+                t.preview_position.hash(&mut h);
                 if let Some(p) = t.location.fs_dir() {
                     self.grid_thumbnail(&p.to_path_buf()).is_some().hash(&mut h);
                 }
             }
+            // The embedded preview is part of this cached view, so its selection
+            // and asynchronous load state must invalidate the pane skeleton.
+            if let Some(state) = self.state.tab_states.get(child) {
+                let mut selected: Vec<_> = state.selection.selected.iter().copied().collect();
+                selected.sort_unstable();
+                selected.hash(&mut h);
+            }
+            self.state.preview.paths.get(child).hash(&mut h);
+            self.state.preview.results.contains_key(child).hash(&mut h);
+            self.state
+                .preview
+                .multi
+                .get(child)
+                .map(|multi| multi.images.len())
+                .hash(&mut h);
             if let Some(started) = self.tab_closing.get(child) {
                 hash_instant(&mut h, *started);
             }
@@ -815,6 +834,57 @@ impl App {
             .unwrap_or_else(|| div().size_full().bg(panel_bg).into_any_element());
         let content = if let Some(active) = active {
             self.with_split_drop_zones(active, content, cx)
+        } else {
+            content
+        };
+        // The preview is a local split of this pane, not another dock tile. This
+        // keeps focus, tab dragging and pane lifecycle independent while the
+        // shared preview cache remains keyed by the active pane's TileId.
+        let content = if let Some(pane_id) = active {
+            let preview_enabled = self
+                .tab_data_for(pane_id)
+                .is_some_and(|tab| tab.preview_enabled);
+            if !preview_enabled {
+                content
+            } else {
+                let position = self
+                    .tab_data_for(pane_id)
+                    .map(|tab| tab.preview_position)
+                    .unwrap_or_default();
+                let preview = self.render_embedded_preview(pane_id, window, cx);
+                match position {
+                    PreviewPosition::Left => h_flex()
+                        .size_full()
+                        .min_w(px(0.))
+                        .min_h(px(0.))
+                        .child(div().w(relative(0.42)).min_w(px(220.)).child(preview))
+                        .child(div().flex_1().min_w(px(0.)).child(content))
+                        .into_any_element(),
+                    PreviewPosition::Top => v_flex()
+                        .size_full()
+                        .min_w(px(0.))
+                        .min_h(px(0.))
+                        .child(div().h(relative(0.42)).min_h(px(180.)).child(preview))
+                        .child(div().flex_1().min_h(px(0.)).child(content))
+                        .into_any_element(),
+                    PreviewPosition::Bottom => v_flex()
+                        .size_full()
+                        .min_w(px(0.))
+                        .min_h(px(0.))
+                        .child(div().flex_1().min_h(px(0.)).child(content))
+                        .child(div().h(relative(0.42)).min_h(px(180.)).child(preview))
+                        .into_any_element(),
+                    // Auto starts on the right; the flex layout is safe in narrow
+                    // panes and can later use measured bounds for adaptive flipping.
+                    PreviewPosition::Auto | PreviewPosition::Right => h_flex()
+                        .size_full()
+                        .min_w(px(0.))
+                        .min_h(px(0.))
+                        .child(div().flex_1().min_w(px(0.)).child(content))
+                        .child(div().w(relative(0.42)).min_w(px(220.)).child(preview))
+                        .into_any_element(),
+                }
+            }
         } else {
             content
         };
@@ -923,12 +993,11 @@ impl App {
         &mut self,
         children: Vec<TileId>,
         active: Option<TileId>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
-        let accent = cx.theme().accent;
         let active_theme = self.state.profiles.active().theme.as_str();
         let figma_glass = active_theme == "Atlas Figma Glass";
         let windows_glass = active_theme == "Atlas Windows Glass";
@@ -960,11 +1029,22 @@ impl App {
             border.opacity(0.22)
         };
 
-        use crate::ui::views::tabs_bar_element::{TabBarItem, TabsBarElement};
-        let mut items = Vec::with_capacity(children.len());
-        for pane_id in &children {
+        let app = cx.entity();
+        let mut strip = h_flex()
+            .h(crate::ui::rem_px(if windows_theme { 46.0 } else { 34.0 }))
+            .min_w(px(0.))
+            .items_center()
+            .gap(crate::ui::rem_px(4.))
+            .px_2()
+            .bg(tab_bar_bg)
+            .rounded_tl(px(12.0))
+            .rounded_tr(px(12.0))
+            .border_b_1()
+            .border_color(border.opacity(0.42));
+
+        for pane_id in children {
             let (label, tag_color) = self
-                .tab_data_for(*pane_id)
+                .tab_data_for(pane_id)
                 .map(|t| {
                     let tag_color = match &t.location {
                         Location::Tag(id) => Some(
@@ -985,36 +1065,217 @@ impl App {
                     (label, tag_color)
                 })
                 .unwrap_or_else(|| (rust_i18n::t!("fallback_tab_title").to_string(), None));
-            items.push(TabBarItem {
-                pane_id: *pane_id,
-                label,
-                is_active: Some(*pane_id) == active,
-                tag_rgb: tag_color,
-            });
+            let is_active = Some(pane_id) == active;
+            let activate_app = app.clone();
+            let close_app = app.clone();
+            let drag_app = app.clone();
+            let tab = h_flex()
+                .id(SharedString::from(format!("tab-chip-{}", pane_id.0)))
+                .relative()
+                .min_w(crate::ui::rem_px(if windows_theme { 118.0 } else { 56.0 }))
+                .max_w(crate::ui::rem_px(if windows_theme { 210.0 } else { 220.0 }))
+                .h(crate::ui::rem_px(if windows_theme { 38.0 } else { 26.0 }))
+                .items_center()
+                .gap(crate::ui::rem_px(if windows_theme { 8.0 } else { 6.0 }))
+                .px_3()
+                .overflow_hidden()
+                .rounded(cx.theme().radius)
+                .cursor_pointer()
+                .bg(if is_active {
+                    active_bg
+                } else {
+                    cx.theme().transparent
+                })
+                .text_color(if is_active { active_fg } else { tab_fg })
+                .hover(move |s| {
+                    if is_active {
+                        s.bg(active_bg)
+                    } else {
+                        s.bg(hover_bg)
+                    }
+                })
+                .on_drag(
+                    TabDrag {
+                        pane_id,
+                        content: self.get_or_make_file_panel(pane_id, cx).clone().into(),
+                        size: self.pane_view_bounds.get(&pane_id).map(|b| b.size),
+                    },
+                    move |drag, _pos, _window, cx| {
+                        drag_app.update(cx, |this, cx| {
+                            if this.state.dragging_pane != Some(drag.pane_id) {
+                                this.animate_pane_drag(drag.pane_id, true);
+                                this.state.dragging_pane = Some(drag.pane_id);
+                                cx.notify();
+                            }
+                        });
+                        tab_drag_entity(drag.pane_id, drag.content.clone(), drag.size, cx)
+                    },
+                )
+                .on_drop::<TabDrag>({
+                    let drop_app = app.clone();
+                    move |drag, _window, cx| {
+                        drop_app.update(cx, |this, cx| {
+                            this.move_tab_before(drag.pane_id, pane_id);
+                            cx.notify();
+                        });
+                    }
+                })
+                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                    activate_app.update(cx, |this, cx| {
+                        this.process_actions(vec![Action::FocusTab(pane_id)]);
+                        cx.notify();
+                    });
+                })
+                .when_some(tag_color, |s, color| {
+                    s.child(
+                        div()
+                            .flex_none()
+                            .size(crate::ui::rem_px(9.))
+                            .rounded_full()
+                            .bg(gpui::rgb(
+                                (u32::from(color[0]) << 16)
+                                    | (u32::from(color[1]) << 8)
+                                    | u32::from(color[2]),
+                            )),
+                    )
+                })
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .truncate()
+                        .when(!windows_theme, |s| s.text_xs())
+                        .when(windows_theme, |s| s.text_sm())
+                        .child(SharedString::from(label)),
+                )
+                .child(
+                    div()
+                        .size(crate::ui::rem_px(if windows_theme { 22.0 } else { 18.0 }))
+                        .rounded(px(5.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(muted)
+                        .hover(move |s| s.bg(border.opacity(0.5)))
+                        .child(theme_icon(
+                            AtlasIcon::X,
+                            if windows_theme { 11.0 } else { 10.0 },
+                            muted,
+                            windows_theme,
+                        ))
+                        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                            close_app.update(cx, |this, cx| {
+                                this.process_actions(vec![Action::CloseTab(pane_id)]);
+                                cx.notify();
+                            });
+                            cx.stop_propagation();
+                        }),
+                );
+            strip = strip.child(tab);
         }
-        let font = window.text_style().font();
-        let font_size = window.text_style().font_size.to_pixels(window.rem_size());
-        crate::ui::layout_region::layout_region(
-            "tabs.bar",
-            TabsBarElement::new(
-                cx.entity().downgrade(),
-                items,
-                active,
-                font,
-                font_size,
-                windows_theme,
-                tab_bar_bg,
-                active_bg,
-                hover_bg,
-                active_fg,
-                tab_fg,
-                muted,
-                border,
-                accent,
-            )
-            .w_full(),
-        )
-        .into_any_element()
+
+        if let Some(anchor) = active {
+            let toggle_app = app.clone();
+            let preview_on = self
+                .tab_data_for(anchor)
+                .is_some_and(|tab| tab.preview_enabled);
+            strip = strip.child(
+                div()
+                    .id(SharedString::from(format!(
+                        "tab-preview-toggle-{}",
+                        anchor.0
+                    )))
+                    .size(crate::ui::rem_px(if windows_theme { 32.0 } else { 24.0 }))
+                    .rounded(px(6.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .text_color(if preview_on { cx.theme().accent } else { muted })
+                    .hover(move |s| s.bg(hover_bg))
+                    .child(theme_icon(
+                        AtlasIcon::Eye,
+                        if windows_theme { 15.0 } else { 13.0 },
+                        if preview_on { cx.theme().accent } else { muted },
+                        windows_theme,
+                    ))
+                    .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                        toggle_app.update(cx, |this, cx| {
+                            if let Some(tile) = this.state.pane_tree.tiles.get_mut(anchor) {
+                                if let Tile::Pane(tab) = tile {
+                                    tab.preview_enabled = !tab.preview_enabled;
+                                }
+                            }
+                            cx.notify();
+                        });
+                    }),
+            );
+            for (suffix, icon, position) in [
+                ("left", AtlasIcon::ArrowLeft, PreviewPosition::Left),
+                ("right", AtlasIcon::ArrowRight, PreviewPosition::Right),
+                ("top", AtlasIcon::ArrowUp, PreviewPosition::Top),
+                ("bottom", AtlasIcon::ArrowDown, PreviewPosition::Bottom),
+            ] {
+                let position_app = app.clone();
+                strip = strip.child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "tab-preview-{suffix}-{}",
+                            anchor.0
+                        )))
+                        .size(crate::ui::rem_px(if windows_theme { 26.0 } else { 21.0 }))
+                        .rounded(px(5.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .text_color(muted)
+                        .hover(move |s| s.bg(hover_bg))
+                        .child(theme_icon(
+                            icon,
+                            if windows_theme { 13.0 } else { 11.0 },
+                            muted,
+                            windows_theme,
+                        ))
+                        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                            position_app.update(cx, |this, cx| {
+                                if let Some(tile) = this.state.pane_tree.tiles.get_mut(anchor) {
+                                    if let Tile::Pane(tab) = tile {
+                                        tab.preview_enabled = true;
+                                        tab.preview_position = position;
+                                    }
+                                }
+                                cx.notify();
+                            });
+                        }),
+                );
+            }
+            let new_app = app;
+            strip = strip.child(
+                div()
+                    .id(SharedString::from(format!("tab-new-{}", anchor.0)))
+                    .size(crate::ui::rem_px(if windows_theme { 32.0 } else { 24.0 }))
+                    .rounded(px(6.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover_bg))
+                    .child(theme_icon(
+                        AtlasIcon::Plus,
+                        if windows_theme { 15.0 } else { 13.0 },
+                        muted,
+                        windows_theme,
+                    ))
+                    .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                        new_app.update(cx, |this, cx| {
+                            this.process_actions(vec![Action::NewTab(anchor)]);
+                            cx.notify();
+                        });
+                    }),
+            );
+        }
+        strip.into_any_element()
     }
 
     fn with_split_drop_zones(

@@ -35,7 +35,9 @@ impl DriveInfo {
 /// Cross-platform via `sysinfo`: on Windows these are drive roots like `C:\`, on
 /// macOS `/` plus `/Volumes/*`, on Linux the real mounted filesystems.
 pub fn list_drives() -> Vec<DriveInfo> {
-    let cache_arc = DRIVE_CACHE.get_or_init(|| Arc::new(Mutex::new(None))).clone();
+    let cache_arc = DRIVE_CACHE
+        .get_or_init(|| Arc::new(Mutex::new(None)))
+        .clone();
     let mut cache = cache_arc.lock().unwrap();
 
     if let Some((last_update, drives, is_updating)) = &mut *cache {

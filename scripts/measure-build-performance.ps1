@@ -38,7 +38,7 @@ if ($Configuration -eq "nightly-cranelift") {
     }
     $cargoPrefix += @(
         "-Z", "codegen-backend",
-        "--config", 'profile.dev.codegen-backend=\"cranelift\"'
+        "--config", "profile.dev.codegen-backend='cranelift'"
     )
 }
 

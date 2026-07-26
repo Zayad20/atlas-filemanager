@@ -6,6 +6,7 @@ use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
 use crate::ui::root::{ctrl_scroll, pane_bounds_recorder, rect_recorder};
+use crate::ui::selection_checkbox::SelectionCheckbox;
 use crate::ui::views::virtual_grid::AnimatedVirtualGrid;
 use atlas_model::file_entry::{FileEntry, FileKind};
 use atlas_model::pane::TabId;
@@ -57,9 +58,7 @@ impl App {
         };
         let font_size = window.text_style().font_size.to_pixels(window.rem_size());
         let row_font = window.text_style().font();
-        let crumb_strip = self.render_crumb_strip(
-            pane_id, &view, fg, muted, border,
-        );
+        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border);
         // `thumb` stays in rem units (same meaning as before the zoom refactor) —
         // it flows into `render_cell`/`FileIcon::element`, which resolve it via
         // `rem_px()`. The virtualization math below runs against real measured
@@ -212,10 +211,12 @@ impl App {
                             && !crate::ui::views::rename::suppress_row_chrome(
                                 app, pane_id, entry_idx,
                             );
+                        let show_checkbox = ts.selection.selected.len() > 1;
                         let cell = render_cell(GridCellProps {
                             entry,
                             entry_idx,
                             selected,
+                            show_checkbox,
                             pane_id,
                             view: &list_view,
                             thumb,
@@ -260,7 +261,11 @@ impl App {
         .on_prepaint(move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {
             crate::perf::count("prepaint.grid_pane");
             let new_w = f32::from(bounds.size.width);
-            let should_update = prepaint_view.read(cx).state.tab_states.get(&pane_id)
+            let should_update = prepaint_view
+                .read(cx)
+                .state
+                .tab_states
+                .get(&pane_id)
                 .map(|ts| (ts.last_pane_width - new_w).abs() > 0.5)
                 .unwrap_or(false);
 
@@ -457,6 +462,7 @@ struct GridCellProps<'a> {
     entry: &'a FileEntry,
     entry_idx: usize,
     selected: bool,
+    show_checkbox: bool,
     pane_id: TabId,
     view: &'a Entity<App>,
     thumb: f32,
@@ -482,6 +488,7 @@ fn render_cell(props: GridCellProps) -> AnyElement {
         entry,
         entry_idx,
         selected,
+        show_checkbox,
         pane_id,
         view,
         thumb,
@@ -509,6 +516,7 @@ fn render_cell(props: GridCellProps) -> AnyElement {
         .p_1()
         .gap_1()
         .items_center()
+        .relative()
         .rounded_md()
         .when(dimmed, |s| s.opacity(0.45))
         .cursor_pointer()
@@ -518,6 +526,18 @@ fn render_cell(props: GridCellProps) -> AnyElement {
         .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
         .when(!selected && rename_input.is_none() && !is_animating, |s| {
             s.hover(|h| h.bg(hover))
+        })
+        .when(selected && show_checkbox, |s| {
+            s.child(
+                div()
+                    .absolute()
+                    .top(px(3.))
+                    .left(px(3.))
+                    .child(SelectionCheckbox::new(
+                        SharedString::from(format!("grid-selection-{pane_id:?}-{entry_idx}")),
+                        16.0,
+                    )),
+            )
         })
         .child({
             let area = div()

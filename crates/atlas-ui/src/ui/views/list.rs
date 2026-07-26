@@ -6,12 +6,11 @@ use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
 use crate::ui::root::{ctrl_scroll, pane_bounds_recorder, rect_recorder, zone_recorder};
+use crate::ui::selection_checkbox::SelectionCheckbox;
 use atlas_model::file_entry::{FileEntry, FileKind};
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
-use gpui::{
-    div, px, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window,
-};
+use gpui::{div, px, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window};
 use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt};
 
 impl App {
@@ -45,9 +44,7 @@ impl App {
         };
         let font_size = window.text_style().font_size.to_pixels(window.rem_size());
         let row_font = window.text_style().font();
-        let crumb_strip = self.render_crumb_strip(
-            pane_id, &view, fg, muted, border,
-        );
+        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border);
         let count = self
             .state
             .tab_states
@@ -106,14 +103,11 @@ impl App {
                     f32::from(window.viewport_size().height)
                 }
             };
-            let cell_h_px = f32::from(window.line_height()).max(16.0 * zoom_scale) + 4.0 * zoom_scale;
+            let cell_h_px =
+                f32::from(window.line_height()).max(16.0 * zoom_scale) + 4.0 * zoom_scale;
             let pitch = cell_h_px;
             let rows = count.div_ceil(cols);
-            let content_h = if rows == 0 {
-                0.0
-            } else {
-                rows as f32 * pitch
-            };
+            let content_h = if rows == 0 { 0.0 } else { rows as f32 * pitch };
             let max_scroll = (content_h - viewport_h).max(0.0);
             if scroll_y > max_scroll {
                 let offset = base_scroll.offset();
@@ -150,7 +144,7 @@ impl App {
 
             let list_view = view.clone();
             let scroll_view = view.clone();
-            
+
             let animate_list_reflow = !self.state.settings.disable_animations
                 && !self.suppress_window_resize_animations()
                 && self.dock_split_animations.is_empty()
@@ -218,11 +212,13 @@ impl App {
                                     && !crate::ui::views::rename::suppress_row_chrome(
                                         app, pane_id, entry_idx,
                                     );
-                                
+                                let show_checkbox = ts.selection.selected.len() > 1;
+
                                 let cell = render_cell_compact(ListCellProps {
                                     entry,
                                     entry_idx,
                                     selected,
+                                    show_checkbox,
                                     pane_id,
                                     view: &list_view,
                                     accent,
@@ -239,7 +235,7 @@ impl App {
                                 });
                                 cell
                             },
-                        ))
+                        )),
                 )
                 .into_any_element()
         };
@@ -262,7 +258,11 @@ impl App {
             move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {
                 crate::perf::count("prepaint.list_pane");
                 let new_w = f32::from(bounds.size.width);
-                let should_update = v.read(cx).state.tab_states.get(&pane_id)
+                let should_update = v
+                    .read(cx)
+                    .state
+                    .tab_states
+                    .get(&pane_id)
                     .map(|ts| (ts.last_pane_width - new_w).abs() > 0.5)
                     .unwrap_or(false);
 
@@ -311,6 +311,7 @@ struct ListCellProps<'a> {
     entry: &'a FileEntry,
     entry_idx: usize,
     selected: bool,
+    show_checkbox: bool,
     pane_id: TabId,
     view: &'a Entity<App>,
     accent: Hsla,
@@ -331,6 +332,7 @@ fn render_cell_compact(props: ListCellProps) -> AnyElement {
         entry,
         entry_idx,
         selected,
+        show_checkbox,
         pane_id,
         view,
         accent,
@@ -365,12 +367,19 @@ fn render_cell_compact(props: ListCellProps) -> AnyElement {
         .when(!selected && rename_input.is_none(), |s| {
             s.hover(|h| h.bg(hover))
         })
-        .child(
+        .child(if selected && show_checkbox {
+            SelectionCheckbox::new(
+                SharedString::from(format!("list-selection-{pane_id:?}-{entry_idx}")),
+                15.0 * f32::from(window.rem_size()) / crate::ui::BASE_PX,
+            )
+            .into_any_element()
+        } else {
             div()
                 .w(crate::ui::rem_px(16.))
                 .flex_none()
-                .child(file_icon.element(14.0, accent)),
-        )
+                .child(file_icon.element(14.0, accent))
+                .into_any_element()
+        })
         .child(match &rename_input {
             Some(input) => {
                 let line_h = window.line_height();

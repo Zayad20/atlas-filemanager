@@ -28,7 +28,28 @@ powershell -NoProfile -File scripts/run-dev-toolchain.ps1 `
 
 # Fully optimized production build.
 cargo rel
+
+# Equivalent explicit release script: stable LLVM + rust-lld.
+powershell -NoProfile -File scripts/build-release.ps1
+
+# Build and immediately launch the stable release for manual testing.
+powershell -NoProfile -File scripts/build-release.ps1 -Run
+
+# Optional nightly LLVM release, isolated from target/release.
+powershell -NoProfile -File scripts/build-release.ps1 -Nightly
+
+# Build and launch the nightly LLVM release.
+powershell -NoProfile -File scripts/build-release.ps1 -Nightly -Run
+
+# Optional lean release without archive/provider features.
+powershell -NoProfile -File scripts/build-release.ps1 -Lean
 ```
+
+PowerShell script parameters use a space, not `=`: write
+`-Backend cranelift -Mode devfast`, not `-Backend="cranelift"`.
+
+`build-release.ps1` always selects LLVM; omit `-Nightly` for the supported
+stable release. Cranelift intentionally has no release mode.
 
 `cargo run`, `devfast`, `devfull`, and `devperf` share `target/debug`, although
 Cargo may retain multiple feature variants there. Nightly LLVM and Cranelift

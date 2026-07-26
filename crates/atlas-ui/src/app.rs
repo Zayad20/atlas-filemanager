@@ -201,8 +201,10 @@ pub struct App {
     // window-space rect of each *visible* item, rebuilt every frame via on_prepaint;
     // the active drag intersects its rectangle against them to drive the selection.
     pub(crate) rubber: Option<RubberDrag>,
-    pub(crate) row_rects: std::cell::RefCell<HashMap<TileId, Vec<(usize, gpui::Bounds<gpui::Pixels>)>>>,
-    pub(crate) miller_row_rects: std::cell::RefCell<HashMap<(TileId, usize), Vec<(usize, gpui::Bounds<gpui::Pixels>)>>>,
+    pub(crate) row_rects:
+        std::cell::RefCell<HashMap<TileId, Vec<(usize, gpui::Bounds<gpui::Pixels>)>>>,
+    pub(crate) miller_row_rects:
+        std::cell::RefCell<HashMap<(TileId, usize), Vec<(usize, gpui::Bounds<gpui::Pixels>)>>>,
     pub(crate) details_hit: HashMap<TileId, DetailsHitModel>,
     /// Per-pane circular row slot buffer for Details (shape on miss only).
     pub(crate) details_row_rings: HashMap<TileId, crate::ui::views::details_ring::DetailsRowRing>,
@@ -844,6 +846,11 @@ pub struct RubberDrag {
     /// True once the cursor has moved at least 4 px from origin. Prevents a plain
     /// click from drawing a marquee or clearing the selection prematurely.
     pub(crate) started: bool,
+    /// Rubber-band scrolling is deliberately stricter than drag-and-drop: the
+    /// pointer must move toward an edge after the marquee has started.
+    pub(crate) edge_intent: Option<crate::ui::edge_autoscroll::EdgeDirection>,
+    pub(crate) edge_intent_origin_y: Option<gpui::Pixels>,
+    pub(crate) last_scroll_frame: Option<std::time::Instant>,
 }
 
 #[derive(Clone, Debug)]
@@ -1203,14 +1210,16 @@ impl App {
             .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
         {
             crate::perf::count("dnd.pending_zone_push");
-            self.pending_pane_zones.borrow_mut().push(crate::dnd::DropZone {
-                x: f32::from(bounds.origin.x),
-                y: f32::from(bounds.origin.y),
-                w: f32::from(bounds.size.width),
-                h: f32::from(bounds.size.height),
-                dest,
-                pane_id: pane_id.0,
-            });
+            self.pending_pane_zones
+                .borrow_mut()
+                .push(crate::dnd::DropZone {
+                    x: f32::from(bounds.origin.x),
+                    y: f32::from(bounds.origin.y),
+                    w: f32::from(bounds.size.width),
+                    h: f32::from(bounds.size.height),
+                    dest,
+                    pane_id: pane_id.0,
+                });
         }
     }
 

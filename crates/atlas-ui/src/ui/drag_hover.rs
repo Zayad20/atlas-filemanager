@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::app::App;
 use crate::input::action::Action;
+use crate::ui::edge_autoscroll;
 use atlas_model::layout_tree::TileId;
 use atlas_model::location::Location;
 use atlas_model::tag_cache::TagId;
@@ -20,9 +21,6 @@ use gpui_component::ActiveTheme;
 
 pub(crate) const NAV_HOVER_DELAY: Duration = Duration::from_millis(350);
 pub(crate) const FOLDER_HOVER_DELAY: Duration = Duration::from_millis(650);
-const EDGE_SCROLL_ZONE: f32 = 44.0;
-const EDGE_SCROLL_MIN_MS: u64 = 38;
-const EDGE_SCROLL_MAX_MS: u64 = 105;
 const REPEAT_NAV_GUARD: Duration = Duration::from_millis(450);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -76,7 +74,7 @@ pub(crate) struct DragHoverState {
     entered_at: Option<Instant>,
     last_fire: Option<(DragHoverId, Instant)>,
     fired_id: Option<DragHoverId>,
-    next_scroll_at: Option<Instant>,
+    last_scroll_frame: Option<Instant>,
     pub(crate) blink_id: Option<DragHoverId>,
     pub(crate) blink_started_at: Option<Instant>,
     pub(crate) blink_bounds: Option<gpui::Bounds<gpui::Pixels>>,
@@ -112,7 +110,7 @@ impl DragHoverState {
         self.entered_at = None;
         self.last_fire = None;
         self.fired_id = None;
-        self.next_scroll_at = None;
+        self.last_scroll_frame = None;
         self.blink_id = None;
         self.blink_started_at = None;
         self.blink_bounds = None;
@@ -269,8 +267,12 @@ impl App {
             .iter()
             .rev()
             .find(|target| {
-                if !contains(target.bounds, pos) { return false; }
-                if in_dropzone { return false; }
+                if !contains(target.bounds, pos) {
+                    return false;
+                }
+                if in_dropzone {
+                    return false;
+                }
                 true
             })
             .cloned();
@@ -585,17 +587,14 @@ impl App {
         self.dropzone_drag_paths.clear();
     }
 
-    /// Auto-scroll a pane (by row) or the sidebar (by pixel) when the drag cursor
-    /// sits within `EDGE_SCROLL_ZONE` of a top/bottom edge. Returns `true` when it
-    /// actually scrolled this frame so the caller repaints.
+    /// DnD uses proximity-only edge activation. The shared core integrates the
+    /// velocity by elapsed time so a stationary cursor keeps scrolling smoothly.
     fn tick_edge_scroll(&mut self, pos: gpui::Point<gpui::Pixels>, now: Instant) -> bool {
-        if self
+        let elapsed = self
             .drag_hover
-            .next_scroll_at
-            .is_some_and(|next| now < next)
-        {
-            return false;
-        }
+            .last_scroll_frame
+            .replace(now)
+            .map_or(1.0 / 60.0, |last| now.duration_since(last).as_secs_f32());
         // Panes first (row-based). The sidebar (pixel-based) is the fallback so a
         // pane that overlaps the sidebar bounds still wins.
         if let Some((&pane, bounds)) = self
@@ -603,36 +602,14 @@ impl App {
             .iter()
             .find(|(_, bounds)| contains(**bounds, pos))
         {
-            return self.tick_pane_edge_scroll(pane, *bounds, pos, now);
+            return self.tick_pane_edge_scroll(pane, *bounds, pos, elapsed);
         }
         if let Some((bounds, handle)) = self.sidebar_scroll_region.clone() {
             if contains(bounds, pos) {
-                return self.tick_pixel_edge_scroll(&handle, bounds, pos, now);
+                return self.tick_pixel_edge_scroll(&handle, bounds, pos, elapsed);
             }
         }
         false
-    }
-
-    fn edge_at(pos_y: f32, top: f32, bottom: f32) -> Option<(bool, f32)> {
-        if pos_y < top + EDGE_SCROLL_ZONE {
-            Some((
-                true,
-                ((top + EDGE_SCROLL_ZONE - pos_y) / EDGE_SCROLL_ZONE).clamp(0.0, 1.0),
-            ))
-        } else if pos_y > bottom - EDGE_SCROLL_ZONE {
-            Some((
-                false,
-                ((pos_y - (bottom - EDGE_SCROLL_ZONE)) / EDGE_SCROLL_ZONE).clamp(0.0, 1.0),
-            ))
-        } else {
-            None
-        }
-    }
-
-    fn throttle_next_scroll(&mut self, now: Instant, strength: f32) {
-        let ms = (EDGE_SCROLL_MAX_MS as f32
-            - (EDGE_SCROLL_MAX_MS - EDGE_SCROLL_MIN_MS) as f32 * strength) as u64;
-        self.drag_hover.next_scroll_at = Some(now + Duration::from_millis(ms.max(1)));
     }
 
     /// Edge-scroll a pane. All views (grid/list/details) drive a `uniform_list`
@@ -644,13 +621,13 @@ impl App {
         pane: TileId,
         bounds: gpui::Bounds<gpui::Pixels>,
         pos: gpui::Point<gpui::Pixels>,
-        now: Instant,
+        elapsed: f32,
     ) -> bool {
         let Some(handle) = self.scroll_handles.get(&pane) else {
             return false;
         };
         let base = handle.0.borrow().base_handle.clone();
-        if self.tick_pixel_edge_scroll(&base, bounds, pos, now) {
+        if self.tick_pixel_edge_scroll(&base, bounds, pos, elapsed) {
             // Separate PaneSignal entity: the canvas repaints App, not the pane.
             self.dirty_panes.insert(pane);
             true
@@ -666,30 +643,12 @@ impl App {
         handle: &gpui::ScrollHandle,
         bounds: gpui::Bounds<gpui::Pixels>,
         pos: gpui::Point<gpui::Pixels>,
-        now: Instant,
+        elapsed: f32,
     ) -> bool {
-        let Some((up, strength)) = Self::edge_at(
-            f32::from(pos.y),
-            f32::from(bounds.top()),
-            f32::from(bounds.bottom()),
-        ) else {
+        let Some(activation) = edge_autoscroll::activation_at(bounds, pos) else {
             return false;
         };
-        let step = 18.0 + 42.0 * strength; // logical px per tick, scaled by closeness
-        let offset = handle.offset();
-        let max = f32::from(handle.max_offset().y); // positive magnitude; valid y is [-max, 0]
-        let cur = f32::from(offset.y); // <= 0
-        let next = if up {
-            (cur + step).min(0.0)
-        } else {
-            (cur - step).max(-max)
-        };
-        if (next - cur).abs() < 0.5 {
-            return false;
-        }
-        handle.set_offset(gpui::point(offset.x, gpui::px(next)));
-        self.throttle_next_scroll(now, strength);
-        true
+        edge_autoscroll::tick_handle(handle, activation, elapsed)
     }
 
     fn execute_drag_hover_command(&mut self, command: DragHoverCommand) {

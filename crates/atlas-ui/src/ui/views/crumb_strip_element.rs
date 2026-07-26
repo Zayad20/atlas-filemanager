@@ -290,11 +290,15 @@ impl Element for CrumbStripElement {
                         id: crate::ui::drag_hover::DragHoverId::Folder(pane, path.clone()),
                         bounds: seg_bounds,
                         kind: crate::ui::drag_hover::DragHoverKind::Folder,
-                        command: crate::ui::drag_hover::DragHoverCommand::Process(crate::input::action::Action::NavigateLocation {
-                            tab: pane,
-                            location: seg.location.clone(),
-                        }),
-                        drop_command: Some(crate::ui::drag_hover::DragHoverDropCommand::TransferTo(path.clone())),
+                        command: crate::ui::drag_hover::DragHoverCommand::Process(
+                            crate::input::action::Action::NavigateLocation {
+                                tab: pane,
+                                location: seg.location.clone(),
+                            },
+                        ),
+                        drop_command: Some(
+                            crate::ui::drag_hover::DragHoverDropCommand::TransferTo(path.clone()),
+                        ),
                     });
                 }
             }

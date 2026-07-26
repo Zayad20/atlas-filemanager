@@ -163,7 +163,14 @@ impl App {
         if !self.preview_visible_for_focused() {
             return;
         }
-        let request = self.state.active_preview_request();
+        self.sync_preview_for(tab);
+    }
+
+    /// Synchronize one pane's preview through the central cache. Unlike the
+    /// legacy inspector path this does not depend on global focus, allowing all
+    /// visible dock splits to keep their own automatic preview current.
+    pub(crate) fn sync_preview_for(&mut self, tab: TileId) {
+        let request = self.state.preview_request_for(tab);
         let Some(request) = request else {
             self.state.clear_preview(tab);
             return;
@@ -198,6 +205,22 @@ impl App {
                 self.load_multi_preview_gpui(tab, key, paths);
             }
         }
+    }
+
+    /// Render the existing inspector content inside a dock pane. The renderer
+    /// is still shared with the global inspector; temporarily selecting the
+    /// owner only scopes its state reads and asynchronous preview request.
+    pub(crate) fn render_embedded_preview(
+        &mut self,
+        tab: TileId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.sync_preview_for(tab);
+        let focused = std::mem::replace(&mut self.state.focused_tile, tab);
+        let element = self.render_inspector_with_layout(window, cx, true);
+        self.state.focused_tile = focused;
+        element
     }
 
     /// Is the preview panel visible for the focused tab? True when the global
@@ -438,6 +461,17 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.render_inspector_with_layout(window, cx, false)
+    }
+
+    /// Shared inspector renderer. Embedded previews must fill their parent rather
+    /// than retaining the global inspector's fixed window-relative width.
+    fn render_inspector_with_layout(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        embedded: bool,
+    ) -> AnyElement {
         // Trigger / advance the debounced preview load for the current selection.
         self.sync_active_preview_gpui();
         self.sync_selection_tags();
@@ -453,7 +487,9 @@ impl App {
             .get(&self.state.focused_tile)
             .is_some_and(|v| v.expanded);
         let viewport = window.viewport_size();
-        let width = if expanded {
+        let width = if embedded {
+            0.0
+        } else if expanded {
             let max_width = (f32::from(viewport.width) - 32.0).max(260.0);
             self.state
                 .settings
@@ -467,7 +503,11 @@ impl App {
                 .max(180.0)
                 .min((f32::from(viewport.width) - 96.0).max(180.0))
         };
-        let box_w = (width - 24.0).max(80.0);
+        let box_w = if embedded {
+            240.0
+        } else {
+            (width - 24.0).max(80.0)
+        };
         let available_h = (f32::from(viewport.height) - 190.0).max(360.0);
         let box_h = if expanded {
             (f32::from(viewport.height) - 120.0).max(520.0)
@@ -495,7 +535,8 @@ impl App {
             )
         };
         let mut col = v_flex()
-            .w(px(width))
+            .when(embedded, |s| s.w_full().min_w(px(0.)).flex_1())
+            .when(!embedded, |s| s.w(px(width)))
             .h_full()
             .text_color(fg)
             .bg(panel_bg)

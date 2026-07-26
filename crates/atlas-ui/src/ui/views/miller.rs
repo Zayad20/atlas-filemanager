@@ -9,6 +9,7 @@ use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
 use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::root::{miller_column_bounds_recorder, miller_rect_recorder, zone_recorder};
+use crate::ui::selection_checkbox::SelectionCheckbox;
 use atlas_core::util::display::display_name;
 use atlas_model::file_entry::{FileEntry, FileKind};
 use atlas_model::pane::TabId;
@@ -72,9 +73,7 @@ impl App {
         };
         let font_size = window.text_style().font_size.to_pixels(window.rem_size());
         let row_font = window.text_style().font();
-        let crumb_strip = self.render_crumb_strip(
-            pane_id, &view, fg, muted, border,
-        );
+        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border);
 
         // Snapshot each column's rows up-front; Miller dirs are browsed one level at a
         // time, so a column is rarely huge — a scrollable v_flex per column is enough.
@@ -145,13 +144,18 @@ impl App {
                                         .filter_map(|i| {
                                             let entry = col.entries.get(i)?;
                                             let selected = col.selection.selected.contains(&i);
-                                            Some((i, entry.clone(), selected))
+                                            Some((
+                                                i,
+                                                entry.clone(),
+                                                selected,
+                                                col.selection.selected.len() > 1,
+                                            ))
                                         })
                                         .collect::<Vec<_>>()
                                 };
                                 rows_data
                                     .into_iter()
-                                    .map(|(i, entry, selected)| {
+                                    .map(|(i, entry, selected, show_checkbox)| {
                                         let file_ref = crate::ui::file_icons::FileIconRef {
                                             path: entry.path.clone(),
                                             kind: entry.kind.clone(),
@@ -176,6 +180,7 @@ impl App {
                                             column: ci,
                                             idx: i,
                                             selected,
+                                            show_checkbox,
                                             pane_id,
                                             view: &list_view,
                                             accent,
@@ -351,6 +356,7 @@ struct MillerRowProps<'a> {
     column: usize,
     idx: usize,
     selected: bool,
+    show_checkbox: bool,
     pane_id: TabId,
     view: &'a Entity<App>,
     accent: Hsla,
@@ -371,6 +377,7 @@ fn render_miller_row(props: MillerRowProps) -> AnyElement {
         column,
         idx,
         selected,
+        show_checkbox,
         pane_id,
         view,
         accent,
@@ -418,12 +425,19 @@ fn render_miller_row(props: MillerRowProps) -> AnyElement {
         .when(!selected && rename_input.is_none(), |s| {
             s.hover(|h| h.bg(hover))
         })
-        .child(
+        .child(if selected && show_checkbox {
+            SelectionCheckbox::new(
+                SharedString::from(format!("miller-selection-{pane_id:?}-{column}-{idx}")),
+                15.0,
+            )
+            .into_any_element()
+        } else {
             div()
                 .w(crate::ui::rem_px(16.))
                 .flex_none()
-                .child(file_icon.element(14.0, accent)),
-        )
+                .child(file_icon.element(14.0, accent))
+                .into_any_element()
+        })
         .child(match &rename_input {
             Some(input) => {
                 let line_h = window.line_height();

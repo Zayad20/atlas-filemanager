@@ -968,9 +968,16 @@ fn nav_button(props: NavButtonProps) -> impl IntoElement {
         other => DragHoverCommand::Process(other),
     };
     div()
-        .id(SharedString::from(format!("{}-{}", props.id, props.pane_id.0)))
+        .id(SharedString::from(format!(
+            "{}-{}",
+            props.id, props.pane_id.0
+        )))
         .flex_none()
-        .size(crate::ui::rem_px(if props.windows_theme { 34.0 } else { 26.0 }))
+        .size(crate::ui::rem_px(if props.windows_theme {
+            34.0
+        } else {
+            26.0
+        }))
         .rounded(px(if props.windows_theme { 8.0 } else { 7.0 }))
         .flex()
         .items_center()
@@ -1224,7 +1231,9 @@ fn breadcrumb_segment(props: BreadcrumbSegmentProps) -> gpui::Stateful<gpui::Div
     let hover_bg = layer_color(props.layer_base, 0.04, 0.42);
     let hover_id = match &props.location {
         Location::Directory(path) => DragHoverId::Folder(props.tile, path.clone()),
-        Location::Archive { archive, inner } => DragHoverId::Folder(props.tile, archive.join(inner)),
+        Location::Archive { archive, inner } => {
+            DragHoverId::Folder(props.tile, archive.join(inner))
+        }
         _ => DragHoverId::Chrome("breadcrumb", props.tile),
     };
     let command = DragHoverCommand::Process(Action::NavigateLocation {
@@ -1235,9 +1244,21 @@ fn breadcrumb_segment(props: BreadcrumbSegmentProps) -> gpui::Stateful<gpui::Div
         .id(props.id.clone())
         .flex_none()
         .relative()
-        .h(crate::ui::rem_px(if props.windows_theme { 32.0 } else { 26.0 }))
-        .max_w(crate::ui::rem_px(if props.windows_theme { 260.0 } else { 220.0 }))
-        .px(crate::ui::rem_px(if props.windows_theme { 10.0 } else { 8.0 }))
+        .h(crate::ui::rem_px(if props.windows_theme {
+            32.0
+        } else {
+            26.0
+        }))
+        .max_w(crate::ui::rem_px(if props.windows_theme {
+            260.0
+        } else {
+            220.0
+        }))
+        .px(crate::ui::rem_px(if props.windows_theme {
+            10.0
+        } else {
+            8.0
+        }))
         .rounded(px(if props.windows_theme { 7.0 } else { 6.0 }))
         .flex()
         .items_center()

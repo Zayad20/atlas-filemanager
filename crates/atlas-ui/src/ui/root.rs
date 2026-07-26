@@ -75,7 +75,12 @@ pub(crate) fn rect_recorder(
     let view = view.clone();
     move |bounds, _window, cx| {
         crate::perf::count("prepaint.row_rect");
-        view.read(cx).row_rects.borrow_mut().entry(pane).or_default().push((idx, bounds));
+        view.read(cx)
+            .row_rects
+            .borrow_mut()
+            .entry(pane)
+            .or_default()
+            .push((idx, bounds));
     }
 }
 
@@ -88,7 +93,8 @@ pub(crate) fn miller_rect_recorder(
     let view = view.clone();
     move |bounds, _window, cx| {
         crate::perf::count("prepaint.miller_row_rect");
-        view.read(cx).miller_row_rects
+        view.read(cx)
+            .miller_row_rects
             .borrow_mut()
             .entry((pane, column))
             .or_default()
@@ -103,7 +109,12 @@ pub(crate) fn miller_column_bounds_recorder(
 ) -> impl Fn(gpui::Bounds<gpui::Pixels>, &mut Window, &mut gpui::App) + 'static {
     let view = view.clone();
     move |bounds, _window, cx| {
-        let should_update = view.read(cx).miller_column_bounds.get(&(pane, column)).copied() != Some(bounds);
+        let should_update = view
+            .read(cx)
+            .miller_column_bounds
+            .get(&(pane, column))
+            .copied()
+            != Some(bounds);
         if should_update {
             view.update(cx, |this, _| {
                 this.miller_column_bounds.insert((pane, column), bounds);
@@ -489,7 +500,9 @@ impl Render for App {
         });
 
         // Phase5: inspector panel (right of body) + overlay layers (above root).
-        let preview_visible = self.preview_visible_for_focused();
+        // Per-tab previews now live inside their owning dock pane. This outer
+        // inspector remains the explicit workspace-level inspector only.
+        let preview_visible = self.state.settings.show_inspector;
         let preview_closing = self.preview_panel_closing.is_some_and(|started| {
             started.elapsed() < std::time::Duration::from_millis(crate::ui::motion::PANEL_MS)
         });
