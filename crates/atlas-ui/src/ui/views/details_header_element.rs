@@ -497,22 +497,24 @@ impl Element for DetailsHeaderElement {
                 };
                 match hit {
                     HeaderHit::ResizeName => {
-                        down_view.update(cx, |this, _| {
+                        let start_width = layout_dn.name_right;
+                        down_view.update(cx, move |this, _| {
                             this.col_resize = Some(ColResizeState {
                                 col: "name",
                                 pane: pane_id,
                                 start_x: f32::from(pos.x),
-                                start_width: this.col_widths.name,
+                                start_width,
                             });
                         });
                     }
                     HeaderHit::ResizeMeta(column) => {
-                        down_view.update(cx, |this, _| {
-                            let start_width = match column {
-                                DetailsColumn::Size => this.col_widths.size,
-                                DetailsColumn::Modified => this.col_widths.modified,
-                                DetailsColumn::Type => this.col_widths.type_w,
-                            };
+                        let start_width = layout_dn
+                            .columns
+                            .iter()
+                            .find(|col| col.column == column)
+                            .map(|col| col.w)
+                            .unwrap_or(0.0);
+                        down_view.update(cx, move |this, _| {
                             this.col_resize = Some(ColResizeState {
                                 col: column.key(),
                                 pane: pane_id,
@@ -577,7 +579,7 @@ impl Element for DetailsHeaderElement {
                             let local_x = f32::from(ev.position.x - bounds.origin.x);
                             let zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
                             move_view.update(cx, |this, cx| {
-                                this.reorder_details_live(column, local_x, zoom);
+                                this.reorder_details_live(pane_id, column, local_x, zoom);
                                 this.notify_pane(pane_id, cx);
                             });
                         }
@@ -586,7 +588,7 @@ impl Element for DetailsHeaderElement {
                     let local_x = f32::from(ev.position.x - bounds.origin.x);
                     let zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
                     move_view.update(cx, |this, cx| {
-                        this.reorder_details_live(column, local_x, zoom);
+                        this.reorder_details_live(pane_id, column, local_x, zoom);
                         this.notify_pane(pane_id, cx);
                     });
                 }

@@ -147,7 +147,7 @@ function Write-Summary {
     $frames = @()
     if (Test-Path $LogPath) {
         Get-Content $LogPath -Encoding utf8 -ErrorAction SilentlyContinue | ForEach-Object {
-            if ($_ -match '\[atlas-perf \+\s*([\d.]+)ms\] frame_summary frame=(\d+) gap_ms=([\d.]+)') {
+            if ($_ -match '\[atlas-perf \+\s*([\d.]+)ms\] frame_summary frame=(\d+)(?: sampled_at=\d+)? gap_ms=([\d.]+)') {
                 $t = [double]$Matches[1]
                 $g = [double]$Matches[3]
                 $hit = if ($_ -match 'details\.ring\.hit=(\d+)') { [int]$Matches[1] } else { 0 }

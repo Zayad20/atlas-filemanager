@@ -154,6 +154,10 @@ pub struct App {
     pub(crate) pane_tabs_fp: HashMap<TileId, u64>,
     pub(crate) pane_tabs_bounds: HashMap<TileId, gpui::Bounds<gpui::Pixels>>,
     pub(crate) sidebar_panel: Option<Entity<crate::ui::sidebar::SidebarPanel>>,
+    /// Inspector body hosted in its own retained entity. Preview decoding and
+    /// pane animations update App frequently, but the inspector only observes
+    /// changes to its focused-preview fingerprint.
+    pub(crate) inspector_host: Option<Entity<crate::ui::inspector::InspectorHost>>,
     /// The dock tree hosted in its own view (see `ui::dock_host`). Split/close/drag
     /// animations call `request_animation_frame`, which notifies the *current* view;
     /// hosting the dock here keeps that per-frame notify off `App`, so animations no
@@ -466,14 +470,17 @@ pub(crate) struct DockSplitAnimation {
     pub(crate) to: Vec<f32>,
     pub(crate) started: Instant,
     pub(crate) closing: bool,
+    /// Splitter immediately adjacent to the closing slot that should collapse
+    /// with it. Keeping the other adjacent splitter alive avoids a final gap
+    /// snap when the pane is removed from the tree.
+    pub(crate) closing_ix: Option<usize>,
 }
 
 impl DockSplitAnimation {
-    // El spring del seam asienta visualmente a ~160ms (perf.log: share=0.01 en
-    // elapsed_ms=160). Con 260ms el pane cerrado quedaba colgado ~150ms como
-    // astilla de 0.01 share antes del desmontaje (PANE_CLOSE_FINALIZE es alias
-    // de esta constante) — el "segundo movimiento fuera de tiempo" al cerrar.
-    pub(crate) const DURATION: Duration = Duration::from_millis(150);
+    // Keep the pane geometry and its teardown in one calm motion. The previous
+    // 150ms spring left a visible second jump when the 0.01-share slot was
+    // finally removed, especially in nested split trees.
+    pub(crate) const DURATION: Duration = Duration::from_millis(220);
 
     pub(crate) fn new(to: Vec<f32>, inserted_ix: usize) -> Self {
         if to.is_empty() {
@@ -482,6 +489,7 @@ impl DockSplitAnimation {
                 to,
                 started: Instant::now(),
                 closing: false,
+                closing_ix: None,
             };
         }
         let mut from = to.clone();
@@ -509,6 +517,7 @@ impl DockSplitAnimation {
             to,
             started: Instant::now(),
             closing: false,
+            closing_ix: None,
         }
     }
 
@@ -516,7 +525,7 @@ impl DockSplitAnimation {
         normalize_split_shares(&mut from);
         let mut to = from.clone();
         if closing_ix < to.len() {
-            let end = 0.01;
+            let end = 0.0;
             to[closing_ix] = end;
             let survivor_sum = to
                 .iter()
@@ -537,12 +546,13 @@ impl DockSplitAnimation {
                 }
             }
         }
-        normalize_split_shares(&mut to);
+        normalize_split_shares_allow_zero(&mut to);
         Self {
             from,
             to,
             started: Instant::now(),
             closing: true,
+            closing_ix: Some(closing_ix),
         }
     }
 
@@ -560,7 +570,11 @@ impl DockSplitAnimation {
             .zip(&self.to)
             .map(|(from, to)| from + (to - from) * eased)
             .collect::<Vec<_>>();
-        normalize_split_shares(&mut shares);
+        if self.closing {
+            normalize_split_shares_allow_zero(&mut shares);
+        } else {
+            normalize_split_shares(&mut shares);
+        }
         shares
     }
 
@@ -568,7 +582,10 @@ impl DockSplitAnimation {
     /// Keeping this in one place prevents the pane from fading out before its slot
     /// has finished collapsing.
     pub(crate) fn closing_progress(t: f32) -> f32 {
-        split_spring(t.clamp(0.0, 1.0) * Self::DURATION.as_secs_f32()).clamp(0.0, 1.0)
+        let t = t.clamp(0.0, 1.0);
+        // Smoothstep gives the close a soft start and a soft landing without
+        // the late overshoot that made survivors rush into the freed space.
+        t * t * (3.0 - 2.0 * t)
     }
 
     pub(crate) fn done(&self) -> bool {
@@ -594,6 +611,33 @@ pub(crate) fn normalize_split_shares(shares: &mut [f32]) {
     let scale = max / sum;
     for share in shares {
         *share = (*share * scale).clamp(0.01, max);
+    }
+}
+
+/// Normalize split weights while preserving intentional zero-width slots used
+/// during pane close-out. Regular layout recovery still uses
+/// [`normalize_split_shares`], which replaces zeroes with sane defaults.
+pub(crate) fn normalize_split_shares_allow_zero(shares: &mut [f32]) {
+    if shares.is_empty() {
+        return;
+    }
+    for share in shares.iter_mut() {
+        if !share.is_finite() || *share < 0.0 {
+            *share = 0.0;
+        }
+    }
+    let sum = shares
+        .iter()
+        .copied()
+        .filter(|share| *share > 0.0)
+        .sum::<f32>();
+    if sum <= f32::EPSILON {
+        shares.fill(1.0);
+        return;
+    }
+    let scale = shares.len() as f32 / sum;
+    for share in shares {
+        *share = (*share * scale).max(0.0);
     }
 }
 
@@ -635,9 +679,9 @@ mod tests {
     fn split_close_distributes_space_across_all_survivors() {
         let anim = DockSplitAnimation::closing(vec![1.0, 1.0, 1.0], 2);
 
-        assert!((anim.to[0] - 1.495).abs() < 0.001);
-        assert!((anim.to[1] - 1.495).abs() < 0.001);
-        assert!((anim.to[2] - 0.01).abs() < 0.001);
+        assert!((anim.to[0] - 1.5).abs() < 0.001);
+        assert!((anim.to[1] - 1.5).abs() < 0.001);
+        assert_eq!(anim.to[2], 0.0);
     }
 
     #[test]
@@ -648,12 +692,12 @@ mod tests {
     }
 }
 
-/// Widths of the fixed-width columns in the Details view (Name is flex_1, not stored).
+/// User widths of the Details columns. The renderer may shrink these transiently
+/// in a narrow pane, but never writes that responsive projection back to prefs.
 /// Serialized into ProfilePrefs via `DetailsColumns: ProfileScoped`.
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ColWidths {
-    /// Name column width (icon + text). Resizable like the rest; Explorer-style
-    /// left-anchored layout, so this is a real fixed width, not flex.
+    /// Name column width (icon + text), in real pixels.
     #[serde(default = "default_name_width")]
     pub(crate) name: f32,
     pub(crate) size: f32,

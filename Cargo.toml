@@ -128,6 +128,16 @@ codegen-units = 1
 strip = true
 panic = "abort"
 
+# Iterative performance build: keeps release optimization and abort semantics,
+# but trades final-binary optimization for much faster atlas-ui recompiles.
+# It lives in target/release-perf, so it never contaminates the definitive
+# target/release artifact.
+[profile.release-perf]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+
 # Vendored gpui-component fork with Atlas tab styling patches. Keep every
 # gpui-component crate on the same source to avoid duplicate GPUI app types.
 [patch."https://github.com/longbridge/gpui-component"]

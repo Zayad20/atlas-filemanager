@@ -244,6 +244,13 @@ impl Render for App {
             self.window_resize_suppress_until =
                 Some(std::time::Instant::now() + std::time::Duration::from_millis(180));
             self.sidebar_width_animation = None;
+            // The retained inspector body computes image/text geometry from
+            // `Window::viewport_size()`, which is not part of AppState. A
+            // window resize is therefore an explicit invalidation even when
+            // the focused preview data itself is unchanged.
+            if let Some(host) = &self.inspector_host {
+                host.update(cx, |_, cx| cx.notify());
+            }
         }
         self.last_viewport_size = Some(viewport_size);
         let suppress_resize_animations = self.suppress_window_resize_animations();
@@ -500,9 +507,7 @@ impl Render for App {
         });
 
         // Phase5: inspector panel (right of body) + overlay layers (above root).
-        // Per-tab previews now live inside their owning dock pane. This outer
-        // inspector remains the explicit workspace-level inspector only.
-        let preview_visible = self.state.settings.show_inspector;
+        let preview_visible = self.preview_visible_for_focused();
         let preview_closing = self.preview_panel_closing.is_some_and(|started| {
             started.elapsed() < std::time::Duration::from_millis(crate::ui::motion::PANEL_MS)
         });
@@ -571,7 +576,11 @@ impl Render for App {
                     .w(px(inspector_width))
                     .flex_shrink_0()
                     .overflow_hidden()
-                    .child(self.render_inspector(window, cx))
+                    // Keep preview content in a retained host. The App root
+                    // still owns the panel shell/resize animation, but a pane
+                    // split or unrelated App notification no longer rebuilds
+                    // all preview rows and controls.
+                    .child(self.ensure_inspector_host(cx).into_any_element())
                     .children(resize_handle);
                 let panel: gpui::AnyElement = if self.state.settings.disable_animations {
                     panel.into_any_element()

@@ -31,14 +31,255 @@ use atlas_model::tab::TabState;
 use gpui::prelude::*;
 use gpui::SharedString;
 use gpui::{
-    div, img, px, AnyElement, ClickEvent, Context, Hsla, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, RenderImage, ScrollDelta, ScrollWheelEvent, Window,
+    div, img, px, AnyElement, ClickEvent, Context, Entity, Hsla, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, RenderImage, ScrollDelta, ScrollWheelEvent, WeakEntity, Window,
 };
 use gpui_component::input::InputEvent;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{h_flex, v_flex, ActiveTheme, Sizable as _};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// Retained host for the preview body. The root still owns the panel shell and
+/// resize/close animation, while this entity only re-renders when the focused
+/// preview's visual fingerprint changes.
+pub(crate) struct InspectorHost {
+    app: WeakEntity<App>,
+    fingerprint: u64,
+    is_rendering: bool,
+}
+
+impl InspectorHost {
+    pub(crate) fn new(app: Entity<App>, cx: &mut Context<Self>) -> Self {
+        cx.observe(&app, |this: &mut Self, app, cx| {
+            if this.is_rendering {
+                return;
+            }
+            let next = preview_fingerprint(app.read(cx));
+            if this.fingerprint != next {
+                this.fingerprint = next;
+                crate::perf::count("inspector.invalidate.changed");
+                cx.notify();
+            } else {
+                crate::perf::count("inspector.invalidate.skipped");
+            }
+        })
+        .detach();
+        Self {
+            app: app.downgrade(),
+            fingerprint: 0,
+            is_rendering: false,
+        }
+    }
+}
+
+impl Render for InspectorHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.is_rendering = true;
+        let el = match self.app.upgrade() {
+            Some(app) => app.update(cx, |app, cx| {
+                crate::perf::count("render.inspector_body");
+                app.render_inspector(window, cx)
+            }),
+            None => div().into_any_element(),
+        };
+        self.is_rendering = false;
+        el
+    }
+}
+
+/// The inspector only depends on the focused tab's selection/preview result,
+/// display knobs, and its image/text interaction state. Hashing metadata and
+/// lengths instead of RGBA/text contents keeps the observer cheap while still
+/// invalidating on each meaningful result transition.
+fn preview_fingerprint(app: &App) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let tab = app.state.focused_tile;
+    tab.hash(&mut hasher);
+    app.state.settings.show_inspector.hash(&mut hasher);
+    app.state
+        .settings
+        .inspector_width
+        .to_bits()
+        .hash(&mut hasher);
+    app.preview_visible_for_focused().hash(&mut hasher);
+
+    if let Some(tab_data) = app.state.active_tab_data() {
+        tab_data.preview_enabled.hash(&mut hasher);
+    }
+    if let Some(tab_state) = app.state.tab_states.get(&tab) {
+        tab_state.selection.selected.len().hash(&mut hasher);
+        tab_state.selection.keyboard_cursor.hash(&mut hasher);
+    }
+
+    if let Some(path) = app.state.preview.paths.get(&tab) {
+        1u8.hash(&mut hasher);
+        path.hash(&mut hasher);
+    } else {
+        0u8.hash(&mut hasher);
+    }
+
+    hash_preview_result(app.state.preview.results.get(&tab), &mut hasher);
+
+    if let Some(multi) = app.state.preview.multi.get(&tab) {
+        1u8.hash(&mut hasher);
+        multi.key.fingerprint.hash(&mut hasher);
+        multi.key.selected_count.hash(&mut hasher);
+        multi.images.len().hash(&mut hasher);
+        for (path, image) in &multi.images {
+            path.hash(&mut hasher);
+            image.width.hash(&mut hasher);
+            image.height.hash(&mut hasher);
+            image.rgba.len().hash(&mut hasher);
+        }
+    } else {
+        0u8.hash(&mut hasher);
+    }
+
+    if let Some(view) = app.preview_view.get(&tab) {
+        view.zoom.to_bits().hash(&mut hasher);
+        view.pan_x.to_bits().hash(&mut hasher);
+        view.pan_y.to_bits().hash(&mut hasher);
+        view.expanded.hash(&mut hasher);
+    }
+
+    hasher.finish()
+}
+
+fn hash_preview_result(
+    result: Option<&PreviewResult>,
+    hasher: &mut std::collections::hash_map::DefaultHasher,
+) {
+    match result {
+        None => 0u8.hash(hasher),
+        Some(PreviewResult::Text { lines, text }) => {
+            1u8.hash(hasher);
+            lines.len().hash(hasher);
+            text.len().hash(hasher);
+        }
+        Some(PreviewResult::Markdown {
+            blocks,
+            source,
+            base_uri,
+        }) => {
+            2u8.hash(hasher);
+            blocks.len().hash(hasher);
+            source.len().hash(hasher);
+            base_uri.hash(hasher);
+        }
+        Some(PreviewResult::Image {
+            rgba,
+            width,
+            height,
+            original_width,
+            original_height,
+            exif,
+        }) => {
+            3u8.hash(hasher);
+            rgba.len().hash(hasher);
+            width.hash(hasher);
+            height.hash(hasher);
+            original_width.hash(hasher);
+            original_height.hash(hasher);
+            exif.len().hash(hasher);
+        }
+        Some(PreviewResult::Pdf {
+            rgba,
+            width,
+            height,
+        }) => {
+            4u8.hash(hasher);
+            rgba.len().hash(hasher);
+            width.hash(hasher);
+            height.hash(hasher);
+        }
+        Some(PreviewResult::Table {
+            headers,
+            rows,
+            truncated,
+        }) => {
+            5u8.hash(hasher);
+            headers.len().hash(hasher);
+            rows.len().hash(hasher);
+            truncated.hash(hasher);
+        }
+        Some(PreviewResult::Document {
+            title,
+            blocks,
+            truncated,
+        }) => {
+            6u8.hash(hasher);
+            title.hash(hasher);
+            blocks.len().hash(hasher);
+            truncated.hash(hasher);
+        }
+        Some(PreviewResult::Presentation { slides, truncated }) => {
+            7u8.hash(hasher);
+            slides.len().hash(hasher);
+            slides
+                .iter()
+                .map(|slide| slide.body.len())
+                .sum::<usize>()
+                .hash(hasher);
+            truncated.hash(hasher);
+        }
+        Some(PreviewResult::Audio {
+            title,
+            artist,
+            album,
+            duration_secs,
+            bitrate,
+            cover,
+        }) => {
+            8u8.hash(hasher);
+            title.hash(hasher);
+            artist.hash(hasher);
+            album.hash(hasher);
+            duration_secs.hash(hasher);
+            bitrate.hash(hasher);
+            cover
+                .as_ref()
+                .map(|image| (image.width, image.height, image.rgba.len()))
+                .hash(hasher);
+        }
+        Some(PreviewResult::Dir {
+            entries,
+            total_count,
+            total_size,
+        }) => {
+            9u8.hash(hasher);
+            entries.len().hash(hasher);
+            total_count.hash(hasher);
+            total_size.hash(hasher);
+        }
+        Some(PreviewResult::Binary { size }) => {
+            10u8.hash(hasher);
+            size.hash(hasher);
+        }
+        Some(PreviewResult::Error(message)) => {
+            11u8.hash(hasher);
+            message.hash(hasher);
+        }
+    }
+}
+
+impl App {
+    /// Get-or-create the retained preview body host. The surrounding panel
+    /// remains in `root.rs` so width and exit animations continue to work.
+    pub(crate) fn ensure_inspector_host(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Entity<InspectorHost> {
+        if let Some(host) = &self.inspector_host {
+            return host.clone();
+        }
+        let app = cx.entity();
+        let host = cx.new(|cx| InspectorHost::new(app, cx));
+        self.inspector_host = Some(host.clone());
+        host
+    }
+}
 
 /// Scale `w`×`h` to fit inside `box_w`×`box_h` preserving aspect ratio. Returns the
 /// fitted display size. A zero/empty source falls back to the box size.
@@ -163,14 +404,7 @@ impl App {
         if !self.preview_visible_for_focused() {
             return;
         }
-        self.sync_preview_for(tab);
-    }
-
-    /// Synchronize one pane's preview through the central cache. Unlike the
-    /// legacy inspector path this does not depend on global focus, allowing all
-    /// visible dock splits to keep their own automatic preview current.
-    pub(crate) fn sync_preview_for(&mut self, tab: TileId) {
-        let request = self.state.preview_request_for(tab);
+        let request = self.state.active_preview_request();
         let Some(request) = request else {
             self.state.clear_preview(tab);
             return;
@@ -205,22 +439,6 @@ impl App {
                 self.load_multi_preview_gpui(tab, key, paths);
             }
         }
-    }
-
-    /// Render the existing inspector content inside a dock pane. The renderer
-    /// is still shared with the global inspector; temporarily selecting the
-    /// owner only scopes its state reads and asynchronous preview request.
-    pub(crate) fn render_embedded_preview(
-        &mut self,
-        tab: TileId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        self.sync_preview_for(tab);
-        let focused = std::mem::replace(&mut self.state.focused_tile, tab);
-        let element = self.render_inspector_with_layout(window, cx, true);
-        self.state.focused_tile = focused;
-        element
     }
 
     /// Is the preview panel visible for the focused tab? True when the global
@@ -461,17 +679,6 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.render_inspector_with_layout(window, cx, false)
-    }
-
-    /// Shared inspector renderer. Embedded previews must fill their parent rather
-    /// than retaining the global inspector's fixed window-relative width.
-    fn render_inspector_with_layout(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        embedded: bool,
-    ) -> AnyElement {
         // Trigger / advance the debounced preview load for the current selection.
         self.sync_active_preview_gpui();
         self.sync_selection_tags();
@@ -487,9 +694,7 @@ impl App {
             .get(&self.state.focused_tile)
             .is_some_and(|v| v.expanded);
         let viewport = window.viewport_size();
-        let width = if embedded {
-            0.0
-        } else if expanded {
+        let width = if expanded {
             let max_width = (f32::from(viewport.width) - 32.0).max(260.0);
             self.state
                 .settings
@@ -503,11 +708,7 @@ impl App {
                 .max(180.0)
                 .min((f32::from(viewport.width) - 96.0).max(180.0))
         };
-        let box_w = if embedded {
-            240.0
-        } else {
-            (width - 24.0).max(80.0)
-        };
+        let box_w = (width - 24.0).max(80.0);
         let available_h = (f32::from(viewport.height) - 190.0).max(360.0);
         let box_h = if expanded {
             (f32::from(viewport.height) - 120.0).max(520.0)
@@ -535,8 +736,7 @@ impl App {
             )
         };
         let mut col = v_flex()
-            .when(embedded, |s| s.w_full().min_w(px(0.)).flex_1())
-            .when(!embedded, |s| s.w(px(width)))
+            .w(px(width))
             .h_full()
             .text_color(fg)
             .bg(panel_bg)

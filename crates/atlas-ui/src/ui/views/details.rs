@@ -145,14 +145,14 @@ impl App {
             .map(|t| (t.sort_col.clone(), t.sort_dir.clone()))
             .unwrap_or_default();
 
-        let col_widths = self.col_widths;
-        let column_order = self.details_column_order;
         // Zoom-scaled once here; threaded as already-real-px through the row/header
         // geometry below so every consumption site can stay a plain `px(...)`.
         let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
+        let col_widths = self.details_widths_for_pane(pane_id, zoom_scale);
+        let column_order = self.details_column_order;
         // Single source of geometry for header AND rows → pixel-perfect alignment.
-        // Left-anchored fixed widths (Explorer-style); layout is independent of the
-        // pane width, so resize/reorder touch only the dragged pane (notify_pane).
+        // Left-anchored widths (Explorer-style); they stay fixed when there is room
+        // and shrink proportionally only until readability minimums in narrow splits.
         // While a reorder slide is running, blend from the pre-swap order so columns
         // glide; request_animation_frame here re-renders only THIS pane (scoped).
         let to_layout = details_row_layout(col_widths, &column_order, zoom_scale);
@@ -484,10 +484,14 @@ impl App {
                     }
                 };
                 if should_update {
-                    v.update(cx, |this, _cx| {
+                    v.update(cx, |this, cx| {
                         if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
                             ts.last_pane_width = new_w;
                             ts.last_pane_height = new_h;
+                            // The responsive column projection depends on this
+                            // measured width. One notification updates the next
+                            // frame; the bounds comparison prevents a loop.
+                            cx.notify();
                         }
                     });
                 }
@@ -532,12 +536,23 @@ pub(crate) fn format_entries(entries: &mut [FileEntry]) {
 }
 
 impl App {
+    fn details_widths_for_pane(&self, pane_id: TabId, zoom_scale: f32) -> crate::app::ColWidths {
+        let available_width = self
+            .state
+            .tab_states
+            .get(&pane_id)
+            .map(|state| state.last_pane_width)
+            .filter(|width| width.is_finite() && *width > 1.0);
+        fit_details_widths(self.col_widths, available_width, zoom_scale)
+    }
+
     /// Live drag-reorder: place `dragged` at the slot the cursor is over (`local_x`
     /// is header-relative). Every position is reachable, including the last (when the
     /// cursor passes every other column's centre). On a real change we snapshot the
     /// previous order so the columns *slide* to their new slots instead of snapping.
     pub(crate) fn reorder_details_live(
         &mut self,
+        pane_id: TabId,
         dragged: DetailsColumn,
         local_x: f32,
         zoom_scale: f32,
@@ -549,15 +564,11 @@ impl App {
         // Insertion index = how many of the *other* columns the cursor has passed
         // (compared against each column's centre in the current left-anchored layout).
         // Matches `details_row_layout`'s `name_w` computation.
-        let mut x = self.col_widths.name.max(ROW_NAME_MIN_W * zoom_scale);
+        let widths = self.details_widths_for_pane(pane_id, zoom_scale);
+        let mut x = widths.name.max(ROW_NAME_MIN_W * zoom_scale);
         let mut passed = 0usize;
         for column in old {
-            let w = details_column_width_raw(
-                column,
-                self.col_widths.size,
-                self.col_widths.modified,
-                self.col_widths.type_w,
-            );
+            let w = details_column_width_raw(column, widths.size, widths.modified, widths.type_w);
             if column != dragged && local_x > x + w * 0.5 {
                 passed += 1;
             }
@@ -883,6 +894,11 @@ pub(crate) const ROW_TEXT_Y_NUDGE: f32 = -1.0;
 /// sits *inside* the column instead of hugging the divider. Applied identically
 /// to the header label and the row data → they stay aligned.
 pub(crate) const CELL_PAD: f32 = 11.0;
+/// Practical minimums for responsive Details columns. Values are real pixels,
+/// like the persisted user widths.
+const DETAILS_SIZE_MIN_W: f32 = 46.0;
+const DETAILS_MODIFIED_MIN_W: f32 = 92.0;
+const DETAILS_TYPE_MIN_W: f32 = 56.0;
 
 /// Extra virtualized rows retained on either side of the current Details viewport.
 /// This is deliberately expressed in viewports, not a fixed row count, so it also
@@ -960,11 +976,82 @@ fn details_column_width_raw(
     }
 }
 
-/// Explorer-style layout: fixed-width columns anchored to the LEFT.
+/// Fit Details columns to a narrow pane without measuring rows or mutating the
+/// persisted preferences. When there is enough room, the user's exact widths are
+/// preserved. When there is not, the available shrink is distributed in proportion
+/// to each column's flexible surplus above its minimum; below the minimum total,
+/// clipping is intentional and stable.
+fn fit_details_widths(
+    widths: crate::app::ColWidths,
+    available_width: Option<f32>,
+    zoom_scale: f32,
+) -> crate::app::ColWidths {
+    let zoom_scale = if zoom_scale.is_finite() && zoom_scale > 0.0 {
+        zoom_scale
+    } else {
+        1.0
+    };
+    let mins = [
+        ROW_NAME_MIN_W * zoom_scale,
+        DETAILS_SIZE_MIN_W,
+        DETAILS_MODIFIED_MIN_W,
+        DETAILS_TYPE_MIN_W,
+    ];
+    let mut values = [
+        widths.name.max(mins[0]),
+        widths.size.max(mins[1]),
+        widths.modified.max(mins[2]),
+        widths.type_w.max(mins[3]),
+    ];
+
+    let Some(available_width) = available_width.filter(|width| width.is_finite()) else {
+        return crate::app::ColWidths {
+            name: values[0],
+            size: values[1],
+            modified: values[2],
+            type_w: values[3],
+        };
+    };
+
+    let total: f32 = values.iter().sum();
+    if available_width >= total {
+        return crate::app::ColWidths {
+            name: values[0],
+            size: values[1],
+            modified: values[2],
+            type_w: values[3],
+        };
+    }
+
+    let min_total: f32 = mins.iter().sum();
+    let target = available_width.max(min_total).min(total);
+    let shrink = total - target;
+    let flexible = [
+        (values[0] - mins[0]).max(0.0),
+        (values[1] - mins[1]).max(0.0),
+        (values[2] - mins[2]).max(0.0),
+        (values[3] - mins[3]).max(0.0),
+    ];
+    let flexible_total: f32 = flexible.iter().sum();
+    if flexible_total > f32::EPSILON {
+        for i in 0..values.len() {
+            values[i] = (values[i] - shrink * flexible[i] / flexible_total).max(mins[i]);
+        }
+    }
+
+    crate::app::ColWidths {
+        name: values[0],
+        size: values[1],
+        modified: values[2],
+        type_w: values[3],
+    }
+}
+
+/// Explorer-style layout: columns anchored to the LEFT.
 /// Name comes first (icon + text), then metadata in order, each at its own width.
 /// Resizing a column shifts the ones to its right into the trailing space — the
-/// handle follows the cursor and nothing "jumps the other way". No flex column,
-/// no collapse: when columns overrun the pane they simply clip on the right.
+/// handle follows the cursor and nothing "jumps the other way". Narrow panes use
+/// the already-computed responsive widths; only panes below the minimum total clip.
 /// `zoom_scale` scales the icon-gutter/min-width chrome constants (`ROW_NAME_X`,
 /// `ROW_NAME_MIN_W`) to real pixels before combining them with `widths` — which
 /// are already real, zoom-independent pixels (user drag-resize state, like a
@@ -1208,5 +1295,28 @@ mod tests {
             model.hit_entry_at_content_offset(point(px(30.0), px(200.0))),
             None
         );
+    }
+
+    #[test]
+    fn details_columns_shrink_to_fit_without_crossing_minimums() {
+        let raw = crate::app::ColWidths::default();
+        let fitted = fit_details_widths(raw, Some(500.0), 1.0);
+        let total = fitted.name + fitted.size + fitted.modified + fitted.type_w;
+
+        assert!((total - 500.0).abs() < 0.01);
+        assert!(fitted.name >= ROW_NAME_MIN_W);
+        assert!(fitted.size >= DETAILS_SIZE_MIN_W);
+        assert!(fitted.modified >= DETAILS_MODIFIED_MIN_W);
+        assert!(fitted.type_w >= DETAILS_TYPE_MIN_W);
+    }
+
+    #[test]
+    fn details_columns_clip_only_below_the_minimum_total() {
+        let fitted = fit_details_widths(crate::app::ColWidths::default(), Some(180.0), 1.0);
+        let total = fitted.name + fitted.size + fitted.modified + fitted.type_w;
+        let minimum_total =
+            ROW_NAME_MIN_W + DETAILS_SIZE_MIN_W + DETAILS_MODIFIED_MIN_W + DETAILS_TYPE_MIN_W;
+
+        assert!((total - minimum_total).abs() < 0.01);
     }
 }

@@ -42,6 +42,7 @@ use gpui_component::scroll::ScrollableElement;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, kbd::Kbd, v_flex, ActiveTheme, ElementExt, Selectable};
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -74,6 +75,11 @@ pub struct SidebarPanel {
     app: WeakEntity<AtlasApp>,
     focus_handle: FocusHandle,
     scroll: gpui::ScrollHandle,
+    /// App is intentionally observed broadly so state changes made by actions,
+    /// background drains, and filesystem notifications remain visible. This
+    /// fingerprint gates the expensive retained-element rebuild: split/hover
+    /// updates that do not change sidebar-visible state do not notify this view.
+    sidebar_fingerprint: u64,
 }
 
 impl SidebarPanel {
@@ -86,7 +92,17 @@ impl SidebarPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.observe(&app, |_, _, cx| cx.notify()).detach();
+        cx.observe(&app, |this: &mut Self, app, cx| {
+            let next = sidebar_fingerprint(app.read(cx));
+            if this.sidebar_fingerprint != next {
+                this.sidebar_fingerprint = next;
+                crate::perf::count("sidebar.invalidate.changed");
+                cx.notify();
+            } else {
+                crate::perf::count("sidebar.invalidate.skipped");
+            }
+        })
+        .detach();
 
         let _ = (names, active_idx, window);
 
@@ -94,8 +110,82 @@ impl SidebarPanel {
             app: app.downgrade(),
             focus_handle: cx.focus_handle(),
             scroll: gpui::ScrollHandle::new(),
+            // `new` is called while App is leased by its root render, so the
+            // initial value is filled by the first observer callback.
+            sidebar_fingerprint: 0,
         }
     }
+}
+
+/// Hash only state that can alter the sidebar's visual tree or active markers.
+///
+/// This is deliberately not a revision counter on `App`: App is also updated
+/// for pane animation, hover, preview decoding, and other state that should not
+/// invalidate the sidebar. The observer can stay broad while the render
+/// invalidation remains narrow.
+fn sidebar_fingerprint(app: &AtlasApp) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let state = &app.state;
+
+    state.settings.sidebar_collapsed.hash(&mut hasher);
+    state.settings.scroll_smoothness.to_bits().hash(&mut hasher);
+    state.profiles.active_idx.hash(&mut hasher);
+
+    for profile in &state.profiles.profiles {
+        profile.name.hash(&mut hasher);
+        profile.theme.hash(&mut hasher);
+        for bookmark in &profile.bookmarks {
+            bookmark.name.hash(&mut hasher);
+            bookmark.path.hash(&mut hasher);
+        }
+        for section in &profile.sidebar_sections {
+            section.kind.label().hash(&mut hasher);
+            section.collapsed.hash(&mut hasher);
+            section.hidden.hash(&mut hasher);
+        }
+    }
+
+    state
+        .profile_ui
+        .atlas_launcher_profiles_open
+        .hash(&mut hasher);
+    state.profile_ui.confirming_delete_profile.hash(&mut hasher);
+
+    if let Some(tab) = state.active_tab_data() {
+        tab.location.hash(&mut hasher);
+        tab.preview_enabled.hash(&mut hasher);
+    } else {
+        0u8.hash(&mut hasher);
+    }
+
+    for item in &state.sidebar_drop_zone {
+        item.path.hash(&mut hasher);
+        item.from_self.hash(&mut hasher);
+    }
+    // HashSet iteration order is not stable; sort before hashing so a
+    // selection update changes the fingerprint without causing false rebuilds.
+    let mut selected: Vec<_> = app.dropzone_selected.iter().collect();
+    selected.sort_unstable();
+    selected.len().hash(&mut hasher);
+    for path in selected {
+        path.hash(&mut hasher);
+    }
+
+    // Recent folders are capped in the renderer, so hash only the same visible
+    // suffix rather than making every historical entry invalidate the panel.
+    let recent = app.recent_folders();
+    recent.len().hash(&mut hasher);
+    for path in recent.iter().rev().take(8) {
+        path.hash(&mut hasher);
+    }
+
+    // Cloud is extension-driven rather than AppState-driven, but its presence
+    // changes whether the Network section is emitted.
+    app.ext_registry
+        .has_sidebar_section("cloud")
+        .hash(&mut hasher);
+
+    hasher.finish()
 }
 
 fn profile_menu_panel(

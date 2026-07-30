@@ -310,15 +310,9 @@ impl AppState {
     }
 
     pub fn active_preview_request(&self) -> Option<crate::preview_cache::PreviewRequest> {
-        self.preview_request_for(self.focused_tile)
-    }
-
-    /// Build a preview request for a concrete pane instead of implicitly using
-    /// the focused pane. Embedded previews use this so sibling splits can load
-    /// independently through the shared preview cache.
-    pub fn preview_request_for(&self, tab: TileId) -> Option<crate::preview_cache::PreviewRequest> {
         use crate::preview_cache::{MultiPreviewKey, PreviewRequest, MULTI_PREVIEW_LIMIT};
 
+        let tab = self.focused_tile;
         let view = match self.pane_tree.tiles.get(tab) {
             Some(Tile::Pane(p)) => p.view_mode.clone(),
             _ => return None,

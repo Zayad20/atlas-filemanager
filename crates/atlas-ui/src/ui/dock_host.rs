@@ -50,7 +50,30 @@ impl Render for DockHost {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.is_rendering = true;
         let el = match self.app.upgrade() {
-            Some(app) => app.update(cx, |app, cx| app.render_custom_dock(window, cx)),
+            Some(app) => app.update(cx, |app, cx| {
+                let dock_frame = crate::perf::next_dock_frame();
+                let panes = app.file_panel_cache.len();
+                let split_animations = app.dock_split_animations.len();
+                let closing = app.pane_closing.len();
+                let pane_animations = app.pane_animations.len();
+                let tiles = app.state.pane_tree.tiles.iter().count();
+                crate::perf::count("render.dock_host");
+                crate::perf::event(|| {
+                    format!(
+                        "dock_frame frame={dock_frame} tiles={tiles} panes={panes} \
+                         split_animations={split_animations} pane_animations={pane_animations} \
+                         closing={closing}"
+                    )
+                });
+                let _perf = crate::perf::span_detail("dock_host.render", || {
+                    format!(
+                        "frame={dock_frame} tiles={tiles} panes={panes} \
+                         split_animations={split_animations} pane_animations={pane_animations} \
+                         closing={closing}"
+                    )
+                });
+                app.render_custom_dock(window, cx)
+            }),
             None => div().into_any_element(),
         };
         self.is_rendering = false;

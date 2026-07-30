@@ -14,7 +14,6 @@ use crate::ui::pane_panel::FilePanel;
 use atlas_core::util::display::display_name;
 use atlas_model::layout_tree::{Container, LinearDir, Tile, TileId};
 use atlas_model::location::Location;
-use atlas_model::pane::PreviewPosition;
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug)]
@@ -34,6 +33,8 @@ struct FlatRect {
 struct FlatPane {
     tile: TileId,
     rect: FlatRect,
+    /// Direction in which an exiting pane should slide beneath its survivor.
+    close_axis: (f32, f32),
 }
 
 struct FlatSplitter {
@@ -49,6 +50,10 @@ fn split_child_span(share: f32, share_sum: f32, available: f32, child_count: usi
     } else {
         available / child_count.max(1) as f32
     }
+}
+
+fn closing_splitter_index(pane_ix: usize, num_splitters: usize) -> Option<usize> {
+    (num_splitters > 0).then(|| pane_ix.min(num_splitters - 1))
 }
 
 fn frozen_tabs_size(
@@ -222,12 +227,22 @@ impl App {
             w,
             h,
         };
-        if !self.collect_flat_layout(root, rect, window, cx, &mut panes, &mut splitters) {
+        if !self.collect_flat_layout(
+            root,
+            rect,
+            window,
+            cx,
+            &mut panes,
+            &mut splitters,
+            (0.0, 0.0),
+        ) {
             return None;
         }
 
         let view = cx.entity();
         let mut host = div().absolute().inset_0().overflow_hidden();
+        let mut closing_panes = Vec::new();
+        let mut live_panes = Vec::new();
 
         for pane in panes {
             let content = if pane.rect.w <= 4.0 || pane.rect.h <= 4.0 {
@@ -235,27 +250,44 @@ impl App {
             } else {
                 self.render_cached_tabs(pane.tile, window, cx)
             };
-            host = host.child(
-                div()
-                    .absolute()
-                    .left(px(pane.rect.x))
-                    .top(px(pane.rect.y))
-                    .w(px(pane.rect.w.max(0.0)))
-                    .h(px(pane.rect.h.max(0.0)))
-                    .min_w(px(0.))
-                    .min_h(px(0.))
-                    .overflow_hidden()
-                    .child(content),
-            );
+            let motion = self.split_motion_for_tile(pane.tile);
+            let is_closing = matches!(motion, Some(SplitMotion::Closing(_)));
+            let pane = div()
+                .absolute()
+                .left(px(pane.rect.x))
+                .top(px(pane.rect.y))
+                .w(px(pane.rect.w.max(0.0)))
+                .h(px(pane.rect.h.max(0.0)))
+                .min_w(px(0.))
+                .min_h(px(0.))
+                .when(!is_closing, |this| this.overflow_hidden())
+                .child(self.render_split_intro(pane.tile, content, motion, pane.close_axis));
+            if is_closing {
+                closing_panes.push(pane);
+            } else {
+                live_panes.push(pane);
+            }
+        }
+
+        // Paint the closing pane first. Live panes then cover it as the slot
+        // collapses, producing a clean "slides underneath" exit instead of a
+        // floating card that suddenly reveals the background.
+        for pane in closing_panes.into_iter().chain(live_panes) {
+            host = host.child(pane);
         }
 
         for splitter in splitters {
+            let thickness = match splitter.dir {
+                LinearDir::Horizontal => splitter.rect.w,
+                LinearDir::Vertical => splitter.rect.h,
+            };
             let splitter_el = crate::ui::dock::resize::splitter(
                 splitter.container,
                 splitter.divider,
                 splitter.dir,
                 &view,
                 cx,
+                thickness,
             );
             host = host.child(
                 div()
@@ -279,17 +311,26 @@ impl App {
         cx: &mut Context<Self>,
         panes: &mut Vec<FlatPane>,
         splitters: &mut Vec<FlatSplitter>,
+        close_axis: (f32, f32),
     ) -> bool {
         match self.state.pane_tree.tiles.get(id).cloned() {
             Some(Tile::Pane(_)) => {
-                panes.push(FlatPane { tile: id, rect });
+                panes.push(FlatPane {
+                    tile: id,
+                    rect,
+                    close_axis,
+                });
                 true
             }
             Some(Tile::Container(Container::Tabs(tabs))) => {
                 if tabs.children.is_empty() {
                     false
                 } else {
-                    panes.push(FlatPane { tile: id, rect });
+                    panes.push(FlatPane {
+                        tile: id,
+                        rect,
+                        close_axis,
+                    });
                     true
                 }
             }
@@ -317,7 +358,21 @@ impl App {
                         }
                     }
                 }
-                crate::app::normalize_split_shares(&mut final_shares);
+                let closing_layout = self
+                    .dock_split_animations
+                    .get(&id)
+                    .is_some_and(|animation| animation.closing)
+                    || linear.children.iter().any(|child| {
+                        matches!(
+                            self.split_motion_for_tile(*child),
+                            Some(SplitMotion::Closing(_))
+                        )
+                    });
+                if closing_layout {
+                    crate::app::normalize_split_shares_allow_zero(&mut final_shares);
+                } else {
+                    crate::app::normalize_split_shares(&mut final_shares);
+                }
                 let sum: f32 = final_shares.iter().copied().filter(|v| *v > 0.0).sum();
                 let shares = if final_shares.len() == linear.children.len() && sum > f32::EPSILON {
                     self.dock_split_shares(id, final_shares, window, cx)
@@ -331,9 +386,37 @@ impl App {
                     LinearDir::Horizontal => rect.w,
                     LinearDir::Vertical => rect.h,
                 };
-                let available = (span
-                    - (linear.children.len().saturating_sub(1) as f32 * splitter_size))
-                    .max(0.0);
+                let num_splitters = linear.children.len().saturating_sub(1);
+                let closing_ix = self
+                    .dock_split_animations
+                    .get(&id)
+                    .filter(|animation| animation.closing)
+                    .and_then(|animation| animation.closing_ix)
+                    .or_else(|| {
+                        linear.children.iter().position(|child| {
+                            matches!(
+                                self.split_motion_for_tile(*child),
+                                Some(SplitMotion::Closing(_))
+                            )
+                        })
+                    });
+                let closing_progress = self
+                    .dock_split_animations
+                    .get(&id)
+                    .filter(|animation| animation.closing)
+                    .map(|animation| {
+                        let t = animation.started.elapsed().as_secs_f32()
+                            / crate::app::DockSplitAnimation::DURATION.as_secs_f32();
+                        crate::app::DockSplitAnimation::closing_progress(t)
+                    })
+                    .unwrap_or_else(|| closing_ix.map_or(0.0, |_| 1.0));
+                let closing_splitter_ix =
+                    closing_ix.and_then(|pane_ix| closing_splitter_index(pane_ix, num_splitters));
+                let mut splitter_gaps = vec![splitter_size; num_splitters];
+                if let Some(splitter_ix) = closing_splitter_ix {
+                    splitter_gaps[splitter_ix] *= 1.0 - closing_progress;
+                }
+                let available = (span - splitter_gaps.iter().sum::<f32>()).max(0.0);
                 let mut offset = match linear.dir {
                     LinearDir::Horizontal => rect.x,
                     LinearDir::Vertical => rect.y,
@@ -342,18 +425,19 @@ impl App {
 
                 for (ix, child_id) in linear.children.iter().copied().enumerate() {
                     if ix > 0 {
+                        let gap = splitter_gaps[ix - 1];
                         let srect = match linear.dir {
                             LinearDir::Horizontal => FlatRect {
                                 x: offset,
                                 y: rect.y,
-                                w: splitter_size,
+                                w: gap,
                                 h: rect.h,
                             },
                             LinearDir::Vertical => FlatRect {
                                 x: rect.x,
                                 y: offset,
                                 w: rect.w,
-                                h: splitter_size,
+                                h: gap,
                             },
                         };
                         splitters.push(FlatSplitter {
@@ -362,10 +446,14 @@ impl App {
                             dir: linear.dir,
                             rect: srect,
                         });
-                        offset += splitter_size;
+                        offset += gap;
                     }
 
-                    let share = shares.get(ix).copied().unwrap_or(1.0).max(0.01);
+                    let share = if closing_layout {
+                        shares.get(ix).copied().unwrap_or(1.0).max(0.0)
+                    } else {
+                        shares.get(ix).copied().unwrap_or(1.0).max(0.01)
+                    };
                     let child_span =
                         split_child_span(share, share_sum, available, linear.children.len());
                     let child_rect = match linear.dir {
@@ -383,8 +471,38 @@ impl App {
                         },
                     };
                     offset += child_span;
-                    any |= self
-                        .collect_flat_layout(child_id, child_rect, window, cx, panes, splitters);
+                    let child_close_axis = if matches!(
+                        self.split_motion_for_tile(child_id),
+                        Some(SplitMotion::Closing(_))
+                    ) {
+                        match linear.dir {
+                            LinearDir::Horizontal => {
+                                if ix + 1 < linear.children.len() {
+                                    (1.0, 0.0)
+                                } else {
+                                    (-1.0, 0.0)
+                                }
+                            }
+                            LinearDir::Vertical => {
+                                if ix + 1 < linear.children.len() {
+                                    (0.0, 1.0)
+                                } else {
+                                    (0.0, -1.0)
+                                }
+                            }
+                        }
+                    } else {
+                        close_axis
+                    };
+                    any |= self.collect_flat_layout(
+                        child_id,
+                        child_rect,
+                        window,
+                        cx,
+                        panes,
+                        splitters,
+                        child_close_axis,
+                    );
                 }
                 any
             }
@@ -451,7 +569,21 @@ impl App {
                         }
                     }
                 }
-                crate::app::normalize_split_shares(&mut final_shares);
+                let closing_layout = self
+                    .dock_split_animations
+                    .get(&id)
+                    .is_some_and(|animation| animation.closing)
+                    || linear.children.iter().any(|child| {
+                        matches!(
+                            self.split_motion_for_tile(*child),
+                            Some(SplitMotion::Closing(_))
+                        )
+                    });
+                if closing_layout {
+                    crate::app::normalize_split_shares_allow_zero(&mut final_shares);
+                } else {
+                    crate::app::normalize_split_shares(&mut final_shares);
+                }
                 let sum: f32 = final_shares.iter().copied().filter(|v| *v > 0.0).sum();
                 let shares = if final_shares.len() == children.len() && sum > f32::EPSILON {
                     self.dock_split_shares(id, final_shares, window, cx)
@@ -464,30 +596,72 @@ impl App {
                 let child_count = children.len();
                 let num_splitters = child_count.saturating_sub(1);
                 let splitter_size = 5.0; // from resize.rs splitter thickness
+                let closing_ix = self
+                    .dock_split_animations
+                    .get(&id)
+                    .filter(|animation| animation.closing)
+                    .and_then(|animation| animation.closing_ix)
+                    .or_else(|| {
+                        linear.children.iter().position(|child| {
+                            matches!(
+                                self.split_motion_for_tile(*child),
+                                Some(SplitMotion::Closing(_))
+                            )
+                        })
+                    });
+                let closing_progress = self
+                    .dock_split_animations
+                    .get(&id)
+                    .filter(|animation| animation.closing)
+                    .map(|animation| {
+                        let t = animation.started.elapsed().as_secs_f32()
+                            / crate::app::DockSplitAnimation::DURATION.as_secs_f32();
+                        crate::app::DockSplitAnimation::closing_progress(t)
+                    })
+                    .unwrap_or_else(|| closing_ix.map_or(0.0, |_| 1.0));
+                let closing_splitter_ix =
+                    closing_ix.and_then(|pane_ix| closing_splitter_index(pane_ix, num_splitters));
+                let mut splitter_gaps = vec![splitter_size; num_splitters];
+                if let Some(splitter_ix) = closing_splitter_ix {
+                    splitter_gaps[splitter_ix] *= 1.0 - closing_progress;
+                }
+                let total_splitter_size = splitter_gaps.iter().sum::<f32>();
                 let mut current_offset = 0.0;
 
                 for (ix, (child_id, child, intro)) in children.into_iter().enumerate() {
-                    let share = shares[ix].max(0.01);
+                    let share = if closing_layout {
+                        shares[ix].max(0.0)
+                    } else {
+                        shares[ix].max(0.01)
+                    };
 
                     if ix > 0 {
-                        let splitter_el =
-                            crate::ui::dock::resize::splitter(id, ix - 1, linear.dir, &view, cx);
+                        let gap = splitter_gaps[ix - 1];
+                        let splitter_el = crate::ui::dock::resize::splitter(
+                            id,
+                            ix - 1,
+                            linear.dir,
+                            &view,
+                            cx,
+                            gap,
+                        );
                         if exact_span.is_some() {
                             let mut s_div = div().absolute();
                             if linear.dir == LinearDir::Horizontal {
-                                s_div = s_div.left(px(current_offset)).top_0().bottom_0();
+                                s_div =
+                                    s_div.left(px(current_offset)).top_0().bottom_0().w(px(gap));
                             } else {
-                                s_div = s_div.top(px(current_offset)).left_0().right_0();
+                                s_div = s_div.top(px(current_offset)).left_0().right_0().h(px(gap));
                             }
                             row = row.child(s_div.child(splitter_el));
-                            current_offset += splitter_size;
+                            current_offset += gap;
                         } else {
                             row = row.child(splitter_el);
                         }
                     }
 
                     let child_span = if let Some(span) = exact_span {
-                        let available = (span - (num_splitters as f32 * splitter_size)).max(0.0);
+                        let available = (span - total_splitter_size).max(0.0);
                         Some(split_child_span(share, share_sum, available, child_count))
                     } else {
                         None
@@ -523,7 +697,27 @@ impl App {
                     let content = if collapsed_closing {
                         div().size_full().into_any_element()
                     } else {
-                        self.render_split_intro(child_id, child, intro)
+                        let close_axis = if matches!(intro, Some(SplitMotion::Closing(_))) {
+                            match linear.dir {
+                                LinearDir::Horizontal => {
+                                    if ix + 1 < child_count {
+                                        (1.0, 0.0)
+                                    } else {
+                                        (-1.0, 0.0)
+                                    }
+                                }
+                                LinearDir::Vertical => {
+                                    if ix + 1 < child_count {
+                                        (0.0, 1.0)
+                                    } else {
+                                        (0.0, -1.0)
+                                    }
+                                }
+                            }
+                        } else {
+                            (0.0, 0.0)
+                        };
+                        self.render_split_intro(child_id, child, intro, close_axis)
                     };
                     row = row.child(pane_div.child(content));
                 }
@@ -573,34 +767,54 @@ impl App {
         id: TileId,
         child: AnyElement,
         motion: Option<SplitMotion>,
+        close_axis: (f32, f32),
     ) -> AnyElement {
+        let is_closing = matches!(motion, Some(SplitMotion::Closing(_)));
         let inner = div()
             .size_full()
             .min_w(px(0.))
             .min_h(px(0.))
-            .overflow_hidden()
+            .when(!is_closing, |this| this.overflow_hidden())
             .child(child);
         let Some(motion) = motion else {
             return inner.into_any_element();
         };
-        let settle_secs = crate::ui::motion::PANE_SPRING.settle().as_secs_f32();
         let key = match motion {
             SplitMotion::Opening(animation) => ("open", animation.started),
             SplitMotion::Closing(started) => ("close", started),
         };
+        let duration = match motion {
+            SplitMotion::Opening(_) => crate::ui::motion::PANE_SPRING.settle(),
+            SplitMotion::Closing(_) => crate::app::DockSplitAnimation::DURATION,
+        };
         inner
             .with_animation(
                 crate::ui::motion::keyed("dock-split-pop", id.0, key),
-                crate::ui::motion::linear_anim(crate::ui::motion::PANE_SPRING.settle()),
+                crate::ui::motion::linear_anim(duration),
                 move |this, t| {
-                    let s = crate::ui::motion::PANE_SPRING.value(t * settle_secs);
-                    let visible = match motion {
-                        SplitMotion::Opening(_) => s,
-                        SplitMotion::Closing(_) => 1.0 - s,
+                    match motion {
+                        SplitMotion::Opening(_) => {
+                            let settle_secs = crate::ui::motion::PANE_SPRING.settle().as_secs_f32();
+                            let visible = crate::ui::motion::PANE_SPRING
+                                .value(t * settle_secs)
+                                .clamp(0.0, 1.0);
+                            this.opacity((0.25 + 0.9 * visible).clamp(0.0, 1.0))
+                                .scale((0.48 + 0.52 * visible).clamp(0.48, 1.10))
+                        }
+                        SplitMotion::Closing(_) => {
+                            let visible = 1.0 - crate::app::DockSplitAnimation::closing_progress(t);
+                            // The layout slot does the horizontal collapse. Keep
+                            // the content almost rigid so it does not look like
+                            // the pane is folding in two directions at once.
+                            let slide = 10.0 * (1.0 - visible);
+                            this.opacity(visible)
+                                .scale(0.92 + 0.08 * visible)
+                                .paint_offset(gpui::point(
+                                    px(close_axis.0 * slide),
+                                    px(close_axis.1 * slide),
+                                ))
+                        }
                     }
-                    .clamp(0.0, 1.0);
-                    this.opacity((0.25 + 0.9 * visible).clamp(0.0, 1.0))
-                        .scale((0.48 + 0.52 * visible).clamp(0.48, 1.10))
                 },
             )
             .into_any_element()
@@ -678,8 +892,15 @@ impl App {
         if self.pane_tabs_fp.insert(id, fp) != Some(fp) {
             view.update(cx, |_, cx| cx.notify());
         }
+        // Opening can keep its previous rasterized size, but closing must stay
+        // layout-live so every surviving pane follows the collapsing slot.
+        let split_closing = !self.pane_closing.is_empty()
+            || self
+                .dock_split_animations
+                .values()
+                .any(|animation| animation.closing);
         let frozen_size = frozen_tabs_size(
-            !self.dock_split_animations.is_empty(),
+            !self.dock_split_animations.is_empty() && !split_closing,
             self.pane_tabs_bounds.get(&id).map(|bounds| bounds.size),
         );
         let mut style = gpui::StyleRefinement::default();
@@ -730,27 +951,10 @@ impl App {
             child.0.hash(&mut h);
             if let Some(t) = self.tab_data_for(*child) {
                 t.location.display_path().hash(&mut h);
-                t.preview_enabled.hash(&mut h);
-                t.preview_position.hash(&mut h);
                 if let Some(p) = t.location.fs_dir() {
                     self.grid_thumbnail(&p.to_path_buf()).is_some().hash(&mut h);
                 }
             }
-            // The embedded preview is part of this cached view, so its selection
-            // and asynchronous load state must invalidate the pane skeleton.
-            if let Some(state) = self.state.tab_states.get(child) {
-                let mut selected: Vec<_> = state.selection.selected.iter().copied().collect();
-                selected.sort_unstable();
-                selected.hash(&mut h);
-            }
-            self.state.preview.paths.get(child).hash(&mut h);
-            self.state.preview.results.contains_key(child).hash(&mut h);
-            self.state
-                .preview
-                .multi
-                .get(child)
-                .map(|multi| multi.images.len())
-                .hash(&mut h);
             if let Some(started) = self.tab_closing.get(child) {
                 hash_instant(&mut h, *started);
             }
@@ -834,57 +1038,6 @@ impl App {
             .unwrap_or_else(|| div().size_full().bg(panel_bg).into_any_element());
         let content = if let Some(active) = active {
             self.with_split_drop_zones(active, content, cx)
-        } else {
-            content
-        };
-        // The preview is a local split of this pane, not another dock tile. This
-        // keeps focus, tab dragging and pane lifecycle independent while the
-        // shared preview cache remains keyed by the active pane's TileId.
-        let content = if let Some(pane_id) = active {
-            let preview_enabled = self
-                .tab_data_for(pane_id)
-                .is_some_and(|tab| tab.preview_enabled);
-            if !preview_enabled {
-                content
-            } else {
-                let position = self
-                    .tab_data_for(pane_id)
-                    .map(|tab| tab.preview_position)
-                    .unwrap_or_default();
-                let preview = self.render_embedded_preview(pane_id, window, cx);
-                match position {
-                    PreviewPosition::Left => h_flex()
-                        .size_full()
-                        .min_w(px(0.))
-                        .min_h(px(0.))
-                        .child(div().w(relative(0.42)).min_w(px(220.)).child(preview))
-                        .child(div().flex_1().min_w(px(0.)).child(content))
-                        .into_any_element(),
-                    PreviewPosition::Top => v_flex()
-                        .size_full()
-                        .min_w(px(0.))
-                        .min_h(px(0.))
-                        .child(div().h(relative(0.42)).min_h(px(180.)).child(preview))
-                        .child(div().flex_1().min_h(px(0.)).child(content))
-                        .into_any_element(),
-                    PreviewPosition::Bottom => v_flex()
-                        .size_full()
-                        .min_w(px(0.))
-                        .min_h(px(0.))
-                        .child(div().flex_1().min_h(px(0.)).child(content))
-                        .child(div().h(relative(0.42)).min_h(px(180.)).child(preview))
-                        .into_any_element(),
-                    // Auto starts on the right; the flex layout is safe in narrow
-                    // panes and can later use measured bounds for adaptive flipping.
-                    PreviewPosition::Auto | PreviewPosition::Right => h_flex()
-                        .size_full()
-                        .min_w(px(0.))
-                        .min_h(px(0.))
-                        .child(div().flex_1().min_w(px(0.)).child(content))
-                        .child(div().w(relative(0.42)).min_w(px(220.)).child(preview))
-                        .into_any_element(),
-                }
-            }
         } else {
             content
         };
@@ -1030,11 +1183,13 @@ impl App {
         };
 
         let app = cx.entity();
+        let tab_min = crate::ui::rem_px(if windows_theme { 118.0 } else { 56.0 });
+        let tab_max = crate::ui::rem_px(if windows_theme { 210.0 } else { 220.0 });
+        let tab_gap = crate::ui::rem_px(4.0);
         let mut strip = h_flex()
             .h(crate::ui::rem_px(if windows_theme { 46.0 } else { 34.0 }))
             .min_w(px(0.))
             .items_center()
-            .gap(crate::ui::rem_px(4.))
             .px_2()
             .bg(tab_bar_bg)
             .rounded_tl(px(12.0))
@@ -1069,11 +1224,24 @@ impl App {
             let activate_app = app.clone();
             let close_app = app.clone();
             let drag_app = app.clone();
+            let tab_motion = (!self.state.settings.disable_animations)
+                .then(|| {
+                    self.tab_closing
+                        .get(&pane_id)
+                        .copied()
+                        .map(|started| (true, started))
+                        .or_else(|| {
+                            self.pane_animation_for(pane_id)
+                                .filter(|animation| animation.kind == PaneAnimationKind::NewTab)
+                                .map(|animation| (false, animation.started))
+                        })
+                })
+                .flatten();
             let tab = h_flex()
                 .id(SharedString::from(format!("tab-chip-{}", pane_id.0)))
                 .relative()
-                .min_w(crate::ui::rem_px(if windows_theme { 118.0 } else { 56.0 }))
-                .max_w(crate::ui::rem_px(if windows_theme { 210.0 } else { 220.0 }))
+                .min_w(tab_min)
+                .max_w(tab_max)
                 .h(crate::ui::rem_px(if windows_theme { 38.0 } else { 26.0 }))
                 .items_center()
                 .gap(crate::ui::rem_px(if windows_theme { 8.0 } else { 6.0 }))
@@ -1171,85 +1339,34 @@ impl App {
                             cx.stop_propagation();
                         }),
                 );
-            strip = strip.child(tab);
+            let slot = h_flex()
+                .min_w(tab_min)
+                .max_w(tab_max)
+                .mr(tab_gap)
+                .overflow_hidden()
+                .child(tab);
+            let slot = if let Some((closing, started)) = tab_motion {
+                let phase = if closing { "close" } else { "open" };
+                slot.with_animation(
+                    crate::ui::motion::keyed("tab-chip-motion", pane_id.0, (phase, started)),
+                    crate::ui::motion::animation(crate::ui::motion::TAB_MS),
+                    move |this, t| {
+                        let openness = if closing { 1.0 - t } else { t };
+                        this.min_w(tab_min * openness)
+                            .max_w(tab_max * openness)
+                            .mr(tab_gap * openness)
+                            .opacity((openness * 1.2).clamp(0.0, 1.0))
+                            .scale(0.88 + 0.12 * openness)
+                    },
+                )
+                .into_any_element()
+            } else {
+                slot.into_any_element()
+            };
+            strip = strip.child(slot);
         }
 
         if let Some(anchor) = active {
-            let toggle_app = app.clone();
-            let preview_on = self
-                .tab_data_for(anchor)
-                .is_some_and(|tab| tab.preview_enabled);
-            strip = strip.child(
-                div()
-                    .id(SharedString::from(format!(
-                        "tab-preview-toggle-{}",
-                        anchor.0
-                    )))
-                    .size(crate::ui::rem_px(if windows_theme { 32.0 } else { 24.0 }))
-                    .rounded(px(6.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .text_color(if preview_on { cx.theme().accent } else { muted })
-                    .hover(move |s| s.bg(hover_bg))
-                    .child(theme_icon(
-                        AtlasIcon::Eye,
-                        if windows_theme { 15.0 } else { 13.0 },
-                        if preview_on { cx.theme().accent } else { muted },
-                        windows_theme,
-                    ))
-                    .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                        toggle_app.update(cx, |this, cx| {
-                            if let Some(tile) = this.state.pane_tree.tiles.get_mut(anchor) {
-                                if let Tile::Pane(tab) = tile {
-                                    tab.preview_enabled = !tab.preview_enabled;
-                                }
-                            }
-                            cx.notify();
-                        });
-                    }),
-            );
-            for (suffix, icon, position) in [
-                ("left", AtlasIcon::ArrowLeft, PreviewPosition::Left),
-                ("right", AtlasIcon::ArrowRight, PreviewPosition::Right),
-                ("top", AtlasIcon::ArrowUp, PreviewPosition::Top),
-                ("bottom", AtlasIcon::ArrowDown, PreviewPosition::Bottom),
-            ] {
-                let position_app = app.clone();
-                strip = strip.child(
-                    div()
-                        .id(SharedString::from(format!(
-                            "tab-preview-{suffix}-{}",
-                            anchor.0
-                        )))
-                        .size(crate::ui::rem_px(if windows_theme { 26.0 } else { 21.0 }))
-                        .rounded(px(5.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .text_color(muted)
-                        .hover(move |s| s.bg(hover_bg))
-                        .child(theme_icon(
-                            icon,
-                            if windows_theme { 13.0 } else { 11.0 },
-                            muted,
-                            windows_theme,
-                        ))
-                        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                            position_app.update(cx, |this, cx| {
-                                if let Some(tile) = this.state.pane_tree.tiles.get_mut(anchor) {
-                                    if let Tile::Pane(tab) = tile {
-                                        tab.preview_enabled = true;
-                                        tab.preview_position = position;
-                                    }
-                                }
-                                cx.notify();
-                            });
-                        }),
-                );
-            }
             let new_app = app;
             strip = strip.child(
                 div()
@@ -1388,6 +1505,14 @@ mod tests {
     #[test]
     fn split_child_span_falls_back_to_even_width() {
         assert_eq!(split_child_span(1.0, 0.0, 90.0, 3), 30.0);
+    }
+
+    #[test]
+    fn collapses_the_divider_adjacent_to_the_closing_pane() {
+        assert_eq!(closing_splitter_index(0, 2), Some(0));
+        assert_eq!(closing_splitter_index(1, 2), Some(1));
+        assert_eq!(closing_splitter_index(2, 2), Some(1));
+        assert_eq!(closing_splitter_index(0, 0), None);
     }
 
     #[test]

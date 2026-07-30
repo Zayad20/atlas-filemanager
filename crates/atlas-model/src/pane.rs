@@ -7,23 +7,6 @@ use std::path::PathBuf;
 pub type PaneId = crate::layout_tree::TileId;
 pub type TabId = crate::layout_tree::TileId;
 
-/// Placement of the preview split embedded in a file pane.
-///
-/// This deliberately belongs to `TabData`: tabs in the same dock can have
-/// independent preview layouts and the choice is restored with the session.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum PreviewPosition {
-    #[default]
-    Auto,
-    Left,
-    Right,
-    Top,
-    Bottom,
-}
-
 // Kept privately for compat deserialization of sessions saved before Location migration.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
 enum TabSource {
@@ -53,8 +36,6 @@ pub struct TabData {
     pub thumbnail_size: f32,
     #[serde(default)]
     pub preview_enabled: bool,
-    #[serde(default)]
-    pub preview_position: PreviewPosition,
     #[serde(default = "default_true")]
     pub folders_first: bool,
     #[serde(default = "default_true")]
@@ -85,8 +66,6 @@ struct TabDataRaw {
     thumbnail_size: f32,
     #[serde(default)]
     preview_enabled: bool,
-    #[serde(default)]
-    preview_position: PreviewPosition,
     #[serde(default = "default_true")]
     folders_first: bool,
     #[serde(default = "default_true")]
@@ -150,7 +129,6 @@ impl From<TabDataRaw> for TabData {
             view_mode: r.view_mode,
             thumbnail_size: r.thumbnail_size,
             preview_enabled: r.preview_enabled,
-            preview_position: r.preview_position,
             folders_first: r.folders_first,
             show_files,
             show_folders,
@@ -180,7 +158,6 @@ impl TabData {
             view_mode,
             thumbnail_size,
             preview_enabled,
-            preview_position: PreviewPosition::default(),
             folders_first: true,
             show_files: true,
             show_folders: true,
@@ -202,15 +179,13 @@ mod tests {
 
     #[test]
     fn persists_view_per_tab() {
-        let mut tab = TabData::with_view(PathBuf::from("/tmp"), ViewMode::Grid, 192.0, true);
-        tab.preview_position = PreviewPosition::Bottom;
+        let tab = TabData::with_view(PathBuf::from("/tmp"), ViewMode::Grid, 192.0, true);
         let json = serde_json::to_string(&tab).unwrap();
         let restored: TabData = serde_json::from_str(&json).unwrap();
 
         assert_eq!(restored.view_mode, ViewMode::Grid);
         assert!((restored.thumbnail_size - 192.0).abs() < f32::EPSILON);
         assert!(restored.preview_enabled);
-        assert_eq!(restored.preview_position, PreviewPosition::Bottom);
     }
 
     #[test]

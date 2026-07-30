@@ -65,6 +65,7 @@ impl App {
                             from: current_shares,
                             to: target_shares,
                             closing: is_starting,
+                            closing_ix: is_starting.then_some(pos),
                         };
                         self.dock_split_animations.insert(parent_id, anim);
                     }
@@ -558,7 +559,10 @@ impl App {
     }
 
     pub(crate) fn activate_tab(&mut self, tab_id: TileId) {
-        if !self.state.tab_states.contains_key(&tab_id) {
+        if !self.state.tab_states.contains_key(&tab_id)
+            || self.tab_closing.contains_key(&tab_id)
+            || self.pane_closing.contains_key(&tab_id)
+        {
             return;
         }
         self.push_focus_history();
@@ -964,6 +968,7 @@ impl App {
             },
             to: vec![0.5, 0.5],
             closing: false,
+            closing_ix: None,
         };
         self.dock_split_animations.insert(linear, anim);
 

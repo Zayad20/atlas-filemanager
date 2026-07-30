@@ -468,6 +468,7 @@ impl App {
             pane_tabs_fp: HashMap::new(),
             pane_tabs_bounds: HashMap::new(),
             sidebar_panel: None,
+            inspector_host: None,
             dock_host: None,
             focus_history: std::collections::VecDeque::new(),
             palette_host: None,

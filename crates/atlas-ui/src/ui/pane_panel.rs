@@ -250,8 +250,16 @@ impl Render for FilePanel {
             Some(app) => {
                 let frozen_size = {
                     let app = app.read(cx);
+                    // A closing split changes the available space every frame.
+                    // Let cached content follow that live layout instead of
+                    // holding its old bounds and jumping when the close ends.
+                    let split_closing = !app.pane_closing.is_empty()
+                        || app
+                            .dock_split_animations
+                            .values()
+                            .any(|animation| animation.closing);
                     frozen_content_size(
-                        !app.dock_split_animations.is_empty(),
+                        !app.dock_split_animations.is_empty() && !split_closing,
                         app.pane_layout_bounds
                             .get(&pane_id)
                             .map(|bounds| bounds.size),

@@ -14,11 +14,13 @@ mod imp {
 
     static CONFIG: OnceLock<Config> = OnceLock::new();
     static FRAME: AtomicU64 = AtomicU64::new(0);
+    static DOCK_FRAME: AtomicU64 = AtomicU64::new(0);
     static COUNTERS: OnceLock<Mutex<HashMap<&'static str, u64>>> = OnceLock::new();
     /// Wall-time accumulators (microseconds) for the current frame.
     /// Spans always add here even when under the log threshold, so N×0.3ms panes are visible.
     static TIMINGS_US: OnceLock<Mutex<HashMap<&'static str, u64>>> = OnceLock::new();
     static LAST_FRAME: OnceLock<Mutex<Instant>> = OnceLock::new();
+    static LAST_FRAME_DETAIL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
     fn truthy(name: &str) -> bool {
         std::env::var(name)
@@ -50,6 +52,14 @@ mod imp {
 
         if config().enabled {
             FRAME.fetch_add(1, Ordering::Relaxed) + 1
+        } else {
+            0
+        }
+    }
+
+    pub(crate) fn next_dock_frame() -> u64 {
+        if config().enabled {
+            DOCK_FRAME.fetch_add(1, Ordering::Relaxed) + 1
         } else {
             0
         }
@@ -117,6 +127,19 @@ mod imp {
         if !cfg.events {
             return;
         }
+        // App::render runs before GPUI prepaint/paint, so these counters and
+        // timings describe the previous completed App frame. Keep its detail
+        // next to the accumulators instead of labeling it with current state.
+        let (summary_frame, detail_s) = {
+            let mut previous = LAST_FRAME_DETAIL
+                .get_or_init(|| Mutex::new(None))
+                .lock()
+                .unwrap();
+            match previous.replace(detail()) {
+                Some(previous) => (frame.saturating_sub(1), previous),
+                None => (frame, previous.take().expect("current frame detail")),
+            }
+        };
         let now = Instant::now();
         let gap_ms = {
             let mut last = LAST_FRAME.get_or_init(|| Mutex::new(now)).lock().unwrap();
@@ -156,9 +179,9 @@ mod imp {
             .collect::<Vec<_>>()
             .join(" ");
         eprintln!(
-            "[atlas-perf +{:>8.1}ms] frame_summary frame={frame} gap_ms={gap_ms:.1} {} {} {}",
+            "[atlas-perf +{:>8.1}ms] frame_summary frame={summary_frame} sampled_at={frame} gap_ms={gap_ms:.1} {} {} {}",
             cfg.started.elapsed().as_secs_f64() * 1000.0,
-            detail(),
+            detail_s,
             counter_s,
             timing_s
         );
@@ -235,6 +258,11 @@ pub(crate) use imp::*;
 
 #[cfg(not(any(feature = "perf-log", feature = "tracy")))]
 pub(crate) fn next_frame() -> u64 {
+    0
+}
+
+#[cfg(not(any(feature = "perf-log", feature = "tracy")))]
+pub(crate) fn next_dock_frame() -> u64 {
     0
 }
 

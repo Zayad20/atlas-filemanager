@@ -13,7 +13,9 @@ use std::time::Duration;
 // Revert to 120/150/170/220/280 after recording (git checkout this file).
 pub const MICRO_MS: u64 = 80;
 pub const PANEL_MS: u64 = 100;
-pub const TAB_MS: u64 = 70;
+// Tabs need enough time for their layout slot to collapse while neighbouring
+// tabs visibly settle into the released space. Shorter values read as a snap.
+pub const TAB_MS: u64 = 150;
 pub const PANE_MS: u64 = 90;
 pub const GLOW_MS: u64 = 90;
 

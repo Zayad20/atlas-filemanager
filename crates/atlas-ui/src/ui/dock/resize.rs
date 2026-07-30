@@ -6,28 +6,35 @@ use crate::app::{App, DockResizeState};
 use atlas_model::layout_tree::LinearDir;
 use atlas_model::layout_tree::TileId;
 
+/// Render a splitter at a caller-selected thickness. Pane close-out uses this
+/// to collapse one of the two adjacent seams together with the disappearing
+/// pane, so tree removal does not expose a transient background gap.
 pub(crate) fn splitter(
     container: TileId,
     divider: usize,
     dir: LinearDir,
     view: &Entity<App>,
     cx: &mut gpui::App,
+    thickness: f32,
 ) -> AnyElement {
     let border = cx.theme().border.opacity(0.7);
     let view = view.clone();
+    let thickness = thickness.max(0.0);
+    let line = thickness.min(1.0);
+    let margin = (thickness - line) * 0.5;
     let el = match dir {
         LinearDir::Horizontal => div()
-            .w(px(5.))
+            .w(px(thickness))
             .h_full()
             .flex_none()
             .cursor_col_resize()
-            .child(div().w(px(1.)).h_full().mx(px(2.)).bg(border)),
+            .child(div().w(px(line)).h_full().mx(px(margin)).bg(border)),
         LinearDir::Vertical => div()
-            .h(px(5.))
+            .h(px(thickness))
             .w_full()
             .flex_none()
             .cursor_row_resize()
-            .child(div().h(px(1.)).w_full().my(px(2.)).bg(border)),
+            .child(div().h(px(line)).w_full().my(px(margin)).bg(border)),
     };
     el.on_mouse_down(MouseButton::Left, move |ev, _window, cx| {
         view.update(cx, |this, _cx| {

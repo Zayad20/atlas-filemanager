@@ -35,6 +35,13 @@ powershell -NoProfile -File scripts/build-release.ps1
 # Build and immediately launch the stable release for manual testing.
 powershell -NoProfile -File scripts/build-release.ps1 -Run
 
+# Fast iterative release-like build with split/frame perf logs enabled.
+# Keeps opt-level=3 and stable LLVM, but skips LTO and uses 16 codegen units.
+powershell -NoProfile -File scripts/run-release-perf.ps1
+
+# Same perf logs using the exact definitive release profile (slower).
+powershell -NoProfile -File scripts/run-release-perf.ps1 -Exact
+
 # Optional nightly LLVM release, isolated from target/release.
 powershell -NoProfile -File scripts/build-release.ps1 -Nightly
 
@@ -50,6 +57,24 @@ PowerShell script parameters use a space, not `=`: write
 
 `build-release.ps1` always selects LLVM; omit `-Nightly` for the supported
 stable release. Cranelift intentionally has no release mode.
+
+`run-release-perf.ps1` also stays on the pinned stable LLVM toolchain. Its
+default `release-perf` profile writes to `target/release-perf`, enables
+`perf-log`, `ATLAS_PERF`, and `ATLAS_PERF_EVENTS`, and uses the persisted Cargo
+incremental cache. Pass `-ThresholdMs 0` to emit every timed span, `-NoEvents`
+to suppress Atlas event/frame summaries, or `-BuildOnly` to compile without launching.
+By default it also sets `GPUI_FRAME_LOG=0` and `RUST_LOG=info`, and saves the
+combined Cargo/Atlas/GPUI output to `perf-logs/release-perf-<timestamp>.log`.
+Use `-NoGpuiFrames` or `-NoFileLog` for quieter/terminal-only runs, or pass
+`-LogPath path\to\session.log` to choose the file.
+For A/B isolation, `-SkipSidebar`, `-SkipOverlays`, and `-SkipInspector` map to
+the corresponding `ATLAS_PERF_SKIP_*` variables and are cleared on normal runs.
+Use `-Exact` before trusting absolute runtime numbers: that selects the normal
+Thin-LTO, one-codegen-unit release profile while keeping the logs compiled in.
+The log header records the effective values, and every dock-only render emits a
+`dock_frame` event with `tiles`, `panes`, `split_animations`, `pane_animations`,
+and `closing`. `frame_summary frame=` now identifies the completed App frame;
+`sampled_at=` is the render in which that summary was observed.
 
 `cargo run`, `devfast`, `devfull`, and `devperf` share `target/debug`, although
 Cargo may retain multiple feature variants there. Nightly LLVM and Cranelift
@@ -90,6 +115,41 @@ Remove-Item -Recurse -Force target/toolchains/nightly-cranelift
 Rust's parallel frontend and Cargo's `codegen-backend` setting are unstable.
 Nightly and Cranelift must remain optional; release builds continue to use LLVM,
 Thin LTO, and `rust-lld`.
+
+## Current release-perf diagnosis
+
+Measured on 2026-07-29 with 16 logical processors:
+
+| Scenario | Total | `atlas-ui` | Interpretation |
+| --- | ---: | ---: | --- |
+| Cold `release-perf` build | 283.3 s | 54.6 s | `windows`, `image`, and `ravif` dominate the initial build |
+| Warm dependencies, only `atlas-ui` rebuilt | 45.05 s | 41.8 s | `atlas-ui` is 93% of the daily local rebuild |
+| No source changes | 1.13 s | fresh | The persistent cache is working |
+
+In the warm sample, `atlas-ui` spent 10.8 s in the frontend and 31.0 s in
+codegen. Cargo used 16 jobs and reached 17 concurrent units. Stable Rust already
+uses the machine's logical processors for Cargo jobs; nightly `-Zthreads=8`
+controls the experimental rustc frontend instead and is not required for this
+profile.
+
+The lowest-churn crate split is a new `atlas-win-shell` leaf crate containing
+the native `shell_menu`, `shell_thumb`, and OLE DnD backend. Together those
+modules are about 104 KB and can remain fresh while GPUI code changes. Keep the
+GPUI context-menu and drop-zone adapters in `atlas-ui`; communicate through
+plain request/event/data types.
+
+Do not directly extract `sidebar`, `inspector`, `chrome`, dock rendering, or the
+large action modules yet. They add inherent `impl App` blocks and access private
+`App` state, so moving them across a crate boundary would require broad public
+APIs and high churn. First convert a large area to a component with narrow state
+and callbacks, then extract that component if timings justify it. Pure motion,
+glass, surface, and icon primitives are a possible second leaf crate after
+removing any `WeakEntity<App>` dependencies.
+
+Cross-crate imports do not prevent navigation: rust-analyzer and CodeGraph
+follow definitions and call paths. Directly named public types and module docs
+usually make agent navigation easier; avoid opaque facades, unnecessary traits,
+and generic indirection at these boundaries.
 
 ## Release size
 

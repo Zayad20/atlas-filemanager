@@ -177,6 +177,7 @@ mod tests {
             row,
             entry_idx: row,
             shape_key: key,
+            selected_at: None,
             selected: false,
             hovered: false,
             flashing: false,
