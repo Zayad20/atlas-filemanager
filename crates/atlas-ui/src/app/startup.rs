@@ -482,6 +482,7 @@ impl App {
             details_row_rings: HashMap::new(),
             grid_hit: HashMap::new(),
             grid_hover: None,
+            file_surface_shapes: Default::default(),
             list_hit: HashMap::new(),
             list_hover: None,
             grid_flip_states: std::rc::Rc::new(std::cell::RefCell::new(HashMap::new())),

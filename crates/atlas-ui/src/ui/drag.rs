@@ -93,11 +93,32 @@ pub(crate) fn file_drag_handler_for_grid_content(
     pane: TabId,
 ) -> impl Fn(&DragView, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> Entity<DragView>
        + 'static {
+    file_drag_handler_for_surface_content(view, pane, false)
+}
+
+pub(crate) fn file_drag_handler_for_list_content(
+    view: Entity<App>,
+    pane: TabId,
+) -> impl Fn(&DragView, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> Entity<DragView>
+       + 'static {
+    file_drag_handler_for_surface_content(view, pane, true)
+}
+
+fn file_drag_handler_for_surface_content(
+    view: Entity<App>,
+    pane: TabId,
+    list: bool,
+) -> impl Fn(&DragView, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> Entity<DragView>
+       + 'static {
     move |_d, cursor_offset, _window, cx| {
         let item = {
             let app = view.read(&*cx);
-            app.grid_hit
-                .get(&pane)
+            let hit_model = if list {
+                app.list_hit.get(&pane)
+            } else {
+                app.grid_hit.get(&pane)
+            };
+            hit_model
                 .and_then(|model| model.hit_entry_at_content_offset(cursor_offset))
                 .and_then(|idx| {
                     app.details_row_selected(pane, idx).then(|| {
@@ -111,7 +132,10 @@ pub(crate) fn file_drag_handler_for_grid_content(
         };
 
         let Some((idx, anchor)) = item else {
-            tracing::debug!("dnd grid content drag ignored outside selected cell");
+            tracing::debug!(
+                surface = if list { "list" } else { "grid" },
+                "dnd surface content drag ignored outside selected cell"
+            );
             return empty_drag_view(cx);
         };
 

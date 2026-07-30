@@ -7,11 +7,14 @@ use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
 use crate::ui::root::{ctrl_scroll, pane_bounds_recorder, rect_recorder, zone_recorder};
 use crate::ui::selection_checkbox::SelectionCheckbox;
+use crate::ui::views::grid_surface_element::{GridSurfaceColors, GridSurfaceElement};
 use atlas_model::file_entry::{FileEntry, FileKind};
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window};
 use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt};
+
+const USE_LIST_SURFACE_ELEMENT: bool = true;
 
 impl App {
     /// Compact List view: small `icon + name` cells flowing row-major into as many
@@ -26,7 +29,7 @@ impl App {
         crate::perf::count("render.view.list");
         let view = cx.entity();
         let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
-        let (fg, accent, accent_fg, hover, muted, border, header_bg) = {
+        let (fg, accent, accent_fg, hover, muted, border, _header_bg) = {
             let t = cx.theme();
             (
                 t.foreground,
@@ -67,9 +70,7 @@ impl App {
             .map(|ts| ts.last_pane_width)
             .filter(|&w| w > 1.0)
             .unwrap_or_else(|| (f32::from(window.viewport_size().width) - 217.0).max(0.0));
-        // px_2 = 8px padding each side on the row; subtract before fitting cells.
-        let avail = (pane_w - 16.0 * zoom_scale).max(cell_stride);
-        let cols = ((avail / cell_stride).floor() as usize).max(1);
+        let cols = list_column_count(pane_w, cell_stride, zoom_scale);
         let row_count = count.div_ceil(cols);
         let _perf = crate::perf::span_detail("list.render", || {
             format!(
@@ -79,6 +80,14 @@ impl App {
         });
 
         let inner = if count == 0 {
+            self.list_hit.remove(&pane_id);
+            self.row_rects.borrow_mut().remove(&pane_id);
+            if self
+                .list_hover
+                .is_some_and(|(hover_pane, _)| hover_pane == pane_id)
+            {
+                self.list_hover = None;
+            }
             let msg = self.empty_pane_message(pane_id, rust_i18n::t!("empty_folder").into_owned());
             v_flex()
                 .size_full()
@@ -151,91 +160,231 @@ impl App {
                 && self.pane_layout_animations.is_empty()
                 && self.file_panel_cache.len() <= if cfg!(debug_assertions) { 4 } else { 6 };
 
+            let surface_colors = GridSurfaceColors {
+                fg,
+                accent,
+                accent_fg,
+                hover,
+                muted,
+            };
+            let surface = if USE_LIST_SURFACE_ELEMENT {
+                GridSurfaceElement::new(
+                    pane_id,
+                    view.downgrade(),
+                    self.state
+                        .tab_states
+                        .get(&pane_id)
+                        .map(|ts| ts.visible.clone())
+                        .unwrap_or_default(),
+                    start,
+                    end,
+                    cols,
+                    count,
+                    CELL_W * zoom_scale,
+                    cell_h_px,
+                    cell_stride,
+                    pitch,
+                    14.0 * zoom_scale,
+                    scroll_y,
+                    viewport_h,
+                    surface_colors,
+                    row_font.clone(),
+                    font_size,
+                )
+                .compact_list()
+                .absolute()
+                .inset_0()
+                .into_any_element()
+            } else {
+                crate::ui::views::virtual_grid::AnimatedVirtualGrid::new(
+                    SharedString::from(format!("anim-list-{}", pane_id.0)),
+                    count,
+                    cols,
+                    gpui::Size {
+                        width: gpui::px(CELL_W * zoom_scale),
+                        height: gpui::px(cell_h_px),
+                    },
+                    gpui::Size {
+                        width: gpui::px(6.0 * zoom_scale),
+                        height: gpui::px(0.0),
+                    },
+                    scroll_y,
+                    viewport_h,
+                    animate_list_reflow,
+                    move |idx, _is_animating, window, cx| {
+                        let app = list_view.read(cx);
+                        let Some(ts) = app.state.tab_states.get(&pane_id) else {
+                            return div().into_any_element();
+                        };
+                        let Some(&entry_idx) = ts.visible.get(idx) else {
+                            return div().into_any_element();
+                        };
+                        let Some(entry) = ts.entries.get(entry_idx) else {
+                            return div().into_any_element();
+                        };
+                        let file_icon = app.file_icon_for_entry(
+                            &entry.path,
+                            &entry.kind,
+                            entry.extension.as_deref(),
+                        );
+                        let flashing = matches!(entry.kind, FileKind::Dir)
+                            && app.drag_hover.blink_id.as_ref()
+                                == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
+                        let rename_input =
+                            crate::ui::views::rename::active_input(app, pane_id, entry_idx);
+                        let selected = ts.selection.selected.contains(&entry_idx)
+                            && !crate::ui::views::rename::suppress_row_chrome(
+                                app, pane_id, entry_idx,
+                            );
+
+                        render_cell_compact(ListCellProps {
+                            entry,
+                            entry_idx,
+                            selected,
+                            show_checkbox: ts.selection.selected.len() > 1,
+                            pane_id,
+                            view: &list_view,
+                            accent,
+                            accent_fg,
+                            hover,
+                            flashing,
+                            record_rects: true,
+                            file_icon,
+                            rename_input,
+                            dimmed: crate::ui::views::rename::dim_other_entry(
+                                app, pane_id, entry_idx,
+                            ),
+                            window,
+                        })
+                    },
+                )
+                .into_any_element()
+            };
+
+            let mut rename_overlay = None;
+            if USE_LIST_SURFACE_ELEMENT {
+                if let Some(ts) = self.state.tab_states.get(&pane_id) {
+                    for visible_pos in start..end {
+                        let Some(&entry_idx) = ts.visible.get(visible_pos) else {
+                            continue;
+                        };
+                        let Some(entry) = ts.entries.get(entry_idx) else {
+                            continue;
+                        };
+                        let Some(rename_input) =
+                            crate::ui::views::rename::active_input(self, pane_id, entry_idx)
+                        else {
+                            continue;
+                        };
+                        let selected = ts.selection.selected.contains(&entry_idx)
+                            && !crate::ui::views::rename::suppress_row_chrome(
+                                self, pane_id, entry_idx,
+                            );
+                        let file_icon = self.file_icon_for_entry(
+                            &entry.path,
+                            &entry.kind,
+                            entry.extension.as_deref(),
+                        );
+                        let cell = render_cell_compact(ListCellProps {
+                            entry,
+                            entry_idx,
+                            selected,
+                            show_checkbox: ts.selection.selected.len() > 1,
+                            pane_id,
+                            view: &view,
+                            accent,
+                            accent_fg,
+                            hover,
+                            flashing: false,
+                            record_rects: false,
+                            file_icon,
+                            rename_input: Some(rename_input),
+                            dimmed: false,
+                            window,
+                        });
+                        let col = visible_pos % cols;
+                        let row = visible_pos / cols;
+                        rename_overlay = Some(
+                            div()
+                                .absolute()
+                                .left(px(col as f32 * cell_stride))
+                                .top(px(row as f32 * pitch))
+                                .w(px(CELL_W * zoom_scale))
+                                .h(px(cell_h_px))
+                                .child(cell)
+                                .into_any_element(),
+                        );
+                        break;
+                    }
+                }
+            }
+            let drag_layer = USE_LIST_SURFACE_ELEMENT.then(|| {
+                div()
+                    .id(("list-drag-layer", pane_id.0))
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .w_full()
+                    .h(px(content_h))
+                    .opacity(0.0)
+                    .on_drag(
+                        crate::ui::drag::file_drag_value(Vec::new()),
+                        crate::ui::drag::file_drag_handler_for_list_content(view.clone(), pane_id),
+                    )
+                    .into_any_element()
+            });
+            let tooltip_data = self
+                .list_hover
+                .filter(|(hover_pane, _)| *hover_pane == pane_id)
+                .and_then(|(_, entry_idx)| {
+                    self.state
+                        .tab_states
+                        .get(&pane_id)
+                        .and_then(|ts| ts.entries.get(entry_idx))
+                        .map(|entry| {
+                            (
+                                entry.name.clone(),
+                                entry.path.clone(),
+                                matches!(entry.kind, FileKind::Dir),
+                                entry.size,
+                                entry.modified,
+                            )
+                        })
+                });
+
             div()
+                .id(("anim-list-scroll", pane_id.0))
                 .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&base_scroll)
                 .on_mouse_down(
                     MouseButton::Left,
                     crate::ui::views::on_pane_rubber_mouse_down(&view, pane_id),
                 )
+                .on_scroll_wheel(move |ev, window, cx| {
+                    ctrl_scroll(ev, pane_id, &scroll_view, window, cx)
+                })
+                .when_some(tooltip_data, |el, (name, path, is_dir, size, modified)| {
+                    el.tooltip(move |window, cx| {
+                        crate::ui::tooltips::entry_hover_tooltip(
+                            name.clone(),
+                            path.clone(),
+                            is_dir,
+                            size,
+                            modified,
+                            window,
+                            cx,
+                        )
+                    })
+                })
                 .child(
                     div()
-                        .id(("anim-list-scroll", pane_id.0))
-                        .size_full()
-                        .overflow_y_scroll()
-                        .track_scroll(&base_scroll)
-                        .on_scroll_wheel(move |ev, window, cx| {
-                            ctrl_scroll(ev, pane_id, &scroll_view, window, cx)
-                        })
-                        .child(crate::ui::views::virtual_grid::AnimatedVirtualGrid::new(
-                            SharedString::from(format!("anim-list-{}", pane_id.0)),
-                            count,
-                            cols,
-                            gpui::Size {
-                                width: gpui::px(CELL_W * zoom_scale),
-                                height: gpui::px(cell_h_px),
-                            },
-                            gpui::Size {
-                                width: gpui::px(6.0 * zoom_scale),
-                                height: gpui::px(0.0),
-                            },
-                            scroll_y,
-                            viewport_h,
-                            animate_list_reflow,
-                            move |idx, mut is_animating, window, cx| {
-                                let app = list_view.read(cx);
-                                if !app.dock_split_animations.is_empty()
-                                    || !app.pane_layout_animations.is_empty()
-                                {
-                                    is_animating = true;
-                                }
-                                let Some(ts) = app.state.tab_states.get(&pane_id) else {
-                                    return div().into_any_element();
-                                };
-                                let Some(&entry_idx) = ts.visible.get(idx) else {
-                                    return div().into_any_element();
-                                };
-                                let Some(entry) = ts.entries.get(entry_idx) else {
-                                    return div().into_any_element();
-                                };
-                                let file_icon = app.file_icon_for_entry(
-                                    &entry.path,
-                                    &entry.kind,
-                                    entry.extension.as_deref(),
-                                );
-                                let record_rects = true;
-                                let flashing = matches!(entry.kind, FileKind::Dir)
-                                    && app.drag_hover.blink_id.as_ref()
-                                        == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
-                                let rename_input =
-                                    crate::ui::views::rename::active_input(app, pane_id, entry_idx);
-                                let selected = ts.selection.selected.contains(&entry_idx)
-                                    && !crate::ui::views::rename::suppress_row_chrome(
-                                        app, pane_id, entry_idx,
-                                    );
-                                let show_checkbox = ts.selection.selected.len() > 1;
-
-                                let cell = render_cell_compact(ListCellProps {
-                                    entry,
-                                    entry_idx,
-                                    selected,
-                                    show_checkbox,
-                                    pane_id,
-                                    view: &list_view,
-                                    accent,
-                                    accent_fg,
-                                    hover,
-                                    flashing,
-                                    record_rects,
-                                    file_icon,
-                                    rename_input,
-                                    dimmed: crate::ui::views::rename::dim_other_entry(
-                                        app, pane_id, entry_idx,
-                                    ),
-                                    window,
-                                });
-                                cell
-                            },
-                        )),
+                        .w_full()
+                        .h(px(content_h))
+                        .relative()
+                        .child(surface)
+                        .when_some(rename_overlay, |el, overlay| el.child(overlay))
+                        .when_some(drag_layer, |el, layer| el.child(layer)),
                 )
                 .into_any_element()
         };
@@ -268,16 +417,24 @@ impl App {
 
                 if should_update {
                     v.update(cx, |this, cx| {
+                        let mut columns_changed = false;
                         if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
                             let old_w = ts.last_pane_width;
+                            let new_cols = list_column_count(new_w, cell_stride, zoom_scale);
+                            columns_changed = new_cols != cols;
                             crate::perf::event(|| {
                                 format!(
-                                    "list.width pane={} old={old_w:.1} new={new_w:.1}",
-                                    pane_id.0
+                                    "list.width pane={} old={old_w:.1} new={new_w:.1} cols={cols}->{new_cols}",
+                                    pane_id.0,
                                 )
                             });
                             ts.last_pane_width = new_w;
+                        }
+                        if columns_changed {
+                            crate::perf::count("list.width.columns_changed");
                             this.notify_pane(pane_id, cx);
+                        } else {
+                            crate::perf::count("list.width.same_columns");
                         }
                     });
                 }
@@ -302,6 +459,35 @@ impl App {
                 .child(controls_pill),
         )
         .into_any_element()
+    }
+}
+
+fn list_column_count(pane_w: f32, cell_stride: f32, zoom: f32) -> usize {
+    // The compact cell owns 8px horizontal padding per side; reserve it before
+    // fitting fixed-pitch columns so the right edge never clips.
+    let avail = (pane_w - 16.0 * zoom).max(cell_stride);
+    ((avail / cell_stride).floor() as usize).max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::list_column_count;
+
+    #[test]
+    fn list_columns_change_only_at_fitted_stride_boundary() {
+        let zoom = 1.0;
+        let stride = 226.0;
+
+        assert_eq!(list_column_count(467.99, stride, zoom), 1);
+        assert_eq!(list_column_count(468.0, stride, zoom), 2);
+        assert_eq!(list_column_count(693.99, stride, zoom), 2);
+        assert_eq!(list_column_count(694.0, stride, zoom), 3);
+    }
+
+    #[test]
+    fn list_columns_scale_with_zoom_and_never_drop_below_one() {
+        assert_eq!(list_column_count(0.0, 452.0, 2.0), 1);
+        assert_eq!(list_column_count(936.0, 452.0, 2.0), 2);
     }
 }
 

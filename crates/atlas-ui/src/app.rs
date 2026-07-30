@@ -214,6 +214,8 @@ pub struct App {
     pub(crate) details_row_rings: HashMap<TileId, crate::ui::views::details_ring::DetailsRowRing>,
     pub(crate) grid_hit: HashMap<TileId, GridHitModel>,
     pub(crate) grid_hover: Option<(TileId, usize)>,
+    /// Cross-pane cold cache; hot reuse remains in each Grid surface's local ring.
+    pub(crate) file_surface_shapes: crate::ui::views::grid_surface_element::FileSurfaceShapeCache,
     pub(crate) list_hit: HashMap<TileId, GridHitModel>,
     pub(crate) list_hover: Option<(TileId, usize)>,
     pub(crate) grid_flip_states: std::rc::Rc<

@@ -42,7 +42,7 @@ impl App {
         crate::perf::count("render.view.grid");
         let view = cx.entity();
         let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
-        let (fg, accent, accent_fg, hover, muted, border, header_bg) = {
+        let (fg, accent, accent_fg, hover, muted, border, _header_bg) = {
             let t = cx.theme();
             (
                 t.foreground,
@@ -88,10 +88,7 @@ impl App {
             .map(|ts| ts.last_pane_width)
             .filter(|&w| w > 1.0)
             .unwrap_or_else(|| (f32::from(window.viewport_size().width) - 217.0).max(0.0));
-        let inner_avail = (pane_w - 2.0 * grid_pad_px).max(thumb_px);
-        // n*(thumb+GAP) - GAP = inner_avail  →  n = ⌊(inner_avail + GAP) / (thumb + GAP)⌋
-        let cols =
-            (((inner_avail + grid_gap_px) / (thumb_px + grid_gap_px)).floor() as usize).max(1);
+        let cols = grid_column_count(pane_w, thumb_px, grid_gap_px, grid_pad_px);
         let _perf = crate::perf::span_detail("grid.render", || {
             format!(
                 "pane={} count={count} cols={cols} thumb={thumb:.1} pane_w={pane_w:.1}",
@@ -418,7 +415,9 @@ impl App {
         )
         // Capture the real pane pixel width every frame so the next frame's
         // column calculation uses the actual container size (handles preview
-        // panel open/close and splitter drags, not just window resize).
+        // panel open/close and splitter drags, not just window resize). A
+        // fractional width change does not alter this fixed-pitch surface until
+        // it crosses a column boundary, so only invalidate the pane then.
         .on_prepaint(move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {
             crate::perf::count("prepaint.grid_pane");
             let new_w = f32::from(bounds.size.width);
@@ -432,16 +431,25 @@ impl App {
 
             if should_update {
                 prepaint_view.update(cx, |this, cx| {
+                    let mut columns_changed = false;
                     if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
                         let old_w = ts.last_pane_width;
+                        let new_cols =
+                            grid_column_count(new_w, thumb_px, grid_gap_px, grid_pad_px);
+                        columns_changed = new_cols != cols;
                         crate::perf::event(|| {
                             format!(
-                                "grid.width pane={} old={old_w:.1} new={new_w:.1}",
-                                pane_id.0
+                                "grid.width pane={} old={old_w:.1} new={new_w:.1} cols={cols}->{new_cols}",
+                                pane_id.0,
                             )
                         });
                         ts.last_pane_width = new_w;
+                    }
+                    if columns_changed {
+                        crate::perf::count("grid.width.columns_changed");
                         this.notify_pane(pane_id, cx);
+                    } else {
+                        crate::perf::count("grid.width.same_columns");
                     }
                 });
             }
@@ -563,6 +571,33 @@ impl App {
         // On non-Windows to_request_shell is always empty; drop it to avoid unused warning.
         #[cfg(not(target_os = "windows"))]
         drop(to_request_shell);
+    }
+}
+
+fn grid_column_count(pane_w: f32, thumb: f32, gap: f32, pad: f32) -> usize {
+    let inner_avail = (pane_w - 2.0 * pad).max(thumb);
+    // n*(thumb+gap) - gap = inner_avail
+    (((inner_avail + gap) / (thumb + gap)).floor() as usize).max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::grid_column_count;
+
+    #[test]
+    fn grid_columns_change_only_at_exact_pitch_boundary() {
+        let thumb = 128.0;
+        let gap = 8.0;
+
+        assert_eq!(grid_column_count(263.99, thumb, gap, 0.0), 1);
+        assert_eq!(grid_column_count(264.0, thumb, gap, 0.0), 2);
+        assert_eq!(grid_column_count(399.99, thumb, gap, 0.0), 2);
+        assert_eq!(grid_column_count(400.0, thumb, gap, 0.0), 3);
+    }
+
+    #[test]
+    fn grid_columns_never_drop_below_one() {
+        assert_eq!(grid_column_count(0.0, 128.0, 8.0, 0.0), 1);
     }
 }
 

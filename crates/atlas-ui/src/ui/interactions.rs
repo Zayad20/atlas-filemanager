@@ -161,6 +161,11 @@ impl App {
                         return Some(model.bounds);
                     }
                 }
+                ViewMode::List => {
+                    if let Some(model) = self.list_hit.get(&pane) {
+                        return Some(model.bounds);
+                    }
+                }
                 _ => {}
             }
         }

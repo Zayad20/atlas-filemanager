@@ -479,6 +479,10 @@ impl Render for App {
                     .when(!figma_glass, |s| {
                         s.rounded(cx.theme().radius_lg).bg(panel_bg)
                     });
+                // Keep the expensive sidebar tree, hitboxes, and paint commands
+                // retained while its fingerprint and bounds are unchanged.
+                let panel =
+                    gpui::AnyView::from(panel).cached(gpui::StyleRefinement::default().size_full());
                 crate::ui::layout_region::layout_region("sidebar", shell.child(panel))
                     .into_any_element()
             });
