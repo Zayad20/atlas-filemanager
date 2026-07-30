@@ -7,6 +7,7 @@ use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
 use crate::ui::root::{ctrl_scroll, pane_bounds_recorder, rect_recorder};
 use crate::ui::selection_checkbox::SelectionCheckbox;
+use crate::ui::views::grid_surface_element::{GridSurfaceColors, GridSurfaceElement};
 use crate::ui::views::virtual_grid::AnimatedVirtualGrid;
 use atlas_model::file_entry::{FileEntry, FileKind};
 use atlas_model::pane::TabId;
@@ -26,6 +27,7 @@ pub(crate) const GRID_PREVIEW_MAX: f32 = 0.70;
 pub(crate) const GRID_TEXTURE_ICON_MAX: f32 = 0.66;
 pub(crate) const GRID_BUILTIN_ICON: f32 = 0.54;
 pub(crate) const GRID_LABEL_H: f32 = 32.0;
+pub(crate) const USE_GRID_SURFACE_ELEMENT: bool = true;
 
 impl App {
     /// Icons (Grid) view: a virtualized grid of fixed-size cells. Column count is
@@ -109,6 +111,13 @@ impl App {
             && self.file_panel_cache.len() <= if cfg!(debug_assertions) { 4 } else { 6 };
 
         let inner = if count == 0 {
+            self.grid_hit.remove(&pane_id);
+            if self
+                .grid_hover
+                .is_some_and(|(hover_pane, _)| hover_pane == pane_id)
+            {
+                self.grid_hover = None;
+            }
             let msg = self.empty_pane_message(pane_id, rust_i18n::t!("empty_folder").into_owned());
             v_flex()
                 .size_full()
@@ -153,19 +162,44 @@ impl App {
 
             let list_view = view.clone();
             let inner_scroll_view = view.clone();
-            div()
-                .id(("anim-grid-scroll", pane_id.0))
-                .size_full()
-                .overflow_y_scroll()
-                .track_scroll(&base_scroll)
-                .on_mouse_down(
-                    MouseButton::Left,
-                    crate::ui::views::on_pane_rubber_mouse_down(&view, pane_id),
+            let visible = self
+                .state
+                .tab_states
+                .get(&pane_id)
+                .map(|ts| ts.visible.clone())
+                .unwrap_or_default();
+            let surface_colors = GridSurfaceColors {
+                fg,
+                accent,
+                accent_fg,
+                hover,
+                muted,
+            };
+            let surface = if USE_GRID_SURFACE_ELEMENT {
+                GridSurfaceElement::new(
+                    pane_id,
+                    view.downgrade(),
+                    visible,
+                    start,
+                    end,
+                    cols,
+                    count,
+                    thumb_px,
+                    cell_h_px,
+                    thumb_px + grid_gap_px,
+                    pitch,
+                    thumb_px,
+                    scroll_y,
+                    viewport_h,
+                    surface_colors,
+                    row_font.clone(),
+                    font_size,
                 )
-                .on_scroll_wheel(move |ev, window, cx| {
-                    ctrl_scroll(ev, pane_id, &inner_scroll_view, window, cx);
-                })
-                .child(AnimatedVirtualGrid::new(
+                .absolute()
+                .inset_0()
+                .into_any_element()
+            } else {
+                AnimatedVirtualGrid::new(
                     SharedString::from(format!("anim-grid-{}", pane_id.0)),
                     count,
                     cols,
@@ -201,7 +235,6 @@ impl App {
                             &entry.kind,
                             entry.extension.as_deref(),
                         );
-                        let record_rects = true;
                         let flashing = matches!(entry.kind, FileKind::Dir)
                             && app.drag_hover.blink_id.as_ref()
                                 == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
@@ -211,12 +244,11 @@ impl App {
                             && !crate::ui::views::rename::suppress_row_chrome(
                                 app, pane_id, entry_idx,
                             );
-                        let show_checkbox = ts.selection.selected.len() > 1;
-                        let cell = render_cell(GridCellProps {
+                        render_cell(GridCellProps {
                             entry,
                             entry_idx,
                             selected,
-                            show_checkbox,
+                            show_checkbox: ts.selection.selected.len() > 1,
                             pane_id,
                             view: &list_view,
                             thumb,
@@ -227,17 +259,146 @@ impl App {
                             hover,
                             border,
                             flashing,
-                            record_rects,
+                            record_rects: true,
                             rename_input,
                             is_animating,
                             dimmed: crate::ui::views::rename::dim_other_entry(
                                 app, pane_id, entry_idx,
                             ),
                             window,
-                        });
-                        cell
+                        })
                     },
-                ))
+                )
+                .into_any_element()
+            };
+            let mut rename_overlay = None;
+            if USE_GRID_SURFACE_ELEMENT {
+                if let Some(ts) = self.state.tab_states.get(&pane_id) {
+                    for visible_pos in start..end {
+                        let Some(&entry_idx) = ts.visible.get(visible_pos) else {
+                            continue;
+                        };
+                        let Some(entry) = ts.entries.get(entry_idx) else {
+                            continue;
+                        };
+                        let Some(rename_input) =
+                            crate::ui::views::rename::active_input(self, pane_id, entry_idx)
+                        else {
+                            continue;
+                        };
+                        let selected = ts.selection.selected.contains(&entry_idx)
+                            && !crate::ui::views::rename::suppress_row_chrome(
+                                self, pane_id, entry_idx,
+                            );
+                        let file_icon = self.file_icon_for_entry(
+                            &entry.path,
+                            &entry.kind,
+                            entry.extension.as_deref(),
+                        );
+                        let cell = render_cell(GridCellProps {
+                            entry,
+                            entry_idx,
+                            selected,
+                            show_checkbox: ts.selection.selected.len() > 1,
+                            pane_id,
+                            view: &view,
+                            thumb,
+                            cell_w: thumb,
+                            file_icon,
+                            accent,
+                            accent_fg,
+                            hover,
+                            border,
+                            flashing: false,
+                            record_rects: false,
+                            rename_input: Some(rename_input),
+                            is_animating: false,
+                            dimmed: false,
+                            window,
+                        });
+                        let col = visible_pos % cols;
+                        let row = visible_pos / cols;
+                        rename_overlay = Some(
+                            div()
+                                .absolute()
+                                .left(px(col as f32 * (thumb_px + grid_gap_px)))
+                                .top(px(row as f32 * pitch))
+                                .w(px(thumb_px))
+                                .h(px(cell_h_px))
+                                .child(cell)
+                                .into_any_element(),
+                        );
+                        break;
+                    }
+                }
+            }
+            let drag_layer = USE_GRID_SURFACE_ELEMENT.then(|| {
+                div()
+                    .id(("grid-drag-layer", pane_id.0))
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .w_full()
+                    .h(px(content_h))
+                    .opacity(0.0)
+                    .on_drag(
+                        crate::ui::drag::file_drag_value(Vec::new()),
+                        crate::ui::drag::file_drag_handler_for_grid_content(view.clone(), pane_id),
+                    )
+                    .into_any_element()
+            });
+            let tooltip_data = self
+                .grid_hover
+                .filter(|(hover_pane, _)| *hover_pane == pane_id)
+                .and_then(|(_, entry_idx)| {
+                    self.state
+                        .tab_states
+                        .get(&pane_id)
+                        .and_then(|ts| ts.entries.get(entry_idx))
+                        .map(|entry| {
+                            (
+                                entry.name.clone(),
+                                entry.path.clone(),
+                                matches!(entry.kind, FileKind::Dir),
+                                entry.size,
+                                entry.modified,
+                            )
+                        })
+                });
+            div()
+                .id(("anim-grid-scroll", pane_id.0))
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&base_scroll)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    crate::ui::views::on_pane_rubber_mouse_down(&view, pane_id),
+                )
+                .on_scroll_wheel(move |ev, window, cx| {
+                    ctrl_scroll(ev, pane_id, &inner_scroll_view, window, cx);
+                })
+                .when_some(tooltip_data, |el, (name, path, is_dir, size, modified)| {
+                    el.tooltip(move |window, cx| {
+                        crate::ui::tooltips::entry_hover_tooltip(
+                            name.clone(),
+                            path.clone(),
+                            is_dir,
+                            size,
+                            modified,
+                            window,
+                            cx,
+                        )
+                    })
+                })
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(content_h))
+                        .relative()
+                        .child(surface)
+                        .when_some(rename_overlay, |el, overlay| el.child(overlay))
+                        .when_some(drag_layer, |el, layer| el.child(layer)),
+                )
                 .into_any_element()
         };
 

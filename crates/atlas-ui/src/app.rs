@@ -690,6 +690,39 @@ mod tests {
 
         assert!((anim.to[1] / anim.to[0] - 2.0).abs() < 0.001);
     }
+
+    #[test]
+    fn grid_hit_ignores_pitch_gaps() {
+        let model = GridHitModel {
+            bounds: gpui::Bounds {
+                origin: gpui::point(gpui::px(10.0), gpui::px(20.0)),
+                size: gpui::size(gpui::px(220.0), gpui::px(120.0)),
+            },
+            scroll_y: 0.0,
+            cell_w: 100.0,
+            cell_h: 80.0,
+            cols: 2,
+            pitch_y: 110.0,
+            pitch_x: 110.0,
+            visible: std::sync::Arc::new(vec![4, 5, 6, 7]),
+            start_idx: 0,
+            end_idx: 4,
+            total_count: 4,
+        };
+
+        assert_eq!(
+            model.hit_entry(gpui::point(gpui::px(15.0), gpui::px(25.0))),
+            Some(4)
+        );
+        assert_eq!(
+            model.hit_entry(gpui::point(gpui::px(112.0), gpui::px(25.0))),
+            None
+        );
+        assert_eq!(
+            model.hit_entry(gpui::point(gpui::px(15.0), gpui::px(125.0))),
+            None
+        );
+    }
 }
 
 /// User widths of the Details columns. The renderer may shrink these transiently
@@ -1620,6 +1653,14 @@ impl GridHitModel {
         if col >= self.cols {
             return None;
         }
+        // The pitch includes the inter-cell gap.  A click/drag in that gap is
+        // background, never the neighbouring cell; this keeps marquee/context
+        // behaviour identical to the painted surface.
+        let local_x = x - col as f32 * self.pitch_x;
+        let local_y = y - row as f32 * self.pitch_y;
+        if local_x >= self.cell_w || local_y >= self.cell_h {
+            return None;
+        }
         let visible_pos = row * self.cols + col;
         (visible_pos >= self.start_idx
             && visible_pos < self.end_idx
@@ -1644,6 +1685,11 @@ impl GridHitModel {
         let row = (y / self.pitch_y).floor() as usize;
         let col = (x / self.pitch_x).floor() as usize;
         if col >= self.cols {
+            return None;
+        }
+        let local_x = x - col as f32 * self.pitch_x;
+        let local_y = y - row as f32 * self.pitch_y;
+        if local_x >= self.cell_w || local_y >= self.cell_h {
             return None;
         }
         let visible_pos = row * self.cols + col;

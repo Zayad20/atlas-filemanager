@@ -21,6 +21,7 @@ pub mod details_element;
 pub mod details_header_element;
 pub mod details_ring;
 pub mod grid;
+pub mod grid_surface_element;
 pub mod list;
 pub mod miller;
 mod rename;

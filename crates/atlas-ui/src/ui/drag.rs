@@ -86,6 +86,39 @@ pub(crate) fn file_drag_handler_for_details_content(
     }
 }
 
+/// Drag source for the retained Grid surface.  The hit model is populated in
+/// `GridSurfaceElement::prepaint`, so the closure does no widget traversal.
+pub(crate) fn file_drag_handler_for_grid_content(
+    view: Entity<App>,
+    pane: TabId,
+) -> impl Fn(&DragView, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> Entity<DragView>
+       + 'static {
+    move |_d, cursor_offset, _window, cx| {
+        let item = {
+            let app = view.read(&*cx);
+            app.grid_hit
+                .get(&pane)
+                .and_then(|model| model.hit_entry_at_content_offset(cursor_offset))
+                .and_then(|idx| {
+                    app.details_row_selected(pane, idx).then(|| {
+                        app.state
+                            .tab_states
+                            .get(&pane)
+                            .and_then(|ts| ts.entries.get(idx))
+                            .map(|entry| (idx, entry.path.clone()))
+                    })?
+                })
+        };
+
+        let Some((idx, anchor)) = item else {
+            tracing::debug!("dnd grid content drag ignored outside selected cell");
+            return empty_drag_view(cx);
+        };
+
+        build_file_drag_start(&view, Some((pane, idx)), anchor, _window, cx)
+    }
+}
+
 fn build_file_drag_handler(
     view: Entity<App>,
     item: Option<(TabId, usize)>,

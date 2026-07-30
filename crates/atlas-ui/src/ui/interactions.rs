@@ -149,12 +149,19 @@ impl App {
         // Details records the actual rows viewport. The generic pane bounds also
         // include breadcrumb/header chrome, which shifts the marquee's content
         // coordinates by that chrome height and selects the wrong rows.
-        if self
-            .tab_data_for(pane)
-            .is_some_and(|tab| tab.view_mode == ViewMode::Details)
-        {
-            if let Some(model) = self.details_hit.get(&pane) {
-                return Some(model.bounds);
+        if let Some(tab) = self.tab_data_for(pane) {
+            match tab.view_mode {
+                ViewMode::Details => {
+                    if let Some(model) = self.details_hit.get(&pane) {
+                        return Some(model.bounds);
+                    }
+                }
+                ViewMode::Grid => {
+                    if let Some(model) = self.grid_hit.get(&pane) {
+                        return Some(model.bounds);
+                    }
+                }
+                _ => {}
             }
         }
         self.pane_view_bounds
