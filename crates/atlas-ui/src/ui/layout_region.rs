@@ -11,12 +11,59 @@ pub fn layout_region(name: &'static str, child: impl IntoElement) -> LayoutRegio
     LayoutRegion {
         name,
         child: child.into_any_element(),
+        timings: None,
     }
 }
+
+/// Tag a subtree and accumulate its inclusive GPUI phase times.
+///
+/// Timings are profiling-only (`perf-log`/`tracy`). Nested timed regions are
+/// intentionally inclusive, so child values explain the corresponding parent
+/// rather than forming additional time that can be summed with it.
+pub fn timed_layout_region(
+    name: &'static str,
+    timings: LayoutRegionTimings,
+    child: impl IntoElement,
+) -> LayoutRegion {
+    LayoutRegion {
+        name,
+        child: child.into_any_element(),
+        timings: Some(timings),
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct LayoutRegionTimings {
+    pub request_layout: &'static str,
+    pub prepaint: &'static str,
+    pub paint: &'static str,
+}
+
+pub const PANE_CRUMBS_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
+    request_layout: "pane.crumbs.request_layout",
+    prepaint: "pane.crumbs.prepaint",
+    paint: "pane.crumbs.paint",
+};
+pub const PANE_VIEWPORT_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
+    request_layout: "pane.viewport.request_layout",
+    prepaint: "pane.viewport.prepaint",
+    paint: "pane.viewport.paint",
+};
+pub const PANE_DETAILS_HEADER_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
+    request_layout: "pane.details_header.request_layout",
+    prepaint: "pane.details_header.prepaint",
+    paint: "pane.details_header.paint",
+};
+pub const PANE_PILLS_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
+    request_layout: "pane.pills.request_layout",
+    prepaint: "pane.pills.prepaint",
+    paint: "pane.pills.paint",
+};
 
 pub struct LayoutRegion {
     name: &'static str,
     child: AnyElement,
+    timings: Option<LayoutRegionTimings>,
 }
 
 impl Element for LayoutRegion {
@@ -38,6 +85,9 @@ impl Element for LayoutRegion {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
+        let _perf = self
+            .timings
+            .and_then(|timings| crate::perf::span(timings.request_layout));
         let _region = enter_layout_region(self.name);
         let layout_id = self.child.request_layout(window, cx);
         (layout_id, ())
@@ -52,7 +102,10 @@ impl Element for LayoutRegion {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        // Nodes are already attributed in request_layout; region only needed there.
+        let _perf = self
+            .timings
+            .and_then(|timings| crate::perf::span(timings.prepaint));
+        // Nodes are already attributed in request_layout; timing remains useful here.
         self.child.prepaint(window, cx);
     }
 
@@ -66,6 +119,9 @@ impl Element for LayoutRegion {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let _perf = self
+            .timings
+            .and_then(|timings| crate::perf::span(timings.paint));
         self.child.paint(window, cx);
     }
 }

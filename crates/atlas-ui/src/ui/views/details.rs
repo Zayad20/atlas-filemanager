@@ -7,6 +7,10 @@ use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::{backdrop_tint, glass_header_fill};
 use crate::ui::icons::{icon, AtlasIcon};
+use crate::ui::layout_region::{
+    layout_region, timed_layout_region, PANE_CRUMBS_TIMINGS, PANE_DETAILS_HEADER_TIMINGS,
+    PANE_PILLS_TIMINGS, PANE_VIEWPORT_TIMINGS,
+};
 use crate::ui::root::{ctrl_scroll, pane_bounds_recorder, rect_recorder, zone_recorder};
 use atlas_model::file_entry::{FileEntry, FileKind, SortColumn, SortDir};
 use atlas_model::pane::TabId;
@@ -464,11 +468,31 @@ impl App {
             &pane_view,
             pane_id,
         )
-        .child(crumb_strip)
-        .child(header)
-        .child(inner)
-        .child(filter_pill)
-        .child(controls_pill)
+        .child(timed_layout_region(
+            "pane.crumbs",
+            PANE_CRUMBS_TIMINGS,
+            crumb_strip,
+        ))
+        .child(timed_layout_region(
+            "pane.details_header",
+            PANE_DETAILS_HEADER_TIMINGS,
+            header,
+        ))
+        .child(timed_layout_region(
+            "pane.viewport",
+            PANE_VIEWPORT_TIMINGS,
+            layout_region("pane.viewport_body", inner),
+        ))
+        .child(timed_layout_region(
+            "pane.pills",
+            PANE_PILLS_TIMINGS,
+            filter_pill,
+        ))
+        .child(timed_layout_region(
+            "pane.pills",
+            PANE_PILLS_TIMINGS,
+            controls_pill,
+        ))
         .on_prepaint({
             let v = prepaint_view;
             move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {

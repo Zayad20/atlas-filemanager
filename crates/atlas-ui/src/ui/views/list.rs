@@ -5,6 +5,10 @@ use crate::app::App;
 use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
+use crate::ui::layout_region::{
+    layout_region, timed_layout_region, PANE_CRUMBS_TIMINGS, PANE_PILLS_TIMINGS,
+    PANE_VIEWPORT_TIMINGS,
+};
 use crate::ui::root::{ctrl_scroll, pane_bounds_recorder, rect_recorder, zone_recorder};
 use crate::ui::selection_checkbox::SelectionCheckbox;
 use crate::ui::views::grid_surface_element::{GridSurfaceColors, GridSurfaceElement};
@@ -444,8 +448,14 @@ impl App {
         .when(cfg!(windows), |el| {
             el.on_prepaint(zone_recorder(pane_id, &zone_view))
         })
-        .child(crumb_strip)
-        .child(
+        .child(timed_layout_region(
+            "pane.crumbs",
+            PANE_CRUMBS_TIMINGS,
+            crumb_strip,
+        ))
+        .child(timed_layout_region(
+            "pane.viewport",
+            PANE_VIEWPORT_TIMINGS,
             div()
                 .flex_1()
                 .min_h(px(0.))
@@ -454,10 +464,18 @@ impl App {
                 .rounded_bl(px(12.0))
                 .rounded_br(px(12.0))
                 .on_prepaint(pane_bounds_recorder(pane_id, &bounds_view))
-                .child(inner)
-                .child(filter_pill)
-                .child(controls_pill),
-        )
+                .child(layout_region("pane.viewport_body", inner))
+                .child(timed_layout_region(
+                    "pane.pills",
+                    PANE_PILLS_TIMINGS,
+                    filter_pill,
+                ))
+                .child(timed_layout_region(
+                    "pane.pills",
+                    PANE_PILLS_TIMINGS,
+                    controls_pill,
+                )),
+        ))
         .into_any_element()
     }
 }

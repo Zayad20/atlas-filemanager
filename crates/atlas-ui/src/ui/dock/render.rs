@@ -10,11 +10,58 @@ use crate::input::action::Action;
 use crate::ui::dock::drag::{tab_drag_entity, TabDrag};
 use crate::ui::glass::{backdrop_tint, glass_chip_fill, glass_fill, GlassExt};
 use crate::ui::icons::{icon, is_windows_theme, theme_icon, AtlasIcon};
+use crate::ui::layout_region::{layout_region, timed_layout_region, LayoutRegionTimings};
 use crate::ui::pane_panel::FilePanel;
 use atlas_core::util::display::display_name;
 use atlas_model::layout_tree::{Container, LinearDir, Tile, TileId};
 use atlas_model::location::Location;
 use std::time::Instant;
+
+const DOCK_FLAT_HOST_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
+    request_layout: "dock.flat_host.request_layout",
+    prepaint: "dock.flat_host.prepaint",
+    paint: "dock.flat_host.paint",
+};
+const DOCK_SPLITTER_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
+    request_layout: "dock.splitters.request_layout",
+    prepaint: "dock.splitters.prepaint",
+    paint: "dock.splitters.paint",
+};
+const PANE_CACHED_HOST_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
+    request_layout: "pane.cached_host.request_layout",
+    prepaint: "pane.cached_host.prepaint",
+    paint: "pane.cached_host.paint",
+};
+const PANE_SHELL_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
+    request_layout: "pane.shell.request_layout",
+    prepaint: "pane.shell.prepaint",
+    paint: "pane.shell.paint",
+};
+const PANE_TABS_BAR_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
+    request_layout: "pane.tabs_bar.request_layout",
+    prepaint: "pane.tabs_bar.prepaint",
+    paint: "pane.tabs_bar.paint",
+};
+const PANE_CONTENT_SHELL_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
+    request_layout: "pane.content_shell.request_layout",
+    prepaint: "pane.content_shell.prepaint",
+    paint: "pane.content_shell.paint",
+};
+const PANE_CONTENT_LAYERS_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
+    request_layout: "pane.content_layers.request_layout",
+    prepaint: "pane.content_layers.prepaint",
+    paint: "pane.content_layers.paint",
+};
+const PANE_BODY_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
+    request_layout: "pane.body.request_layout",
+    prepaint: "pane.body.prepaint",
+    paint: "pane.body.paint",
+};
+const PANE_DROP_ZONES_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
+    request_layout: "pane.drop_zones.request_layout",
+    prepaint: "pane.drop_zones.prepaint",
+    paint: "pane.drop_zones.paint",
+};
 
 #[derive(Clone, Copy, Debug)]
 enum SplitMotion {
@@ -273,7 +320,7 @@ impl App {
         // collapses, producing a clean "slides underneath" exit instead of a
         // floating card that suddenly reveals the background.
         for pane in closing_panes.into_iter().chain(live_panes) {
-            host = host.child(pane);
+            host = host.child(layout_region("dock.pane_slot", pane));
         }
 
         for splitter in splitters {
@@ -289,7 +336,9 @@ impl App {
                 cx,
                 thickness,
             );
-            host = host.child(
+            host = host.child(timed_layout_region(
+                "dock.splitters",
+                DOCK_SPLITTER_TIMINGS,
                 div()
                     .absolute()
                     .left(px(splitter.rect.x))
@@ -297,10 +346,10 @@ impl App {
                     .w(px(splitter.rect.w.max(0.0)))
                     .h(px(splitter.rect.h.max(0.0)))
                     .child(splitter_el),
-            );
+            ));
         }
 
-        Some(host.into_any_element())
+        Some(timed_layout_region("dock.flat_host", DOCK_FLAT_HOST_TIMINGS, host).into_any_element())
     }
 
     fn collect_flat_layout(
@@ -911,10 +960,13 @@ impl App {
         };
 
         let app = cx.entity();
-        div()
+        let host = div()
             .size_full()
             .overflow_hidden()
-            .child(gpui::AnyView::from(view).cached(style))
+            .child(layout_region(
+                "pane.cached_view",
+                gpui::AnyView::from(view).cached(style),
+            ))
             .on_prepaint(move |bounds, _window, cx| {
                 let should_update = {
                     let app_ref = app.read(cx);
@@ -927,8 +979,8 @@ impl App {
                         this.pane_tabs_bounds.insert(id, bounds);
                     });
                 }
-            })
-            .into_any_element()
+            });
+        timed_layout_region("pane.cached_host", PANE_CACHED_HOST_TIMINGS, host).into_any_element()
     }
 
     fn tabs_fingerprint(&self, id: TileId, window: &Window, cx: &Context<Self>) -> u64 {
@@ -1036,11 +1088,26 @@ impl App {
                 }
             })
             .unwrap_or_else(|| div().size_full().bg(panel_bg).into_any_element());
+        let content =
+            timed_layout_region("pane.body", PANE_BODY_TIMINGS, content).into_any_element();
         let content = if let Some(active) = active {
             self.with_split_drop_zones(active, content, cx)
         } else {
             content
         };
+        let content_shell = timed_layout_region(
+            "pane.content_shell",
+            PANE_CONTENT_SHELL_TIMINGS,
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .min_w(px(0.))
+                .child(timed_layout_region(
+                    "pane.content_layers",
+                    PANE_CONTENT_LAYERS_TIMINGS,
+                    content,
+                )),
+        );
         let panel = v_flex()
             .size_full()
             .min_w(px(0.))
@@ -1057,11 +1124,8 @@ impl App {
                     .border_1()
                     .border_color(cx.theme().border.opacity(0.55))
             })
-            // tabs.bar region is applied inside render_tab_strip (TabsBar surface).
             .child(self.render_tab_strip(children, active, window, cx))
-            .child(div().flex_1().min_h(px(0.)).min_w(px(0.)).child(
-                crate::ui::layout_region::layout_region("pane.content", content),
-            ));
+            .child(content_shell);
 
         let is_mod = window.modifiers().alt;
         let activate_drag_app = cx.entity().clone();
@@ -1074,7 +1138,8 @@ impl App {
                 .size_full()
                 .relative()
                 .child(panel)
-                .child(
+                .child(layout_region(
+                    "pane.drag_overlay",
                     div()
                         .id(gpui::SharedString::from(format!(
                             "alt-drag-{}",
@@ -1129,13 +1194,13 @@ impl App {
                             });
                             cx.stop_propagation();
                         }),
-                )
+                ))
                 .into_any_element()
         } else {
             panel.into_any_element()
         };
 
-        panel
+        timed_layout_region("pane.shell", PANE_SHELL_TIMINGS, panel).into_any_element()
     }
 
     fn should_render_pane_body(&self, pane_id: TileId) -> bool {
@@ -1363,12 +1428,13 @@ impl App {
             } else {
                 slot.into_any_element()
             };
-            strip = strip.child(slot);
+            strip = strip.child(layout_region("pane.tabs_chips", slot));
         }
 
         if let Some(anchor) = active {
             let new_app = app;
-            strip = strip.child(
+            strip = strip.child(layout_region(
+                "pane.tabs_actions",
                 div()
                     .id(SharedString::from(format!("tab-new-{}", anchor.0)))
                     .size(crate::ui::rem_px(if windows_theme { 32.0 } else { 24.0 }))
@@ -1390,9 +1456,9 @@ impl App {
                             cx.notify();
                         });
                     }),
-            );
+            ));
         }
-        strip.into_any_element()
+        timed_layout_region("pane.tabs_bar", PANE_TABS_BAR_TIMINGS, strip).into_any_element()
     }
 
     fn with_split_drop_zones(
@@ -1411,7 +1477,9 @@ impl App {
             .relative()
             .group("tab-split-zone")
             .child(content)
-            .child(
+            .child(timed_layout_region(
+                "pane.drop_zones",
+                PANE_DROP_ZONES_TIMINGS,
                 split_drop_zone(AtlasIcon::SplitHorizontal)
                     .left_0()
                     .top(relative(0.25))
@@ -1423,8 +1491,10 @@ impl App {
                             cx.notify();
                         });
                     }),
-            )
-            .child(
+            ))
+            .child(timed_layout_region(
+                "pane.drop_zones",
+                PANE_DROP_ZONES_TIMINGS,
                 split_drop_zone(AtlasIcon::SplitHorizontal)
                     .right_0()
                     .top(relative(0.25))
@@ -1436,8 +1506,10 @@ impl App {
                             cx.notify();
                         });
                     }),
-            )
-            .child(
+            ))
+            .child(timed_layout_region(
+                "pane.drop_zones",
+                PANE_DROP_ZONES_TIMINGS,
                 split_drop_zone(AtlasIcon::SplitVertical)
                     .left_0()
                     .right_0()
@@ -1449,8 +1521,10 @@ impl App {
                             cx.notify();
                         });
                     }),
-            )
-            .child(
+            ))
+            .child(timed_layout_region(
+                "pane.drop_zones",
+                PANE_DROP_ZONES_TIMINGS,
                 split_drop_zone(AtlasIcon::SplitVertical)
                     .left_0()
                     .right_0()
@@ -1462,7 +1536,7 @@ impl App {
                             cx.notify();
                         });
                     }),
-            )
+            ))
             .into_any_element()
     }
 
