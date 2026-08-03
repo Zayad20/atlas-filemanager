@@ -5,16 +5,69 @@
 //! clip (`ContentMask`), so column resize does not invalidate shaped names.
 
 use crate::app::DetailsColumn;
-use gpui::{Pixels, ShapedLine};
+use gpui::{Font, Pixels, ShapedLine};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
+
+const DETAILS_ROW_TEXT_CACHE_CAPACITY: usize = 8_192;
+
+/// Immutable, GPU-ready text shared by every pane that renders the same row
+/// with the same font/colors. Dynamic pane state deliberately lives outside.
+pub(crate) struct DetailsRowText {
+    /// Full name line (not pre-truncated). Clip at paint.
+    pub name_s: ShapedLine,
+    pub meta_cols: Vec<DetailsRingMeta>,
+}
+
+/// Bounded cross-pane cache for Details shaping. A split clones the directory
+/// snapshot, so identical panes can reuse one set of shaped rows.
+pub(crate) struct DetailsRowTextCache {
+    rows: HashMap<u64, Arc<DetailsRowText>>,
+    insertion_order: VecDeque<u64>,
+    capacity: usize,
+}
+
+impl Default for DetailsRowTextCache {
+    fn default() -> Self {
+        Self {
+            rows: HashMap::new(),
+            insertion_order: VecDeque::new(),
+            capacity: DETAILS_ROW_TEXT_CACHE_CAPACITY,
+        }
+    }
+}
+
+impl DetailsRowTextCache {
+    pub fn get_or_insert_with(
+        &mut self,
+        key: u64,
+        fill: impl FnOnce() -> DetailsRowText,
+    ) -> Arc<DetailsRowText> {
+        if let Some(row) = self.rows.get(&key) {
+            crate::perf::count("details.text.shared.hit");
+            return row.clone();
+        }
+
+        crate::perf::count("details.text.shared.miss");
+        let row = Arc::new(fill());
+        while self.rows.len() >= self.capacity {
+            let Some(oldest) = self.insertion_order.pop_front() else {
+                break;
+            };
+            self.rows.remove(&oldest);
+        }
+        self.rows.insert(key, row.clone());
+        self.insertion_order.push_back(key);
+        row
+    }
+}
 
 /// One virtualized row's GPU-ready text/icons.
 #[derive(Clone)]
 pub(crate) struct DetailsRowSlot {
     /// Visible-list index (`start_idx..end_idx`).
     pub row: usize,
-    pub entry_idx: usize,
     /// Hash of everything that forces a re-shape (text, font, colors baked in runs).
     pub shape_key: u64,
     pub selected: bool,
@@ -25,9 +78,9 @@ pub(crate) struct DetailsRowSlot {
     pub flashing: bool,
     pub odd: bool,
     pub dimmed: bool,
-    /// Full name line (not pre-truncated). Clip at paint.
-    pub name_s: ShapedLine,
-    pub meta_cols: Vec<DetailsRingMeta>,
+    /// Heavy immutable payload is shared across panes; paint snapshots only clone
+    /// this Arc while dynamic flags remain local to the compact row record.
+    pub text: Arc<DetailsRowText>,
     pub icon_tex: Option<Arc<gpui::RenderImage>>,
     pub fallback_icon_path: Option<&'static str>,
 }
@@ -41,6 +94,8 @@ pub(crate) struct DetailsRingMeta {
 /// Ring of row slots: capacity ≈ viewport rows (+ overscan). Index `row % cap`.
 #[derive(Clone, Default)]
 pub(crate) struct DetailsRowRing {
+    // Slots own only compact dynamic state plus Arc handles to immutable text/icons.
+    // Paint snapshots clone these small records into one contiguous Vec.
     slots: Vec<Option<DetailsRowSlot>>,
 }
 
@@ -97,18 +152,30 @@ impl DetailsRowRing {
             return;
         }
         let ix = self.index(row);
-        if let Some(s) = self.slots[ix].as_mut() {
-            if s.row == row && s.shape_key == shape_key {
-                if s.selected != selected {
-                    s.selected_at = selected.then(Instant::now);
-                }
-                s.selected = selected;
-                s.hovered = hovered;
-                s.flashing = flashing;
-                s.odd = odd;
-                s.dimmed = dimmed;
-            }
+        let Some(current) = self.slots[ix].as_ref() else {
+            return;
+        };
+        if current.row != row || current.shape_key != shape_key {
+            return;
         }
+        if current.selected == selected
+            && current.hovered == hovered
+            && current.flashing == flashing
+            && current.odd == odd
+            && current.dimmed == dimmed
+        {
+            return;
+        }
+
+        let s = self.slots[ix].as_mut().expect("slot checked above");
+        if s.selected != selected {
+            s.selected_at = selected.then(Instant::now);
+        }
+        s.selected = selected;
+        s.hovered = hovered;
+        s.flashing = flashing;
+        s.odd = odd;
+        s.dimmed = dimmed;
     }
 
     pub fn get(&self, row: usize) -> Option<&DetailsRowSlot> {
@@ -119,7 +186,8 @@ impl DetailsRowRing {
         self.slots[ix].as_ref().filter(|s| s.row == row)
     }
 
-    /// Collect a dense list for one paint pass (clones Arc layouts inside ShapedLine).
+    /// Collect a dense, contiguous paint snapshot. Heavy payloads remain shared;
+    /// each clone copies only scalars and Arc handles.
     pub fn collect_rows(&self, start: usize, end: usize) -> Vec<DetailsRowSlot> {
         let mut out = Vec::with_capacity(end.saturating_sub(start));
         for row in start..end {
@@ -143,6 +211,7 @@ pub(crate) fn details_row_shape_key(
     extension: Option<&str>,
     selected: bool,
     dimmed: bool,
+    font: &Font,
     font_size: Pixels,
     name_color_bits: u32,
     meta_color_bits: u32,
@@ -158,6 +227,7 @@ pub(crate) fn details_row_shape_key(
     extension.hash(&mut h);
     selected.hash(&mut h);
     dimmed.hash(&mut h);
+    font.hash(&mut h);
     f32::from(font_size).to_bits().hash(&mut h);
     name_color_bits.hash(&mut h);
     meta_color_bits.hash(&mut h);
@@ -175,7 +245,6 @@ mod tests {
     fn slot(row: usize, key: u64) -> DetailsRowSlot {
         DetailsRowSlot {
             row,
-            entry_idx: row,
             shape_key: key,
             selected_at: None,
             selected: false,
@@ -183,8 +252,10 @@ mod tests {
             flashing: false,
             odd: row % 2 == 1,
             dimmed: false,
-            name_s: dummy_line(),
-            meta_cols: Vec::new(),
+            text: Arc::new(DetailsRowText {
+                name_s: dummy_line(),
+                meta_cols: Vec::new(),
+            }),
             icon_tex: None,
             fallback_icon_path: None,
         }
@@ -208,5 +279,46 @@ mod tests {
         let _ = ring.sync_row(4, 2, || slot(4, 2)); // same index as 0
         assert!(ring.get(0).is_none());
         assert_eq!(ring.get(4).map(|s| s.row), Some(4));
+    }
+
+    #[test]
+    fn paint_snapshot_keeps_old_flags_and_shared_text() {
+        let mut ring = DetailsRowRing::default();
+        ring.ensure_capacity(4);
+        let _ = ring.sync_row(1, 7, || slot(1, 7));
+        let snapshot = ring.collect_rows(1, 2);
+
+        ring.touch_flags(1, 7, true, true, false, true, false);
+
+        let current = ring.get(1).expect("ring row");
+        assert!(!snapshot[0].selected);
+        assert!(current.selected);
+        assert!(Arc::ptr_eq(&snapshot[0].text, &current.text));
+    }
+
+    #[test]
+    fn shared_text_cache_reuses_payload_and_is_bounded() {
+        let mut cache = DetailsRowTextCache {
+            rows: HashMap::new(),
+            insertion_order: VecDeque::new(),
+            capacity: 2,
+        };
+        let first = cache.get_or_insert_with(1, || DetailsRowText {
+            name_s: dummy_line(),
+            meta_cols: Vec::new(),
+        });
+        let same = cache.get_or_insert_with(1, || panic!("cache hit must not refill"));
+        assert!(Arc::ptr_eq(&first, &same));
+
+        let _ = cache.get_or_insert_with(2, || DetailsRowText {
+            name_s: dummy_line(),
+            meta_cols: Vec::new(),
+        });
+        let _ = cache.get_or_insert_with(3, || DetailsRowText {
+            name_s: dummy_line(),
+            meta_cols: Vec::new(),
+        });
+        assert!(!cache.rows.contains_key(&1));
+        assert_eq!(cache.rows.len(), 2);
     }
 }

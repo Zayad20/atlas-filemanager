@@ -17,7 +17,7 @@ use crate::ui::views::details::{
     hsla_key_bits, DetailsColors, DetailsRowLayout, CELL_PAD, DETAILS_ROW_H, ROW_ICON_SIZE,
     ROW_PAD_X, ROW_TEXT_Y_NUDGE,
 };
-use crate::ui::views::details_ring::{self, DetailsRingMeta, DetailsRowSlot};
+use crate::ui::views::details_ring::{self, DetailsRingMeta, DetailsRowSlot, DetailsRowText};
 use atlas_model::file_entry::FileKind;
 use atlas_model::pane::TabId;
 use gpui::{
@@ -158,8 +158,17 @@ impl Element for DetailsBodyElement {
         let font = self.font.clone();
         let font_size = self.font_size;
         let colors = self.colors;
-        let bounds_w = f32::from(bounds.size.width);
         let visible_rows = end_idx.saturating_sub(start_idx);
+        // Aggregate per-frame timings rather than emitting one span per row. This
+        // keeps the profiler useful when many panes are visible simultaneously.
+        let mut row_build_us = 0_u64;
+        let mut icon_lookup_us = 0_u64;
+        let mut icon_texture_lookups = 0_u64;
+        let mut icon_builtin_lookups = 0_u64;
+        let mut text_shape_us = 0_u64;
+        let mut text_shape_name_calls = 0_u64;
+        let mut text_shape_meta_calls = 0_u64;
+        let mut ring_collect_us = 0_u64;
         // This element registers window-level listeners in paint. Give them a
         // hitbox so popovers/modals using `.occlude()` suppress underlying rows.
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
@@ -191,6 +200,7 @@ impl Element for DetailsBodyElement {
 
         // Summed across all panes → details.element.ring_ms in frame_summary.
         let _ring_perf = crate::perf::span("details.element.ring");
+        let app_update_t0 = Instant::now();
         let (rows, show_checkboxes) = app_entity.update(cx, |app, _| {
             app.details_hit.insert(pane_id, hit_model.clone());
             if app.drag_hover_maybe_active() {
@@ -227,7 +237,7 @@ impl Element for DetailsBodyElement {
                 }
             }
 
-            struct RowBuild {
+            struct VisibleRowInput {
                 row: usize,
                 entry_idx: usize,
                 selected: bool,
@@ -236,20 +246,20 @@ impl Element for DetailsBodyElement {
                 odd: bool,
                 dimmed: bool,
                 shape_key: u64,
-                name: String,
-                display_size: String,
-                display_date: String,
-                display_type: String,
                 name_color: Hsla,
                 meta_color: Hsla,
                 icon_tex: Option<std::sync::Arc<gpui::RenderImage>>,
                 fallback_icon_path: Option<&'static str>,
             }
 
-            let builds: Vec<RowBuild> = {
+            let (builds, entries, show_checkboxes) = {
+                let row_build_t0 = Instant::now();
                 let Some(tab_state) = app.state.tab_states.get(&pane_id) else {
                     return (Vec::new(), false);
                 };
+                // One pointer clone keeps the immutable directory snapshot alive
+                // after the TabState borrow ends. Split panes already share this Arc.
+                let entries = tab_state.entries.clone();
                 let mut builds = Vec::with_capacity(visible_rows);
                 for i in start_idx..end_idx {
                     let Some(&entry_idx) = visible.get(i) else {
@@ -306,24 +316,29 @@ impl Element for DetailsBodyElement {
                         entry.extension.as_deref(),
                         selected,
                         dimmed,
+                        &font,
                         font_size,
                         hsla_key_bits(name_color),
                         hsla_key_bits(meta_color),
                     );
 
+                    let icon_t0 = Instant::now();
                     let icon_tex = app
                         .file_icon_for_entry(&entry.path, &entry.kind, entry.extension.as_deref())
                         .texture();
+                    icon_lookup_us += icon_t0.elapsed().as_micros() as u64;
                     let fallback_icon_path = if icon_tex.is_none() {
+                        icon_builtin_lookups += 1;
                         Some(match entry.kind {
                             FileKind::Dir => AtlasIcon::Folder.path(),
                             _ => AtlasIcon::File.path(),
                         })
                     } else {
+                        icon_texture_lookups += 1;
                         None
                     };
 
-                    builds.push(RowBuild {
+                    builds.push(VisibleRowInput {
                         row: i,
                         entry_idx,
                         selected,
@@ -332,83 +347,81 @@ impl Element for DetailsBodyElement {
                         odd,
                         dimmed,
                         shape_key,
-                        name: entry.name.to_string(),
-                        display_size: entry.display_size.to_string(),
-                        display_date: entry.display_date.to_string(),
-                        display_type: entry.display_type.to_string(),
                         name_color,
                         meta_color,
                         icon_tex,
                         fallback_icon_path,
                     });
                 }
-                builds
+                row_build_us += row_build_t0.elapsed().as_micros() as u64;
+                let show_checkboxes = tab_state.selection.selected.len() > 1;
+                (builds, entries, show_checkboxes)
             };
-            let show_checkboxes = app
-                .state
-                .tab_states
-                .get(&pane_id)
-                .is_some_and(|tab_state| tab_state.selection.selected.len() > 1);
 
             let cols = layout.columns.clone();
-            let ring = app.details_row_rings.entry(pane_id).or_default();
+            let (rings, text_cache) = (&mut app.details_row_rings, &mut app.details_row_texts);
+            let ring = rings.entry(pane_id).or_default();
             ring.ensure_capacity((visible_rows + 8).max(16));
 
+            let ring_sync_t0 = Instant::now();
             for b in &builds {
-                let name = b.name.clone();
-                let display_size = b.display_size.clone();
-                let display_date = b.display_date.clone();
-                let display_type = b.display_type.clone();
-                let font = font.clone();
-                let cols = cols.clone();
-                let name_color = b.name_color;
-                let meta_color = b.meta_color;
-                let icon_tex = b.icon_tex.clone();
-                let fallback_icon_path = b.fallback_icon_path;
                 let shape_key = b.shape_key;
                 let entry_idx = b.entry_idx;
                 let row_i = b.row;
+                let Some(entry) = entries.get(entry_idx) else {
+                    continue;
+                };
                 let selected_at = (b.selected
                     && !ring.get(row_i).is_some_and(|previous| previous.selected))
                 .then(Instant::now);
 
                 ring.sync_row(row_i, shape_key, || {
-                    let name_run = TextRun {
-                        len: name.len(),
-                        font: font.clone(),
-                        color: name_color,
-                        background_color: None,
-                        underline: None,
-                        strikethrough: None,
-                    };
-                    let name_s = ts.shape_line(name.into(), font_size, &[name_run], None);
+                    let text = text_cache.get_or_insert_with(shape_key, || {
+                        let name: SharedString = entry.name.clone().into();
+                        let name_run = TextRun {
+                            len: name.len(),
+                            font: font.clone(),
+                            color: b.name_color,
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        };
+                        let shape_t0 = Instant::now();
+                        let name_s = ts.shape_line(name, font_size, &[name_run], None);
+                        text_shape_us += shape_t0.elapsed().as_micros() as u64;
+                        text_shape_name_calls += 1;
 
-                    let mut meta_cols = Vec::new();
-                    for col in &cols {
-                        if col.x < bounds_w && col.w > 1.0 {
+                        // Cache every metadata column independently of this pane's
+                        // current width. Resizing then only changes clips/geometry.
+                        let mut meta_cols = Vec::with_capacity(cols.len());
+                        for col in &cols {
                             let text: SharedString = match col.column {
-                                DetailsColumn::Size => display_size.clone().into(),
-                                DetailsColumn::Modified => display_date.clone().into(),
-                                DetailsColumn::Type => display_type.clone().into(),
+                                DetailsColumn::Size => entry.display_size.clone().into(),
+                                DetailsColumn::Modified => entry.display_date.clone().into(),
+                                DetailsColumn::Type => entry.display_type.clone().into(),
                             };
                             let run = TextRun {
                                 len: text.len(),
                                 font: font.clone(),
-                                color: meta_color,
+                                color: b.meta_color,
                                 background_color: None,
                                 underline: None,
                                 strikethrough: None,
                             };
+                            let shape_t0 = Instant::now();
                             meta_cols.push(DetailsRingMeta {
                                 column: col.column,
                                 line: ts.shape_line(text, font_size, &[run], None),
                             });
+                            text_shape_us += shape_t0.elapsed().as_micros() as u64;
+                            text_shape_meta_calls += 1;
                         }
-                    }
+
+                        DetailsRowText { name_s, meta_cols }
+                    });
 
                     DetailsRowSlot {
                         row: row_i,
-                        entry_idx,
                         shape_key,
                         selected: b.selected,
                         selected_at,
@@ -416,21 +429,39 @@ impl Element for DetailsBodyElement {
                         flashing: b.flashing,
                         odd: b.odd,
                         dimmed: b.dimmed,
-                        name_s,
-                        meta_cols,
-                        icon_tex,
-                        fallback_icon_path,
+                        text,
+                        icon_tex: b.icon_tex.clone(),
+                        fallback_icon_path: b.fallback_icon_path,
                     }
                 });
                 ring.touch_flags(
                     row_i, shape_key, b.selected, b.hovered, b.flashing, b.odd, b.dimmed,
                 );
             }
+            crate::perf::time_us(
+                "details.ring.sync",
+                ring_sync_t0.elapsed().as_micros() as u64,
+            );
 
-            (ring.collect_rows(start_idx, end_idx), show_checkboxes)
+            let ring_collect_t0 = Instant::now();
+            let rows = ring.collect_rows(start_idx, end_idx);
+            ring_collect_us += ring_collect_t0.elapsed().as_micros() as u64;
+            (rows, show_checkboxes)
         });
+        crate::perf::time_us(
+            "details.prepaint.app_update",
+            app_update_t0.elapsed().as_micros() as u64,
+        );
 
         crate::perf::count_by("details.element.rows", rows.len() as u64);
+        crate::perf::time_us("details.row_build", row_build_us);
+        crate::perf::time_us("details.icons.lookup", icon_lookup_us);
+        crate::perf::count_by("details.icons.texture", icon_texture_lookups);
+        crate::perf::count_by("details.icons.builtin", icon_builtin_lookups);
+        crate::perf::time_us("details.text.shape", text_shape_us);
+        crate::perf::count_by("details.text.shape_name", text_shape_name_calls);
+        crate::perf::count_by("details.text.shape_meta", text_shape_meta_calls);
+        crate::perf::time_us("details.ring.collect", ring_collect_us);
 
         DetailsBodyPrepaint {
             rows,
@@ -471,6 +502,9 @@ impl Element for DetailsBodyElement {
                 .name_col_w
                 .min((f32::from(bounds.size.width) - prepaint.layout.name_x).max(0.0));
 
+            crate::perf::count_by("details.paint.rows", prepaint.rows.len() as u64);
+
+            let backgrounds_t0 = Instant::now();
             for row in &prepaint.rows {
                 let y = bounds.origin.y + px(row.row as f32 * row_h);
                 let row_bounds = Bounds {
@@ -495,9 +529,15 @@ impl Element for DetailsBodyElement {
                     }
                     window.paint_quad(gpui::fill(row_bounds, color));
                 }
+            }
+            crate::perf::time_us(
+                "details.paint.backgrounds",
+                backgrounds_t0.elapsed().as_micros() as u64,
+            );
 
-                let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
-
+            let icons_t0 = Instant::now();
+            for row in &prepaint.rows {
+                let y = bounds.origin.y + px(row.row as f32 * row_h);
                 if row.selected && prepaint.show_checkboxes {
                     // Windows-like selection affordance: the file-type glyph yields
                     // to a bright checkbox that pops in, then draws its checkmark.
@@ -541,14 +581,20 @@ impl Element for DetailsBodyElement {
                         cx,
                     );
                 }
+            }
+            crate::perf::time_us("details.paint.icons", icons_t0.elapsed().as_micros() as u64);
 
+            let text_t0 = Instant::now();
+            for row in &prepaint.rows {
+                let y = bounds.origin.y + px(row.row as f32 * row_h);
+                let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
                 let name_x = bounds.origin.x + px(prepaint.layout.name_x);
                 let name_clip = Bounds {
                     origin: point(name_x, y),
                     size: size(px(name_col_w.max(0.0)), px(row_h)),
                 };
                 window.with_content_mask(Some(ContentMask { bounds: name_clip }), |window| {
-                    let _ = row.name_s.paint(
+                    let _ = row.text.name_s.paint(
                         point(name_x, text_y),
                         px(row_h),
                         TextAlign::Left,
@@ -558,7 +604,7 @@ impl Element for DetailsBodyElement {
                     );
                 });
 
-                for meta in &row.meta_cols {
+                for meta in &row.text.meta_cols {
                     let Some(layout_col) = prepaint
                         .layout
                         .columns
@@ -586,8 +632,10 @@ impl Element for DetailsBodyElement {
                     });
                 }
             }
+            crate::perf::time_us("details.paint.text", text_t0.elapsed().as_micros() as u64);
 
             // Input: same handlers as the old event canvas.
+            let handlers_t0 = Instant::now();
             if let Some(app_entity) = app.upgrade() {
                 let move_view = app_entity.clone();
                 let move_hitbox = prepaint.hitbox.clone();
@@ -644,6 +692,10 @@ impl Element for DetailsBodyElement {
                     }
                 });
             }
+            crate::perf::time_us(
+                "details.paint.handlers",
+                handlers_t0.elapsed().as_micros() as u64,
+            );
         });
     }
 }

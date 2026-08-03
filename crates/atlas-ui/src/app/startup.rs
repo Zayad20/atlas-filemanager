@@ -480,6 +480,7 @@ impl App {
             miller_row_rects: std::cell::RefCell::new(HashMap::new()),
             details_hit: HashMap::new(),
             details_row_rings: HashMap::new(),
+            details_row_texts: Default::default(),
             grid_hit: HashMap::new(),
             grid_hover: None,
             file_surface_shapes: Default::default(),

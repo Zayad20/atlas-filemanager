@@ -212,6 +212,9 @@ pub struct App {
     pub(crate) details_hit: HashMap<TileId, DetailsHitModel>,
     /// Per-pane circular row slot buffer for Details (shape on miss only).
     pub(crate) details_row_rings: HashMap<TileId, crate::ui::views::details_ring::DetailsRowRing>,
+    /// Cross-pane immutable text cache. Panes cloned from the same directory
+    /// share shaped Details rows instead of rebuilding one cache per pane.
+    pub(crate) details_row_texts: crate::ui::views::details_ring::DetailsRowTextCache,
     pub(crate) grid_hit: HashMap<TileId, GridHitModel>,
     pub(crate) grid_hover: Option<(TileId, usize)>,
     /// Cross-pane cold cache; hot reuse remains in each Grid surface's local ring.

@@ -848,20 +848,16 @@ impl App {
                                 .value(t * settle_secs)
                                 .clamp(0.0, 1.0);
                             this.opacity((0.25 + 0.9 * visible).clamp(0.0, 1.0))
-                                .scale((0.48 + 0.52 * visible).clamp(0.48, 1.10))
                         }
                         SplitMotion::Closing(_) => {
                             let visible = 1.0 - crate::app::DockSplitAnimation::closing_progress(t);
-                            // The layout slot does the horizontal collapse. Keep
-                            // the content almost rigid so it does not look like
-                            // the pane is folding in two directions at once.
+                            // The interpolated layout handles the collapse. This
+                            // overlay only exits, avoiding a second transform.
                             let slide = 10.0 * (1.0 - visible);
-                            this.opacity(visible)
-                                .scale(0.92 + 0.08 * visible)
-                                .paint_offset(gpui::point(
-                                    px(close_axis.0 * slide),
-                                    px(close_axis.1 * slide),
-                                ))
+                            this.opacity(visible).paint_offset(gpui::point(
+                                px(close_axis.0 * slide),
+                                px(close_axis.1 * slide),
+                            ))
                         }
                     }
                 },
@@ -887,24 +883,8 @@ impl App {
             self.dock_split_animations.remove(&id);
             return final_shares;
         }
-        // The resize animation interpolates EVERY sibling's width each frame, which
-        // repaints all of them ~15× over the animation. With many panes in one
-        // container that is the stutter when rapidly splitting or closing under a held
-        // shortcut (perf.log: 40-54ms frames at 10+ panes). Past a small count, snap to
-        // the final layout (open still fades via PaneAnimation, close via the pop anim).
-        // Heuristic cap; raise if paint per pane gets cheap enough.
-        // Gate by total pane count: animation-frame cost is rebuilding every pane
-        // whose bounds changed (measured in release: ~17ms with 10-14 panes, ~28ms
-        // with 20+). The older sibling-count gate penalized same-direction splits
-        // even with few panes; the real cost depends on total invalidated panes.
-        let max_animated_panes = 64;
-        let max_animated_siblings = 64;
-        if self.file_panel_cache.len() > max_animated_panes
-            || final_shares.len() > max_animated_siblings
-        {
-            self.dock_split_animations.remove(&id);
-            return final_shares;
-        }
+        // Restore the established split animation: the layout interpolates the
+        // shares while the pane visual only fades/slides (never scales).
         window.request_animation_frame();
         let shares = anim.shares();
         let elapsed_ms = anim.started.elapsed().as_millis();

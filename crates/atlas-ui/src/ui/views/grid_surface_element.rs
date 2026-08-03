@@ -78,6 +78,16 @@ pub(crate) enum GridSurfaceLayout {
 }
 
 impl GridSurfaceLayout {
+    /// Select a stable, per-view perf metric without constructing a string on
+    /// every visible row. `grid` is used for thumbnails, `list` for compact
+    /// list mode.
+    fn metric(self, grid: &'static str, list: &'static str) -> &'static str {
+        match self {
+            Self::Thumbnail => grid,
+            Self::CompactList => list,
+        }
+    }
+
     fn layout_metric(self) -> &'static str {
         match self {
             Self::Thumbnail => "grid.surface.layout",
@@ -376,12 +386,18 @@ impl Element for GridSurfaceElement {
         };
 
         let mut state = GridSurfaceState::default();
+        let state_restore_t0 = Instant::now();
         window.with_optional_element_state(
             id,
             |state_opt: Option<Option<GridSurfaceState>>, _window| {
                 state = state_opt.flatten().unwrap_or_default();
                 ((), Some(state.clone()))
             },
+        );
+        crate::perf::time_us(
+            self.layout
+                .metric("grid.surface.state_restore", "list.surface.state_restore"),
+            state_restore_t0.elapsed().as_micros() as u64,
         );
         state.ensure_capacity((self.end_idx.saturating_sub(self.start_idx) + 8).max(16));
 
@@ -411,6 +427,10 @@ impl Element for GridSurfaceElement {
             total_count: self.total_count,
         };
 
+        let mut row_rects_us = 0_u64;
+        let mut shape_cache_us = 0_u64;
+        let mut ring_collect_us = 0_u64;
+        let app_update_t0 = Instant::now();
         let (slots, show_checkboxes) = app_entity.update(cx, |app, _| {
             match layout {
                 GridSurfaceLayout::Thumbnail => {
@@ -418,6 +438,7 @@ impl Element for GridSurfaceElement {
                 }
                 GridSurfaceLayout::CompactList => {
                     app.list_hit.insert(pane_id, model.clone());
+                    let row_rects_t0 = Instant::now();
                     let row_rects = (start_idx..end_idx)
                         .filter_map(|visible_pos| {
                             visible
@@ -426,6 +447,7 @@ impl Element for GridSurfaceElement {
                                 .map(|entry_idx| (entry_idx, model.cell_bounds(visible_pos)))
                         })
                         .collect();
+                    row_rects_us += row_rects_t0.elapsed().as_micros() as u64;
                     app.row_rects.borrow_mut().insert(pane_id, row_rects);
                 }
             }
@@ -526,21 +548,26 @@ impl Element for GridSurfaceElement {
                         hovered,
                         flashing,
                         dimmed,
-                        name: app.file_surface_shapes.get_or_insert_with(key, || {
-                            text_system.shape_line(
-                                name.into(),
-                                font_size,
-                                &[gpui::TextRun {
-                                    len: entry.name.len(),
-                                    font: font.clone(),
-                                    color: name_color,
-                                    background_color: None,
-                                    underline: None,
-                                    strikethrough: None,
-                                }],
-                                None,
-                            )
-                        }),
+                        name: {
+                            let shape_cache_t0 = Instant::now();
+                            let line = app.file_surface_shapes.get_or_insert_with(key, || {
+                                text_system.shape_line(
+                                    name.into(),
+                                    font_size,
+                                    &[gpui::TextRun {
+                                        len: entry.name.len(),
+                                        font: font.clone(),
+                                        color: name_color,
+                                        background_color: None,
+                                        underline: None,
+                                        strikethrough: None,
+                                    }],
+                                    None,
+                                )
+                            });
+                            shape_cache_us += shape_cache_t0.elapsed().as_micros() as u64;
+                            line
+                        },
                         icon: icon.clone(),
                     },
                     layout.ring_hit_metric(),
@@ -549,10 +576,39 @@ impl Element for GridSurfaceElement {
                 state.touch_dynamic(row, key, selected, hovered, flashing, dimmed, icon);
             }
 
-            (state.collect(start_idx, end_idx), show_checkboxes)
+            let ring_collect_t0 = Instant::now();
+            let slots = state.collect(start_idx, end_idx);
+            ring_collect_us += ring_collect_t0.elapsed().as_micros() as u64;
+            (slots, show_checkboxes)
         });
 
+        crate::perf::time_us(
+            self.layout
+                .metric("grid.surface.app_update", "list.surface.app_update"),
+            app_update_t0.elapsed().as_micros() as u64,
+        );
+        crate::perf::time_us(
+            self.layout
+                .metric("grid.surface.row_rects", "list.surface.row_rects"),
+            row_rects_us,
+        );
+        crate::perf::time_us(
+            self.layout
+                .metric("grid.surface.text_shape", "list.surface.text_shape"),
+            shape_cache_us,
+        );
+        crate::perf::time_us(
+            self.layout
+                .metric("grid.surface.ring_collect", "list.surface.ring_collect"),
+            ring_collect_us,
+        );
+        let state_store_t0 = Instant::now();
         window.with_optional_element_state(id, |_, _window| ((), Some(state.clone())));
+        crate::perf::time_us(
+            self.layout
+                .metric("grid.surface.state_store", "list.surface.state_store"),
+            state_store_t0.elapsed().as_micros() as u64,
+        );
         crate::perf::count_by(
             match self.layout {
                 GridSurfaceLayout::Thumbnail => "grid.surface.rows",
