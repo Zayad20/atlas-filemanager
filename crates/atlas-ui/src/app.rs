@@ -40,6 +40,7 @@ pub struct App {
     /// Per-pane virtualized-list scroll handles (UI-side), so keyboard nav can
     /// scroll the cursor into view.
     pub(crate) scroll_handles: HashMap<TileId, UniformListScrollHandle>,
+    pub(crate) scroll_targets: HashMap<TileId, f32>,
     pub(crate) miller_scroll_handles: HashMap<(TileId, usize), UniformListScrollHandle>,
     /// Runtime filesystem watcher handles keyed by pane tile. Kept out of
     /// `AppState` so model/state does not depend on `fs`.
@@ -584,7 +585,9 @@ impl DockSplitAnimation {
         if self.closing {
             Self::closing_progress(t)
         } else {
-            split_spring(t * Self::DURATION.as_secs_f32())
+            // Modern, smooth, non-bouncy curve (Cubic Ease-Out)
+            let inv = 1.0 - t;
+            1.0 - inv * inv * inv
         }
     }
 

@@ -108,6 +108,26 @@ impl App {
             let scroll = self.scroll_handle_for(pane_id);
             let base_scroll = scroll.0.borrow().base_handle.clone();
             let mut scroll_y = (-f32::from(base_scroll.offset().y)).max(0.0);
+            
+            // Grid Snapping Smooth Scroll Interpolation
+            if let Some(&target) = self.scroll_targets.get(&pane_id) {
+                let current = f32::from(base_scroll.offset().y);
+                if (target - current).abs() > 0.5 {
+                    let (ease, _) = crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
+                    let mut next = current + (target - current) * ease;
+                    if (target - next).abs() < 1.0 {
+                        next = target;
+                        self.scroll_targets.remove(&pane_id);
+                    }
+                    base_scroll.set_offset(gpui::point(gpui::px(0.0), gpui::px(next)));
+                    window.request_animation_frame();
+                } else {
+                    base_scroll.set_offset(gpui::point(gpui::px(0.0), gpui::px(target)));
+                    self.scroll_targets.remove(&pane_id);
+                }
+                scroll_y = (-f32::from(base_scroll.offset().y)).max(0.0);
+            }
+            let app_handle = cx.entity().clone();
             let viewport_h = {
                 let tracked = f32::from(base_scroll.bounds().size.height);
                 if tracked > 1.0 {
@@ -365,8 +385,31 @@ impl App {
                     MouseButton::Left,
                     crate::ui::views::on_pane_rubber_mouse_down(&view, pane_id),
                 )
-                .on_scroll_wheel(move |ev, window, cx| {
-                    ctrl_scroll(ev, pane_id, &scroll_view, window, cx)
+                .on_scroll_wheel({
+                    let base_scroll = base_scroll.clone();
+                    let app_handle = app_handle.clone();
+                    move |ev, window, cx| {
+                        if ev.modifiers.control || ev.modifiers.platform {
+                            ctrl_scroll(ev, pane_id, &scroll_view, window, cx);
+                        } else if cfg!(windows) {
+                            if let gpui::ScrollDelta::Lines(l) = ev.delta {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                let dy = l.y * pitch * 3.0;
+                                
+                                app_handle.update(cx, |app, cx| {
+                                    let current_target = *app.scroll_targets.entry(pane_id).or_insert_with(|| f32::from(base_scroll.offset().y));
+                                    let mut new_y = current_target + dy;
+                                    let max_scroll = (content_h - viewport_h).max(0.0);
+                                    new_y = (new_y / pitch).round() * pitch;
+                                    new_y = new_y.clamp(-max_scroll, 0.0);
+                                    
+                                    app.scroll_targets.insert(pane_id, new_y);
+                                    cx.notify();
+                                });
+                            }
+                        }
+                    }
                 })
                 .when_some(tooltip_data, |el, (name, path, is_dir, size, modified)| {
                     el.tooltip(move |window, cx| {

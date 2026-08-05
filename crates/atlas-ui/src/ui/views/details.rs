@@ -250,6 +250,27 @@ impl App {
             let scroll = self.scroll_handle_for(pane_id);
             let base_scroll = scroll.0.borrow().base_handle.clone();
             let scroll_view = view.clone();
+            
+            // Grid Snapping Smooth Scroll Interpolation
+            if let Some(&target) = self.scroll_targets.get(&pane_id) {
+                let current = f32::from(base_scroll.offset().y);
+                if (target - current).abs() > 0.5 {
+                    let (ease, _) = crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
+                    let mut next = current + (target - current) * ease;
+                    // If almost there, snap to target.
+                    if (target - next).abs() < 1.0 {
+                        next = target;
+                        self.scroll_targets.remove(&pane_id);
+                    }
+                    base_scroll.set_offset(gpui::point(gpui::px(0.0), gpui::px(next)));
+                    window.request_animation_frame();
+                } else {
+                    base_scroll.set_offset(gpui::point(gpui::px(0.0), gpui::px(target)));
+                    self.scroll_targets.remove(&pane_id);
+                }
+            }
+            
+            let app_handle = cx.entity().clone();
             // First frames after a split often report 0-height scroll bounds (layout
             // not committed yet). Shaping with viewport_h=0 builds an empty canvas and
             // used to stick for the whole seam animation via cache force-reuse.
@@ -437,8 +458,31 @@ impl App {
                         .size_full()
                         .overflow_y_scroll()
                         .track_scroll(&base_scroll)
-                        .on_scroll_wheel(move |ev, window, cx| {
-                            ctrl_scroll(ev, pane_id, &scroll_view, window, cx)
+                        .on_scroll_wheel({
+                            let base_scroll = base_scroll.clone();
+                            let app_handle = app_handle.clone();
+                            move |ev, window, cx| {
+                                if ev.modifiers.control || ev.modifiers.platform {
+                                    ctrl_scroll(ev, pane_id, &scroll_view, window, cx);
+                                } else if cfg!(windows) {
+                                    if let gpui::ScrollDelta::Lines(l) = ev.delta {
+                                        window.prevent_default();
+                                        cx.stop_propagation();
+                                        let dy = l.y * row_h * 3.0;
+                                        
+                                        app_handle.update(cx, |app, cx| {
+                                            let current_target = *app.scroll_targets.entry(pane_id).or_insert_with(|| f32::from(base_scroll.offset().y));
+                                            let mut new_y = current_target + dy;
+                                            let max_scroll = (total_height - viewport_h).max(0.0);
+                                            new_y = (new_y / row_h).round() * row_h;
+                                            new_y = new_y.clamp(-max_scroll, 0.0);
+                                            
+                                            app.scroll_targets.insert(pane_id, new_y);
+                                            cx.notify();
+                                        });
+                                    }
+                                }
+                            }
                         })
                         .child(
                             div()

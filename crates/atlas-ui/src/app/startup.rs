@@ -424,6 +424,7 @@ impl App {
             rt,
             focus_handle,
             scroll_handles: HashMap::new(),
+            scroll_targets: HashMap::new(),
             miller_scroll_handles: HashMap::new(),
             watchers,
             nucleo,

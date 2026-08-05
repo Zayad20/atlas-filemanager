@@ -486,6 +486,8 @@ impl Element for DetailsBodyElement {
         let stripe_bg = self.colors.stripe_bg;
 
         style.paint(bounds, window, cx, |window, cx| {
+            let origin_x = px(f32::from(bounds.origin.x).round());
+            let origin_y = px(f32::from(bounds.origin.y).round());
             let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
             let row_icon_size = ROW_ICON_SIZE * zoom_scale;
             let row_pad_x = ROW_PAD_X * zoom_scale;
@@ -499,9 +501,9 @@ impl Element for DetailsBodyElement {
 
             let backgrounds_t0 = Instant::now();
             for row in &prepaint.rows {
-                let y = bounds.origin.y + px(row.row as f32 * row_h);
+                let y = origin_y + px(row.row as f32 * row_h);
                 let row_bounds = Bounds {
-                    origin: point(bounds.origin.x, y),
+                    origin: point(origin_x, y),
                     size: size(bounds.size.width, px(row_h)),
                 };
 
@@ -530,12 +532,12 @@ impl Element for DetailsBodyElement {
 
             let icons_t0 = Instant::now();
             for row in &prepaint.rows {
-                let y = bounds.origin.y + px(row.row as f32 * row_h);
+                let y = origin_y + px(row.row as f32 * row_h);
                 if row.selected && prepaint.show_checkboxes {
                     // Windows-like selection affordance: the file-type glyph yields
                     // to a bright checkbox that pops in, then draws its checkmark.
                     let icon_center_x =
-                        f32::from(bounds.origin.x) + row_pad_x + row_icon_size * 0.5;
+                        f32::from(origin_x) + row_pad_x + row_icon_size * 0.5;
                     let icon_center_y = f32::from(y) + row_h * 0.5;
                     selection_checkbox::paint_animated(
                         window,
@@ -548,7 +550,7 @@ impl Element for DetailsBodyElement {
                     let _ = window.paint_image(
                         Bounds {
                             origin: point(
-                                bounds.origin.x + px(row_pad_x),
+                                origin_x + px(row_pad_x),
                                 y + px((row_h - row_icon_size) * 0.5),
                             ),
                             size: size(px(row_icon_size), px(row_icon_size)),
@@ -562,7 +564,7 @@ impl Element for DetailsBodyElement {
                     let _ = window.paint_svg(
                         Bounds {
                             origin: point(
-                                bounds.origin.x + px(row_pad_x),
+                                origin_x + px(row_pad_x),
                                 y + px((row_h - row_icon_size) * 0.5),
                             ),
                             size: size(px(row_icon_size), px(row_icon_size)),
@@ -581,9 +583,9 @@ impl Element for DetailsBodyElement {
             let name_t0 = Instant::now();
             let mut truncated_names = 0_u64;
             for row in &prepaint.rows {
-                let y = bounds.origin.y + px(row.row as f32 * row_h);
+                let y = origin_y + px(row.row as f32 * row_h);
                 let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
-                let name_x = bounds.origin.x + px(prepaint.layout.name_x);
+                let name_x = origin_x + px(prepaint.layout.name_x);
                 let mut name_color = if row.selected { accent_fg } else { fg };
                 if row.dimmed {
                     name_color = name_color.opacity(0.45);
@@ -616,7 +618,7 @@ impl Element for DetailsBodyElement {
             let meta_t0 = Instant::now();
             let mut truncated_meta = 0_u64;
             for row in &prepaint.rows {
-                let y = bounds.origin.y + px(row.row as f32 * row_h);
+                let y = origin_y + px(row.row as f32 * row_h);
                 let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
                 let mut meta_color = if row.selected { accent_fg } else { muted };
                 if row.dimmed {
@@ -632,7 +634,7 @@ impl Element for DetailsBodyElement {
                     else {
                         continue;
                     };
-                    let col_x = bounds.origin.x + px(layout_col.x);
+                    let col_x = origin_x + px(layout_col.x);
                     let col_w = layout_col.w;
                     let padding = cell_pad.min(col_w);
                     let available_width = (col_w - padding).max(0.0);

@@ -80,8 +80,6 @@ struct FlatRect {
 struct FlatPane {
     tile: TileId,
     rect: FlatRect,
-    /// Paint-only FLIP delta accumulated from animated linear ancestors.
-    paint_offset: (f32, f32),
     /// Direction in which an exiting pane should slide beneath its survivor.
     close_axis: (f32, f32),
 }
@@ -91,7 +89,6 @@ struct FlatSplitter {
     divider: usize,
     dir: LinearDir,
     rect: FlatRect,
-    paint_offset: (f32, f32),
 }
 
 fn split_child_span(share: f32, share_sum: f32, available: f32, child_count: usize) -> f32 {
@@ -104,10 +101,6 @@ fn split_child_span(share: f32, share_sum: f32, available: f32, child_count: usi
 
 fn closing_splitter_index(pane_ix: usize, num_splitters: usize) -> Option<usize> {
     (num_splitters > 0).then(|| pane_ix.min(num_splitters - 1))
-}
-
-fn flip_axis_offset(old: f32, final_position: f32, progress: f32) -> f32 {
-    (old - final_position) * (1.0 - progress)
 }
 
 /// Tabs-like tile (tab strip + body) hosted in its own entity so it can be embedded
@@ -289,7 +282,6 @@ impl App {
             &mut panes,
             &mut splitters,
             (0.0, 0.0),
-            (0.0, 0.0),
             active_animation,
         ) {
             return None;
@@ -305,33 +297,14 @@ impl App {
         for pane in panes {
             let motion = self.split_motion_for_tile(pane.tile);
             let is_closing = matches!(motion, Some(SplitMotion::Closing(_)));
-            let previous = self.pane_tabs_bounds.get(&pane.tile).map(|old| FlatRect {
-                x: f32::from(old.origin.x - bounds.origin.x),
-                y: f32::from(old.origin.y - bounds.origin.y),
-                w: f32::from(old.size.width),
-                h: f32::from(old.size.height),
-            });
-            // The tree keeps an exiting pane until the close timer elapses, but its
-            // final share is zero. Paint that one cached view at its previous bounds
-            // as an overlay while every survivor uses final layout immediately.
-            let rect = if is_closing {
-                previous.unwrap_or(pane.rect)
-            } else {
-                pane.rect
-            };
+            let rect = pane.rect;
             let content = if rect.w <= 4.0 || rect.h <= 4.0 {
                 div().size_full().into_any_element()
             } else {
                 self.render_cached_tabs(pane.tile, window, cx)
             };
-            let flip_offset = if is_closing {
-                gpui::point(px(0.0), px(0.0))
-            } else {
-                gpui::point(px(pane.paint_offset.0), px(pane.paint_offset.1))
-            };
             let animated = div()
                 .size_full()
-                .paint_offset(flip_offset)
                 .child(self.render_split_intro(pane.tile, content, motion, pane.close_axis));
             let pane = div()
                 .absolute()
@@ -387,10 +360,6 @@ impl App {
                     .top(px(splitter.rect.y))
                     .w(px(splitter.rect.w.max(0.0)))
                     .h(px(splitter.rect.h.max(0.0)))
-                    .paint_offset(gpui::point(
-                        px(splitter.paint_offset.0),
-                        px(splitter.paint_offset.1),
-                    ))
                     .child(splitter_el),
             ));
         }
@@ -407,7 +376,6 @@ impl App {
         panes: &mut Vec<FlatPane>,
         splitters: &mut Vec<FlatSplitter>,
         close_axis: (f32, f32),
-        paint_offset: (f32, f32),
         active_animation: Option<Instant>,
     ) -> bool {
         match self.state.pane_tree.tiles.get(id).cloned() {
@@ -415,7 +383,6 @@ impl App {
                 panes.push(FlatPane {
                     tile: id,
                     rect,
-                    paint_offset,
                     close_axis,
                 });
                 true
@@ -427,7 +394,6 @@ impl App {
                     panes.push(FlatPane {
                         tile: id,
                         rect,
-                        paint_offset,
                         close_axis,
                     });
                     true
@@ -539,27 +505,22 @@ impl App {
                     if ix > 0 {
                         let gap = splitter_gaps[ix - 1];
                         let start_gap = start_splitter_gaps[ix - 1];
-                        let splitter_axis_offset = flip_axis_offset(start_offset, offset, progress);
-                        let splitter_paint_offset = match linear.dir {
-                            LinearDir::Horizontal => {
-                                (paint_offset.0 + splitter_axis_offset, paint_offset.1)
-                            }
-                            LinearDir::Vertical => {
-                                (paint_offset.0, paint_offset.1 + splitter_axis_offset)
-                            }
-                        };
+                        
+                        let current_offset = start_offset + (offset - start_offset) * progress;
+                        let current_gap = start_gap + (gap - start_gap) * progress;
+                        
                         let srect = match linear.dir {
                             LinearDir::Horizontal => FlatRect {
-                                x: offset,
+                                x: current_offset,
                                 y: rect.y,
-                                w: gap,
+                                w: current_gap,
                                 h: rect.h,
                             },
                             LinearDir::Vertical => FlatRect {
                                 x: rect.x,
-                                y: offset,
+                                y: current_offset,
                                 w: rect.w,
-                                h: gap,
+                                h: current_gap,
                             },
                         };
                         splitters.push(FlatSplitter {
@@ -567,7 +528,6 @@ impl App {
                             divider: ix - 1,
                             dir: linear.dir,
                             rect: srect,
-                            paint_offset: splitter_paint_offset,
                         });
                         offset += gap;
                         start_offset += start_gap;
@@ -591,25 +551,22 @@ impl App {
                         start_available,
                         linear.children.len(),
                     );
-                    let child_axis_offset = flip_axis_offset(start_offset, offset, progress);
-                    let child_paint_offset = match linear.dir {
-                        LinearDir::Horizontal => {
-                            (paint_offset.0 + child_axis_offset, paint_offset.1)
-                        }
-                        LinearDir::Vertical => (paint_offset.0, paint_offset.1 + child_axis_offset),
-                    };
+                    
+                    let current_offset = start_offset + (offset - start_offset) * progress;
+                    let current_child_span = start_child_span + (child_span - start_child_span) * progress;
+
                     let child_rect = match linear.dir {
                         LinearDir::Horizontal => FlatRect {
-                            x: offset,
+                            x: current_offset,
                             y: rect.y,
-                            w: child_span,
+                            w: current_child_span,
                             h: rect.h,
                         },
                         LinearDir::Vertical => FlatRect {
                             x: rect.x,
-                            y: offset,
+                            y: current_offset,
                             w: rect.w,
-                            h: child_span,
+                            h: current_child_span,
                         },
                     };
                     offset += child_span;
@@ -645,7 +602,6 @@ impl App {
                         panes,
                         splitters,
                         child_close_axis,
-                        child_paint_offset,
                         active_animation,
                     );
                 }
@@ -1004,8 +960,7 @@ impl App {
             .on_prepaint(move |bounds, _window, cx| {
                 let should_update = {
                     let app_ref = app.read(cx);
-                    app_ref.dock_split_animations.is_empty()
-                        && app_ref.state.pane_tree.tiles.get(id).is_some()
+                    app_ref.state.pane_tree.tiles.get(id).is_some()
                         && app_ref.pane_tabs_bounds.get(&id) != Some(&bounds)
                 };
                 if should_update {
@@ -1713,11 +1668,13 @@ impl gpui::Element for FastPaneShell {
         let tab_offset = bounds.origin - tab_bounds.origin;
         let content_offset = bounds.origin + gpui::Point { x: gpui::px(0.0), y: tab_bounds.size.height } - content_bounds.origin;
 
-        window.with_element_offset(tab_offset, |window| {
-            self.tab_strip.prepaint(window, cx);
-        });
-        window.with_element_offset(content_offset, |window| {
-            self.content.prepaint(window, cx);
+        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+            window.with_element_offset(tab_offset, |window| {
+                self.tab_strip.prepaint(window, cx);
+            });
+            window.with_element_offset(content_offset, |window| {
+                self.content.prepaint(window, cx);
+            });
         });
     }
 

@@ -19,10 +19,10 @@ use atlas_model::pane::TabId;
 use gpui::prelude::*;
 use gpui::{
     div, px, AnyView, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    MouseButton, Render, SharedString, StyleRefinement, WeakEntity, Window,
+    MouseButton, Render, SharedString, WeakEntity, Window,
 };
 use gpui_component::dock::{Panel, PanelEvent, PanelInfo, PanelState};
-use gpui_component::{h_flex, ActiveTheme as _, ElementExt as _, StyledExt as _};
+use gpui_component::{h_flex, ActiveTheme as _, ElementExt as _};
 
 pub struct FilePanel {
     /// Weak handle to the orchestrator that owns `AppState`.
@@ -239,11 +239,7 @@ impl Render for FilePanel {
         let _perf = crate::perf::span_detail("file_panel.render", || format!("pane={}", pane_id.0));
         match self.app.upgrade() {
             Some(_app) => {
-                // Dock FLIP lays out the final geometry once, then translates cached
-                // paint. Keeping this cache at size_full makes its bounds stable for
-                // every intermediate animation frame.
-                let content_style = StyleRefinement::default().v_flex().size_full();
-                let content = AnyView::from(self.content.clone()).cached(content_style);
+                let content = AnyView::from(self.content.clone());
                 let bounds_app = self.app.clone();
                 let panel = div()
                     .size_full()
@@ -254,8 +250,7 @@ impl Render for FilePanel {
                         if let Some(app) = bounds_app.upgrade() {
                             let should_update = {
                                 let app_ref = app.read(cx);
-                                app_ref.dock_split_animations.is_empty()
-                                    && app_ref.state.tab_states.contains_key(&pane_id)
+                                app_ref.state.tab_states.contains_key(&pane_id)
                                     && app_ref.pane_layout_bounds.get(&pane_id) != Some(&bounds)
                             };
                             if should_update {

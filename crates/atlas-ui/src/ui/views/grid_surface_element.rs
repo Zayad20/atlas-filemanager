@@ -647,6 +647,8 @@ impl Element for GridSurfaceElement {
         let layout = self.layout;
 
         style.paint(bounds, window, cx, |window, cx| {
+            let origin_x = px(f32::from(bounds.origin.x).round());
+            let origin_y = px(f32::from(bounds.origin.y).round());
             let zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
             let icon_area_h = thumb * GRID_ICON_AREA;
             let label_h = GRID_LABEL_H * zoom;
@@ -659,8 +661,8 @@ impl Element for GridSurfaceElement {
                 for slot in &prepaint.slots {
                     let col = slot.row % cols;
                     let row = slot.row / cols;
-                    let x = bounds.origin.x + px(col as f32 * pitch_x);
-                    let y = bounds.origin.y + px(row as f32 * pitch_y);
+                    let x = origin_x + px(col as f32 * pitch_x);
+                    let y = origin_y + px(row as f32 * pitch_y);
                     let cell = Bounds {
                         origin: point(x, y),
                         size: size(px(cell_w), px(cell_h)),
@@ -770,8 +772,8 @@ impl Element for GridSurfaceElement {
                 for slot in &prepaint.slots {
                     let col = slot.row % cols;
                     let row = slot.row / cols;
-                    let x = bounds.origin.x + px(col as f32 * pitch_x);
-                    let y = bounds.origin.y + px(row as f32 * pitch_y);
+                    let x = origin_x + px(col as f32 * pitch_x);
+                    let y = origin_y + px(row as f32 * pitch_y);
                     let cell = Bounds {
                         origin: point(x, y),
                         size: size(px(cell_w), px(cell_h)),
