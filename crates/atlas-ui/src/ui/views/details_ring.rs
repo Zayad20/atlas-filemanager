@@ -13,7 +13,7 @@ use std::time::Instant;
 const DETAILS_ROW_TEXT_CACHE_CAPACITY: usize = 8_192;
 
 /// Immutable, GPU-ready text shared by every pane that renders the same row
-/// with the same font/colors. Dynamic pane state deliberately lives outside.
+/// with the same font geometry. Dynamic color/state deliberately lives outside.
 pub(crate) struct DetailsRowText {
     /// Full name line (not pre-truncated). Clip at paint.
     pub name_s: ShapedLine,
@@ -68,7 +68,7 @@ impl DetailsRowTextCache {
 pub(crate) struct DetailsRowSlot {
     /// Visible-list index (`start_idx..end_idx`).
     pub row: usize,
-    /// Hash of everything that forces a re-shape (text, font, colors baked in runs).
+    /// Hash of everything that changes the immutable row payload.
     pub shape_key: u64,
     pub selected: bool,
     /// Starts only on an observed selection transition, never merely because a
@@ -199,8 +199,8 @@ impl DetailsRowRing {
     }
 }
 
-/// Hash inputs that force re-shape. Width is intentionally excluded: names are
-/// clipped at paint, not re-split when the column shrinks.
+/// Hash inputs that force re-shape. Width and paint-only state are intentionally
+/// excluded: truncation and color are applied while painting.
 pub(crate) fn details_row_shape_key(
     entry_idx: usize,
     name: &str,
@@ -209,12 +209,8 @@ pub(crate) fn details_row_shape_key(
     display_type: &str,
     kind_disc: u8,
     extension: Option<&str>,
-    selected: bool,
-    dimmed: bool,
     font: &Font,
     font_size: Pixels,
-    name_color_bits: u32,
-    meta_color_bits: u32,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -225,12 +221,8 @@ pub(crate) fn details_row_shape_key(
     display_type.hash(&mut h);
     kind_disc.hash(&mut h);
     extension.hash(&mut h);
-    selected.hash(&mut h);
-    dimmed.hash(&mut h);
     font.hash(&mut h);
     f32::from(font_size).to_bits().hash(&mut h);
-    name_color_bits.hash(&mut h);
-    meta_color_bits.hash(&mut h);
     h.finish()
 }
 

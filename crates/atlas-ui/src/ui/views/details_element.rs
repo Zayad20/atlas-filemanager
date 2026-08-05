@@ -14,17 +14,17 @@ use crate::ui::drag_hover::{
 use crate::ui::icons::AtlasIcon;
 use crate::ui::selection_checkbox;
 use crate::ui::views::details::{
-    hsla_key_bits, DetailsColors, DetailsRowLayout, CELL_PAD, DETAILS_ROW_H, ROW_ICON_SIZE,
-    ROW_PAD_X, ROW_TEXT_Y_NUDGE,
+    DetailsColors, DetailsRowLayout, CELL_PAD, DETAILS_ROW_H, ROW_ICON_SIZE, ROW_PAD_X,
+    ROW_TEXT_Y_NUDGE,
 };
 use crate::ui::views::details_ring::{self, DetailsRingMeta, DetailsRowSlot, DetailsRowText};
 use atlas_model::file_entry::FileKind;
 use atlas_model::pane::TabId;
 use gpui::{
     point, px, size, App as GpuiApp, Bounds, ContentMask, Corners, DispatchPhase, Element,
-    ElementId, Font, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
-    IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Refineable,
-    SharedString, Style, StyleRefinement, Styled, TextAlign, TextRun, WeakEntity, Window,
+    ElementId, Font, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Refineable, ShapedLine,
+    SharedString, Style, StyleRefinement, Styled, TextRun, WeakEntity, Window,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -50,6 +50,8 @@ pub(crate) struct DetailsBodyElement {
 /// Data produced in prepaint for paint (ring slots + geometry).
 pub(crate) struct DetailsBodyPrepaint {
     rows: Vec<DetailsRowSlot>,
+    /// One shaped trailer per pane/style; every row reuses its glyph geometry.
+    ellipsis: ShapedLine,
     layout: DetailsRowLayout,
     show_checkboxes: bool,
     /// Lets window-level listeners participate in GPUI's occlusion hit-testing.
@@ -172,10 +174,29 @@ impl Element for DetailsBodyElement {
         // This element registers window-level listeners in paint. Give them a
         // hitbox so popovers/modals using `.occlude()` suppress underlying rows.
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        let ts = window.text_system();
+        let ellipsis_text = SharedString::new_static("…");
+        let ellipsis_run = TextRun {
+            len: ellipsis_text.len(),
+            font: font.clone(),
+            // `paint_mono_truncated` supplies the live color. This color only
+            // identifies the otherwise reusable shaped geometry.
+            color: colors.fg,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let ellipsis_shape_t0 = Instant::now();
+        let ellipsis = ts.shape_line(ellipsis_text, font_size, &[ellipsis_run], None);
+        crate::perf::time_us(
+            "details.text.ellipsis_shape",
+            ellipsis_shape_t0.elapsed().as_micros() as u64,
+        );
 
         let Some(app_entity) = self.app.upgrade() else {
             return DetailsBodyPrepaint {
                 rows: Vec::new(),
+                ellipsis,
                 layout,
                 show_checkboxes: false,
                 hitbox,
@@ -195,8 +216,6 @@ impl Element for DetailsBodyElement {
             end_idx,
             total_count: visible.len(),
         };
-
-        let ts = window.text_system();
 
         // Summed across all panes → details.element.ring_ms in frame_summary.
         let _ring_perf = crate::perf::span("details.element.ring");
@@ -246,8 +265,6 @@ impl Element for DetailsBodyElement {
                 odd: bool,
                 dimmed: bool,
                 shape_key: u64,
-                name_color: Hsla,
-                meta_color: Hsla,
                 icon_tex: Option<std::sync::Arc<gpui::RenderImage>>,
                 fallback_icon_path: Option<&'static str>,
             }
@@ -281,27 +298,6 @@ impl Element for DetailsBodyElement {
                     let hovered = app.details_hover == Some((pane_id, entry_idx));
                     let odd = i % 2 == 1;
 
-                    let name_color = if selected {
-                        colors.accent_fg
-                    } else {
-                        colors.fg
-                    };
-                    let name_color = if dimmed {
-                        name_color.opacity(0.45)
-                    } else {
-                        name_color
-                    };
-                    let meta_color = if selected {
-                        colors.accent_fg
-                    } else {
-                        colors.muted
-                    };
-                    let meta_color = if dimmed {
-                        meta_color.opacity(0.45)
-                    } else {
-                        meta_color
-                    };
-
                     let kind_disc = match entry.kind {
                         FileKind::Dir => 0u8,
                         _ => 1u8,
@@ -314,12 +310,8 @@ impl Element for DetailsBodyElement {
                         &entry.display_type,
                         kind_disc,
                         entry.extension.as_deref(),
-                        selected,
-                        dimmed,
                         &font,
                         font_size,
-                        hsla_key_bits(name_color),
-                        hsla_key_bits(meta_color),
                     );
 
                     let icon_t0 = Instant::now();
@@ -347,8 +339,6 @@ impl Element for DetailsBodyElement {
                         odd,
                         dimmed,
                         shape_key,
-                        name_color,
-                        meta_color,
                         icon_tex,
                         fallback_icon_path,
                     });
@@ -381,7 +371,7 @@ impl Element for DetailsBodyElement {
                         let name_run = TextRun {
                             len: name.len(),
                             font: font.clone(),
-                            color: b.name_color,
+                            color: colors.fg,
                             background_color: None,
                             underline: None,
                             strikethrough: None,
@@ -403,7 +393,7 @@ impl Element for DetailsBodyElement {
                             let run = TextRun {
                                 len: text.len(),
                                 font: font.clone(),
-                                color: b.meta_color,
+                                color: colors.muted,
                                 background_color: None,
                                 underline: None,
                                 strikethrough: None,
@@ -465,6 +455,7 @@ impl Element for DetailsBodyElement {
 
         DetailsBodyPrepaint {
             rows,
+            ellipsis,
             layout,
             show_checkboxes,
             hitbox,
@@ -488,6 +479,8 @@ impl Element for DetailsBodyElement {
         let app = self.app.clone();
         let row_h = self.row_h;
         let accent = self.colors.accent;
+        let accent_fg = self.colors.accent_fg;
+        let fg = self.colors.fg;
         let hover = self.colors.hover;
         let muted = self.colors.muted;
         let stripe_bg = self.colors.stripe_bg;
@@ -585,24 +578,50 @@ impl Element for DetailsBodyElement {
             crate::perf::time_us("details.paint.icons", icons_t0.elapsed().as_micros() as u64);
 
             let text_t0 = Instant::now();
+            let name_t0 = Instant::now();
+            let mut truncated_names = 0_u64;
             for row in &prepaint.rows {
                 let y = bounds.origin.y + px(row.row as f32 * row_h);
                 let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
                 let name_x = bounds.origin.x + px(prepaint.layout.name_x);
+                let mut name_color = if row.selected { accent_fg } else { fg };
+                if row.dimmed {
+                    name_color = name_color.opacity(0.45);
+                }
+                let name_width = name_col_w.max(0.0);
+                if row.text.name_s.width() > px(name_width) {
+                    truncated_names += 1;
+                }
                 let name_clip = Bounds {
                     origin: point(name_x, y),
-                    size: size(px(name_col_w.max(0.0)), px(row_h)),
+                    size: size(px(name_width), px(row_h)),
                 };
                 window.with_content_mask(Some(ContentMask { bounds: name_clip }), |window| {
-                    let _ = row.text.name_s.paint(
+                    let _ = row.text.name_s.paint_mono_truncated(
                         point(name_x, text_y),
                         px(row_h),
-                        TextAlign::Left,
-                        None,
+                        px(name_width),
+                        &prepaint.ellipsis,
+                        name_color,
                         window,
                         cx,
                     );
                 });
+            }
+            crate::perf::time_us(
+                "details.paint.text_name",
+                name_t0.elapsed().as_micros() as u64,
+            );
+
+            let meta_t0 = Instant::now();
+            let mut truncated_meta = 0_u64;
+            for row in &prepaint.rows {
+                let y = bounds.origin.y + px(row.row as f32 * row_h);
+                let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
+                let mut meta_color = if row.selected { accent_fg } else { muted };
+                if row.dimmed {
+                    meta_color = meta_color.opacity(0.45);
+                }
 
                 for meta in &row.text.meta_cols {
                     let Some(layout_col) = prepaint
@@ -615,24 +634,40 @@ impl Element for DetailsBodyElement {
                     };
                     let col_x = bounds.origin.x + px(layout_col.x);
                     let col_w = layout_col.w;
-                    let text_x = col_x + px(cell_pad.min(col_w));
+                    let padding = cell_pad.min(col_w);
+                    let available_width = (col_w - padding).max(0.0);
+                    let text_x = col_x + px(padding);
+                    if meta.line.width() > px(available_width) {
+                        truncated_meta += 1;
+                    }
                     let meta_clip = Bounds {
                         origin: point(col_x, y),
                         size: size(px(col_w.max(0.0)), px(row_h)),
                     };
                     window.with_content_mask(Some(ContentMask { bounds: meta_clip }), |window| {
-                        let _ = meta.line.paint(
+                        let _ = meta.line.paint_mono_truncated(
                             point(text_x, text_y),
                             px(row_h),
-                            TextAlign::Left,
-                            None,
+                            px(available_width),
+                            &prepaint.ellipsis,
+                            meta_color,
                             window,
                             cx,
                         );
                     });
                 }
             }
+            crate::perf::time_us(
+                "details.paint.text_meta",
+                meta_t0.elapsed().as_micros() as u64,
+            );
             crate::perf::time_us("details.paint.text", text_t0.elapsed().as_micros() as u64);
+            crate::perf::count_by("details.paint.text_truncated_name", truncated_names);
+            crate::perf::count_by("details.paint.text_truncated_meta", truncated_meta);
+            crate::perf::count_by(
+                "details.paint.text_truncated",
+                truncated_names + truncated_meta,
+            );
 
             // Input: same handlers as the old event canvas.
             let handlers_t0 = Instant::now();

@@ -339,8 +339,17 @@ impl App {
     /// `drain_bg_results_state_only` to avoid re-entering gpui's entity lease.
     pub(crate) fn drain_bg_results(&mut self, cx: &mut gpui::Context<Self>) -> bool {
         let _perf = crate::perf::span("bg.drain");
+        let start = std::time::Instant::now();
+        let max_duration = std::time::Duration::from_millis(2);
+
         // Drain icon channel first.
-        let icon_results: Vec<_> = self.icon_rx.try_iter().collect();
+        let mut icon_results = Vec::new();
+        for res in self.icon_rx.try_iter() {
+            icon_results.push(res);
+            if start.elapsed() > max_duration {
+                break;
+            }
+        }
         let icon_len = icon_results.len();
         let icon_changed = !icon_results.is_empty();
         let mut changed = icon_changed;
@@ -352,7 +361,15 @@ impl App {
             self.icon_cache.insert(key, state);
         }
 
-        let results: Vec<BgResult> = self.rx.try_iter().collect();
+        let mut results = Vec::new();
+        if start.elapsed() < max_duration {
+            for res in self.rx.try_iter() {
+                results.push(res);
+                if start.elapsed() > max_duration {
+                    break;
+                }
+            }
+        }
         let results_len = results.len();
         let info = self.process_bg_results(results);
         changed |= info.changed;
@@ -395,7 +412,16 @@ impl App {
     /// re-enters gpui's entity lease machinery.
     pub(crate) fn drain_bg_results_state_only(&mut self) -> bool {
         let _perf = crate::perf::span("bg.drain_state_only");
-        let icon_results: Vec<_> = self.icon_rx.try_iter().collect();
+        let start = std::time::Instant::now();
+        let max_duration = std::time::Duration::from_millis(2);
+
+        let mut icon_results = Vec::new();
+        for res in self.icon_rx.try_iter() {
+            icon_results.push(res);
+            if start.elapsed() > max_duration {
+                break;
+            }
+        }
         let icon_len = icon_results.len();
         let icon_changed = !icon_results.is_empty();
         let mut changed = icon_changed;
@@ -406,7 +432,15 @@ impl App {
             };
             self.icon_cache.insert(key, state);
         }
-        let results: Vec<BgResult> = self.rx.try_iter().collect();
+        let mut results = Vec::new();
+        if start.elapsed() < max_duration {
+            for res in self.rx.try_iter() {
+                results.push(res);
+                if start.elapsed() > max_duration {
+                    break;
+                }
+            }
+        }
         let results_len = results.len();
         let info = self.process_bg_results(results);
         changed |= info.changed;

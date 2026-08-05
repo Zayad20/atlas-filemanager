@@ -952,13 +952,6 @@ pub(crate) struct DetailsRowLayout {
     pub columns: Vec<DetailsColumnLayout>,
 }
 
-pub(crate) fn hsla_key_bits(c: Hsla) -> u32 {
-    c.h.to_bits()
-        ^ c.s.to_bits().rotate_left(8)
-        ^ c.l.to_bits().rotate_left(16)
-        ^ c.a.to_bits().rotate_left(24)
-}
-
 fn prime_details_file_icons_range(
     app: &mut App,
     pane_id: TabId,

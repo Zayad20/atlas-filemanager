@@ -5,7 +5,7 @@ use gpui::{
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme as _, ElementExt as _};
 
-use crate::app::{App, PaneAnimation, PaneAnimationKind};
+use crate::app::{App, PaneAnimationKind};
 use crate::input::action::Action;
 use crate::ui::dock::drag::{tab_drag_entity, TabDrag};
 use crate::ui::glass::{backdrop_tint, glass_chip_fill, glass_fill, GlassExt};
@@ -65,7 +65,7 @@ const PANE_DROP_ZONES_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
 
 #[derive(Clone, Copy, Debug)]
 enum SplitMotion {
-    Opening(PaneAnimation),
+    Opening,
     Closing(Instant),
 }
 
@@ -80,6 +80,8 @@ struct FlatRect {
 struct FlatPane {
     tile: TileId,
     rect: FlatRect,
+    /// Paint-only FLIP delta accumulated from animated linear ancestors.
+    paint_offset: (f32, f32),
     /// Direction in which an exiting pane should slide beneath its survivor.
     close_axis: (f32, f32),
 }
@@ -89,6 +91,7 @@ struct FlatSplitter {
     divider: usize,
     dir: LinearDir,
     rect: FlatRect,
+    paint_offset: (f32, f32),
 }
 
 fn split_child_span(share: f32, share_sum: f32, available: f32, child_count: usize) -> f32 {
@@ -103,13 +106,8 @@ fn closing_splitter_index(pane_ix: usize, num_splitters: usize) -> Option<usize>
     (num_splitters > 0).then(|| pane_ix.min(num_splitters - 1))
 }
 
-fn frozen_tabs_size(
-    split_animating: bool,
-    stable_size: Option<gpui::Size<gpui::Pixels>>,
-) -> Option<gpui::Size<gpui::Pixels>> {
-    stable_size.filter(|size| {
-        split_animating && f32::from(size.width) > 1.0 && f32::from(size.height) > 1.0
-    })
+fn flip_axis_offset(old: f32, final_position: f32, progress: f32) -> f32 {
+    (old - final_position) * (1.0 - progress)
 }
 
 /// Tabs-like tile (tab strip + body) hosted in its own entity so it can be embedded
@@ -274,6 +272,15 @@ impl App {
             w,
             h,
         };
+        // Only the newest interrupted/restarted split supplies visual motion.
+        // Older entries may still be settling, but combining axes makes a lateral
+        // split travel diagonally.
+        let active_animation = self
+            .dock_split_animations
+            .values()
+            .filter(|animation| !animation.done())
+            .max_by_key(|animation| animation.started)
+            .map(|animation| animation.started);
         if !self.collect_flat_layout(
             root,
             rect,
@@ -282,44 +289,79 @@ impl App {
             &mut panes,
             &mut splitters,
             (0.0, 0.0),
+            (0.0, 0.0),
+            active_animation,
         ) {
             return None;
         }
 
         let view = cx.entity();
+        let flip_active = active_animation.is_some();
         let mut host = div().absolute().inset_0().overflow_hidden();
         let mut closing_panes = Vec::new();
+        let mut opening_panes = Vec::new();
         let mut live_panes = Vec::new();
 
         for pane in panes {
-            let content = if pane.rect.w <= 4.0 || pane.rect.h <= 4.0 {
+            let motion = self.split_motion_for_tile(pane.tile);
+            let is_closing = matches!(motion, Some(SplitMotion::Closing(_)));
+            let previous = self.pane_tabs_bounds.get(&pane.tile).map(|old| FlatRect {
+                x: f32::from(old.origin.x - bounds.origin.x),
+                y: f32::from(old.origin.y - bounds.origin.y),
+                w: f32::from(old.size.width),
+                h: f32::from(old.size.height),
+            });
+            // The tree keeps an exiting pane until the close timer elapses, but its
+            // final share is zero. Paint that one cached view at its previous bounds
+            // as an overlay while every survivor uses final layout immediately.
+            let rect = if is_closing {
+                previous.unwrap_or(pane.rect)
+            } else {
+                pane.rect
+            };
+            let content = if rect.w <= 4.0 || rect.h <= 4.0 {
                 div().size_full().into_any_element()
             } else {
                 self.render_cached_tabs(pane.tile, window, cx)
             };
-            let motion = self.split_motion_for_tile(pane.tile);
-            let is_closing = matches!(motion, Some(SplitMotion::Closing(_)));
+            let flip_offset = if is_closing {
+                gpui::point(px(0.0), px(0.0))
+            } else {
+                gpui::point(px(pane.paint_offset.0), px(pane.paint_offset.1))
+            };
+            let animated = div()
+                .size_full()
+                .paint_offset(flip_offset)
+                .child(self.render_split_intro(pane.tile, content, motion, pane.close_axis));
             let pane = div()
                 .absolute()
-                .left(px(pane.rect.x))
-                .top(px(pane.rect.y))
-                .w(px(pane.rect.w.max(0.0)))
-                .h(px(pane.rect.h.max(0.0)))
+                .left(px(rect.x))
+                .top(px(rect.y))
+                .w(px(rect.w.max(0.0)))
+                .h(px(rect.h.max(0.0)))
                 .min_w(px(0.))
                 .min_h(px(0.))
-                .when(!is_closing, |this| this.overflow_hidden())
-                .child(self.render_split_intro(pane.tile, content, motion, pane.close_axis));
+                // A final-bounds clip can hide most of a translated survivor.
+                // Let panes overlap while FLIP is active; the dock root remains clipped.
+                .when(!is_closing && !flip_active, |this| this.overflow_hidden())
+                .child(animated);
             if is_closing {
                 closing_panes.push(pane);
+            } else if matches!(motion, Some(SplitMotion::Opening)) {
+                opening_panes.push(pane);
             } else {
                 live_panes.push(pane);
             }
         }
 
-        // Paint the closing pane first. Live panes then cover it as the slot
-        // collapses, producing a clean "slides underneath" exit instead of a
-        // floating card that suddenly reveals the background.
-        for pane in closing_panes.into_iter().chain(live_panes) {
+        // Transition panes stay underneath. Survivors slide over them from their
+        // previous origins, which reveals an opening pane and covers a closing one
+        // without a second pop/scale/exit animation on the pane itself.
+        for pane in closing_panes
+            .into_iter()
+            .chain(opening_panes)
+            .chain(live_panes)
+        {
             host = host.child(layout_region("dock.pane_slot", pane));
         }
 
@@ -345,6 +387,10 @@ impl App {
                     .top(px(splitter.rect.y))
                     .w(px(splitter.rect.w.max(0.0)))
                     .h(px(splitter.rect.h.max(0.0)))
+                    .paint_offset(gpui::point(
+                        px(splitter.paint_offset.0),
+                        px(splitter.paint_offset.1),
+                    ))
                     .child(splitter_el),
             ));
         }
@@ -361,12 +407,15 @@ impl App {
         panes: &mut Vec<FlatPane>,
         splitters: &mut Vec<FlatSplitter>,
         close_axis: (f32, f32),
+        paint_offset: (f32, f32),
+        active_animation: Option<Instant>,
     ) -> bool {
         match self.state.pane_tree.tiles.get(id).cloned() {
             Some(Tile::Pane(_)) => {
                 panes.push(FlatPane {
                     tile: id,
                     rect,
+                    paint_offset,
                     close_axis,
                 });
                 true
@@ -378,6 +427,7 @@ impl App {
                     panes.push(FlatPane {
                         tile: id,
                         rect,
+                        paint_offset,
                         close_axis,
                     });
                     true
@@ -422,6 +472,15 @@ impl App {
                 } else {
                     crate::app::normalize_split_shares(&mut final_shares);
                 }
+                let flip_animation = self
+                    .dock_split_animations
+                    .get(&id)
+                    .filter(|animation| {
+                        Some(animation.started) == active_animation
+                            && !animation.done()
+                            && animation.from.len() == linear.children.len()
+                    })
+                    .cloned();
                 let sum: f32 = final_shares.iter().copied().filter(|v| *v > 0.0).sum();
                 let shares = if final_shares.len() == linear.children.len() && sum > f32::EPSILON {
                     self.dock_split_shares(id, final_shares, window, cx)
@@ -449,32 +508,46 @@ impl App {
                             )
                         })
                     });
-                let closing_progress = self
-                    .dock_split_animations
-                    .get(&id)
-                    .filter(|animation| animation.closing)
-                    .map(|animation| {
-                        let t = animation.started.elapsed().as_secs_f32()
-                            / crate::app::DockSplitAnimation::DURATION.as_secs_f32();
-                        crate::app::DockSplitAnimation::closing_progress(t)
-                    })
-                    .unwrap_or_else(|| closing_ix.map_or(0.0, |_| 1.0));
                 let closing_splitter_ix =
                     closing_ix.and_then(|pane_ix| closing_splitter_index(pane_ix, num_splitters));
                 let mut splitter_gaps = vec![splitter_size; num_splitters];
                 if let Some(splitter_ix) = closing_splitter_ix {
-                    splitter_gaps[splitter_ix] *= 1.0 - closing_progress;
+                    splitter_gaps[splitter_ix] = 0.0;
                 }
+                let start_splitter_gaps = vec![splitter_size; num_splitters];
                 let available = (span - splitter_gaps.iter().sum::<f32>()).max(0.0);
+                let start_available = (span - start_splitter_gaps.iter().sum::<f32>()).max(0.0);
+                let (start_shares, progress) = if let Some(animation) = flip_animation {
+                    let progress = animation.progress();
+                    (animation.from, progress)
+                } else {
+                    (shares.clone(), 1.0)
+                };
+                let start_share_sum = start_shares
+                    .iter()
+                    .copied()
+                    .filter(|share| *share > 0.0)
+                    .sum::<f32>();
                 let mut offset = match linear.dir {
                     LinearDir::Horizontal => rect.x,
                     LinearDir::Vertical => rect.y,
                 };
+                let mut start_offset = offset;
                 let mut any = false;
 
                 for (ix, child_id) in linear.children.iter().copied().enumerate() {
                     if ix > 0 {
                         let gap = splitter_gaps[ix - 1];
+                        let start_gap = start_splitter_gaps[ix - 1];
+                        let splitter_axis_offset = flip_axis_offset(start_offset, offset, progress);
+                        let splitter_paint_offset = match linear.dir {
+                            LinearDir::Horizontal => {
+                                (paint_offset.0 + splitter_axis_offset, paint_offset.1)
+                            }
+                            LinearDir::Vertical => {
+                                (paint_offset.0, paint_offset.1 + splitter_axis_offset)
+                            }
+                        };
                         let srect = match linear.dir {
                             LinearDir::Horizontal => FlatRect {
                                 x: offset,
@@ -494,8 +567,10 @@ impl App {
                             divider: ix - 1,
                             dir: linear.dir,
                             rect: srect,
+                            paint_offset: splitter_paint_offset,
                         });
                         offset += gap;
+                        start_offset += start_gap;
                     }
 
                     let share = if closing_layout {
@@ -505,6 +580,24 @@ impl App {
                     };
                     let child_span =
                         split_child_span(share, share_sum, available, linear.children.len());
+                    let start_share = if closing_layout {
+                        start_shares.get(ix).copied().unwrap_or(1.0).max(0.0)
+                    } else {
+                        start_shares.get(ix).copied().unwrap_or(1.0).max(0.01)
+                    };
+                    let start_child_span = split_child_span(
+                        start_share,
+                        start_share_sum,
+                        start_available,
+                        linear.children.len(),
+                    );
+                    let child_axis_offset = flip_axis_offset(start_offset, offset, progress);
+                    let child_paint_offset = match linear.dir {
+                        LinearDir::Horizontal => {
+                            (paint_offset.0 + child_axis_offset, paint_offset.1)
+                        }
+                        LinearDir::Vertical => (paint_offset.0, paint_offset.1 + child_axis_offset),
+                    };
                     let child_rect = match linear.dir {
                         LinearDir::Horizontal => FlatRect {
                             x: offset,
@@ -520,6 +613,7 @@ impl App {
                         },
                     };
                     offset += child_span;
+                    start_offset += start_child_span;
                     let child_close_axis = if matches!(
                         self.split_motion_for_tile(child_id),
                         Some(SplitMotion::Closing(_))
@@ -551,6 +645,8 @@ impl App {
                         panes,
                         splitters,
                         child_close_axis,
+                        child_paint_offset,
+                        active_animation,
                     );
                 }
                 any
@@ -658,21 +754,11 @@ impl App {
                             )
                         })
                     });
-                let closing_progress = self
-                    .dock_split_animations
-                    .get(&id)
-                    .filter(|animation| animation.closing)
-                    .map(|animation| {
-                        let t = animation.started.elapsed().as_secs_f32()
-                            / crate::app::DockSplitAnimation::DURATION.as_secs_f32();
-                        crate::app::DockSplitAnimation::closing_progress(t)
-                    })
-                    .unwrap_or_else(|| closing_ix.map_or(0.0, |_| 1.0));
                 let closing_splitter_ix =
                     closing_ix.and_then(|pane_ix| closing_splitter_index(pane_ix, num_splitters));
                 let mut splitter_gaps = vec![splitter_size; num_splitters];
                 if let Some(splitter_ix) = closing_splitter_ix {
-                    splitter_gaps[splitter_ix] *= 1.0 - closing_progress;
+                    splitter_gaps[splitter_ix] = 0.0;
                 }
                 let total_splitter_size = splitter_gaps.iter().sum::<f32>();
                 let mut current_offset = 0.0;
@@ -801,7 +887,7 @@ impl App {
                                     | PaneAnimationKind::SplitVertical
                             )
                         })
-                        .map(SplitMotion::Opening)
+                        .map(|_| SplitMotion::Opening)
                 }),
             Tile::Container(Container::Tabs(tabs)) => tabs
                 .children
@@ -828,38 +914,22 @@ impl App {
         let Some(motion) = motion else {
             return inner.into_any_element();
         };
-        let key = match motion {
-            SplitMotion::Opening(animation) => ("open", animation.started),
-            SplitMotion::Closing(started) => ("close", started),
-        };
-        let duration = match motion {
-            SplitMotion::Opening(_) => crate::ui::motion::PANE_SPRING.settle(),
-            SplitMotion::Closing(_) => crate::app::DockSplitAnimation::DURATION,
+        let SplitMotion::Closing(started) = motion else {
+            // Opening is revealed exclusively by the surrounding panes' FLIP.
+            // Adding a second offset here is the bottom/right pop-in the user saw.
+            return inner.into_any_element();
         };
         inner
             .with_animation(
-                crate::ui::motion::keyed("dock-split-pop", id.0, key),
-                crate::ui::motion::linear_anim(duration),
+                crate::ui::motion::keyed("dock-split-pop", id.0, ("close", started)),
+                crate::ui::motion::linear_anim(crate::app::DockSplitAnimation::DURATION),
                 move |this, t| {
-                    match motion {
-                        SplitMotion::Opening(_) => {
-                            let settle_secs = crate::ui::motion::PANE_SPRING.settle().as_secs_f32();
-                            let visible = crate::ui::motion::PANE_SPRING
-                                .value(t * settle_secs)
-                                .clamp(0.0, 1.0);
-                            this.opacity((0.25 + 0.9 * visible).clamp(0.0, 1.0))
-                        }
-                        SplitMotion::Closing(_) => {
-                            let visible = 1.0 - crate::app::DockSplitAnimation::closing_progress(t);
-                            // The interpolated layout handles the collapse. This
-                            // overlay only exits, avoiding a second transform.
-                            let slide = 10.0 * (1.0 - visible);
-                            this.opacity(visible).paint_offset(gpui::point(
-                                px(close_axis.0 * slide),
-                                px(close_axis.1 * slide),
-                            ))
-                        }
-                    }
+                    let progress = crate::app::DockSplitAnimation::closing_progress(t);
+                    let slide = 10.0 * progress;
+                    this.paint_offset(gpui::point(
+                        px(close_axis.0 * slide),
+                        px(close_axis.1 * slide),
+                    ))
                 },
             )
             .into_any_element()
@@ -883,20 +953,20 @@ impl App {
             self.dock_split_animations.remove(&id);
             return final_shares;
         }
-        // Restore the established split animation: the layout interpolates the
-        // shares while the pane visual only fades/slides (never scales).
+        // FLIP: layout jumps to final shares once. Cached paint moves from the
+        // previous origins, so Taffy/prepaint do not repeat on every animation frame.
         window.request_animation_frame();
-        let shares = anim.shares();
+        let progress = anim.progress();
         let elapsed_ms = anim.started.elapsed().as_millis();
         if anim.closing && (elapsed_ms < 20 || elapsed_ms % 80 < 18) {
             crate::perf::event(|| {
                 format!(
-                    "pane_close.split_frame parent={} elapsed_ms={} shares={:?}",
-                    id.0, elapsed_ms, shares
+                    "pane_close.flip_frame parent={} elapsed_ms={} progress={:.3}",
+                    id.0, elapsed_ms, progress
                 )
             });
         }
-        shares
+        final_shares
     }
 
     /// Embed the tabs-like tile as a cached `PaneTabsView`. The fingerprint captures
@@ -921,23 +991,7 @@ impl App {
         if self.pane_tabs_fp.insert(id, fp) != Some(fp) {
             view.update(cx, |_, cx| cx.notify());
         }
-        // Opening can keep its previous rasterized size, but closing must stay
-        // layout-live so every surviving pane follows the collapsing slot.
-        let split_closing = !self.pane_closing.is_empty()
-            || self
-                .dock_split_animations
-                .values()
-                .any(|animation| animation.closing);
-        let frozen_size = frozen_tabs_size(
-            !self.dock_split_animations.is_empty() && !split_closing,
-            self.pane_tabs_bounds.get(&id).map(|bounds| bounds.size),
-        );
-        let mut style = gpui::StyleRefinement::default();
-        style = if let Some(size) = frozen_size {
-            style.w(size.width).h(size.height)
-        } else {
-            style.size_full()
-        };
+        let style = gpui::StyleRefinement::default().size_full();
 
         let app = cx.entity();
         let host = div()
@@ -1068,44 +1122,32 @@ impl App {
                 }
             })
             .unwrap_or_else(|| div().size_full().bg(panel_bg).into_any_element());
-        let content =
-            timed_layout_region("pane.body", PANE_BODY_TIMINGS, content).into_any_element();
         let content = if let Some(active) = active {
             self.with_split_drop_zones(active, content, cx)
         } else {
             content
         };
-        let content_shell = timed_layout_region(
-            "pane.content_shell",
-            PANE_CONTENT_SHELL_TIMINGS,
-            div()
-                .flex_1()
-                .min_h(px(0.))
-                .min_w(px(0.))
-                .child(timed_layout_region(
-                    "pane.content_layers",
-                    PANE_CONTENT_LAYERS_TIMINGS,
-                    content,
-                )),
-        );
-        let panel = v_flex()
-            .size_full()
-            .min_w(px(0.))
-            .min_h(px(0.))
-            .overflow_hidden()
-            .when(
-                self.state.settings.dim_inactive_panes && self.state.focused_tile != active_id,
-                |s| s.opacity(0.65),
-            )
-            .when(figma_glass, |s| s.glass_surface(panel_bg))
-            .when(!figma_glass, |s| {
-                s.rounded(cx.theme().radius_lg)
-                    .bg(panel_bg)
-                    .border_1()
-                    .border_color(cx.theme().border.opacity(0.55))
-            })
-            .child(self.render_tab_strip(children, active, window, cx))
-            .child(content_shell);
+
+        let panel = FastPaneShell::new(
+            active_id,
+            self.render_tab_strip(children, active, window, cx),
+            content,
+        )
+        .size_full()
+        .min_w(px(0.))
+        .min_h(px(0.))
+        .overflow_hidden()
+        .when(
+            self.state.settings.dim_inactive_panes && self.state.focused_tile != active_id,
+            |s| s.opacity(0.65),
+        )
+        .when(figma_glass, |s| s.glass_surface(panel_bg))
+        .when(!figma_glass, |s| {
+            s.rounded(cx.theme().radius_lg)
+                .bg(panel_bg)
+                .border_1()
+                .border_color(cx.theme().border.opacity(0.55))
+        });
 
         let is_mod = window.modifiers().alt;
         let activate_drag_app = cx.entity().clone();
@@ -1570,19 +1612,138 @@ mod tests {
     }
 
     #[test]
-    fn freezes_tabs_size_only_during_split_animation() {
-        let size = gpui::size(px(320.0), px(180.0));
+    fn flip_offset_moves_from_previous_to_final_position() {
+        assert_eq!(flip_axis_offset(100.0, 40.0, 0.0), 60.0);
+        assert_eq!(flip_axis_offset(100.0, 40.0, 0.5), 30.0);
+        assert_eq!(flip_axis_offset(100.0, 40.0, 1.0), 0.0);
+    }
+}
 
-        assert_eq!(frozen_tabs_size(true, Some(size)), Some(size));
-        assert_eq!(frozen_tabs_size(false, Some(size)), None);
-        assert_eq!(frozen_tabs_size(true, None), None);
-        assert_eq!(
-            frozen_tabs_size(true, Some(gpui::size(px(1.0), px(180.0)))),
-            None
-        );
-        assert_eq!(
-            frozen_tabs_size(true, Some(gpui::size(px(320.0), px(1.0)))),
-            None
-        );
+pub(crate) struct FastPaneShell {
+    id: gpui::ElementId,
+    tab_strip: gpui::AnyElement,
+    content: gpui::AnyElement,
+    style: gpui::StyleRefinement,
+}
+
+pub(crate) struct FastPaneShellPrepaint {
+    tab_layout: gpui::LayoutId,
+    content_layout: gpui::LayoutId,
+}
+
+impl FastPaneShell {
+    pub(crate) fn new(
+        pane_id: TileId,
+        tab_strip: gpui::AnyElement,
+        content: gpui::AnyElement,
+    ) -> Self {
+        Self {
+            id: gpui::ElementId::Name(gpui::SharedString::from(format!("pane-shell-{}", pane_id.0))),
+            tab_strip,
+            content,
+            style: gpui::StyleRefinement::default(),
+        }
+    }
+}
+
+impl gpui::IntoElement for FastPaneShell {
+    type Element = Self;
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl gpui::Styled for FastPaneShell {
+    fn style(&mut self) -> &mut gpui::StyleRefinement {
+        &mut self.style
+    }
+}
+
+impl gpui::Element for FastPaneShell {
+    type RequestLayoutState = FastPaneShellPrepaint;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) -> (gpui::LayoutId, Self::RequestLayoutState) {
+        crate::perf::count("pane.shell.layout");
+        let tab_layout = self.tab_strip.request_layout(window, cx);
+        let content_layout = self.content.request_layout(window, cx);
+
+        let mut style = gpui::Style::default();
+        style.refine(&self.style);
+
+        let layout_id = window.request_layout(style, vec![tab_layout, content_layout], cx);
+
+        (
+            layout_id,
+            FastPaneShellPrepaint {
+                tab_layout,
+                content_layout,
+            },
+        )
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        request_layout: &mut Self::RequestLayoutState,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) -> Self::PrepaintState {
+        crate::perf::count("pane.shell.prepaint");
+        
+        let tab_bounds = window.layout_bounds(request_layout.tab_layout);
+        let content_bounds = window.layout_bounds(request_layout.content_layout);
+        
+        let tab_offset = bounds.origin - tab_bounds.origin;
+        let content_offset = bounds.origin + gpui::Point { x: gpui::px(0.0), y: tab_bounds.size.height } - content_bounds.origin;
+
+        window.with_element_offset(tab_offset, |window| {
+            self.tab_strip.prepaint(window, cx);
+        });
+        window.with_element_offset(content_offset, |window| {
+            self.content.prepaint(window, cx);
+        });
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) {
+        crate::perf::count("pane.shell.paint");
+        
+        let tab_bounds = window.layout_bounds(request_layout.tab_layout);
+        let content_bounds = window.layout_bounds(request_layout.content_layout);
+        
+        let tab_offset = bounds.origin - tab_bounds.origin;
+        let content_offset = bounds.origin + gpui::Point { x: gpui::px(0.0), y: tab_bounds.size.height } - content_bounds.origin;
+
+        window.with_element_offset(tab_offset, |window| {
+            self.tab_strip.paint(window, cx);
+        });
+        window.with_element_offset(content_offset, |window| {
+            self.content.paint(window, cx);
+        });
     }
 }

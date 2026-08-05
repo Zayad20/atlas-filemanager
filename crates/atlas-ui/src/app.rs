@@ -562,13 +562,7 @@ impl DockSplitAnimation {
     }
 
     pub(crate) fn shares(&self) -> Vec<f32> {
-        let t = (self.started.elapsed().as_secs_f32() / Self::DURATION.as_secs_f32()).min(1.0);
-        let eased = split_spring(t * Self::DURATION.as_secs_f32());
-        let eased = if self.closing {
-            Self::closing_progress(t)
-        } else {
-            eased
-        };
+        let eased = self.progress();
         let mut shares = self
             .from
             .iter()
@@ -581,6 +575,17 @@ impl DockSplitAnimation {
             normalize_split_shares(&mut shares);
         }
         shares
+    }
+
+    /// Visual progress for paint-only FLIP. Layout uses `to` immediately; only
+    /// the cached scene moves from its previous origin to the final origin.
+    pub(crate) fn progress(&self) -> f32 {
+        let t = (self.started.elapsed().as_secs_f32() / Self::DURATION.as_secs_f32()).min(1.0);
+        if self.closing {
+            Self::closing_progress(t)
+        } else {
+            split_spring(t * Self::DURATION.as_secs_f32())
+        }
     }
 
     /// Progress used by both the closing split geometry and its visual treatment.
