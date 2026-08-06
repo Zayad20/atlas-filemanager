@@ -300,8 +300,20 @@ impl App {
             let rect = pane.rect;
             let content = if rect.w <= 4.0 || rect.h <= 4.0 {
                 div().size_full().into_any_element()
+            } else if is_closing {
+                let bounds = self.pane_tabs_bounds.get(&pane.tile).cloned().unwrap_or_default();
+                let left_shift = if pane.close_axis.0 < 0.0 { rect.w - f32::from(bounds.size.width) } else { 0.0 };
+                let top_shift = if pane.close_axis.1 < 0.0 { rect.h - f32::from(bounds.size.height) } else { 0.0 };
+                div()
+                    .absolute()
+                    .left(px(left_shift))
+                    .top(px(top_shift))
+                    .w(bounds.size.width)
+                    .h(bounds.size.height)
+                    .child(self.render_cached_tabs(pane.tile, true, window, cx))
+                    .into_any_element()
             } else {
-                self.render_cached_tabs(pane.tile, window, cx)
+                self.render_cached_tabs(pane.tile, false, window, cx)
             };
             let animated = div()
                 .size_full()
@@ -316,7 +328,7 @@ impl App {
                 .min_h(px(0.))
                 // A final-bounds clip can hide most of a translated survivor.
                 // Let panes overlap while FLIP is active; the dock root remains clipped.
-                .when(!is_closing && !flip_active, |this| this.overflow_hidden())
+                .when(!flip_active || is_closing, |this| this.overflow_hidden())
                 .child(animated);
             if is_closing {
                 closing_panes.push(pane);
@@ -619,12 +631,12 @@ impl App {
     ) -> Option<AnyElement> {
         crate::perf::count("dock.render_tree");
         match self.state.pane_tree.tiles.get(id)?.clone() {
-            Tile::Pane(_) => Some(self.render_cached_tabs(id, window, cx)),
+            Tile::Pane(_) => Some(self.render_cached_tabs(id, false, window, cx)),
             Tile::Container(Container::Tabs(tabs)) => {
                 if tabs.children.is_empty() {
                     return None;
                 }
-                Some(self.render_cached_tabs(id, window, cx))
+                Some(self.render_cached_tabs(id, false, window, cx))
             }
             Tile::Container(Container::Linear(linear)) => {
                 let mut children = Vec::new();
@@ -932,6 +944,7 @@ impl App {
     fn render_cached_tabs(
         &mut self,
         id: TileId,
+        is_closing: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -944,7 +957,7 @@ impl App {
             self.pane_tabs_cache.insert(id, view.clone());
             view
         };
-        if self.pane_tabs_fp.insert(id, fp) != Some(fp) {
+        if self.pane_tabs_fp.insert(id, fp) != Some(fp) && !is_closing {
             view.update(cx, |_, cx| cx.notify());
         }
         let style = gpui::StyleRefinement::default().size_full();
@@ -1181,7 +1194,7 @@ impl App {
     }
 
     fn should_render_pane_body(&self, pane_id: TileId) -> bool {
-        !self.pane_closing.contains_key(&pane_id)
+        true
     }
 
     fn render_tab_strip(
