@@ -14,17 +14,17 @@ use crate::ui::drag_hover::{
 use crate::ui::icons::AtlasIcon;
 use crate::ui::selection_checkbox;
 use crate::ui::views::details::{
-    DetailsColors, DetailsRowLayout, CELL_PAD, DETAILS_ROW_H, ROW_ICON_SIZE, ROW_PAD_X,
-    ROW_TEXT_Y_NUDGE,
+    DetailsColors, DetailsContentLod, DetailsRowLayout, CELL_PAD, DETAILS_ROW_H, ROW_ICON_SIZE,
+    ROW_PAD_X, ROW_TEXT_Y_NUDGE,
 };
 use crate::ui::views::details_ring::{self, DetailsRingMeta, DetailsRowSlot, DetailsRowText};
 use atlas_model::file_entry::FileKind;
 use atlas_model::pane::TabId;
 use gpui::{
-    point, px, size, App as GpuiApp, Bounds, ContentMask, Corners, DispatchPhase, Element,
-    ElementId, Font, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Refineable, ShapedLine,
-    SharedString, Style, StyleRefinement, Styled, TextRun, WeakEntity, Window,
+    point, px, size, App as GpuiApp, Bounds, Corners, DispatchPhase, Element, ElementId, Font,
+    GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
+    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Refineable, ShapedLine, SharedString,
+    Style, StyleRefinement, Styled, TextRun, WeakEntity, Window,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -41,6 +41,7 @@ pub(crate) struct DetailsBodyElement {
     start_idx: usize,
     end_idx: usize,
     layout: DetailsRowLayout,
+    content_lod: DetailsContentLod,
     colors: DetailsColors,
     font: Font,
     font_size: Pixels,
@@ -54,7 +55,7 @@ pub(crate) struct DetailsBodyPrepaint {
     ellipsis: ShapedLine,
     layout: DetailsRowLayout,
     show_checkboxes: bool,
-    animating: bool,
+    content_lod: DetailsContentLod,
     /// Lets window-level listeners participate in GPUI's occlusion hit-testing.
     hitbox: Hitbox,
 }
@@ -71,6 +72,7 @@ impl DetailsBodyElement {
         start_idx: usize,
         end_idx: usize,
         layout: DetailsRowLayout,
+        content_lod: DetailsContentLod,
         colors: DetailsColors,
         font: Font,
         font_size: Pixels,
@@ -86,6 +88,7 @@ impl DetailsBodyElement {
             start_idx,
             end_idx,
             layout,
+            content_lod,
             colors,
             font,
             font_size,
@@ -158,6 +161,7 @@ impl Element for DetailsBodyElement {
         let scroll_y = self.scroll_y;
         let viewport_h = self.viewport_h;
         let layout = self.layout.clone();
+        let content_lod = self.content_lod;
         let font = self.font.clone();
         let font_size = self.font_size;
         let colors = self.colors;
@@ -200,7 +204,7 @@ impl Element for DetailsBodyElement {
                 ellipsis,
                 layout,
                 show_checkboxes: false,
-                animating: false,
+                content_lod,
                 hitbox,
             };
         };
@@ -222,7 +226,7 @@ impl Element for DetailsBodyElement {
         // Summed across all panes → details.element.ring_ms in frame_summary.
         let _ring_perf = crate::perf::span("details.element.ring");
         let app_update_t0 = Instant::now();
-        let (rows, show_checkboxes, animating) = app_entity.update(cx, |app, _| {
+        let (rows, show_checkboxes) = app_entity.update(cx, |app, _| {
             app.details_hit.insert(pane_id, hit_model.clone());
             if app.drag_hover_maybe_active() {
                 let targets = app
@@ -271,11 +275,10 @@ impl Element for DetailsBodyElement {
                 fallback_icon_path: Option<&'static str>,
             }
 
-            let (builds, entries, show_checkboxes, animating) = {
+            let (builds, entries, show_checkboxes) = {
                 let row_build_t0 = Instant::now();
-                let animating = !app.dock_split_animations.is_empty() || !app.pane_animations.is_empty();
                 let Some(tab_state) = app.state.tab_states.get(&pane_id) else {
-                    return (Vec::new(), false, animating);
+                    return (Vec::new(), false);
                 };
                 // One pointer clone keeps the immutable directory snapshot alive
                 // after the TabState borrow ends. Split panes already share this Arc.
@@ -348,7 +351,7 @@ impl Element for DetailsBodyElement {
                 }
                 row_build_us += row_build_t0.elapsed().as_micros() as u64;
                 let show_checkboxes = tab_state.selection.selected.len() > 1;
-                (builds, entries, show_checkboxes, animating)
+                (builds, entries, show_checkboxes)
             };
 
             let cols = layout.columns.clone();
@@ -439,7 +442,7 @@ impl Element for DetailsBodyElement {
             let ring_collect_t0 = Instant::now();
             let rows = ring.collect_rows(start_idx, end_idx);
             ring_collect_us += ring_collect_t0.elapsed().as_micros() as u64;
-            (rows, show_checkboxes, animating)
+            (rows, show_checkboxes)
         });
         crate::perf::time_us(
             "details.prepaint.app_update",
@@ -455,13 +458,14 @@ impl Element for DetailsBodyElement {
         crate::perf::count_by("details.text.shape_name", text_shape_name_calls);
         crate::perf::count_by("details.text.shape_meta", text_shape_meta_calls);
         crate::perf::time_us("details.ring.collect", ring_collect_us);
+        crate::perf::count(content_lod.perf_counter());
 
         DetailsBodyPrepaint {
             rows,
             ellipsis,
             layout,
             show_checkboxes,
-            animating,
+            content_lod,
             hitbox,
         }
     }
@@ -585,23 +589,22 @@ impl Element for DetailsBodyElement {
             let text_t0 = Instant::now();
             let name_t0 = Instant::now();
             let mut truncated_names = 0_u64;
-            for row in &prepaint.rows {
-                let y = origin_y + px(row.row as f32 * row_h);
-                let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
-                let name_x = origin_x + px(prepaint.layout.name_x);
-                let mut name_color = if row.selected { accent_fg } else { fg };
-                if row.dimmed {
-                    name_color = name_color.opacity(0.45);
-                }
-                let name_width = name_col_w.max(0.0);
-                if row.text.name_s.width() > px(name_width) {
-                    truncated_names += 1;
-                }
-                let name_clip = Bounds {
-                    origin: point(name_x, y),
-                    size: size(px(name_width), px(row_h)),
-                };
-                if name_width > 15.0 * zoom_scale {
+            let name_width = prepaint
+                .content_lod
+                .name_paint_width(name_col_w.max(0.0), zoom_scale);
+            let paint_names = prepaint.content_lod.paints_name() && name_width > 15.0 * zoom_scale;
+            if paint_names {
+                for row in &prepaint.rows {
+                    let y = origin_y + px(row.row as f32 * row_h);
+                    let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
+                    let name_x = origin_x + px(prepaint.layout.name_x);
+                    let mut name_color = if row.selected { accent_fg } else { fg };
+                    if row.dimmed {
+                        name_color = name_color.opacity(0.45);
+                    }
+                    if row.text.name_s.width() > px(name_width) {
+                        truncated_names += 1;
+                    }
                     let _ = row.text.name_s.paint_mono_truncated(
                         point(name_x, text_y),
                         px(row_h),
@@ -613,6 +616,14 @@ impl Element for DetailsBodyElement {
                     );
                 }
             }
+            crate::perf::count_by(
+                "details.paint.name_rows",
+                if paint_names {
+                    prepaint.rows.len() as u64
+                } else {
+                    0
+                },
+            );
             crate::perf::time_us(
                 "details.paint.text_name",
                 name_t0.elapsed().as_micros() as u64,
@@ -620,56 +631,54 @@ impl Element for DetailsBodyElement {
 
             let meta_t0 = Instant::now();
             let mut truncated_meta = 0_u64;
-            for row in &prepaint.rows {
-                let y = origin_y + px(row.row as f32 * row_h);
-                let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
-                let mut meta_color = if row.selected { accent_fg } else { muted };
-                if row.dimmed {
-                    meta_color = meta_color.opacity(0.45);
-                }
+            let mut painted_meta_cells = 0_u64;
+            if prepaint.content_lod.paints_metadata() {
+                for row in &prepaint.rows {
+                    let y = origin_y + px(row.row as f32 * row_h);
+                    let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
+                    let mut meta_color = if row.selected { accent_fg } else { muted };
+                    if row.dimmed {
+                        meta_color = meta_color.opacity(0.45);
+                    }
 
-                for meta in &row.text.meta_cols {
-                    if prepaint.animating {
-                        continue;
-                    }
-                    let Some(layout_col) = prepaint
-                        .layout
-                        .columns
-                        .iter()
-                        .find(|col| col.column == meta.column)
-                    else {
-                        continue;
-                    };
-                    if layout_col.x >= f32::from(bounds.size.width) {
-                        continue;
-                    }
-                    let col_x = origin_x + px(layout_col.x);
-                    let mut col_w = layout_col.w;
-                    let remaining_w = (f32::from(bounds.size.width) - layout_col.x).max(0.0);
-                    col_w = col_w.min(remaining_w);
-                    let padding = cell_pad.min(col_w);
-                    let available_width = (col_w - padding).max(0.0);
-                    let text_x = col_x + px(padding);
-                    if meta.line.width() > px(available_width) {
-                        truncated_meta += 1;
-                    }
-                    let meta_clip = Bounds {
-                        origin: point(col_x, y),
-                        size: size(px(col_w.max(0.0)), px(row_h)),
-                    };
-                    if available_width > 15.0 * zoom_scale {
-                        let _ = meta.line.paint_mono_truncated(
-                            point(text_x, text_y),
-                            px(row_h),
-                            px(available_width),
-                            &prepaint.ellipsis,
-                            meta_color,
-                            window,
-                            cx,
-                        );
+                    for meta in &row.text.meta_cols {
+                        let Some(layout_col) = prepaint
+                            .layout
+                            .columns
+                            .iter()
+                            .find(|col| col.column == meta.column)
+                        else {
+                            continue;
+                        };
+                        if layout_col.x >= f32::from(bounds.size.width) {
+                            continue;
+                        }
+                        let col_x = origin_x + px(layout_col.x);
+                        let mut col_w = layout_col.w;
+                        let remaining_w = (f32::from(bounds.size.width) - layout_col.x).max(0.0);
+                        col_w = col_w.min(remaining_w);
+                        let padding = cell_pad.min(col_w);
+                        let available_width = (col_w - padding).max(0.0);
+                        let text_x = col_x + px(padding);
+                        if meta.line.width() > px(available_width) {
+                            truncated_meta += 1;
+                        }
+                        if available_width > 15.0 * zoom_scale {
+                            painted_meta_cells += 1;
+                            let _ = meta.line.paint_mono_truncated(
+                                point(text_x, text_y),
+                                px(row_h),
+                                px(available_width),
+                                &prepaint.ellipsis,
+                                meta_color,
+                                window,
+                                cx,
+                            );
+                        }
                     }
                 }
             }
+            crate::perf::count_by("details.paint.meta_cells", painted_meta_cells);
             crate::perf::time_us(
                 "details.paint.text_meta",
                 meta_t0.elapsed().as_micros() as u64,

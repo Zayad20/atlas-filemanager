@@ -8,7 +8,7 @@ use crate::input::action::Action;
 use crate::ui::icons::AtlasIcon;
 use crate::ui::surface::{chrome_font_size_header, paint_theme_icon, shape_text, Slot};
 use crate::ui::views::details::{
-    DetailsColors, DetailsRowLayout, CELL_PAD, DETAILS_ROW_H, ROW_TEXT_Y_NUDGE,
+    DetailsColors, DetailsContentLod, DetailsRowLayout, CELL_PAD, DETAILS_ROW_H, ROW_TEXT_Y_NUDGE,
 };
 use atlas_model::file_entry::{SortColumn, SortDir};
 use atlas_model::pane::TabId;
@@ -52,11 +52,12 @@ pub(crate) struct DetailsHeaderElement {
     type_labels: Vec<String>,
     dragging: Option<DetailsColumn>,
     drag_x: f32,
+    content_lod: DetailsContentLod,
     style: StyleRefinement,
 }
 
 pub(crate) struct DetailsHeaderPrepaint {
-    name_line: ShapedLine,
+    name_line: Option<ShapedLine>,
     meta_lines: Vec<(DetailsColumn, ShapedLine)>,
     layout: DetailsRowLayout,
     header_h: f32,
@@ -78,6 +79,7 @@ impl DetailsHeaderElement {
         type_labels: Vec<String>,
         dragging: Option<DetailsColumn>,
         drag_x: f32,
+        content_lod: DetailsContentLod,
     ) -> Self {
         Self {
             id: ElementId::Name(SharedString::from(format!(
@@ -96,6 +98,7 @@ impl DetailsHeaderElement {
             type_labels,
             dragging,
             drag_x,
+            content_lod,
             style: StyleRefinement::default(),
         }
     }
@@ -224,26 +227,30 @@ impl Element for DetailsHeaderElement {
         } else {
             self.colors.muted
         };
-        let name_line = shape_label(
-            &rust_i18n::t!("column_name"),
-            font,
-            font_size,
-            name_color,
-            window,
-        );
+        let name_line = self.content_lod.paints_name_header().then(|| {
+            shape_label(
+                &rust_i18n::t!("column_name"),
+                font,
+                font_size,
+                name_color,
+                window,
+            )
+        });
 
         let mut meta_lines = Vec::with_capacity(self.layout.columns.len());
-        for col in &self.layout.columns {
-            let sort = sort_for_column(col.column);
-            let active = self.sort_col == sort
-                || (col.column == DetailsColumn::Type && self.has_type_filter);
-            let color = if active {
-                self.colors.accent
-            } else {
-                self.colors.muted
-            };
-            let line = shape_label(&column_label(col.column), font, font_size, color, window);
-            meta_lines.push((col.column, line));
+        if self.content_lod.paints_metadata() {
+            for col in &self.layout.columns {
+                let sort = sort_for_column(col.column);
+                let active = self.sort_col == sort
+                    || (col.column == DetailsColumn::Type && self.has_type_filter);
+                let color = if active {
+                    self.colors.accent
+                } else {
+                    self.colors.muted
+                };
+                let line = shape_label(&column_label(col.column), font, font_size, color, window);
+                meta_lines.push((col.column, line));
+            }
         }
 
         DetailsHeaderPrepaint {
@@ -336,31 +343,37 @@ impl Element for DetailsHeaderElement {
                     origin: point(bounds.origin.x + px(layout_snap.name_x), bounds.origin.y),
                     size: size(px(layout_snap.name_col_w.max(0.0)), px(header_h)),
                 };
-                if layout_snap.name_col_w > 15.0 * zoom_scale {
+                if self.content_lod.paints_name_header()
+                    && layout_snap.name_col_w > 15.0 * zoom_scale
+                {
                     window.with_content_mask(
                         Some(ContentMask {
                             bounds: name_clip.intersect(&bounds),
                         }),
                         |window| {
-                            let _ = prepaint.name_line.paint(
-                                point(name_x, text_y),
-                                px(header_h),
-                                TextAlign::Left,
-                                None,
-                                window,
-                                cx,
-                            );
+                            if let Some(line) = &prepaint.name_line {
+                                let _ = line.paint(
+                                    point(name_x, text_y),
+                                    px(header_h),
+                                    TextAlign::Left,
+                                    None,
+                                    window,
+                                    cx,
+                                );
+                            }
                         },
                     );
                 }
-                paint_sort_glyph(
-                    window,
-                    cx,
-                    sort_col == SortColumn::Name,
-                    &sort_dir,
-                    f32::from(bounds.origin.x) + layout_snap.name_right - 4.0 * zoom_scale,
-                    f32::from(bounds.origin.y) + header_h * 0.5,
-                );
+                if self.content_lod.paints_name_header() {
+                    paint_sort_glyph(
+                        window,
+                        cx,
+                        sort_col == SortColumn::Name,
+                        &sort_dir,
+                        f32::from(bounds.origin.x) + layout_snap.name_right - 4.0 * zoom_scale,
+                        f32::from(bounds.origin.y) + header_h * 0.5,
+                    );
+                }
             }
 
             for col in &layout_snap.columns {
@@ -396,7 +409,10 @@ impl Element for DetailsHeaderElement {
                         },
                     );
                 }
-                if col.column == DetailsColumn::Type && has_type_filter {
+                if self.content_lod.paints_metadata()
+                    && col.column == DetailsColumn::Type
+                    && has_type_filter
+                {
                     let dot = 5.0 * zoom_scale;
                     window.paint_quad(gpui::fill(
                         Bounds {
@@ -409,14 +425,16 @@ impl Element for DetailsHeaderElement {
                         accent,
                     ));
                 }
-                paint_sort_glyph(
-                    window,
-                    cx,
-                    active,
-                    &sort_dir,
-                    f32::from(col_x) + col.w - 4.0 * zoom_scale,
-                    f32::from(bounds.origin.y) + header_h * 0.5,
-                );
+                if self.content_lod.paints_metadata() {
+                    paint_sort_glyph(
+                        window,
+                        cx,
+                        active,
+                        &sort_dir,
+                        f32::from(col_x) + col.w - 4.0 * zoom_scale,
+                        f32::from(bounds.origin.y) + header_h * 0.5,
+                    );
+                }
             }
 
             let paint_grip = |window: &mut Window, edge_x: f32| {

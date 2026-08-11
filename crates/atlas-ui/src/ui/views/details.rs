@@ -23,7 +23,7 @@ use gpui::{
 use gpui_component::input::InputState;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{v_flex, ActiveTheme, ElementExt};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Clone, Copy)]
 pub(crate) struct DetailsColors {
@@ -153,6 +153,14 @@ impl App {
         // geometry below so every consumption site can stay a plain `px(...)`.
         let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
         let col_widths = self.details_widths_for_pane(pane_id, zoom_scale);
+        let pane_width = self
+            .state
+            .tab_states
+            .get(&pane_id)
+            .map(|state| state.last_pane_width)
+            .filter(|width| width.is_finite() && *width > 1.0)
+            .unwrap_or(f32::INFINITY);
+        let content_lod = details_content_lod(pane_width, zoom_scale);
         let column_order = self.details_column_order;
         // Single source of geometry for header AND rows → pixel-perfect alignment.
         // Left-anchored widths (Explorer-style); they stay fixed when there is room
@@ -227,6 +235,7 @@ impl App {
             &type_labels,
             dragging,
             drag_x,
+            content_lod,
             &colors,
             row_font.clone(),
             font_size,
@@ -376,6 +385,7 @@ impl App {
                     start_idx,
                     end_idx,
                     (*layout).clone(),
+                    content_lod,
                     colors,
                     row_font.clone(),
                     font_size,
@@ -666,6 +676,7 @@ fn details_header(
     type_labels: &[String],
     dragging: Option<DetailsColumn>,
     drag_x: f32,
+    content_lod: DetailsContentLod,
     colors: &DetailsColors,
     font: gpui::Font,
     font_size: gpui::Pixels,
@@ -683,6 +694,7 @@ fn details_header(
         type_labels.to_vec(),
         dragging,
         drag_x,
+        content_lod,
     )
     .into_any_element()
 }
@@ -986,6 +998,88 @@ pub(crate) struct DetailsRowLayout {
     pub name_right: f32,
     /// Metadata columns in visual order (left→right, after Name).
     pub columns: Vec<DetailsColumnLayout>,
+}
+
+/// Responsive paint policy for a Details pane. Geometry and interaction never
+/// change with this value: columns, separators, sort zones, reorder targets and
+/// resize handles remain live. Only expensive text primitives are shed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DetailsContentLod {
+    Full,
+    NameOnly,
+    Initials,
+    IconOnly,
+}
+
+impl DetailsContentLod {
+    pub(crate) fn paints_name(self) -> bool {
+        !matches!(self, Self::IconOnly)
+    }
+
+    pub(crate) fn paints_name_header(self) -> bool {
+        matches!(self, Self::Full | Self::NameOnly)
+    }
+
+    pub(crate) fn paints_metadata(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    /// Quantize the narrow-name state so a resize does not produce a new glyph
+    /// count for every pixel. `paint_mono_truncated` adds the shared ellipsis.
+    pub(crate) fn name_paint_width(self, available: f32, zoom_scale: f32) -> f32 {
+        match self {
+            Self::IconOnly => 0.0,
+            Self::Initials => available.min(30.0 * zoom_scale),
+            Self::NameOnly | Self::Full => available,
+        }
+    }
+
+    pub(crate) fn perf_counter(self) -> &'static str {
+        match self {
+            Self::Full => "details.lod.full",
+            Self::NameOnly => "details.lod.name_only",
+            Self::Initials => "details.lod.initials",
+            Self::IconOnly => "details.lod.icon_only",
+        }
+    }
+}
+
+fn details_lod_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("ATLAS_DETAILS_LOD")
+            .ok()
+            .map(|value| !matches!(value.as_str(), "" | "0" | "false" | "FALSE" | "off" | "OFF"))
+            .unwrap_or(true)
+    })
+}
+
+fn details_content_lod_for_width(
+    pane_width: f32,
+    zoom_scale: f32,
+    enabled: bool,
+) -> DetailsContentLod {
+    if !enabled || !pane_width.is_finite() || pane_width <= 1.0 {
+        return DetailsContentLod::Full;
+    }
+    let scale = if zoom_scale.is_finite() && zoom_scale > 0.0 {
+        zoom_scale
+    } else {
+        1.0
+    };
+    if pane_width < 104.0 * scale {
+        DetailsContentLod::IconOnly
+    } else if pane_width < 180.0 * scale {
+        DetailsContentLod::Initials
+    } else if pane_width < 320.0 * scale {
+        DetailsContentLod::NameOnly
+    } else {
+        DetailsContentLod::Full
+    }
+}
+
+fn details_content_lod(pane_width: f32, zoom_scale: f32) -> DetailsContentLod {
+    details_content_lod_for_width(pane_width, zoom_scale, details_lod_enabled())
 }
 
 fn prime_details_file_icons_range(
@@ -1377,5 +1471,33 @@ mod tests {
             ROW_NAME_MIN_W + DETAILS_SIZE_MIN_W + DETAILS_MODIFIED_MIN_W + DETAILS_TYPE_MIN_W;
 
         assert!((total - minimum_total).abs() < 0.01);
+    }
+
+    #[test]
+    fn details_content_lod_uses_discrete_width_buckets() {
+        assert_eq!(
+            details_content_lod_for_width(80.0, 1.0, true),
+            DetailsContentLod::IconOnly
+        );
+        assert_eq!(
+            details_content_lod_for_width(140.0, 1.0, true),
+            DetailsContentLod::Initials
+        );
+        assert_eq!(
+            details_content_lod_for_width(240.0, 1.0, true),
+            DetailsContentLod::NameOnly
+        );
+        assert_eq!(
+            details_content_lod_for_width(400.0, 1.0, true),
+            DetailsContentLod::Full
+        );
+    }
+
+    #[test]
+    fn details_content_lod_can_be_disabled_for_ab_measurement() {
+        assert_eq!(
+            details_content_lod_for_width(80.0, 1.0, false),
+            DetailsContentLod::Full
+        );
     }
 }

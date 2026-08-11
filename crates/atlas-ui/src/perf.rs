@@ -1,3 +1,12 @@
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum UiLabAction {
+    SetDetails,
+    SplitHorizontal,
+    ClosePane,
+    SetGrid,
+    Quit,
+}
+
 #[cfg(any(feature = "perf-log", feature = "tracy"))]
 mod imp {
     use std::collections::HashMap;
@@ -15,6 +24,7 @@ mod imp {
     static CONFIG: OnceLock<Config> = OnceLock::new();
     static FRAME: AtomicU64 = AtomicU64::new(0);
     static DOCK_FRAME: AtomicU64 = AtomicU64::new(0);
+    static UI_LAB_NEXT_ACTION: AtomicU64 = AtomicU64::new(0);
     static COUNTERS: OnceLock<Mutex<HashMap<&'static str, u64>>> = OnceLock::new();
     /// Wall-time accumulators (microseconds) for the current frame.
     /// Spans always add here even when under the log threshold, so N×0.3ms panes are visible.
@@ -211,6 +221,53 @@ mod imp {
         truthy("ATLAS_PERF_SKIP_INSPECTOR")
     }
 
+    /// Deterministic pane-animation workload for A/B measurements. It is compiled
+    /// only into perf/tracy builds and inert unless explicitly enabled.
+    pub(crate) fn ui_lab_active() -> bool {
+        truthy("ATLAS_PERF_AUTOMATE_SPLITS")
+    }
+
+    pub(crate) fn ui_lab_action() -> Option<super::UiLabAction> {
+        if !ui_lab_active() {
+            return None;
+        }
+
+        const START_DELAY_MS: u64 = 800;
+        const ACTION_INTERVAL_MS: u64 = 420;
+        const SPLITS: u64 = 12;
+        const CLOSES: u64 = 12;
+        const SET_GRID_STAGE: u64 = 1 + SPLITS + CLOSES;
+        const QUIT_STAGE: u64 = SET_GRID_STAGE + 1;
+
+        let elapsed_ms = config().started.elapsed().as_millis() as u64;
+        if elapsed_ms < START_DELAY_MS {
+            return None;
+        }
+        let due_stage = (elapsed_ms - START_DELAY_MS) / ACTION_INTERVAL_MS;
+        let next = UI_LAB_NEXT_ACTION.load(Ordering::Relaxed);
+        if next > due_stage || next > QUIT_STAGE {
+            return None;
+        }
+        if UI_LAB_NEXT_ACTION
+            .compare_exchange(next, next + 1, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return None;
+        }
+
+        Some(if next == 0 {
+            super::UiLabAction::SetDetails
+        } else if next <= SPLITS {
+            super::UiLabAction::SplitHorizontal
+        } else if next <= SPLITS + CLOSES {
+            super::UiLabAction::ClosePane
+        } else if next == SET_GRID_STAGE {
+            super::UiLabAction::SetGrid
+        } else {
+            super::UiLabAction::Quit
+        })
+    }
+
     pub(crate) struct Span {
         name: &'static str,
         detail: Option<String>,
@@ -304,6 +361,16 @@ pub(crate) fn skip_overlays() -> bool {
 #[cfg(not(any(feature = "perf-log", feature = "tracy")))]
 pub(crate) fn skip_inspector() -> bool {
     false
+}
+
+#[cfg(not(any(feature = "perf-log", feature = "tracy")))]
+pub(crate) fn ui_lab_active() -> bool {
+    false
+}
+
+#[cfg(not(any(feature = "perf-log", feature = "tracy")))]
+pub(crate) fn ui_lab_action() -> Option<UiLabAction> {
+    None
 }
 
 #[cfg(not(any(feature = "perf-log", feature = "tracy")))]

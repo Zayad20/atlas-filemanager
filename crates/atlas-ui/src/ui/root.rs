@@ -219,6 +219,34 @@ impl Render for App {
                 self.pane_closing.len()
             )
         });
+        if crate::perf::ui_lab_active() {
+            // Keep sampling through the quiet gaps between deterministic actions.
+            window.request_animation_frame();
+        }
+        if let Some(action) = crate::perf::ui_lab_action() {
+            crate::perf::event(|| format!("ui_lab action={action:?}"));
+            match action {
+                crate::perf::UiLabAction::SetDetails => {
+                    self.process_actions(vec![crate::input::action::Action::SetViewMode(
+                        atlas_model::settings::ViewMode::Details,
+                    )]);
+                }
+                crate::perf::UiLabAction::SplitHorizontal => {
+                    self.process_actions(vec![
+                        crate::input::action::Action::SplitHorizontalFocused,
+                    ]);
+                }
+                crate::perf::UiLabAction::ClosePane => {
+                    self.process_actions(vec![crate::input::action::Action::CloseFocusedPane]);
+                }
+                crate::perf::UiLabAction::SetGrid => {
+                    self.process_actions(vec![crate::input::action::Action::SetViewMode(
+                        atlas_model::settings::ViewMode::Grid,
+                    )]);
+                }
+                crate::perf::UiLabAction::Quit => cx.quit(),
+            }
+        }
         let _perf = crate::perf::span_detail("app.render", || {
             format!(
                 "frame={frame} tiles={} panels={} dirty={} dirty_all={} closing={}",
