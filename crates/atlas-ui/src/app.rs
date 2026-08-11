@@ -1627,12 +1627,12 @@ fn collect_tag_migration(
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ActiveGridAnimation {
     pub(crate) start_time: std::time::Instant,
-    pub(crate) start_offset: gpui::Point<gpui::Pixels>,
+    pub(crate) start_offset: gpui::Point<f32>,
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct GridFlipState {
-    pub(crate) last_item_bounds: std::collections::HashMap<usize, gpui::Bounds<gpui::Pixels>>,
+    pub(crate) last_unscrolled_origins: std::collections::HashMap<usize, gpui::Point<f32>>,
     pub(crate) animations: std::collections::HashMap<usize, ActiveGridAnimation>,
 }
 

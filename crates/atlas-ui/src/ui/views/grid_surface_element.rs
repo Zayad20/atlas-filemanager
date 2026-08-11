@@ -138,6 +138,9 @@ struct GridSurfaceSlot {
 }
 
 #[derive(Clone, Default)]
+struct SharedGridSurfaceState(std::rc::Rc<std::cell::RefCell<GridSurfaceState>>);
+
+#[derive(Default)]
 struct GridSurfaceState {
     slots: Vec<Option<GridSurfaceSlot>>,
 }
@@ -251,7 +254,9 @@ pub(crate) struct GridSurfaceColors {
 }
 
 pub(crate) struct GridSurfacePrepaint {
-    slots: Vec<GridSurfaceSlot>,
+    state: SharedGridSurfaceState,
+    start_idx: usize,
+    end_idx: usize,
     show_checkboxes: bool,
     hitbox: Hitbox,
 }
@@ -379,21 +384,24 @@ impl Element for GridSurfaceElement {
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let Some(app_entity) = self.app.upgrade() else {
             return GridSurfacePrepaint {
-                slots: Vec::new(),
+                state: SharedGridSurfaceState::default(),
+                start_idx: 0,
+                end_idx: 0,
                 show_checkboxes: false,
                 hitbox,
             };
         };
 
-        let mut state = GridSurfaceState::default();
-        let state_restore_t0 = Instant::now();
-        window.with_optional_element_state(
+        let state_restore_t0 = std::time::Instant::now();
+        let state_rc = window.with_optional_element_state(
             id,
-            |state_opt: Option<Option<GridSurfaceState>>, _window| {
-                state = state_opt.flatten().unwrap_or_default();
-                ((), Some(state.clone()))
+            |state_opt: Option<Option<SharedGridSurfaceState>>, _window| {
+                let s = state_opt.flatten().unwrap_or_default();
+                (s.clone(), Some(s))
             },
         );
+        let mut state = state_rc.0.borrow_mut();
+
         crate::perf::time_us(
             self.layout
                 .metric("grid.surface.state_restore", "list.surface.state_restore"),
@@ -430,8 +438,8 @@ impl Element for GridSurfaceElement {
         let mut row_rects_us = 0_u64;
         let mut shape_cache_us = 0_u64;
         let mut ring_collect_us = 0_u64;
-        let app_update_t0 = Instant::now();
-        let (slots, show_checkboxes) = app_entity.update(cx, |app, _| {
+        let app_update_t0 = std::time::Instant::now();
+        let show_checkboxes = app_entity.update(cx, |app, _| {
             match layout {
                 GridSurfaceLayout::Thumbnail => {
                     app.grid_hit.insert(pane_id, model.clone());
@@ -484,7 +492,7 @@ impl Element for GridSurfaceElement {
             }
 
             let Some(tab_state) = app.state.tab_states.get(&pane_id) else {
-                return (Vec::new(), false);
+                return false;
             };
             let show_checkboxes = tab_state.selection.selected.len() > 1;
             let text_system = window.text_system();
@@ -519,18 +527,27 @@ impl Element for GridSurfaceElement {
                 } else {
                     name_color
                 };
+                let max_chars = match layout {
+                    GridSurfaceLayout::CompactList => {
+                        let text_w = self.cell_w - 50.0; // padding and icon approx
+                        (text_w / (f32::from(font_size) * 0.55)) as usize
+                    }
+                    GridSurfaceLayout::Thumbnail => {
+                        let text_w = self.cell_w - 8.0;
+                        (text_w / (f32::from(font_size) * 0.55)) as usize
+                    }
+                }.max(5);
                 let key = grid_shape_key(
                     entry_idx,
                     &entry.name,
+                    max_chars,
                     selected,
                     dimmed,
                     &font,
                     font_size,
                     name_color,
                 );
-                let name = entry.name.to_string();
-                let icon =
-                    app.file_icon_for_entry(&entry.path, &entry.kind, entry.extension.as_deref());
+                let icon = app.file_icon_for_entry(&entry.path, &entry.kind, entry.extension.as_deref());
                 let previous_selected = state
                     .slots
                     .get(state.index(row))
@@ -540,35 +557,46 @@ impl Element for GridSurfaceElement {
                 let _ = state.sync(
                     row,
                     key,
-                    || GridSurfaceSlot {
-                        row,
-                        shape_key: key,
-                        selected,
-                        selected_at: (selected && !previous_selected).then(Instant::now),
-                        hovered,
-                        flashing,
-                        dimmed,
-                        name: {
-                            let shape_cache_t0 = Instant::now();
-                            let line = app.file_surface_shapes.get_or_insert_with(key, || {
-                                text_system.shape_line(
-                                    name.into(),
-                                    font_size,
-                                    &[gpui::TextRun {
-                                        len: entry.name.len(),
-                                        font: font.clone(),
-                                        color: name_color,
-                                        background_color: None,
-                                        underline: None,
-                                        strikethrough: None,
-                                    }],
-                                    None,
-                                )
-                            });
-                            shape_cache_us += shape_cache_t0.elapsed().as_micros() as u64;
-                            line
-                        },
-                        icon: icon.clone(),
+                    || {
+                        let name = if entry.name.chars().count() > max_chars {
+                            let half = max_chars.saturating_sub(3) / 2;
+                            let start: String = entry.name.chars().take(half).collect();
+                            let mut end: String = entry.name.chars().rev().take(half).collect();
+                            end = end.chars().rev().collect();
+                            format!("{}...{}", start, end)
+                        } else {
+                            entry.name.to_string()
+                        };
+                        GridSurfaceSlot {
+                            row,
+                            shape_key: key,
+                            selected,
+                            selected_at: (selected && !previous_selected).then(Instant::now),
+                            hovered,
+                            flashing,
+                            dimmed,
+                            name: {
+                                let shape_cache_t0 = Instant::now();
+                                let line = app.file_surface_shapes.get_or_insert_with(key, || {
+                                    text_system.shape_line(
+                                        name.clone().into(),
+                                        font_size,
+                                        &[gpui::TextRun {
+                                            len: name.len(),
+                                            font: font.clone(),
+                                            color: name_color,
+                                            background_color: None,
+                                            underline: None,
+                                            strikethrough: None,
+                                        }],
+                                        None,
+                                    )
+                                });
+                                shape_cache_us += shape_cache_t0.elapsed().as_micros() as u64;
+                                line
+                            },
+                            icon: icon.clone(),
+                        }
                     },
                     layout.ring_hit_metric(),
                     layout.ring_miss_metric(),
@@ -576,10 +604,7 @@ impl Element for GridSurfaceElement {
                 state.touch_dynamic(row, key, selected, hovered, flashing, dimmed, icon);
             }
 
-            let ring_collect_t0 = Instant::now();
-            let slots = state.collect(start_idx, end_idx);
-            ring_collect_us += ring_collect_t0.elapsed().as_micros() as u64;
-            (slots, show_checkboxes)
+            show_checkboxes
         });
 
         crate::perf::time_us(
@@ -597,13 +622,14 @@ impl Element for GridSurfaceElement {
                 .metric("grid.surface.text_shape", "list.surface.text_shape"),
             shape_cache_us,
         );
+        // ring collect is now bypassed since we reference state during paint
         crate::perf::time_us(
             self.layout
                 .metric("grid.surface.ring_collect", "list.surface.ring_collect"),
-            ring_collect_us,
+            0,
         );
         let state_store_t0 = Instant::now();
-        window.with_optional_element_state(id, |_, _window| ((), Some(state.clone())));
+        // State is already updated inside the Rc in GPUI, no need to push it back
         crate::perf::time_us(
             self.layout
                 .metric("grid.surface.state_store", "list.surface.state_store"),
@@ -614,10 +640,12 @@ impl Element for GridSurfaceElement {
                 GridSurfaceLayout::Thumbnail => "grid.surface.rows",
                 GridSurfaceLayout::CompactList => "list.surface.rows",
             },
-            slots.len() as u64,
+            (end_idx - start_idx) as u64,
         );
         GridSurfacePrepaint {
-            slots,
+            state: state_rc.clone(),
+            start_idx,
+            end_idx,
             show_checkboxes,
             hitbox,
         }
@@ -653,12 +681,16 @@ impl Element for GridSurfaceElement {
             let icon_area_h = thumb * GRID_ICON_AREA;
             let label_h = GRID_LABEL_H * zoom;
 
+            let state = prepaint.state.0.borrow();
+            
             if layout == GridSurfaceLayout::CompactList {
-                let pad_x = 8.0 * zoom;
+                let pad_x = 24.0 * zoom;
                 let icon_slot_w = 16.0 * zoom;
                 let icon_size = 14.0 * zoom;
                 let text_gap = 4.0 * zoom;
-                for slot in &prepaint.slots {
+                for r in prepaint.start_idx..prepaint.end_idx {
+                    let Some(slot) = state.slots.get(state.index(r)).and_then(|s| s.as_ref()) else { continue; };
+                    if slot.row != r { continue; }
                     let col = slot.row % cols;
                     let row = slot.row / cols;
                     let x = origin_x + px(col as f32 * pitch_x);
@@ -752,24 +784,19 @@ impl Element for GridSurfaceElement {
                             px(cell_h),
                         ),
                     };
-                    window.with_content_mask(
-                        Some(ContentMask {
-                            bounds: name_bounds.intersect(&bounds),
-                        }),
-                        |window| {
-                            let _ = slot.name.paint(
-                                name_bounds.origin,
-                                px(cell_h),
-                                TextAlign::Left,
-                                None,
-                                window,
-                                cx,
-                            );
-                        },
+                    let _ = slot.name.paint(
+                        name_bounds.origin,
+                        px(cell_h),
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
                     );
                 }
             } else {
-                for slot in &prepaint.slots {
+                for r in prepaint.start_idx..prepaint.end_idx {
+                    let Some(slot) = state.slots.get(state.index(r)).and_then(|s| s.as_ref()) else { continue; };
+                    if slot.row != r { continue; }
                     let col = slot.row % cols;
                     let row = slot.row / cols;
                     let x = origin_x + px(col as f32 * pitch_x);
@@ -883,20 +910,13 @@ impl Element for GridSurfaceElement {
                         origin: point(x + px(4.0 * zoom), y + px(icon_area_h)),
                         size: size(px((cell_w - 8.0 * zoom).max(0.0)), px(label_h)),
                     };
-                    window.with_content_mask(
-                        Some(ContentMask {
-                            bounds: name_bounds,
-                        }),
-                        |window| {
-                            let _ = slot.name.paint(
-                                point(name_bounds.origin.x, name_bounds.origin.y),
-                                px(label_h),
-                                TextAlign::Center,
-                                None,
-                                window,
-                                cx,
-                            );
-                        },
+                    let _ = slot.name.paint(
+                        point(name_bounds.origin.x, name_bounds.origin.y),
+                        px(label_h),
+                        TextAlign::Center,
+                        None,
+                        window,
+                        cx,
                     );
                 }
             }
@@ -1000,6 +1020,7 @@ impl Element for GridSurfaceElement {
 fn grid_shape_key(
     entry_idx: usize,
     name: &str,
+    max_chars: usize,
     selected: bool,
     dimmed: bool,
     font: &Font,
@@ -1010,6 +1031,7 @@ fn grid_shape_key(
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     entry_idx.hash(&mut hasher);
     name.hash(&mut hasher);
+    max_chars.hash(&mut hasher);
     selected.hash(&mut hasher);
     dimmed.hash(&mut hasher);
     font.hash(&mut hasher);

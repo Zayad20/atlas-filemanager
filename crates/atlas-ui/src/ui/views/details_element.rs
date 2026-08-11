@@ -54,6 +54,7 @@ pub(crate) struct DetailsBodyPrepaint {
     ellipsis: ShapedLine,
     layout: DetailsRowLayout,
     show_checkboxes: bool,
+    animating: bool,
     /// Lets window-level listeners participate in GPUI's occlusion hit-testing.
     hitbox: Hitbox,
 }
@@ -199,6 +200,7 @@ impl Element for DetailsBodyElement {
                 ellipsis,
                 layout,
                 show_checkboxes: false,
+                animating: false,
                 hitbox,
             };
         };
@@ -220,7 +222,7 @@ impl Element for DetailsBodyElement {
         // Summed across all panes → details.element.ring_ms in frame_summary.
         let _ring_perf = crate::perf::span("details.element.ring");
         let app_update_t0 = Instant::now();
-        let (rows, show_checkboxes) = app_entity.update(cx, |app, _| {
+        let (rows, show_checkboxes, animating) = app_entity.update(cx, |app, _| {
             app.details_hit.insert(pane_id, hit_model.clone());
             if app.drag_hover_maybe_active() {
                 let targets = app
@@ -269,10 +271,11 @@ impl Element for DetailsBodyElement {
                 fallback_icon_path: Option<&'static str>,
             }
 
-            let (builds, entries, show_checkboxes) = {
+            let (builds, entries, show_checkboxes, animating) = {
                 let row_build_t0 = Instant::now();
+                let animating = !app.dock_split_animations.is_empty() || !app.pane_animations.is_empty();
                 let Some(tab_state) = app.state.tab_states.get(&pane_id) else {
-                    return (Vec::new(), false);
+                    return (Vec::new(), false, animating);
                 };
                 // One pointer clone keeps the immutable directory snapshot alive
                 // after the TabState borrow ends. Split panes already share this Arc.
@@ -345,7 +348,7 @@ impl Element for DetailsBodyElement {
                 }
                 row_build_us += row_build_t0.elapsed().as_micros() as u64;
                 let show_checkboxes = tab_state.selection.selected.len() > 1;
-                (builds, entries, show_checkboxes)
+                (builds, entries, show_checkboxes, animating)
             };
 
             let cols = layout.columns.clone();
@@ -436,7 +439,7 @@ impl Element for DetailsBodyElement {
             let ring_collect_t0 = Instant::now();
             let rows = ring.collect_rows(start_idx, end_idx);
             ring_collect_us += ring_collect_t0.elapsed().as_micros() as u64;
-            (rows, show_checkboxes)
+            (rows, show_checkboxes, animating)
         });
         crate::perf::time_us(
             "details.prepaint.app_update",
@@ -458,6 +461,7 @@ impl Element for DetailsBodyElement {
             ellipsis,
             layout,
             show_checkboxes,
+            animating,
             hitbox,
         }
     }
@@ -536,8 +540,7 @@ impl Element for DetailsBodyElement {
                 if row.selected && prepaint.show_checkboxes {
                     // Windows-like selection affordance: the file-type glyph yields
                     // to a bright checkbox that pops in, then draws its checkmark.
-                    let icon_center_x =
-                        f32::from(origin_x) + row_pad_x + row_icon_size * 0.5;
+                    let icon_center_x = f32::from(origin_x) + row_pad_x + row_icon_size * 0.5;
                     let icon_center_y = f32::from(y) + row_h * 0.5;
                     selection_checkbox::paint_animated(
                         window,
@@ -598,7 +601,7 @@ impl Element for DetailsBodyElement {
                     origin: point(name_x, y),
                     size: size(px(name_width), px(row_h)),
                 };
-                window.with_content_mask(Some(ContentMask { bounds: name_clip }), |window| {
+                if name_width > 15.0 * zoom_scale {
                     let _ = row.text.name_s.paint_mono_truncated(
                         point(name_x, text_y),
                         px(row_h),
@@ -608,7 +611,7 @@ impl Element for DetailsBodyElement {
                         window,
                         cx,
                     );
-                });
+                }
             }
             crate::perf::time_us(
                 "details.paint.text_name",
@@ -626,6 +629,9 @@ impl Element for DetailsBodyElement {
                 }
 
                 for meta in &row.text.meta_cols {
+                    if prepaint.animating {
+                        continue;
+                    }
                     let Some(layout_col) = prepaint
                         .layout
                         .columns
@@ -634,8 +640,13 @@ impl Element for DetailsBodyElement {
                     else {
                         continue;
                     };
+                    if layout_col.x >= f32::from(bounds.size.width) {
+                        continue;
+                    }
                     let col_x = origin_x + px(layout_col.x);
-                    let col_w = layout_col.w;
+                    let mut col_w = layout_col.w;
+                    let remaining_w = (f32::from(bounds.size.width) - layout_col.x).max(0.0);
+                    col_w = col_w.min(remaining_w);
                     let padding = cell_pad.min(col_w);
                     let available_width = (col_w - padding).max(0.0);
                     let text_x = col_x + px(padding);
@@ -646,7 +657,7 @@ impl Element for DetailsBodyElement {
                         origin: point(col_x, y),
                         size: size(px(col_w.max(0.0)), px(row_h)),
                     };
-                    window.with_content_mask(Some(ContentMask { bounds: meta_clip }), |window| {
+                    if available_width > 15.0 * zoom_scale {
                         let _ = meta.line.paint_mono_truncated(
                             point(text_x, text_y),
                             px(row_h),
@@ -656,7 +667,7 @@ impl Element for DetailsBodyElement {
                             window,
                             cx,
                         );
-                    });
+                    }
                 }
             }
             crate::perf::time_us(

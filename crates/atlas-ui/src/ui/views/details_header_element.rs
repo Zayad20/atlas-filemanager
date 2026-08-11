@@ -336,21 +336,23 @@ impl Element for DetailsHeaderElement {
                     origin: point(bounds.origin.x + px(layout_snap.name_x), bounds.origin.y),
                     size: size(px(layout_snap.name_col_w.max(0.0)), px(header_h)),
                 };
-                window.with_content_mask(
-                    Some(ContentMask {
-                        bounds: name_clip.intersect(&bounds),
-                    }),
-                    |window| {
-                        let _ = prepaint.name_line.paint(
-                            point(name_x, text_y),
-                            px(header_h),
-                            TextAlign::Left,
-                            None,
-                            window,
-                            cx,
-                        );
-                    },
-                );
+                if layout_snap.name_col_w > 15.0 * zoom_scale {
+                    window.with_content_mask(
+                        Some(ContentMask {
+                            bounds: name_clip.intersect(&bounds),
+                        }),
+                        |window| {
+                            let _ = prepaint.name_line.paint(
+                                point(name_x, text_y),
+                                px(header_h),
+                                TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            );
+                        },
+                    );
+                }
                 paint_sort_glyph(
                     window,
                     cx,
@@ -377,21 +379,23 @@ impl Element for DetailsHeaderElement {
                     origin: point(col_x, bounds.origin.y),
                     size: size(px(col.w.max(0.0)), px(header_h)),
                 };
-                window.with_content_mask(
-                    Some(ContentMask {
-                        bounds: clip.intersect(&bounds),
-                    }),
-                    |window| {
-                        let _ = line.paint(
-                            point(text_x, text_y),
-                            px(header_h),
-                            TextAlign::Left,
-                            None,
-                            window,
-                            cx,
-                        );
-                    },
-                );
+                if col.w > 15.0 * zoom_scale {
+                    window.with_content_mask(
+                        Some(ContentMask {
+                            bounds: clip.intersect(&bounds),
+                        }),
+                        |window| {
+                            let _ = line.paint(
+                                point(text_x, text_y),
+                                px(header_h),
+                                TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            );
+                        },
+                    );
+                }
                 if col.column == DetailsColumn::Type && has_type_filter {
                     let dot = 5.0 * zoom_scale;
                     window.paint_quad(gpui::fill(

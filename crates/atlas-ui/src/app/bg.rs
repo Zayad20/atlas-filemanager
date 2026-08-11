@@ -361,29 +361,35 @@ impl App {
             self.icon_cache.insert(key, state);
         }
 
-        let mut results = Vec::new();
+        let mut results_len = 0;
+        let mut info = BgDrainInfo {
+            changed: false,
+            notify_all: false,
+            notify_panes: Vec::new(),
+        };
         if start.elapsed() < max_duration {
-            for res in self.rx.try_iter() {
-                results.push(res);
+            while let Ok(res) = self.rx.try_recv() {
+                results_len += 1;
+                let sub_info = self.process_bg_results(vec![res]);
+                info.changed |= sub_info.changed;
+                info.notify_all |= sub_info.notify_all;
+                info.notify_panes.extend(sub_info.notify_panes);
                 if start.elapsed() > max_duration {
                     break;
                 }
             }
         }
-        let results_len = results.len();
-        let info = self.process_bg_results(results);
         changed |= info.changed;
-        let notify_all = self.dirty_all_panes || info.notify_all;
         let notify_panes_len = info.notify_panes.len();
         crate::perf::event(|| {
             format!(
-                "bg.drain icons={icon_len} results={results_len} changed={changed} notify_all={notify_all} notify_panes={notify_panes_len} dirty={}",
-                self.dirty_panes.len()
+                "bg.drain icons={icon_len} results={results_len} changed={changed} notify_all={} notify_panes={notify_panes_len} dirty={}",
+                info.notify_all, self.dirty_panes.len()
             )
         });
 
         // Apply pane notifications now that state mutation is done.
-        if notify_all {
+        if info.notify_all {
             self.dirty_all_panes = false;
             self.dirty_panes.clear();
             self.notify_all_panes(cx);
@@ -432,17 +438,24 @@ impl App {
             };
             self.icon_cache.insert(key, state);
         }
-        let mut results = Vec::new();
+        let mut results_len = 0;
+        let mut info = BgDrainInfo {
+            changed: false,
+            notify_all: false,
+            notify_panes: Vec::new(),
+        };
         if start.elapsed() < max_duration {
-            for res in self.rx.try_iter() {
-                results.push(res);
+            while let Ok(res) = self.rx.try_recv() {
+                results_len += 1;
+                let sub_info = self.process_bg_results(vec![res]);
+                info.changed |= sub_info.changed;
+                info.notify_all |= sub_info.notify_all;
+                info.notify_panes.extend(sub_info.notify_panes);
                 if start.elapsed() > max_duration {
                     break;
                 }
             }
         }
-        let results_len = results.len();
-        let info = self.process_bg_results(results);
         changed |= info.changed;
         let notify_panes_len = info.notify_panes.len();
         crate::perf::event(|| {

@@ -159,7 +159,10 @@ impl App {
                                         let file_ref = crate::ui::file_icons::FileIconRef {
                                             path: entry.path.clone(),
                                             kind: entry.kind.clone(),
-                                            extension: entry.extension.clone(),
+                                            extension: entry
+                                                .extension
+                                                .as_ref()
+                                                .map(|s| gpui::SharedString::from(s.to_string())),
                                         };
                                         app.maybe_request_file_icon(&file_ref);
                                         let file_icon = app.file_icon(&file_ref);
@@ -312,7 +315,6 @@ impl App {
             }
         }
 
-        let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
         let zone_view = view.clone();
         let pane_view = view;
         crate::ui::views::pane_background_interactions(
@@ -341,9 +343,7 @@ impl App {
                         .size_full()
                         .overflow_x_scroll()
                         .children(columns),
-                )
-                .child(filter_pill)
-                .child(controls_pill),
+                ),
         )
         .into_any_element()
     }

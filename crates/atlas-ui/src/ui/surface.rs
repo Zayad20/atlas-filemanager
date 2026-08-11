@@ -65,27 +65,30 @@ pub(crate) fn chrome_ui_font(window: &Window) -> Font {
 }
 
 fn fluent_icons_font() -> Font {
-    Font {
+    use std::sync::LazyLock;
+    static FONT: LazyLock<Font> = LazyLock::new(|| Font {
         family: SharedString::from("Segoe Fluent Icons"),
         features: FontFeatures::default(),
         fallbacks: None,
         weight: FontWeight::default(),
         style: FontStyle::default(),
-    }
+    });
+    FONT.clone()
 }
 
 // ── Text ────────────────────────────────────────────────────────────────────
 
 /// Shape a single-line label (measured width via [`line_width`]).
 pub(crate) fn shape_text(
-    text: &str,
+    text: impl Into<SharedString>,
     font: &Font,
     font_size: Pixels,
     color: Hsla,
     window: &Window,
 ) -> ShapedLine {
+    let text_ss: SharedString = text.into();
     let run = TextRun {
-        len: text.len(),
+        len: text_ss.len(),
         font: font.clone(),
         color,
         background_color: None,
@@ -93,7 +96,7 @@ pub(crate) fn shape_text(
         strikethrough: None,
     };
     window.text_system().shape_line(
-        SharedString::from(text.to_string()),
+        text_ss,
         font_size,
         &[run],
         None,

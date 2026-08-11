@@ -55,6 +55,7 @@ struct TabGeom {
     label: Slot,
     close: Slot,
     tag: Option<Slot>,
+    visible: bool,
 }
 
 pub(crate) struct TabsBarPrepaint {
@@ -199,9 +200,28 @@ impl Element for TabsBarElement {
         }
 
         let avail = (f32::from(bounds.size.width) - pad_x * 2.0 - new_sz - gap).max(40.0);
-        let sum: f32 = natural_ws.iter().sum();
-        let scale = if sum > avail && sum > 0.0 {
-            avail / sum
+        
+        // Progressive Disclosure: if the space is too small for all tabs,
+        // start hiding inactive ones (so inactive tabs collapse progressively).
+        let min_required = self.tabs.len() as f32 * (tab_min * 0.55 + gap);
+        let mut visible_tabs: Vec<bool> = vec![true; self.tabs.len()];
+        let mut sum_visible = 0.0;
+        
+        if min_required > avail && self.tabs.len() > 1 {
+            // We need to hide tabs. Always keep the active tab visible.
+            for (i, tab) in self.tabs.iter().enumerate() {
+                if !tab.is_active {
+                    visible_tabs[i] = false;
+                } else {
+                    sum_visible += natural_ws[i];
+                }
+            }
+        } else {
+            sum_visible = natural_ws.iter().sum();
+        }
+
+        let scale = if sum_visible > avail && sum_visible > 0.0 {
+            avail / sum_visible
         } else {
             1.0
         };
@@ -210,6 +230,18 @@ impl Element for TabsBarElement {
         let mut x = pad_x;
         let mut geoms = Vec::with_capacity(self.tabs.len());
         for (i, tab) in self.tabs.iter().enumerate() {
+            if !visible_tabs[i] {
+                // Invisible tabs get a zero-width slot
+                geoms.push(TabGeom {
+                    tab: Slot::new(x, y0, 0.0, 0.0),
+                    label: Slot::new(x, y0, 0.0, 0.0),
+                    close: Slot::new(x, y0, 0.0, 0.0),
+                    tag: None,
+                    visible: false,
+                });
+                continue;
+            }
+
             let tw = (natural_ws[i] * scale).max(tab_min * 0.55);
             let tab_slot = Slot::new(x, y0, tw, tab_h);
             let mut inner_x = x + pad_in * scale.max(0.5);
@@ -233,9 +265,9 @@ impl Element for TabsBarElement {
                 label,
                 close,
                 tag,
+                visible: true,
             });
             x += tw + gap;
-            let _ = i;
         }
 
         let new_btn = Slot::new(x, y0 + (tab_h - new_sz) * 0.5, new_sz, new_sz);
@@ -311,6 +343,9 @@ impl Element for TabsBarElement {
 
             for (i, tab) in tabs.iter().enumerate() {
                 let g = &prepaint.geoms[i];
+                if !g.visible {
+                    continue;
+                }
                 let tab_b = g.tab.to_bounds(origin);
                 if tab.is_active {
                     paint_rounded(window, tab_b, radius, active_bg);

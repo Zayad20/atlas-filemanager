@@ -323,12 +323,12 @@ impl App {
     /// activates) and a controls pill on the right (visibility toggles,
     /// folders-first, view selector). Both sit on translucent glass so the
     /// listing shows through.
-    pub(crate) fn render_pane_pills(
+    pub(crate) fn render_pane_bottom_bar(
         &mut self,
         pane_id: TabId,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> (AnyElement, AnyElement) {
+    ) -> AnyElement {
         // Mirror the per-tab toggles into the TabState so its cached filtering
         // (and the counts below) pick them up.
         let (folders_first, show_files, show_folders) = self
@@ -432,9 +432,6 @@ impl App {
                 let open_view = view.clone();
                 h_flex()
                     .id(SharedString::from(format!("filter-badge-{}", pane_id.0)))
-                    .absolute()
-                    .bottom_2()
-                    .left_2()
                     .px_2()
                     .py(crate::ui::rem_px(3.))
                     .gap_1()
@@ -443,7 +440,6 @@ impl App {
                     .border_1()
                     .border_color(accent.opacity(0.45))
                     .bg(layer_color(secondary, 0.04, 0.86))
-                    .raised_surface()
                     .text_xs()
                     .cursor_pointer()
                     .child(theme_icon(AtlasIcon::Search, 12.0, accent, windows_theme))
@@ -464,7 +460,7 @@ impl App {
             } else {
                 div().into_any_element()
             };
-            return (badge, div().into_any_element());
+            return badge;
         }
 
         // ── Left pill: fuzzy filter (lone magnifier until active) ──
@@ -473,9 +469,6 @@ impl App {
             let close_view = view.clone();
             h_flex()
                 .id(SharedString::from(format!("filter-pill-{}", pane_id.0)))
-                .absolute()
-                .bottom_2()
-                .left_2()
                 .px_2()
                 .py_1()
                 .gap_1()
@@ -488,7 +481,6 @@ impl App {
                     border.opacity(0.35)
                 })
                 .bg(layer_color(secondary, 0.04, 0.92))
-                .raised_surface()
                 .text_xs()
                 // Keep pill clicks away from the pane underneath (rubber band,
                 // pane-focus click handlers).
@@ -594,15 +586,11 @@ impl App {
             let open_view = view.clone();
             div()
                 .id(SharedString::from(format!("filter-pill-{}", pane_id.0)))
-                .absolute()
-                .bottom_2()
-                .left_2()
                 .p(crate::ui::rem_px(6.))
                 .rounded_full()
                 .border_1()
                 .border_color(border.opacity(0.35))
                 .bg(layer_color(secondary, 0.04, 0.82))
-                .raised_surface()
                 .cursor_pointer()
                 .hover(|s| s.bg(layer_color(secondary, 0.07, 0.92)))
                 .child(theme_icon(AtlasIcon::Search, 14.0, muted, windows_theme))
@@ -841,9 +829,6 @@ impl App {
         let animate_selection_badge = !self.state.settings.disable_animations;
         let controls_pill = h_flex()
             .id(SharedString::from(format!("controls-pill-{}", pane_id.0)))
-            .absolute()
-            .bottom_2()
-            .right_2()
             .px_1()
             .py(crate::ui::rem_px(3.))
             .gap_1()
@@ -852,7 +837,6 @@ impl App {
             .border_1()
             .border_color(border.opacity(0.35))
             .bg(layer_color(secondary, 0.04, 0.88))
-            .raised_surface()
             // The view-selector actions act on the focused pane; make sure that's
             // us — and keep the click away from the pane underneath.
             .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
@@ -929,7 +913,19 @@ impl App {
             .child(view_btn)
             .into_any_element();
 
-        (filter_pill, controls_pill)
+        h_flex()
+            .id(SharedString::from(format!("pane-bottom-bar-{}", pane_id.0)))
+            .w_full()
+            .h(px(32.0))
+            .px_2()
+            .items_center()
+            .justify_between()
+            .border_t_1()
+            .border_color(border.opacity(0.35))
+            .bg(layer_color(secondary, 0.04, 0.6))
+            .child(filter_pill)
+            .child(controls_pill)
+            .into_any_element()
     }
 }
 

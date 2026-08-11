@@ -11,7 +11,7 @@ use atlas_model::file_entry::FileKind;
 pub(crate) struct FileIconRef {
     pub(crate) path: PathBuf,
     pub(crate) kind: FileKind,
-    pub(crate) extension: Option<String>,
+    pub(crate) extension: Option<gpui::SharedString>,
 }
 
 #[derive(Clone)]
@@ -20,7 +20,7 @@ pub(crate) enum FileIcon {
     IconTexture(Arc<RenderImage>),
     Builtin {
         kind: FileKind,
-        extension: Option<String>,
+        extension: Option<gpui::SharedString>,
     },
 }
 
@@ -57,7 +57,7 @@ impl App {
         FileIconRef {
             path,
             kind,
-            extension,
+            extension: extension.map(gpui::SharedString::from),
         }
     }
 
@@ -81,7 +81,7 @@ impl App {
         }
         FileIcon::Builtin {
             kind: kind.clone(),
-            extension: extension.map(str::to_string),
+            extension: extension.map(gpui::SharedString::from),
         }
     }
 

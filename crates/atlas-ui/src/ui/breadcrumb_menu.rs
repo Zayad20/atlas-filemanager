@@ -397,7 +397,7 @@ fn breadcrumb_items(dir: PathBuf) -> Vec<BreadcrumbMenuItem> {
                 icon: FileIconRef {
                     path,
                     kind,
-                    extension,
+                    extension: extension.map(gpui::SharedString::from),
                 },
             })
         })

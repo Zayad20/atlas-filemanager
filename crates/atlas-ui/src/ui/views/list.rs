@@ -108,12 +108,13 @@ impl App {
             let scroll = self.scroll_handle_for(pane_id);
             let base_scroll = scroll.0.borrow().base_handle.clone();
             let mut scroll_y = (-f32::from(base_scroll.offset().y)).max(0.0);
-            
+
             // Grid Snapping Smooth Scroll Interpolation
             if let Some(&target) = self.scroll_targets.get(&pane_id) {
                 let current = f32::from(base_scroll.offset().y);
                 if (target - current).abs() > 0.5 {
-                    let (ease, _) = crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
+                    let (ease, _) =
+                        crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
                     let mut next = current + (target - current) * ease;
                     if (target - next).abs() < 1.0 {
                         next = target;
@@ -162,7 +163,10 @@ impl App {
                                 let fref = crate::ui::file_icons::FileIconRef {
                                     path: e.path.clone(),
                                     kind: e.kind.clone(),
-                                    extension: e.extension.clone(),
+                                    extension: e
+                                        .extension
+                                        .as_ref()
+                                        .map(|s| gpui::SharedString::from(s.to_string())),
                                 };
                                 m.push(fref);
                             }
@@ -396,14 +400,17 @@ impl App {
                                 window.prevent_default();
                                 cx.stop_propagation();
                                 let dy = l.y * pitch * 3.0;
-                                
+
                                 app_handle.update(cx, |app, cx| {
-                                    let current_target = *app.scroll_targets.entry(pane_id).or_insert_with(|| f32::from(base_scroll.offset().y));
+                                    let current_target = *app
+                                        .scroll_targets
+                                        .entry(pane_id)
+                                        .or_insert_with(|| f32::from(base_scroll.offset().y));
                                     let mut new_y = current_target + dy;
                                     let max_scroll = (content_h - viewport_h).max(0.0);
                                     new_y = (new_y / pitch).round() * pitch;
                                     new_y = new_y.clamp(-max_scroll, 0.0);
-                                    
+
                                     app.scroll_targets.insert(pane_id, new_y);
                                     cx.notify();
                                 });
@@ -436,7 +443,6 @@ impl App {
                 .into_any_element()
         };
 
-        let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
         let zone_view = view.clone();
         let prepaint_view = view.clone();
         let bounds_view = view.clone();
@@ -454,21 +460,11 @@ impl App {
             move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {
                 crate::perf::count("prepaint.list_pane");
                 let new_w = f32::from(bounds.size.width);
-                let should_update = v
-                    .read(cx)
-                    .state
-                    .tab_states
-                    .get(&pane_id)
-                    .map(|ts| (ts.last_pane_width - new_w).abs() > 0.5)
-                    .unwrap_or(false);
-
-                if should_update {
+                let new_cols = list_column_count(new_w, cell_stride, zoom_scale);
+                if new_cols != cols {
                     v.update(cx, |this, cx| {
-                        let mut columns_changed = false;
                         if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
                             let old_w = ts.last_pane_width;
-                            let new_cols = list_column_count(new_w, cell_stride, zoom_scale);
-                            columns_changed = new_cols != cols;
                             crate::perf::event(|| {
                                 format!(
                                     "list.width pane={} old={old_w:.1} new={new_w:.1} cols={cols}->{new_cols}",
@@ -477,12 +473,8 @@ impl App {
                             });
                             ts.last_pane_width = new_w;
                         }
-                        if columns_changed {
-                            crate::perf::count("list.width.columns_changed");
-                            this.notify_pane(pane_id, cx);
-                        } else {
-                            crate::perf::count("list.width.same_columns");
-                        }
+                        crate::perf::count("list.width.columns_changed");
+                        this.notify_pane(pane_id, cx);
                     });
                 }
             }
@@ -507,17 +499,7 @@ impl App {
                 .rounded_bl(px(12.0))
                 .rounded_br(px(12.0))
                 .on_prepaint(pane_bounds_recorder(pane_id, &bounds_view))
-                .child(layout_region("pane.viewport_body", inner))
-                .child(timed_layout_region(
-                    "pane.pills",
-                    PANE_PILLS_TIMINGS,
-                    filter_pill,
-                ))
-                .child(timed_layout_region(
-                    "pane.pills",
-                    PANE_PILLS_TIMINGS,
-                    controls_pill,
-                )),
+                .child(layout_region("pane.viewport_body", inner)),
         ))
         .into_any_element()
     }

@@ -228,21 +228,29 @@ impl<Pane> Tree<Pane> {
         self.tiles.map.retain(|id, _| reachable.contains(id));
     }
 
-    fn sanitize_node(&mut self, id: TileId, visiting: &mut HashSet<TileId>) -> Option<TileId>
-    where
-        Pane: Clone,
-    {
+    fn sanitize_node(&mut self, id: TileId, visiting: &mut HashSet<TileId>) -> Option<TileId> {
         if !self.tiles.map.contains_key(&id) || !visiting.insert(id) {
             return None;
         }
 
-        let tile = self.tiles.map.get(&id)?.clone();
-        let result = match tile {
-            Tile::Pane(_) => Some(id),
+        let container_data = match self.tiles.map.get(&id)? {
+            Tile::Pane(_) => {
+                visiting.remove(&id);
+                return Some(id);
+            }
             Tile::Container(Container::Tabs(tabs)) => {
+                Ok((tabs.children.clone(), tabs.active))
+            }
+            Tile::Container(Container::Linear(linear)) => {
+                Err((linear.children.clone(), linear.shares.clone()))
+            }
+        };
+
+        let result = match container_data {
+            Ok((tabs_children, tabs_active)) => {
                 let mut children = Vec::new();
                 let mut seen = HashSet::new();
-                for child in tabs.children {
+                for child in tabs_children {
                     if let Some(child) = self.sanitize_node(child, visiting) {
                         if seen.insert(child) {
                             children.push(child);
@@ -253,8 +261,7 @@ impl<Pane> Tree<Pane> {
                 match children.len() {
                     0 => None,
                     _ => {
-                        let active = tabs
-                            .active
+                        let active = tabs_active
                             .and_then(|active| children.contains(&active).then_some(active))
                             .or_else(|| children.first().copied());
                         if let Some(Tile::Container(Container::Tabs(tabs))) =
@@ -267,11 +274,11 @@ impl<Pane> Tree<Pane> {
                     }
                 }
             }
-            Tile::Container(Container::Linear(linear)) => {
+            Err((linear_children, linear_shares)) => {
                 let mut children = Vec::new();
                 let mut shares = Vec::new();
                 let mut seen = HashSet::new();
-                for (ix, child) in linear.children.into_iter().enumerate() {
+                for (ix, child) in linear_children.into_iter().enumerate() {
                     let Some(child) = self.sanitize_node(child, visiting) else {
                         continue;
                     };
@@ -279,7 +286,7 @@ impl<Pane> Tree<Pane> {
                         continue;
                     }
                     children.push(child);
-                    let share = linear.shares.get(ix).copied().unwrap_or(1.0);
+                    let share = linear_shares.get(ix).copied().unwrap_or(1.0);
                     shares.push(if share.is_finite() && share > 0.0 {
                         share
                     } else {

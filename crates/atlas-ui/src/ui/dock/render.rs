@@ -301,9 +301,21 @@ impl App {
             let content = if rect.w <= 4.0 || rect.h <= 4.0 {
                 div().size_full().into_any_element()
             } else if is_closing {
-                let bounds = self.pane_tabs_bounds.get(&pane.tile).cloned().unwrap_or_default();
-                let left_shift = if pane.close_axis.0 < 0.0 { rect.w - f32::from(bounds.size.width) } else { 0.0 };
-                let top_shift = if pane.close_axis.1 < 0.0 { rect.h - f32::from(bounds.size.height) } else { 0.0 };
+                let bounds = self
+                    .pane_tabs_bounds
+                    .get(&pane.tile)
+                    .cloned()
+                    .unwrap_or_default();
+                let left_shift = if pane.close_axis.0 < 0.0 {
+                    rect.w - f32::from(bounds.size.width)
+                } else {
+                    0.0
+                };
+                let top_shift = if pane.close_axis.1 < 0.0 {
+                    rect.h - f32::from(bounds.size.height)
+                } else {
+                    0.0
+                };
                 div()
                     .absolute()
                     .left(px(left_shift))
@@ -317,7 +329,12 @@ impl App {
             };
             let animated = div()
                 .size_full()
-                .child(self.render_split_intro(pane.tile, content, motion, pane.close_axis));
+                .child(self.render_split_intro(
+                    pane.tile,
+                    content,
+                    motion,
+                    pane.close_axis,
+                ));
             let pane = div()
                 .absolute()
                 .left(px(rect.x))
@@ -517,10 +534,10 @@ impl App {
                     if ix > 0 {
                         let gap = splitter_gaps[ix - 1];
                         let start_gap = start_splitter_gaps[ix - 1];
-                        
+
                         let current_offset = start_offset + (offset - start_offset) * progress;
                         let current_gap = start_gap + (gap - start_gap) * progress;
-                        
+
                         let srect = match linear.dir {
                             LinearDir::Horizontal => FlatRect {
                                 x: current_offset,
@@ -563,9 +580,10 @@ impl App {
                         start_available,
                         linear.children.len(),
                     );
-                    
+
                     let current_offset = start_offset + (offset - start_offset) * progress;
-                    let current_child_span = start_child_span + (child_span - start_child_span) * progress;
+                    let current_child_span =
+                        start_child_span + (child_span - start_child_span) * progress;
 
                     let child_rect = match linear.dir {
                         LinearDir::Horizontal => FlatRect {
@@ -1091,7 +1109,13 @@ impl App {
             })
             .unwrap_or_else(|| div().size_full().bg(panel_bg).into_any_element());
         let content = if let Some(active) = active {
-            self.with_split_drop_zones(active, content, cx)
+            let mut content_flex = v_flex()
+                .size_full()
+                .child(div().flex_1().min_h(px(0.)).min_w(px(0.)).child(content));
+            if self.state.focused_tile == active {
+                content_flex = content_flex.child(self.render_pane_bottom_bar(active, window, cx));
+            }
+            self.with_split_drop_zones(active, content_flex.into_any_element(), cx)
         } else {
             content
         };
@@ -1457,16 +1481,23 @@ impl App {
         content: AnyElement,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let mut el = div()
+            .size_full()
+            .relative()
+            .group("tab-split-zone")
+            .child(content);
+
+        if !cx.has_active_drag() {
+            return el.into_any_element();
+        }
+
         let app = cx.entity();
         let overlay_top_app = app.clone();
         let overlay_left_app = app.clone();
         let overlay_right_app = app.clone();
         let overlay_bottom_app = app;
-        div()
-            .size_full()
-            .relative()
-            .group("tab-split-zone")
-            .child(content)
+
+        el = el
             .child(timed_layout_region(
                 "pane.drop_zones",
                 PANE_DROP_ZONES_TIMINGS,
@@ -1480,11 +1511,16 @@ impl App {
                             this.split_existing_tab(target, drag.pane_id, false, true);
                             cx.notify();
                         });
-                    }),
+                    })
+                    .child(
+                        div()
+                            .size_full()
+                            .bg(cx.theme().background.opacity(0.85))
+                            .opacity(0.0)
+                            .group_hover("tab-split-zone", |s| s.opacity(1.0)),
+                    ),
             ))
-            .child(timed_layout_region(
-                "pane.drop_zones",
-                PANE_DROP_ZONES_TIMINGS,
+            .child(
                 split_drop_zone(AtlasIcon::SplitHorizontal)
                     .right_0()
                     .top(relative(0.25))
@@ -1495,39 +1531,57 @@ impl App {
                             this.split_existing_tab(target, drag.pane_id, false, false);
                             cx.notify();
                         });
-                    }),
-            ))
-            .child(timed_layout_region(
-                "pane.drop_zones",
-                PANE_DROP_ZONES_TIMINGS,
+                    })
+                    .child(
+                        div()
+                            .size_full()
+                            .bg(cx.theme().background.opacity(0.85))
+                            .opacity(0.0)
+                            .group_hover("tab-split-zone", |s| s.opacity(1.0)),
+                    ),
+            )
+            .child(
                 split_drop_zone(AtlasIcon::SplitVertical)
+                    .top_0()
                     .left_0()
                     .right_0()
-                    .top_0()
                     .h(relative(0.25))
                     .on_drop::<TabDrag>(move |drag, _window, cx| {
                         overlay_top_app.update(cx, |this, cx| {
                             this.split_existing_tab(target, drag.pane_id, true, true);
                             cx.notify();
                         });
-                    }),
-            ))
-            .child(timed_layout_region(
-                "pane.drop_zones",
-                PANE_DROP_ZONES_TIMINGS,
+                    })
+                    .child(
+                        div()
+                            .size_full()
+                            .bg(cx.theme().background.opacity(0.85))
+                            .opacity(0.0)
+                            .group_hover("tab-split-zone", |s| s.opacity(1.0)),
+                    ),
+            )
+            .child(
                 split_drop_zone(AtlasIcon::SplitVertical)
+                    .bottom_0()
                     .left_0()
                     .right_0()
-                    .bottom_0()
                     .h(relative(0.25))
                     .on_drop::<TabDrag>(move |drag, _window, cx| {
                         overlay_bottom_app.update(cx, |this, cx| {
                             this.split_existing_tab(target, drag.pane_id, true, false);
                             cx.notify();
                         });
-                    }),
-            ))
-            .into_any_element()
+                    })
+                    .child(
+                        div()
+                            .size_full()
+                            .bg(cx.theme().background.opacity(0.85))
+                            .opacity(0.0)
+                            .group_hover("tab-split-zone", |s| s.opacity(1.0)),
+                    ),
+            );
+
+        el.into_any_element()
     }
 
     pub(crate) fn get_or_make_file_panel(
@@ -1579,12 +1633,6 @@ mod tests {
         assert_eq!(closing_splitter_index(0, 0), None);
     }
 
-    #[test]
-    fn flip_offset_moves_from_previous_to_final_position() {
-        assert_eq!(flip_axis_offset(100.0, 40.0, 0.0), 60.0);
-        assert_eq!(flip_axis_offset(100.0, 40.0, 0.5), 30.0);
-        assert_eq!(flip_axis_offset(100.0, 40.0, 1.0), 0.0);
-    }
 }
 
 pub(crate) struct FastPaneShell {
@@ -1606,7 +1654,10 @@ impl FastPaneShell {
         content: gpui::AnyElement,
     ) -> Self {
         Self {
-            id: gpui::ElementId::Name(gpui::SharedString::from(format!("pane-shell-{}", pane_id.0))),
+            id: gpui::ElementId::Name(gpui::SharedString::from(format!(
+                "pane-shell-{}",
+                pane_id.0
+            ))),
             tab_strip,
             content,
             style: gpui::StyleRefinement::default(),
@@ -1674,12 +1725,17 @@ impl gpui::Element for FastPaneShell {
         cx: &mut gpui::App,
     ) -> Self::PrepaintState {
         crate::perf::count("pane.shell.prepaint");
-        
+
         let tab_bounds = window.layout_bounds(request_layout.tab_layout);
         let content_bounds = window.layout_bounds(request_layout.content_layout);
-        
+
         let tab_offset = bounds.origin - tab_bounds.origin;
-        let content_offset = bounds.origin + gpui::Point { x: gpui::px(0.0), y: tab_bounds.size.height } - content_bounds.origin;
+        let content_offset = bounds.origin
+            + gpui::Point {
+                x: gpui::px(0.0),
+                y: tab_bounds.size.height,
+            }
+            - content_bounds.origin;
 
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
             window.with_element_offset(tab_offset, |window| {
@@ -1702,12 +1758,17 @@ impl gpui::Element for FastPaneShell {
         cx: &mut gpui::App,
     ) {
         crate::perf::count("pane.shell.paint");
-        
+
         let tab_bounds = window.layout_bounds(request_layout.tab_layout);
         let content_bounds = window.layout_bounds(request_layout.content_layout);
-        
+
         let tab_offset = bounds.origin - tab_bounds.origin;
-        let content_offset = bounds.origin + gpui::Point { x: gpui::px(0.0), y: tab_bounds.size.height } - content_bounds.origin;
+        let content_offset = bounds.origin
+            + gpui::Point {
+                x: gpui::px(0.0),
+                y: tab_bounds.size.height,
+            }
+            - content_bounds.origin;
 
         window.with_element_offset(tab_offset, |window| {
             self.tab_strip.paint(window, cx);

@@ -250,12 +250,13 @@ impl App {
             let scroll = self.scroll_handle_for(pane_id);
             let base_scroll = scroll.0.borrow().base_handle.clone();
             let scroll_view = view.clone();
-            
+
             // Grid Snapping Smooth Scroll Interpolation
             if let Some(&target) = self.scroll_targets.get(&pane_id) {
                 let current = f32::from(base_scroll.offset().y);
                 if (target - current).abs() > 0.5 {
-                    let (ease, _) = crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
+                    let (ease, _) =
+                        crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
                     let mut next = current + (target - current) * ease;
                     // If almost there, snap to target.
                     if (target - next).abs() < 1.0 {
@@ -269,7 +270,7 @@ impl App {
                     self.scroll_targets.remove(&pane_id);
                 }
             }
-            
+
             let app_handle = cx.entity().clone();
             // First frames after a split often report 0-height scroll bounds (layout
             // not committed yet). Shaping with viewport_h=0 builds an empty canvas and
@@ -469,14 +470,17 @@ impl App {
                                         window.prevent_default();
                                         cx.stop_propagation();
                                         let dy = l.y * row_h * 3.0;
-                                        
+
                                         app_handle.update(cx, |app, cx| {
-                                            let current_target = *app.scroll_targets.entry(pane_id).or_insert_with(|| f32::from(base_scroll.offset().y));
+                                            let current_target =
+                                                *app.scroll_targets.entry(pane_id).or_insert_with(
+                                                    || f32::from(base_scroll.offset().y),
+                                                );
                                             let mut new_y = current_target + dy;
                                             let max_scroll = (total_height - viewport_h).max(0.0);
                                             new_y = (new_y / row_h).round() * row_h;
                                             new_y = new_y.clamp(-max_scroll, 0.0);
-                                            
+
                                             app.scroll_targets.insert(pane_id, new_y);
                                             cx.notify();
                                         });
@@ -498,8 +502,6 @@ impl App {
                 .vertical_scrollbar(&base_scroll)
                 .into_any_element()
         };
-        let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
-
         let zone_view = view.clone();
         let prepaint_view = view.clone();
         let bounds_view = view.clone();
@@ -526,16 +528,6 @@ impl App {
             "pane.viewport",
             PANE_VIEWPORT_TIMINGS,
             layout_region("pane.viewport_body", inner),
-        ))
-        .child(timed_layout_region(
-            "pane.pills",
-            PANE_PILLS_TIMINGS,
-            filter_pill,
-        ))
-        .child(timed_layout_region(
-            "pane.pills",
-            PANE_PILLS_TIMINGS,
-            controls_pill,
         ))
         .on_prepaint({
             let v = prepaint_view;
@@ -1014,7 +1006,10 @@ fn prime_details_file_icons_range(
                 Some(crate::ui::file_icons::FileIconRef {
                     path: entry.path.clone(),
                     kind: entry.kind.clone(),
-                    extension: entry.extension.as_ref().map(|s| s.to_string()),
+                    extension: entry
+                        .extension
+                        .as_ref()
+                        .map(|s| gpui::SharedString::from(s.to_string())),
                 })
             })
             .collect::<Vec<_>>()
@@ -1206,7 +1201,10 @@ fn render_rename_row(
     let name = entry.name.clone();
     let fallback_icon = FileIcon::Builtin {
         kind: entry.kind.clone(),
-        extension: entry.extension.as_ref().map(|s| s.to_string()),
+        extension: entry
+            .extension
+            .as_ref()
+            .map(|s| gpui::SharedString::from(s.to_string())),
     };
     let meta_cells = layout.columns.iter().map(|col| {
         let text = match col.column {
