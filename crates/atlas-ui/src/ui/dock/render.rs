@@ -15,7 +15,7 @@ use crate::ui::pane_panel::FilePanel;
 use atlas_core::util::display::display_name;
 use atlas_model::layout_tree::{Container, LinearDir, Tile, TileId};
 use atlas_model::location::Location;
-use std::time::Instant;
+use std::{sync::OnceLock, time::Instant};
 
 const DOCK_FLAT_HOST_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
     request_layout: "dock.flat_host.request_layout",
@@ -79,7 +79,11 @@ struct FlatRect {
 
 struct FlatPane {
     tile: TileId,
+    /// Interpolated visual rect for this frame.
     rect: FlatRect,
+    /// Stable final-layout rect. During FLIP, non-closing pane contents are laid out
+    /// here once and only translated in paint on subsequent frames.
+    layout_rect: FlatRect,
     /// Direction in which an exiting pane should slide beneath its survivor.
     close_axis: (f32, f32),
 }
@@ -101,6 +105,32 @@ fn split_child_span(share: f32, share_sum: f32, available: f32, child_count: usi
 
 fn closing_splitter_index(pane_ix: usize, num_splitters: usize) -> Option<usize> {
     (num_splitters > 0).then(|| pane_ix.min(num_splitters - 1))
+}
+
+fn stable_flip_layout_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("ATLAS_STABLE_FLIP_LAYOUT")
+            .ok()
+            .map(|value| !matches!(value.as_str(), "" | "0" | "false" | "FALSE" | "off" | "OFF"))
+            .unwrap_or(true)
+    })
+}
+
+fn pane_visual_layout(
+    current: FlatRect,
+    final_rect: FlatRect,
+    closing: bool,
+    stable_flip: bool,
+) -> (FlatRect, (f32, f32)) {
+    if stable_flip && !closing {
+        (
+            final_rect,
+            (current.x - final_rect.x, current.y - final_rect.y),
+        )
+    } else {
+        (current, (0.0, 0.0))
+    }
 }
 
 /// Tabs-like tile (tab strip + body) hosted in its own entity so it can be embedded
@@ -277,6 +307,7 @@ impl App {
         if !self.collect_flat_layout(
             root,
             rect,
+            rect,
             window,
             cx,
             &mut panes,
@@ -289,6 +320,7 @@ impl App {
 
         let view = cx.entity();
         let flip_active = active_animation.is_some();
+        let stable_flip = flip_active && stable_flip_layout_enabled();
         let mut host = div().absolute().inset_0().overflow_hidden();
         let mut closing_panes = Vec::new();
         let mut opening_panes = Vec::new();
@@ -297,7 +329,12 @@ impl App {
         for pane in panes {
             let motion = self.split_motion_for_tile(pane.tile);
             let is_closing = matches!(motion, Some(SplitMotion::Closing(_)));
-            let rect = pane.rect;
+            let current_rect = pane.rect;
+            let (rect, paint_offset) =
+                pane_visual_layout(current_rect, pane.layout_rect, is_closing, stable_flip);
+            if stable_flip && !is_closing {
+                crate::perf::count("dock.stable_flip.pane");
+            }
             let content = if rect.w <= 4.0 || rect.h <= 4.0 {
                 div().size_full().into_any_element()
             } else if is_closing {
@@ -307,12 +344,12 @@ impl App {
                     .cloned()
                     .unwrap_or_default();
                 let left_shift = if pane.close_axis.0 < 0.0 {
-                    rect.w - f32::from(bounds.size.width)
+                    current_rect.w - f32::from(bounds.size.width)
                 } else {
                     0.0
                 };
                 let top_shift = if pane.close_axis.1 < 0.0 {
-                    rect.h - f32::from(bounds.size.height)
+                    current_rect.h - f32::from(bounds.size.height)
                 } else {
                     0.0
                 };
@@ -327,14 +364,12 @@ impl App {
             } else {
                 self.render_cached_tabs(pane.tile, false, window, cx)
             };
-            let animated = div()
-                .size_full()
-                .child(self.render_split_intro(
-                    pane.tile,
-                    content,
-                    motion,
-                    pane.close_axis,
-                ));
+            let animated = div().size_full().child(self.render_split_intro(
+                pane.tile,
+                content,
+                motion,
+                pane.close_axis,
+            ));
             let pane = div()
                 .absolute()
                 .left(px(rect.x))
@@ -346,6 +381,9 @@ impl App {
                 // A final-bounds clip can hide most of a translated survivor.
                 // Let panes overlap while FLIP is active; the dock root remains clipped.
                 .when(!flip_active || is_closing, |this| this.overflow_hidden())
+                .when(paint_offset.0 != 0.0 || paint_offset.1 != 0.0, |this| {
+                    this.paint_offset(gpui::point(px(paint_offset.0), px(paint_offset.1)))
+                })
                 .child(animated);
             if is_closing {
                 closing_panes.push(pane);
@@ -393,6 +431,15 @@ impl App {
             ));
         }
 
+        if stable_flip {
+            // Paint-only FLIP deliberately keeps cached hitboxes at their final
+            // geometry while panes are visually translated. One dock-wide occluder
+            // prevents a short-lived click/drop mismatch without rebuilding every
+            // pane's interaction tree on each animation frame.
+            crate::perf::count("dock.stable_flip.occluder");
+            host = host.child(div().absolute().inset_0().occlude());
+        }
+
         Some(timed_layout_region("dock.flat_host", DOCK_FLAT_HOST_TIMINGS, host).into_any_element())
     }
 
@@ -400,6 +447,7 @@ impl App {
         &mut self,
         id: TileId,
         rect: FlatRect,
+        layout_rect: FlatRect,
         window: &mut Window,
         cx: &mut Context<Self>,
         panes: &mut Vec<FlatPane>,
@@ -412,6 +460,7 @@ impl App {
                 panes.push(FlatPane {
                     tile: id,
                     rect,
+                    layout_rect,
                     close_axis,
                 });
                 true
@@ -423,6 +472,7 @@ impl App {
                     panes.push(FlatPane {
                         tile: id,
                         rect,
+                        layout_rect,
                         close_axis,
                     });
                     true
@@ -489,6 +539,10 @@ impl App {
                     LinearDir::Horizontal => rect.w,
                     LinearDir::Vertical => rect.h,
                 };
+                let layout_span = match linear.dir {
+                    LinearDir::Horizontal => layout_rect.w,
+                    LinearDir::Vertical => layout_rect.h,
+                };
                 let num_splitters = linear.children.len().saturating_sub(1);
                 let closing_ix = self
                     .dock_split_animations
@@ -511,6 +565,7 @@ impl App {
                 }
                 let start_splitter_gaps = vec![splitter_size; num_splitters];
                 let available = (span - splitter_gaps.iter().sum::<f32>()).max(0.0);
+                let layout_available = (layout_span - splitter_gaps.iter().sum::<f32>()).max(0.0);
                 let start_available = (span - start_splitter_gaps.iter().sum::<f32>()).max(0.0);
                 let (start_shares, progress) = if let Some(animation) = flip_animation {
                     let progress = animation.progress();
@@ -528,6 +583,10 @@ impl App {
                     LinearDir::Vertical => rect.y,
                 };
                 let mut start_offset = offset;
+                let mut layout_offset = match linear.dir {
+                    LinearDir::Horizontal => layout_rect.x,
+                    LinearDir::Vertical => layout_rect.y,
+                };
                 let mut any = false;
 
                 for (ix, child_id) in linear.children.iter().copied().enumerate() {
@@ -560,6 +619,7 @@ impl App {
                         });
                         offset += gap;
                         start_offset += start_gap;
+                        layout_offset += gap;
                     }
 
                     let share = if closing_layout {
@@ -569,6 +629,8 @@ impl App {
                     };
                     let child_span =
                         split_child_span(share, share_sum, available, linear.children.len());
+                    let layout_child_span =
+                        split_child_span(share, share_sum, layout_available, linear.children.len());
                     let start_share = if closing_layout {
                         start_shares.get(ix).copied().unwrap_or(1.0).max(0.0)
                     } else {
@@ -599,8 +661,23 @@ impl App {
                             h: current_child_span,
                         },
                     };
+                    let layout_child_rect = match linear.dir {
+                        LinearDir::Horizontal => FlatRect {
+                            x: layout_offset,
+                            y: layout_rect.y,
+                            w: layout_child_span,
+                            h: layout_rect.h,
+                        },
+                        LinearDir::Vertical => FlatRect {
+                            x: layout_rect.x,
+                            y: layout_offset,
+                            w: layout_rect.w,
+                            h: layout_child_span,
+                        },
+                    };
                     offset += child_span;
                     start_offset += start_child_span;
+                    layout_offset += layout_child_span;
                     let child_close_axis = if matches!(
                         self.split_motion_for_tile(child_id),
                         Some(SplitMotion::Closing(_))
@@ -627,6 +704,7 @@ impl App {
                     any |= self.collect_flat_layout(
                         child_id,
                         child_rect,
+                        layout_child_rect,
                         window,
                         cx,
                         panes,
@@ -1633,6 +1711,51 @@ mod tests {
         assert_eq!(closing_splitter_index(0, 0), None);
     }
 
+    #[test]
+    fn stable_flip_uses_final_layout_and_current_visual_offset() {
+        let current = FlatRect {
+            x: 120.0,
+            y: 20.0,
+            w: 300.0,
+            h: 400.0,
+        };
+        let final_rect = FlatRect {
+            x: 80.0,
+            y: 20.0,
+            w: 220.0,
+            h: 400.0,
+        };
+
+        let (layout, offset) = pane_visual_layout(current, final_rect, false, true);
+        assert_eq!(
+            (layout.x, layout.y, layout.w, layout.h),
+            (80.0, 20.0, 220.0, 400.0)
+        );
+        assert_eq!(offset, (40.0, 0.0));
+    }
+
+    #[test]
+    fn closing_pane_keeps_interpolated_layout() {
+        let current = FlatRect {
+            x: 10.0,
+            y: 20.0,
+            w: 90.0,
+            h: 400.0,
+        };
+        let final_rect = FlatRect {
+            x: 10.0,
+            y: 20.0,
+            w: 0.0,
+            h: 400.0,
+        };
+
+        let (layout, offset) = pane_visual_layout(current, final_rect, true, true);
+        assert_eq!(
+            (layout.x, layout.y, layout.w, layout.h),
+            (10.0, 20.0, 90.0, 400.0)
+        );
+        assert_eq!(offset, (0.0, 0.0));
+    }
 }
 
 pub(crate) struct FastPaneShell {
