@@ -298,7 +298,7 @@ impl App {
                             .map(|b| f32::from(b.size.height))
                             .filter(|h| *h > row_h)
                     })
-                    .unwrap_or(row_h * 24.0)
+                    .unwrap_or(row_h * 4.0)
             };
             let scroll_y = (-f32::from(base_scroll.offset().y)).max(0.0);
             let _list_view = view.clone();
@@ -309,8 +309,7 @@ impl App {
             // next render. Keep a generous paint/shaping runway on both sides so a
             // fast wheel/trackpad fling never exposes an unpainted (black) frame.
             let overscan_rows = ((viewport_h * DETAILS_SCROLL_OVERSCAN_VIEWPORTS) / row_h)
-                .ceil()
-                .max(12.0) as usize;
+                .ceil() as usize;
             let start_idx =
                 ((scroll_y / row_h).floor().max(0.0) as usize).saturating_sub(overscan_rows);
             let end_idx = ((scroll_y + viewport_h) / row_h).ceil() as usize + overscan_rows;
@@ -975,7 +974,12 @@ const DETAILS_TYPE_MIN_W: f32 = 56.0;
 /// Extra virtualized rows retained on either side of the current Details viewport.
 /// This is deliberately expressed in viewports, not a fixed row count, so it also
 /// covers high-DPI / zoomed layouts and large trackpad deltas.
-const DETAILS_SCROLL_OVERSCAN_VIEWPORTS: f32 = 1.5;
+// We use a small overscan (0.2 viewports) instead of a large one (like 1.5).
+// A large overscan forces GPUI to process and submit thousands of invisible primitives 
+// (text glyphs, icons, quads) to the scene builder every frame, which can cause 
+// `gpui-draw` to take 9+ ms to process 3000+ scene_ops. By keeping this small, 
+// we ensure only the visible rows (plus a tiny runway) are processed.
+const DETAILS_SCROLL_OVERSCAN_VIEWPORTS: f32 = 0.2;
 
 /// A/B: `true` = `DetailsBodyElement` (custom Element + ring); `false` = legacy dual-canvas.
 pub(crate) const USE_DETAILS_BODY_ELEMENT: bool = true;
