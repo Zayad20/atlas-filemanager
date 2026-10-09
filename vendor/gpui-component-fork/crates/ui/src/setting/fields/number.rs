@@ -6,7 +6,7 @@ use gpui::{
 };
 
 use crate::{
-    AxisExt, Disableable, Sizable, StyledExt,
+    AxisExt, Disableable, Sizable,
     input::{InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     setting::{
         AnySettingField, RenderOptions,

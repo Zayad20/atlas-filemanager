@@ -171,7 +171,7 @@ fn build_file_drag_start(
     cx: &mut gpui::App,
 ) -> Entity<DragView> {
     if view.read(&*cx).rubber.is_some() {
-        tracing::debug!(anchor = %anchor.display(), "dnd file drag blocked by active rubber");
+        tracing::info!(anchor = %anchor.display(), "dnd file drag blocked by active rubber");
         return empty_drag_view(cx);
     }
     // Recycle Bin rows carry mangled `$R` payload paths and remote rows carry
@@ -245,7 +245,7 @@ fn build_file_drag_start(
     // "RefCell already borrowed" panic from DoDragDrop's nested message loop).
     #[cfg(windows)]
     {
-        tracing::debug!(paths = paths.len(), "dnd file drag source triggered");
+        tracing::info!(paths = paths.len(), "dnd file drag source triggered");
         view.read(&*cx)
             .trigger_os_drag(paths.clone(), archive_items);
         // Invisible zero-size placeholder; OLE provides cursor feedback and a
@@ -256,11 +256,7 @@ fn build_file_drag_start(
     #[cfg(not(windows))]
     {
         let _ = archive_items;
-        let urls: Vec<String> = paths
-            .iter()
-            .map(|p| format!("file://{}", p.display()))
-            .collect();
-        _window.start_urilist_drag(urls);
+        let _ = _window;
         cx.new(|_| DraggedFiles { paths })
     }
 }

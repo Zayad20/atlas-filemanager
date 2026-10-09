@@ -24,10 +24,7 @@ pub(crate) mod shell_menu;
 pub(crate) mod shell_thumb;
 pub mod ui;
 
-use gpui::{
-    px, size, App as GpuiApp, AppContext as _, KeyBinding, WindowBackgroundAppearance,
-    WindowBounds, WindowOptions,
-};
+use gpui::{px, size, App as GpuiApp, AppContext as _, KeyBinding, WindowBounds, WindowOptions};
 use gpui_component::{Root, ThemeRegistry, TitleBar};
 use std::time::Instant;
 
@@ -271,7 +268,6 @@ pub fn run(
         let window_options = WindowOptions {
             titlebar: Some(TitleBar::title_bar_options()),
             window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
-            window_background: WindowBackgroundAppearance::Opaque,
             window_min_size: Some(size(px(900.), px(560.))),
             ..Default::default()
         };

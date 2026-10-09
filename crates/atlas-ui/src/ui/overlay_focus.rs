@@ -46,6 +46,7 @@ pub(crate) enum OverlayClaim {
     GotoBar,
     Commands,
     ExtPalette,
+    ExtPrompt,
     ExtManager,
     Settings,
     BatchRename,
@@ -81,6 +82,9 @@ impl App {
         }
         if self.ctx_menu.is_some() {
             return Some(OverlayClaim::CtxMenu);
+        }
+        if self.state.ext.pending.is_some() {
+            return Some(OverlayClaim::ExtPrompt);
         }
         let o = &self.state.overlay;
         if o.show_goto_bar {
@@ -201,6 +205,13 @@ impl App {
             OverlayClaim::ExtPalette => {
                 let input = self.palette_input_for(PaletteKind::Ext, window, cx);
                 Some(input.read(cx).focus_handle(cx))
+            }
+            OverlayClaim::ExtPrompt => {
+                self.ensure_ext_prompt_inputs(window, cx);
+                self.ext_prompt_inputs
+                    .first()
+                    .map(|i| i.read(cx).focus_handle(cx))
+                    .or_else(|| Some(self.overlay_focus(cx)))
             }
             OverlayClaim::ExtManager => Some(self.ext_manager_focus_handle(window, cx)),
             OverlayClaim::Settings => Some(self.settings_focus_handle(window, cx)),

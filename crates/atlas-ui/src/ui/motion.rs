@@ -18,6 +18,10 @@ pub const PANEL_MS: u64 = 100;
 pub const TAB_MS: u64 = 150;
 pub const PANE_MS: u64 = 90;
 pub const GLOW_MS: u64 = 90;
+// Layout motion has its own budget: entrances explain the new split, while
+// exits release space sooner. Neither curve overshoots the pane's neighbours.
+pub const SPLIT_OPEN_MS: u64 = 240;
+pub const SPLIT_CLOSE_MS: u64 = 140;
 
 pub const PALETTE_GROW_FROM: f32 = 0.80;
 
@@ -31,14 +35,7 @@ pub fn ease_out_quart(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(4)
 }
 
-/// A spring, as the analytic step response of a second-order system — the same
-/// physics alt-drag/iOS use for "alive" motion, but in closed form: no per-frame
-/// integrator, so it's frame-rate independent and can't drift or blow up.
-///
-/// `value(t)` returns the spring's position at `t` *seconds* for a unit step (0→1).
-/// Underdamped (`zeta` < 1) overshoots once and settles — the momentum feel. The
-/// output exceeds 1.0 on the overshoot, so it must drive a `with_animation` *closure*
-/// (unchecked), NOT `with_easing` (gpui `debug_assert!`s easings stay in [0,1]).
+/// Motion presets expressed as frequency and damping; GPUI CE owns the solver.
 #[derive(Clone, Copy)]
 pub struct Spring {
     /// Natural angular frequency (rad/s). Higher = snappier.
@@ -48,27 +45,20 @@ pub struct Spring {
 }
 
 impl Spring {
-    pub fn value(self, t: f32) -> f32 {
-        let (w, z) = (self.omega, self.zeta);
-        if t <= 0.0 {
-            return 0.0;
-        }
-        if z < 1.0 {
-            // Underdamped: decaying cosine envelope → one soft overshoot.
-            let wd = w * (1.0 - z * z).sqrt();
-            let e = (-z * w * t).exp();
-            1.0 - e * ((wd * t).cos() + (z * w / wd) * (wd * t).sin())
-        } else {
-            // Critically damped: smooth decel, no overshoot (good for exits).
-            let e = (-w * t).exp();
-            (w * t).mul_add(-e, 1.0 - e)
-        }
+    pub const fn config(self) -> gpui::SpringConfig {
+        gpui::spring(self.omega * self.omega, 2.0 * self.zeta * self.omega, 1.0)
     }
 
-    /// Seconds until the response has decayed within `eps` of rest. Drives the
-    /// `with_animation` timeline length so the tween ends exactly as the spring stills.
+    pub fn value(self, t: f32) -> f32 {
+        self.config()
+            .step(gpui::SpringState::default(), 1.0, t.max(0.0))
+            .position
+    }
+
     pub fn settle_secs(self, eps: f32) -> f32 {
-        -eps.ln() / (self.zeta * self.omega)
+        self.config()
+            .settle_time(gpui::SpringState::default(), 1.0, eps)
+            .as_secs_f32()
     }
 
     pub fn settle(self) -> Duration {
@@ -103,13 +93,49 @@ pub fn item_appear(this: Div, t: f32, row: usize) -> Div {
 }
 
 pub fn animation(ms: u64) -> Animation {
-    Animation::new(Duration::from_millis(ms)).with_easing(ease_out_quart)
+    Animation::new(gpui::Motion::new(Duration::from_millis(ms)).with_easing(ease_out_quart))
 }
 
 /// Linear timeline over a `Duration` — for animations whose curve lives in the
 /// `with_animation` closure (e.g. a [`Spring`]), so the easing gpui sees stays in [0,1].
 pub fn linear_anim(d: Duration) -> Animation {
-    Animation::new(d).with_easing(|t| t)
+    Animation::new(gpui::Motion::new(d))
+}
+
+/// Retain a native spring across renders and retarget it from its current value.
+/// Completion comes from the solver, so a panel stays mounted for its whole exit.
+pub fn panel_transition(
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+    key: &'static str,
+    initial: f32,
+    target: f32,
+    config: gpui::SpringConfig,
+    instant: bool,
+) -> gpui::AnimatedSample<f32> {
+    let state = window.use_keyed_state(key, cx, |_, _| gpui::Animated::new(initial, config));
+    let sample = state.update(cx, |state, _| {
+        sample_panel_transition(state, target, config, instant, std::time::Instant::now())
+    });
+    if sample.is_active {
+        window.request_animation_frame();
+    }
+    sample
+}
+
+fn sample_panel_transition(
+    state: &mut gpui::Animated<f32>,
+    target: f32,
+    config: gpui::SpringConfig,
+    instant: bool,
+    now: std::time::Instant,
+) -> gpui::AnimatedSample<f32> {
+    if instant {
+        state.jump_to(target);
+    } else {
+        state.set(target, config, now);
+    }
+    state.sample(now)
 }
 
 pub fn keyed(
@@ -140,6 +166,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hover_motion_uses_transparency_without_replacing_authored_materials() {
+        let mut bare = gpui::div().motion_feedback();
+        assert_eq!(
+            bare.style().background,
+            Some(gpui::transparent_black().into())
+        );
+        let mut filled = gpui::div().bg(gpui::white()).motion_feedback();
+        assert_eq!(filled.style().background, Some(gpui::white().into()));
+    }
+
+    #[test]
     fn spring_step_response() {
         let s = PANE_SPRING;
         assert_eq!(s.value(0.0), 0.0, "starts at rest position 0");
@@ -152,4 +189,77 @@ mod tests {
         let v = s.value(s.settle_secs(0.02));
         assert!((v - 1.0).abs() < 0.05, "settles to ~1.0, got {v}");
     }
+
+    #[test]
+    fn panel_can_reverse_mid_flight_and_finishes_its_exit() {
+        let now = std::time::Instant::now();
+        let config = gpui::spring(1100.0, 66.0, 1.0);
+        let mut state = gpui::Animated::new(0.0, config);
+        sample_panel_transition(&mut state, 1.0, config, false, now);
+        let interrupted_at = now + Duration::from_millis(80);
+        let before = state.sample(interrupted_at).value;
+        assert!(before > 0.0 && before < 1.0);
+        let closing = sample_panel_transition(&mut state, 0.0, config, false, interrupted_at);
+        assert!(
+            (closing.value - before).abs() < 0.0001,
+            "retargeting must not jump"
+        );
+        assert!(
+            closing.is_active,
+            "the inspector must stay mounted during its exit"
+        );
+        let still_closing = sample_panel_transition(
+            &mut state,
+            0.0,
+            config,
+            false,
+            interrupted_at + Duration::from_millis(100),
+        );
+        assert!(
+            still_closing.is_active,
+            "the old 100 ms teardown cuts off this spring"
+        );
+        assert!(still_closing.value < before);
+        let finished =
+            sample_panel_transition(&mut state, 0.0, config, false, now + Duration::from_secs(2));
+        assert!(!finished.is_active);
+        assert_eq!(finished.value, 0.0);
+    }
+
+    #[test]
+    fn disabling_motion_or_resizing_settles_a_running_panel_immediately() {
+        let now = std::time::Instant::now();
+        let config = gpui::spring(900.0, 60.0, 1.0);
+        let mut state = gpui::Animated::new(260.0, config);
+        sample_panel_transition(&mut state, 56.0, config, false, now);
+        let now = now + Duration::from_millis(40);
+        assert!(state.sample(now).is_active);
+        let instant = sample_panel_transition(&mut state, 56.0, config, true, now);
+        assert_eq!(instant.value, 56.0);
+        assert!(!instant.is_active);
+        let unchanged = sample_panel_transition(&mut state, 56.0, config, false, now);
+        assert_eq!(unchanged.value, 56.0);
+        assert!(
+            !unchanged.is_active,
+            "reenabling motion must not replay the old target"
+        );
+    }
 }
+
+pub trait MotionFeedbackExt: gpui::InteractiveElement + gpui::Styled + Sized {
+    #[track_caller]
+    fn motion_feedback(mut self) -> Self {
+        // An absent background is transparent. GPUI's default Fill is opaque
+        // black, so author the transparent endpoint before asking it to animate.
+        if self.style().background.is_none() {
+            self.style().background = Some(gpui::transparent_black().into());
+        }
+        self.transitions(|t| {
+            t.bg(gpui::millis(120))
+                .text_color(gpui::millis(120))
+                .opacity(gpui::millis(120))
+        })
+    }
+}
+
+impl<T: gpui::InteractiveElement + gpui::Styled + Sized> MotionFeedbackExt for T {}

@@ -1,11 +1,11 @@
+use crate::Colorize;
 use gpui::{
     AnyElement, App, ElementId, InteractiveElement as _, IntoElement, ParentElement, RenderOnce,
     StyleRefinement, Styled, Window, prelude::FluentBuilder,
 };
 
 use crate::{
-    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, Size, StyleSized, StyledExt,
-    h_flex,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, Size, StyleSized, h_flex,
 };
 
 /// A single row element used inside searchable-list dropdowns (Select, ComboBox, MultiComboBox).

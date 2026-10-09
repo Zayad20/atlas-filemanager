@@ -61,6 +61,10 @@ impl App {
                         crate::app::normalize_split_shares(&mut target_shares);
 
                         let anim = DockSplitAnimation {
+                            close_duration: None,
+                            from_gap_factors: self.dock_split_animations.get(&parent_id)
+                                .map(DockSplitAnimation::gap_factors)
+                                .unwrap_or_else(|| vec![1.0; current_shares.len().saturating_sub(1)]),
                             started: Instant::now(),
                             from: current_shares,
                             to: target_shares,
@@ -231,6 +235,27 @@ impl App {
             );
         }
 
+        // Target-First: Pre-assign the target pane width to both source and new pane
+        // based on the split direction, so the very first render uses the final column count
+        // and avoids an invalidation cascade on frame 1.
+        if let Some(source_id) = source_pane_id {
+            let source_w = self
+                .state
+                .tab_states
+                .get(&source_id)
+                .map(|s| s.last_pane_width)
+                .unwrap_or(0.0);
+            if source_w > 1.0 {
+                let target_w = if !vertical { source_w / 2.0 } else { source_w };
+                if let Some(source_ts) = self.state.tab_states.get_mut(&source_id) {
+                    source_ts.last_pane_width = target_w;
+                }
+                if let Some(target_ts) = self.state.tab_states.get_mut(&new_pane_id) {
+                    target_ts.last_pane_width = target_w;
+                }
+            }
+        }
+
         let split_source = source_pane_id.unwrap_or(new_pane_id);
         self.insert_split_tile(split_source, new_pane_id, vertical);
 
@@ -335,7 +360,7 @@ impl App {
         let _perf = crate::perf::span_detail("pane_close.queue", || {
             format!("new={} pending={}", panes.len(), self.pane_closing.len())
         });
-        let mut pending_before = self.pane_closing.len();
+        let pending_before = self.pane_closing.len();
         if self.state.settings.disable_animations {
             let mut remove: Vec<TileId> = self.pane_closing.keys().copied().collect();
             self.pane_closing.clear();
@@ -348,20 +373,6 @@ impl App {
             });
             self.remove_panes_from_tree(&remove);
         } else {
-            if pending_before > 0 {
-                let pending: Vec<TileId> = self.pane_closing.keys().copied().collect();
-                self.pane_closing.clear();
-                self.dock_split_animations.clear();
-                crate::perf::event(|| {
-                    format!(
-                        "pane_close.compact_pending pending={} before_new={}",
-                        pending.len(),
-                        panes.len()
-                    )
-                });
-                self.remove_panes_from_tree(&pending);
-                pending_before = 0;
-            }
             crate::perf::event(|| {
                 format!(
                     "pane_close.defer new={} pending_before={pending_before} open_panes={}",
@@ -408,7 +419,19 @@ impl App {
             return;
         };
         let from = self.split_shares_now(parent_id, &base);
-        let anim = DockSplitAnimation::closing(from, pos);
+        let from_gap_factors = self.split_gaps_now(parent_id, old_len);
+        let mut closing_indices: Vec<_> = linear.children.iter().enumerate()
+            .filter(|(_, child)| self.pane_closing.keys().any(|pane| {
+                self.state.container_contains_pane(**child, *pane)
+            }))
+            .map(|(ix, _)| ix)
+            .collect();
+        closing_indices.push(pos);
+        let mut anim = DockSplitAnimation::closing_many(from, &closing_indices);
+        anim.from_gap_factors = from_gap_factors;
+        if let Some(previous) = self.dock_split_animations.get(&parent_id) {
+            anim.retarget_close_deadline(previous);
+        }
         crate::perf::event(|| {
             format!(
                 "pane_close.split_start pane={} tabs={} parent={} siblings={} pos={} from={:?} to={:?}",
@@ -649,6 +672,12 @@ impl App {
         let new_tabs = self.state.pane_tree.tiles.insert_tab_tile(vec![new_pane]);
 
         if let Some(parent_id) = self.state.find_parent_of(source_tabs) {
+            let from_gap_factors = self.state.pane_tree.tiles.get(parent_id)
+                .and_then(|tile| match tile {
+                    Tile::Container(Container::Linear(linear)) if linear.dir == dir =>
+                        Some(self.split_gaps_now(parent_id, linear.children.len())),
+                    _ => None,
+                });
             let from = self
                 .state
                 .pane_tree
@@ -675,7 +704,7 @@ impl App {
                         if linear.shares.len() != old_len {
                             linear.shares = vec![1.0; old_len];
                         }
-                        crate::app::normalize_split_shares(&mut linear.shares);
+                        crate::app::normalize_split_shares_allow_zero(&mut linear.shares);
                         let sum: f32 = linear.shares.iter().copied().filter(|v| *v > 0.0).sum();
                         let new_share = if old_len == 0 || sum <= f32::EPSILON {
                             1.0
@@ -685,13 +714,17 @@ impl App {
                         let insert_at = pos + 1;
                         linear.children.insert(insert_at, new_tabs);
                         linear.shares.insert(insert_at, new_share);
-                        crate::app::normalize_split_shares(&mut linear.shares);
-                        let anim = match from {
+                        crate::app::normalize_split_shares_allow_zero(&mut linear.shares);
+                        let mut anim = match from {
                             Some(from) => {
                                 DockSplitAnimation::opening(from, linear.shares.clone(), insert_at)
                             }
                             None => DockSplitAnimation::new(linear.shares.clone(), insert_at),
                         };
+                        if let Some(mut gaps) = from_gap_factors {
+                            gaps.insert(insert_at.saturating_sub(1).min(gaps.len()), 0.0);
+                            anim.from_gap_factors = gaps;
+                        }
                         self.dock_split_animations.insert(parent_id, anim);
                         return;
                     }
@@ -736,6 +769,13 @@ impl App {
         }
         self.dock_split_animations
             .insert(linear, DockSplitAnimation::new(vec![1.0, 1.0], 1));
+    }
+
+    fn split_gaps_now(&self, linear_id: TileId, child_count: usize) -> Vec<f32> {
+        self.dock_split_animations.get(&linear_id)
+            .filter(|animation| animation.to.len() == child_count)
+            .map(DockSplitAnimation::gap_factors)
+            .unwrap_or_else(|| vec![1.0; child_count.saturating_sub(1)])
     }
 
     pub(crate) fn remove_panes_from_tree(&mut self, panes: &[TileId]) {
@@ -825,6 +865,9 @@ impl App {
             match container {
                 Container::Linear(l) => {
                     if let Some(pos) = l.children.iter().position(|child| *child == id) {
+                        if let Some(animation) = self.dock_split_animations.get_mut(&parent_id) {
+                            animation.remove_child(pos);
+                        }
                         l.children.remove(pos);
                         if pos < l.shares.len() {
                             l.shares.remove(pos);
@@ -958,18 +1001,8 @@ impl App {
             LinearDir::Vertical => self.state.pane_tree.tiles.insert_vertical_tile(children),
         };
 
-        let _insert_at = if before { 0 } else { 1 };
-        let anim = DockSplitAnimation {
-            started: Instant::now(),
-            from: if before {
-                vec![0.0, 1.0]
-            } else {
-                vec![1.0, 0.0]
-            },
-            to: vec![0.5, 0.5],
-            closing: false,
-            closing_ix: None,
-        };
+        let insert_at = if before { 0 } else { 1 };
+        let anim = DockSplitAnimation::new(vec![1.0, 1.0], insert_at);
         self.dock_split_animations.insert(linear, anim);
 
         if self.state.pane_tree.root == Some(target_tabs) {

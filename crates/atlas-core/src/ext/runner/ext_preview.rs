@@ -55,7 +55,14 @@ pub(crate) fn run_declarative_preview(cmd: &CommandRef, input: &Path) -> Preview
     let Some(program) = super::approved_program(&cmd.tools, program) else {
         return PreviewResult::Error(format!("preview uses undeclared tool: {program}"));
     };
-    let ran = std::process::Command::new(program).args(args).output();
+    let mut cmd_proc = std::process::Command::new(program);
+    cmd_proc.args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd_proc.creation_flags(0x0800_0000);
+    }
+    let ran = cmd_proc.output();
     let result = match ran {
         Ok(out) if out.status.success() => match cmd.command.output {
             PreviewOutput::Image => super::img::image_file_to_preview(&output),

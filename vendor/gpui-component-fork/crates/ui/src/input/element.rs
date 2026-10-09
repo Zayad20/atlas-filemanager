@@ -1,3 +1,4 @@
+use gpui::ColorExt as _;
 use gpui::Corners;
 use gpui::Half;
 use gpui::{
@@ -901,6 +902,7 @@ impl TextElement {
                     background_color: None,
                     underline: None,
                     strikethrough: None,
+                    letter_spacing: None,
                 }],
                 None,
             );
@@ -955,6 +957,7 @@ impl TextElement {
                 background_color: None,
                 underline: None,
                 strikethrough: None,
+                letter_spacing: None,
             }],
             None,
         );
@@ -970,6 +973,7 @@ impl TextElement {
                 background_color: None,
                 underline: None,
                 strikethrough: None,
+                letter_spacing: None,
             }],
             None,
         );
@@ -1027,6 +1031,7 @@ impl TextElement {
                 background_color: None,
                 underline: None,
                 strikethrough: None,
+                letter_spacing: None,
             };
             Some(
                 window
@@ -1050,6 +1055,7 @@ impl TextElement {
                     background_color: None,
                     underline: None,
                     strikethrough: None,
+                    letter_spacing: None,
                 };
                 // Use space for empty lines so they take up height
                 let shaped_text = if text.is_empty() { " ".into() } else { text };
@@ -1647,6 +1653,7 @@ impl Element for TextElement {
             background_color: None,
             underline: None,
             strikethrough: None,
+            letter_spacing: None,
         };
         let marked_run = TextRun {
             len: 0,
@@ -1659,6 +1666,7 @@ impl Element for TextElement {
                 wavy: false,
             }),
             strikethrough: None,
+            letter_spacing: None,
         };
 
         let runs = if !is_empty {
@@ -1745,6 +1753,7 @@ impl Element for TextElement {
                         background_color: None,
                         underline: None,
                         strikethrough: None,
+                        letter_spacing: None,
                     }],
                     wrap_width,
                 )
@@ -1847,6 +1856,7 @@ impl Element for TextElement {
                 background_color: None,
                 underline: None,
                 strikethrough: None,
+                letter_spacing: None,
             }];
             let current_line_runs = vec![TextRun {
                 len: line_number_len,
@@ -1855,6 +1865,7 @@ impl Element for TextElement {
                 background_color: None,
                 underline: None,
                 strikethrough: None,
+                letter_spacing: None,
             }];
 
             // build line numbers
@@ -2321,7 +2332,7 @@ fn split_runs_by_bg_segments(
             // Add the overlapping part with background color
             let overlap_start = run_start.max(bg_range.start);
             let overlap_end = run_end.min(bg_range.end);
-            let text_color = if bg_color.l >= 0.5 {
+            let text_color = if bg_color.lightness >= 0.5 {
                 gpui::black()
             } else {
                 gpui::white()
@@ -2420,6 +2431,7 @@ mod tests {
             background_color: None,
             underline: None,
             strikethrough: None,
+            letter_spacing: None,
         };
 
         // use hello this-is-test
@@ -2478,6 +2490,7 @@ mod tests {
             background_color: None,
             underline: None,
             strikethrough: None,
+            letter_spacing: None,
         };
 
         let runs = vec![
@@ -2516,6 +2529,7 @@ mod tests {
             background_color: None,
             underline: None,
             strikethrough: None,
+            letter_spacing: None,
         };
 
         let runs = vec![

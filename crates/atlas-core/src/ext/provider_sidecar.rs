@@ -27,14 +27,18 @@ impl ProviderSidecar {
         event_tx: flume::Sender<Event>,
     ) -> Result<Self> {
         let program = confined_program(extension_dir, command)?;
-        let mut child = Command::new(program)
-            .args(args)
+        let mut cmd = Command::new(program);
+        cmd.args(args)
             .current_dir(extension_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .context("start provider sidecar")?;
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+        let mut child = cmd.spawn().context("start provider sidecar")?;
         let stdin = Arc::new(Mutex::new(
             child.stdin.take().context("provider stdin unavailable")?,
         ));

@@ -1,3 +1,4 @@
+use gpui::ColorExt as _;
 use std::{
     any::Any,
     fmt::{Debug, Formatter},
@@ -1200,7 +1201,9 @@ impl Render for Tiles {
                             .into_iter()
                             .map(|item| self.render_panel(&item, window, cx)),
                     )
-                    .on_prepaint(move |bounds, _, cx| view.update(cx, |r, _| r.bounds = bounds))
+                    .on_prepaint_child(move |bounds, _, cx| {
+                        view.update(cx, |r, _| r.bounds = bounds)
+                    })
                     .on_drop(cx.listener(move |_, item: &AnyDrag, _, cx| {
                         cx.emit(DragDrop(item.clone()));
                     })),

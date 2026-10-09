@@ -37,12 +37,14 @@ use crate::dnd::DropZones;
 
 /// Resolved drop payload. Built inside the COM vtable, dispatched to App.
 /// The move-vs-copy decision is made later in `drain_dnd_queue` (by volume),
-/// so no effect travels here.
+/// including the modifier keys at the moment of release.
 #[derive(Debug)]
 pub struct DropPayload {
     pub paths: Vec<PathBuf>,
     /// True when the drag originated from Atlas itself (intra-Atlas move).
     pub from_self: bool,
+    pub ctrl: bool,
+    pub shift: bool,
     /// Window-space drop position (scaled, logical pixels).
     pub x: f32,
     pub y: f32,
@@ -377,7 +379,7 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
     fn Drop(
         &self,
         pdataobj: windows::core::Ref<IDataObject>,
-        _grfkeystate: MODIFIERKEYS_FLAGS,
+        grfkeystate: MODIFIERKEYS_FLAGS,
         pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> Result<()> {
@@ -420,6 +422,8 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
         let payload = DropPayload {
             paths,
             from_self,
+            ctrl: grfkeystate.0 & 0x0008 != 0,
+            shift: grfkeystate.0 & 0x0004 != 0,
             x: lx,
             y: ly,
         };

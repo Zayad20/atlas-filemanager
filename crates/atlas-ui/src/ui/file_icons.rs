@@ -15,9 +15,46 @@ pub(crate) struct FileIconRef {
 }
 
 #[derive(Clone)]
+pub(crate) enum IconTexture {
+    Single(Arc<RenderImage>),
+    Multi(Arc<crate::icon_theme::MultiResIcon>),
+}
+
+impl IconTexture {
+    #[inline]
+    pub(crate) fn for_size(&self, px: f32) -> Arc<RenderImage> {
+        match self {
+            Self::Single(tex) => tex.clone(),
+            Self::Multi(multi) => multi.for_size(px),
+        }
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn single(&self) -> Arc<RenderImage> {
+        match self {
+            Self::Single(tex) => tex.clone(),
+            Self::Multi(multi) => multi.full.clone(),
+        }
+    }
+}
+
+impl From<Arc<RenderImage>> for IconTexture {
+    fn from(tex: Arc<RenderImage>) -> Self {
+        Self::Single(tex)
+    }
+}
+
+impl From<Arc<crate::icon_theme::MultiResIcon>> for IconTexture {
+    fn from(multi: Arc<crate::icon_theme::MultiResIcon>) -> Self {
+        Self::Multi(multi)
+    }
+}
+
+#[derive(Clone)]
 pub(crate) enum FileIcon {
     PreviewTexture(Arc<RenderImage>),
-    IconTexture(Arc<RenderImage>),
+    IconTexture(IconTexture),
     Builtin {
         kind: FileKind,
         extension: Option<gpui::SharedString>,
@@ -27,7 +64,11 @@ pub(crate) enum FileIcon {
 impl FileIcon {
     pub(crate) fn element(self, size: f32, _color: Hsla) -> AnyElement {
         match self {
-            Self::PreviewTexture(tex) | Self::IconTexture(tex) => img(tex)
+            Self::PreviewTexture(tex) => img(tex)
+                .size(crate::ui::rem_px(size))
+                .flex_none()
+                .into_any_element(),
+            Self::IconTexture(tex) => img(tex.for_size(crate::ui::BASE_PX * size))
                 .size(crate::ui::rem_px(size))
                 .flex_none()
                 .into_any_element(),
@@ -36,8 +77,13 @@ impl FileIcon {
     }
 
     pub(crate) fn texture(&self) -> Option<Arc<RenderImage>> {
+        self.texture_for_size(24.0)
+    }
+
+    pub(crate) fn texture_for_size(&self, px: f32) -> Option<Arc<RenderImage>> {
         match self {
-            Self::PreviewTexture(tex) | Self::IconTexture(tex) => Some(tex.clone()),
+            Self::PreviewTexture(tex) => Some(tex.clone()),
+            Self::IconTexture(tex) => Some(tex.for_size(px)),
             Self::Builtin { .. } => None,
         }
     }
@@ -73,16 +119,13 @@ impl App {
         #[cfg(target_os = "windows")]
         if matches!(kind, FileKind::Dir) && is_windows_theme(&self.state.profiles.active().theme) {
             if let Some(tex) = self.shell_folder_icon() {
-                return FileIcon::IconTexture(tex);
+                return FileIcon::IconTexture(IconTexture::Single(tex));
             }
         }
-        if let Some(tex) = self.icon_tex_for_entry(kind, extension) {
-            return FileIcon::IconTexture(tex);
+        if let Some(multi) = self.multi_res_icon_for_entry(kind, extension) {
+            return FileIcon::IconTexture(IconTexture::Multi(multi));
         }
-        FileIcon::Builtin {
-            kind: kind.clone(),
-            extension: extension.map(gpui::SharedString::from),
-        }
+        FileIcon::IconTexture(IconTexture::Single(self.liquid_glass_icon(kind, extension)))
     }
 
     pub(crate) fn file_icon(&self, file: &FileIconRef) -> FileIcon {

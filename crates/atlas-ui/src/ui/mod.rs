@@ -53,3 +53,4 @@ pub mod thumbs;
 pub mod tooltips;
 pub mod type_filter_menu;
 pub mod views;
+pub mod window_chrome;

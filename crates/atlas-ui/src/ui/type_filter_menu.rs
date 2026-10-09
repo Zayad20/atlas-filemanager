@@ -15,6 +15,7 @@ use crate::ui::icons::{file_type_icon, icon, AtlasIcon};
 use atlas_model::file_entry::FileKind;
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{
     div, px, AnimationExt, AnyElement, Context, MouseButton, Pixels, Point, SharedString, Window,
 };

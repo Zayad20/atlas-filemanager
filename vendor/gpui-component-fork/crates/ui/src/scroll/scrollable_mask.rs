@@ -1,3 +1,4 @@
+use gpui::AppContext;
 use gpui::{
     App, Axis, BorderStyle, Bounds, ContentMask, Edges, Element, ElementId, GlobalElementId,
     Hitbox, Hsla, IntoElement, IsZero as _, LayoutId, PaintQuad, Point, Position, ScrollHandle,
@@ -109,54 +110,62 @@ impl Element for ScrollableMask {
         let line_height = window.line_height();
         let bounds = hitbox.bounds;
 
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            if let Some(color) = self.debug {
-                window.paint_quad(PaintQuad {
-                    bounds,
-                    border_widths: Edges::all(px(1.0)),
-                    border_color: color,
-                    background: gpui::transparent_white().into(),
-                    corner_radii: Corners::all(px(0.)),
-                    border_style: BorderStyle::default(),
-                });
-            }
+        window.with_content_mask(
+            Some(ContentMask {
+                bounds,
+                ..Default::default()
+            }),
+            |window| {
+                if let Some(color) = self.debug {
+                    window.paint_quad(PaintQuad {
+                        bounds,
+                        border_widths: Edges::all(px(1.0)),
+                        border_color: color.into(),
+                        background: gpui::transparent_white().into(),
+                        corner_radii: Corners::all(px(0.)),
+                        border_style: BorderStyle::default(),
+                        border_dashed_length: 3.0,
+                        border_dashed_gap: 3.0,
+                    });
+                }
 
-            window.on_mouse_event({
-                let view_id = window.current_view();
-                let scroll_handle = self.scroll_handle.clone();
+                window.on_mouse_event({
+                    let view_id = window.current_view();
+                    let scroll_handle = self.scroll_handle.clone();
 
-                move |event: &ScrollWheelEvent, phase, _, cx| {
-                    if !(bounds.contains(&event.position) && phase.bubble()) {
-                        return;
-                    }
+                    move |event: &ScrollWheelEvent, phase, _, cx| {
+                        if !(bounds.contains(&event.position) && phase.bubble()) {
+                            return;
+                        }
 
-                    let mut offset = scroll_handle.offset();
-                    let mut delta = event.delta.pixel_delta(line_height);
+                        let mut offset = scroll_handle.offset();
+                        let mut delta = event.delta.pixel_delta(line_height);
 
-                    // Limit for only one way scrolling at same time.
-                    // When use MacBook touchpad we may get both x and y delta,
-                    // only allows the one that more to scroll.
-                    if !delta.x.is_zero() && !delta.y.is_zero() {
-                        if delta.x.abs() > delta.y.abs() {
-                            delta.y = px(0.);
+                        // Limit for only one way scrolling at same time.
+                        // When use MacBook touchpad we may get both x and y delta,
+                        // only allows the one that more to scroll.
+                        if !delta.x.is_zero() && !delta.y.is_zero() {
+                            if delta.x.abs() > delta.y.abs() {
+                                delta.y = px(0.);
+                            } else {
+                                delta.x = px(0.);
+                            }
+                        }
+
+                        if is_horizontal {
+                            offset.x += delta.x;
                         } else {
-                            delta.x = px(0.);
+                            offset.y += delta.y;
+                        }
+
+                        if offset != scroll_handle.offset() {
+                            scroll_handle.set_offset(offset);
+                            cx.notify(view_id);
+                            cx.stop_propagation();
                         }
                     }
-
-                    if is_horizontal {
-                        offset.x += delta.x;
-                    } else {
-                        offset.y += delta.y;
-                    }
-
-                    if offset != scroll_handle.offset() {
-                        scroll_handle.set_offset(offset);
-                        cx.notify(view_id);
-                        cx.stop_propagation();
-                    }
-                }
-            });
-        });
+                });
+            },
+        );
     }
 }

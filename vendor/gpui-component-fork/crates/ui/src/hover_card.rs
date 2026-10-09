@@ -6,7 +6,7 @@ use gpui::{
 use instant::Duration;
 use std::{cell::Cell, rc::Rc};
 
-use crate::{ElementExt, StyledExt as _, popover::Popover};
+use crate::{ElementExt, popover::Popover};
 
 /// A hover card element that displays content when hovering over a trigger element.
 ///
@@ -286,7 +286,7 @@ impl RenderOnce for HoverCard {
                 .on_hover(window.listener_for(&state, |state, hovered, _, cx| {
                     state.on_trigger_hover(*hovered, cx);
                 }))
-                .on_prepaint({
+                .on_prepaint_child({
                     let state = state.clone();
                     let position = position.clone();
                     move |bounds, _, cx| {

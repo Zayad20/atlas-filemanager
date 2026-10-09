@@ -20,6 +20,7 @@ use crate::ui::views::details::{
 use crate::ui::views::details_ring::{self, DetailsRingMeta, DetailsRowSlot, DetailsRowText};
 use atlas_model::file_entry::FileKind;
 use atlas_model::pane::TabId;
+use gpui::ColorExt as _;
 use gpui::{
     point, px, size, App as GpuiApp, Bounds, Corners, DispatchPhase, Element, ElementId, Font,
     GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
@@ -45,6 +46,7 @@ pub(crate) struct DetailsBodyElement {
     colors: DetailsColors,
     font: Font,
     font_size: Pixels,
+    dragging: Option<DetailsColumn>,
     style: StyleRefinement,
 }
 
@@ -76,6 +78,7 @@ impl DetailsBodyElement {
         colors: DetailsColors,
         font: Font,
         font_size: Pixels,
+        dragging: Option<DetailsColumn>,
     ) -> Self {
         Self {
             id: ElementId::Name(SharedString::from(format!("details-body-{}", pane_id.0))),
@@ -92,6 +95,7 @@ impl DetailsBodyElement {
             colors,
             font,
             font_size,
+            dragging,
             style: StyleRefinement::default(),
         }
     }
@@ -134,8 +138,10 @@ impl Element for DetailsBodyElement {
         let mut style = Style::default();
         style.refine(&self.style);
         // Fill the scroll-content parent (explicit height set by outer div).
-        style.size.width = gpui::Length::Definite(gpui::DefiniteLength::Fraction(1.0));
-        style.size.height = gpui::Length::Definite(gpui::DefiniteLength::Fraction(1.0));
+        style.size.width =
+            gpui::Length::Definite(gpui::DefiniteLength::Relative(gpui::relative(1.0)));
+        style.size.height =
+            gpui::Length::Definite(gpui::DefiniteLength::Relative(gpui::relative(1.0)));
         let layout_id = window.request_layout(style.clone(), [], cx);
         (layout_id, style)
     }
@@ -190,6 +196,7 @@ impl Element for DetailsBodyElement {
             background_color: None,
             underline: None,
             strikethrough: None,
+            letter_spacing: None,
         };
         let ellipsis_shape_t0 = Instant::now();
         let ellipsis = ts.shape_line(ellipsis_text, font_size, &[ellipsis_run], None);
@@ -228,7 +235,8 @@ impl Element for DetailsBodyElement {
         let app_update_t0 = Instant::now();
         let (rows, show_checkboxes) = app_entity.update(cx, |app, _| {
             app.details_hit.insert(pane_id, hit_model.clone());
-            if app.drag_hover_maybe_active() {
+            {
+                app.pending_drag_hover_targets.retain(|target| !matches!(target.id, DragHoverId::Folder(tab, _) if tab == pane_id));
                 let targets = app
                     .state
                     .tab_states
@@ -242,7 +250,7 @@ impl Element for DetailsBodyElement {
                                     let id = DragHoverId::Folder(pane_id, entry.path.clone());
                                     DragHoverTarget {
                                         id,
-                                        bounds: hit_model.row_bounds(visible_pos),
+                                        bounds: hit_model.row_bounds(visible_pos).intersect(&hit_model.bounds).intersect(&window.content_mask().bounds),
                                         kind: DragHoverKind::Folder,
                                         command: DragHoverCommand::NavigatePathIn(
                                             pane_id,
@@ -381,6 +389,7 @@ impl Element for DetailsBodyElement {
                             background_color: None,
                             underline: None,
                             strikethrough: None,
+                            letter_spacing: None,
                         };
                         let shape_t0 = Instant::now();
                         let name_s = ts.shape_line(name, font_size, &[name_run], None);
@@ -403,6 +412,7 @@ impl Element for DetailsBodyElement {
                                 background_color: None,
                                 underline: None,
                                 strikethrough: None,
+                                letter_spacing: None,
                             };
                             let shape_t0 = Instant::now();
                             meta_cols.push(DetailsRingMeta {
@@ -539,7 +549,7 @@ impl Element for DetailsBodyElement {
                     };
                     if let Some(mut color) = bg {
                         if row.dimmed {
-                            color = color.opacity(color.a * 0.45);
+                            color = color.opacity(color.alpha * 0.45);
                         }
                         window.paint_quad(gpui::fill(row_bounds, color));
                     }
@@ -557,6 +567,13 @@ impl Element for DetailsBodyElement {
                         );
                     } else if let Some(tex) = &row.icon_tex {
                         let _ = window.paint_image(
+                            Bounds {
+                                origin: point(
+                                    origin_x + px(row_pad_x),
+                                    y + px((row_h - row_icon_size) * 0.5),
+                                ),
+                                size: size(px(row_icon_size), px(row_icon_size)),
+                            },
                             Bounds {
                                 origin: point(
                                     origin_x + px(row_pad_x),
@@ -611,10 +628,12 @@ impl Element for DetailsBodyElement {
                     // 4. Meta text
                     if prepaint.content_lod.paints_metadata() {
                         let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
-                        let mut meta_color = if row.selected { accent_fg } else { muted };
-                        if row.dimmed {
-                            meta_color = meta_color.opacity(0.45);
-                        }
+                        let base_meta_color = if row.selected { accent_fg } else { muted };
+                        let base_meta_color = if row.dimmed {
+                            base_meta_color.opacity(base_meta_color.alpha * 0.45)
+                        } else {
+                            base_meta_color
+                        };
 
                         for meta in &row.text.meta_cols {
                             let Some(layout_col) = prepaint
@@ -630,7 +649,8 @@ impl Element for DetailsBodyElement {
                             }
                             let col_x = origin_x + px(layout_col.x);
                             let mut col_w = layout_col.w;
-                            let remaining_w = (f32::from(bounds.size.width) - layout_col.x).max(0.0);
+                            let remaining_w =
+                                (f32::from(bounds.size.width) - layout_col.x).max(0.0);
                             col_w = col_w.min(remaining_w);
                             let padding = cell_pad.min(col_w);
                             let available_width = (col_w - padding).max(0.0);
@@ -640,6 +660,12 @@ impl Element for DetailsBodyElement {
                             }
                             if available_width > 15.0 * zoom_scale {
                                 painted_meta_cells += 1;
+                                let is_dragging = self.dragging == Some(meta.column);
+                                let meta_color = if is_dragging {
+                                    base_meta_color.opacity(base_meta_color.alpha * 0.35)
+                                } else {
+                                    base_meta_color
+                                };
                                 let _ = meta.line.paint_mono_truncated(
                                     point(text_x, text_y),
                                     px(row_h),

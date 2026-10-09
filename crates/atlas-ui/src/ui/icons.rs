@@ -86,7 +86,7 @@ pub(crate) enum AtlasIcon {
     TrayArrowDown,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum FileTypeIcon {
     Folder,
     File,
@@ -168,7 +168,7 @@ impl AtlasIcon {
 
 impl FileTypeIcon {
     #[inline]
-    const fn path(self) -> &'static str {
+    pub(crate) const fn path(self) -> &'static str {
         match self {
             Self::Folder => "icons/filetypes/liquid-glass/folder.png",
             Self::File => "icons/filetypes/liquid-glass/file.png",
@@ -309,7 +309,7 @@ pub(crate) fn file_type_icon(kind: &FileKind, extension: Option<&str>, size: f32
 }
 
 #[inline]
-fn file_type_icon_kind(kind: &FileKind, extension: Option<&str>) -> FileTypeIcon {
+pub(crate) fn file_type_icon_kind(kind: &FileKind, extension: Option<&str>) -> FileTypeIcon {
     match kind {
         FileKind::Dir => FileTypeIcon::Folder,
         FileKind::Symlink => FileTypeIcon::File,

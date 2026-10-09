@@ -2,6 +2,7 @@ use crate::app::App;
 use atlas_core::util::display::format_size;
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{div, hsla, px, relative, AnyElement, Context, MouseButton, SharedString, Window};
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 

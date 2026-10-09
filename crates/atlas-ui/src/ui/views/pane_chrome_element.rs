@@ -1,15 +1,13 @@
 //! Monolithic Element for Pane Chrome, eliminating all Taffy wrappers per pane.
-//! 
+//!
 //! Draws the CrumbStrip, Header, Body, and Scrollbar in a single node.
 //! Disconnected layout roots are used for the children to avoid flex layout overhead.
 
-
 use atlas_model::pane::TabId;
 use gpui::{
-    px, AnyElement, Bounds, Element, App as GpuiApp,
-    ElementId, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId,
-    Pixels, SharedString, Style,
-    StyleRefinement, Styled, Window, UniformListScrollHandle,
+    px, AnyElement, App as GpuiApp, Bounds, Element, ElementId, GlobalElementId, Hsla,
+    InspectorElementId, IntoElement, LayoutId, Pixels, SharedString, Style, StyleRefinement,
+    Styled, UniformListScrollHandle, Window,
 };
 
 pub(crate) struct PaneChromeElement {
@@ -100,29 +98,39 @@ impl Element for PaneChromeElement {
         cx: &mut GpuiApp,
     ) -> (LayoutId, Self::RequestLayoutState) {
         crate::perf::count("pane.chrome.layout");
-        
 
         let crumb_layout = self.crumb_strip.request_layout(window, cx);
 
-
         // Assume crumb strip height is ~36px or 44px, but we can just let it overlap if needed
-        // Actually, Taffy doesn't return computed size until after `request_layout` returns, 
+        // Actually, Taffy doesn't return computed size until after `request_layout` returns,
         // so we'll just stack them in prepaint!
         let header_layout = self.header.request_layout(window, cx);
-        
+
         let body_layout = self.scroll_body.request_layout(window, cx);
 
-        let filter_layout = self.filter_pill.as_mut().map(|p| p.request_layout(window, cx));
-        let controls_layout = self.controls_pill.as_mut().map(|p| p.request_layout(window, cx));
+        let filter_layout = self
+            .filter_pill
+            .as_mut()
+            .map(|p| p.request_layout(window, cx));
+        let controls_layout = self
+            .controls_pill
+            .as_mut()
+            .map(|p| p.request_layout(window, cx));
 
         // Register children so Taffy computes bounds.
         // We do NOT position them with flex; they just sit at (0,0) in our node space!
         let mut children = vec![crumb_layout, header_layout, body_layout];
-        if let Some(l) = filter_layout { children.push(l); }
-        if let Some(l) = controls_layout { children.push(l); }
+        if let Some(l) = filter_layout {
+            children.push(l);
+        }
+        if let Some(l) = controls_layout {
+            children.push(l);
+        }
 
         let mut root_style = Style::default();
-        root_style.size.width = gpui::Length::Definite(gpui::DefiniteLength::Absolute(gpui::AbsoluteLength::Pixels(px(0.0).into())));
+        root_style.size.width = gpui::Length::Definite(gpui::DefiniteLength::Absolute(
+            gpui::AbsoluteLength::Pixels(px(0.0).into()),
+        ));
         let layout_id = window.request_layout(Style::default(), children, cx);
 
         (
@@ -147,14 +155,29 @@ impl Element for PaneChromeElement {
         cx: &mut GpuiApp,
     ) -> Self::PrepaintState {
         crate::perf::count("pane.chrome.prepaint");
-        
-        // Compute offsets manually!
-        let crumb_h = window.layout_bounds(request_layout.crumb_layout).size.height;
-        let header_h = window.layout_bounds(request_layout.header_layout).size.height;
 
-        let crumb_offset = gpui::Point { x: px(0.0), y: px(0.0) };
-        let header_offset = gpui::Point { x: px(0.0), y: crumb_h };
-        let body_offset = gpui::Point { x: px(0.0), y: crumb_h + header_h };
+        // Compute offsets manually!
+        let crumb_h = window
+            .layout_bounds(request_layout.crumb_layout)
+            .size
+            .height;
+        let header_h = window
+            .layout_bounds(request_layout.header_layout)
+            .size
+            .height;
+
+        let crumb_offset = gpui::Point {
+            x: px(0.0),
+            y: px(0.0),
+        };
+        let header_offset = gpui::Point {
+            x: px(0.0),
+            y: crumb_h,
+        };
+        let body_offset = gpui::Point {
+            x: px(0.0),
+            y: crumb_h + header_h,
+        };
 
         window.with_element_offset(crumb_offset, |window| {
             self.crumb_strip.prepaint(window, cx);
@@ -165,8 +188,12 @@ impl Element for PaneChromeElement {
         window.with_element_offset(body_offset, |window| {
             self.scroll_body.prepaint(window, cx);
         });
-        if let Some(p) = self.filter_pill.as_mut() { p.prepaint(window, cx); }
-        if let Some(p) = self.controls_pill.as_mut() { p.prepaint(window, cx); }
+        if let Some(p) = self.filter_pill.as_mut() {
+            p.prepaint(window, cx);
+        }
+        if let Some(p) = self.controls_pill.as_mut() {
+            p.prepaint(window, cx);
+        }
     }
 
     fn paint(
@@ -174,33 +201,23 @@ impl Element for PaneChromeElement {
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        request_layout: &mut PaneChromePrepaint,
+        _request_layout: &mut PaneChromePrepaint,
         _prepaint: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut GpuiApp,
     ) {
         crate::perf::count("pane.chrome.paint");
-        
-        let crumb_h = window.layout_bounds(request_layout.crumb_layout).size.height;
-        let header_h = window.layout_bounds(request_layout.header_layout).size.height;
 
-        let crumb_offset = gpui::Point { x: px(0.0), y: px(0.0) };
-        let header_offset = gpui::Point { x: px(0.0), y: crumb_h };
-        let body_offset = gpui::Point { x: px(0.0), y: crumb_h + header_h };
+        // Child bounds were captured with their offsets during prepaint.
+        self.crumb_strip.paint(window, cx);
+        self.header.paint(window, cx);
+        self.scroll_body.paint(window, cx);
 
-        window.with_element_offset(crumb_offset, |window| {
-            self.crumb_strip.paint(window, cx);
-        });
-        window.with_element_offset(header_offset, |window| {
-            self.header.paint(window, cx);
-        });
-        window.with_element_offset(body_offset, |window| {
-            self.scroll_body.paint(window, cx);
-        });
-        
-        if let Some(p) = self.filter_pill.as_mut() { p.paint(window, cx); }
-        if let Some(p) = self.controls_pill.as_mut() { p.paint(window, cx); }
-        
-
+        if let Some(p) = self.filter_pill.as_mut() {
+            p.paint(window, cx);
+        }
+        if let Some(p) = self.controls_pill.as_mut() {
+            p.paint(window, cx);
+        }
     }
 }

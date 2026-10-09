@@ -3,7 +3,7 @@ use gpui::{
     StyleRefinement, Styled, TextAlign, Window, div, prelude::FluentBuilder as _, px, relative,
 };
 
-use crate::{ActiveTheme as _, AnyChildElement, ChildElement, Sizable, Size, StyledExt as _};
+use crate::{ActiveTheme as _, AnyChildElement, ChildElement, Sizable, Size};
 
 const MIN_CELL_WIDTH: Pixels = px(100.);
 

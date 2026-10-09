@@ -8,6 +8,7 @@ use crate::ui::surface::{
     paint_theme_icon, shape_text, text_origin_y, Slot,
 };
 use atlas_model::pane::TabId;
+use gpui::ColorExt as _;
 use gpui::{
     point, px, size, App as GpuiApp, Bounds, ContentMask, Corners, DispatchPhase, Element,
     ElementId, Font, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton,
@@ -142,7 +143,8 @@ impl Element for TabsBarElement {
         let strip_h = if self.windows_theme { 46.0 } else { 34.0 } * zoom;
         let mut style = Style::default();
         style.refine(&self.style);
-        style.size.width = gpui::Length::Definite(gpui::DefiniteLength::Fraction(1.0));
+        style.size.width =
+            gpui::Length::Definite(gpui::DefiniteLength::Relative(gpui::relative(1.0)));
         style.size.height = gpui::Length::Definite(gpui::DefiniteLength::Absolute(
             gpui::AbsoluteLength::Pixels(px(strip_h)),
         ));
@@ -200,13 +202,13 @@ impl Element for TabsBarElement {
         }
 
         let avail = (f32::from(bounds.size.width) - pad_x * 2.0 - new_sz - gap).max(40.0);
-        
+
         // Progressive Disclosure: if the space is too small for all tabs,
         // start hiding inactive ones (so inactive tabs collapse progressively).
         let min_required = self.tabs.len() as f32 * (tab_min * 0.55 + gap);
         let mut visible_tabs: Vec<bool> = vec![true; self.tabs.len()];
         let mut sum_visible = 0.0;
-        
+
         if min_required > avail && self.tabs.len() > 1 {
             // We need to hide tabs. Always keep the active tab visible.
             for (i, tab) in self.tabs.iter().enumerate() {
@@ -361,7 +363,7 @@ impl Element for TabsBarElement {
                         window,
                         tag_slot.to_bounds(origin),
                         tag_slot.h * 0.5,
-                        c.into(),
+                        gpui::rgb_to_hsla(c),
                     );
                 }
 
@@ -370,6 +372,14 @@ impl Element for TabsBarElement {
                     window.with_content_mask(
                         Some(ContentMask {
                             bounds: lb.intersect(&bounds),
+                            fade_out: gpui::Edges {
+                                right: if line.width() > lb.size.width {
+                                    px(8.0 * zoom)
+                                } else {
+                                    px(0.0)
+                                },
+                                ..Default::default()
+                            },
                         }),
                         |window| {
                             // origin = top of label slot; line_height = slot h → GPUI centers glyphs.

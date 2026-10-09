@@ -6,6 +6,7 @@
 //! Atlas rows dispatch the same boxed gpui actions the old `PopupMenu` used, so
 //! all existing wiring is reused. Native rows are invoked through the worker.
 
+use gpui::ColorExt as _;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -788,7 +789,7 @@ impl App {
                 })
                 .child(panel),
         )
-        .with_priority(2)
+        .priority(2)
         .into_any_element()
     }
 

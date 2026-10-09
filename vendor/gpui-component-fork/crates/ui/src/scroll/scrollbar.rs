@@ -1,3 +1,5 @@
+use gpui::AppContext;
+use gpui::ColorExt as _;
 use std::{cell::Cell, ops::Deref, panic::Location, rc::Rc};
 
 use instant::{Duration, Instant};
@@ -527,9 +529,13 @@ impl Element for Scrollbar {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let hitbox = window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            window.insert_hitbox(bounds, HitboxBehavior::Normal)
-        });
+        let hitbox = window.with_content_mask(
+            Some(ContentMask {
+                bounds,
+                ..Default::default()
+            }),
+            |window| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+        );
 
         let state = window
             .use_state(cx, |_, _| ScrollbarState::default())
@@ -694,9 +700,13 @@ impl Element for Scrollbar {
                 )
             };
 
-            let bar_hitbox = window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
-            });
+            let bar_hitbox = window.with_content_mask(
+                Some(ContentMask {
+                    bounds,
+                    ..Default::default()
+                }),
+                |window| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+            );
 
             states.push(AxisPrepaintState {
                 axis,
@@ -752,6 +762,7 @@ impl Element for Scrollbar {
         window.with_content_mask(
             Some(ContentMask {
                 bounds: hitbox_bounds,
+                fade_out: Default::default(),
             }),
             |window| {
                 for state in prepaint.states.iter() {
@@ -792,8 +803,10 @@ impl Element for Scrollbar {
                                     left: px(0.),
                                 }
                             },
-                            border_color: state.border,
+                            border_color: state.border.into(),
                             border_style: BorderStyle::default(),
+                            border_dashed_length: 3.0,
+                            border_dashed_gap: 3.0,
                         });
 
                         cx.paint_quad(

@@ -1,0 +1,22 @@
+<svg width="500" height="500" viewBox="0 0 500 500" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="triangle_shadow" x="-50" y="-50" width="600" height="600" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.35"/>
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#000000" flood-opacity="0.20"/>
+    </filter>
+  </defs>
+
+  <g transform="translate(2, 32)" filter="url(#triangle_shadow)">
+    <!-- Left diagonal bar -->
+    <path d="M214 47.5167C221.18 35.0811 237.081 30.8203 249.517 38C261.952 45.1797 266.213 61.0811 259.033 73.5167L124.033 307.344C116.854 319.779 100.952 324.04 88.5167 316.86C76.0811 309.68 71.8203 293.779 79 281.344L214 47.5167Z"
+          fill="#FFFFFF" stroke="#0F172A" stroke-width="2.5" stroke-opacity="0.25"/>
+
+    <!-- Right diagonal bar -->
+    <rect x="254.599" y="123.754" width="52" height="322" rx="26" transform="rotate(-30 254.599 123.754)"
+          fill="#FFFFFF" stroke="#0F172A" stroke-width="2.5" stroke-opacity="0.25"/>
+
+    <!-- Bottom horizontal bar -->
+    <rect x="44" y="395" width="52" height="322" rx="26" transform="rotate(-90 44 395)"
+          fill="#FFFFFF" stroke="#0F172A" stroke-width="2.5" stroke-opacity="0.25"/>
+  </g>
+</svg>

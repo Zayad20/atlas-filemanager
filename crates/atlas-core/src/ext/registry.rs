@@ -7,6 +7,10 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, RwLock};
+
+static BINARY_PATH_CACHE: LazyLock<RwLock<HashMap<String, Option<PathBuf>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 use super::manifest::{ExtCommand, ExtKind, Manifest};
 pub use atlas_model::ext_model::CommandRef;
@@ -323,6 +327,19 @@ pub fn has_binary(name: &str) -> bool {
 }
 
 pub fn binary_path(name: &str) -> Option<PathBuf> {
+    if let Ok(cache) = BINARY_PATH_CACHE.read() {
+        if let Some(res) = cache.get(name) {
+            return res.clone();
+        }
+    }
+    let res = binary_path_uncached(name);
+    if let Ok(mut cache) = BINARY_PATH_CACHE.write() {
+        cache.insert(name.to_string(), res.clone());
+    }
+    res
+}
+
+fn binary_path_uncached(name: &str) -> Option<PathBuf> {
     let direct = Path::new(name);
     if direct.is_file() {
         return Some(direct.to_path_buf());

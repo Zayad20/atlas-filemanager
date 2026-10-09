@@ -18,6 +18,7 @@ use atlas_core::util::display::{format_date, format_size};
 use atlas_model::file_entry::FileKind;
 use atlas_model::overlay::{PropertiesState, PropertyRow};
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{div, px, AnyElement, Context, KeyDownEvent, MouseButton, Window};
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 use std::path::{Path, PathBuf};

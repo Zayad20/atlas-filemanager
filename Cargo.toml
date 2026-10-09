@@ -15,8 +15,9 @@ members = [
     "crates/atlas-publisher",
     "crates/atlas-cloud-extension",
     "crates/atlas-icon-extension",
+    "crates/atlas-search-service",
 ]
-exclude = ["vendor/zed-reference", "vendor/gpui-component-fork"]
+exclude = ["vendor/zed-reference", "vendor/gpui-component-fork", "vendor/gpui-ce", "vendor/gpui-ce/crates/*", "vendor/gpui-ce/tooling/perf"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -145,13 +146,13 @@ gpui-component = { path = "vendor/gpui-component-fork/crates/ui" }
 gpui-component-assets = { path = "vendor/gpui-component-fork/crates/assets" }
 gpui-component-macros = { path = "vendor/gpui-component-fork/crates/macros" }
 
-# Vendored GPUI fork with paint-only offsets for pane layout animation.
-[patch."https://github.com/zed-industries/zed"]
-gpui = { path = "vendor/zed-reference/crates/gpui" }
-gpui_platform = { path = "vendor/zed-reference/crates/gpui_platform" }
-gpui_linux = { path = "vendor/zed-reference/crates/gpui_linux" }
-
 # Optional local taffy perf patch. The normal build uses crates.io taffy.
 # To re-enable the counters temporarily, restore the checkout and add:
 # [patch.crates-io]
 # taffy = { path = "../taffy-patch" }
+
+[patch."https://github.com/gpui-ce/gpui-ce"]
+gpui-ce = { path = "vendor/gpui-ce/crates/gpui" }
+gpui_ce_platform = { path = "vendor/gpui-ce/crates/gpui_platform" }
+gpui_ce_macros = { path = "vendor/gpui-ce/crates/gpui_macros" }
+gpui_ce_web = { path = "vendor/gpui-ce/crates/gpui_web" }

@@ -60,6 +60,7 @@ pub(super) fn input_width(name: &str, max_px: f32, font_size: Pixels, window: &m
         background_color: None,
         underline: None,
         strikethrough: None,
+        letter_spacing: None,
     };
     let width = window
         .text_system()

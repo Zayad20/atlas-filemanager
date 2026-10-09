@@ -10,9 +10,7 @@ use gpui::{
     prelude::FluentBuilder,
 };
 
-use crate::{
-    AxisExt, ElementExt, h_flex, resizable::PANEL_MIN_SIZE, styled::StyledExt as _, v_flex,
-};
+use crate::{AxisExt, ElementExt, h_flex, resizable::PANEL_MIN_SIZE, v_flex};
 
 use super::{ResizableState, resizable_panel, resize_handle};
 
@@ -156,7 +154,7 @@ impl RenderOnce for ResizablePanelGroup {
                         panel
                     }),
             )
-            .on_prepaint({
+            .on_prepaint_child({
                 let state = state.clone();
                 move |bounds, _, cx| {
                     state.update(cx, |state, cx| {
@@ -321,7 +319,7 @@ impl RenderOnce for ResizablePanel {
                 Some(size) => this.flex_basis(size.min(size_range.end).max(size_range.start)),
                 None => this,
             })
-            .on_prepaint({
+            .on_prepaint_child({
                 let state = state.clone();
                 move |bounds, _, cx| {
                     state.update(cx, |state, cx| {

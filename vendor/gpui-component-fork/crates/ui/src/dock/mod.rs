@@ -1136,7 +1136,7 @@ impl Render for DockArea {
             .relative()
             .size_full()
             .overflow_hidden()
-            .on_prepaint(move |bounds, _, cx| view.update(cx, |r, _| r.bounds = bounds))
+            .on_prepaint_child(move |bounds, _, cx| view.update(cx, |r, _| r.bounds = bounds))
             .map(|this| {
                 if let Some(zoom_view) = self.zoom_view.clone() {
                     this.child(zoom_view)

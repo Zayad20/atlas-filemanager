@@ -1,7 +1,7 @@
 #![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
 use crate::search::nucleo_pool::IndexEntry;
 use crate::util::display::is_hidden;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -21,6 +21,7 @@ pub fn build_index(current_root: PathBuf, injector: nucleo::Injector<IndexEntry>
         if !current_root.starts_with(&home) {
             index_tree(&current_root, 3, &home, &mut seen, &injector);
         }
+        index_files(&current_root, 4, 10_000, &injector);
     });
 }
 
@@ -100,15 +101,62 @@ fn index_tree(
     seen: &mut HashSet<PathBuf>,
     injector: &nucleo::Injector<IndexEntry>,
 ) {
+    // Breadth first: publish nearby folders before descending into large
+    // AppData, dependency or document trees. A new project at home/developer/
+    // git/myproj must not wait behind every deep subtree that sorts before it.
+    inject_folder(root.to_path_buf(), home, seen, injector);
+    let mut pending = VecDeque::from([(root.to_path_buf(), 0_usize)]);
+    while let Some((directory, depth)) = pending.pop_front() {
+        if depth >= max_depth {
+            continue;
+        }
+        let Ok(children) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        let mut folders: Vec<_> = children
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir() && !kind.is_symlink()))
+            .map(|entry| entry.path())
+            .filter(|path| !is_hidden(path))
+            .collect();
+        folders.sort();
+        for folder in folders {
+            inject_folder(folder.clone(), home, seen, injector);
+            pending.push_back((folder, depth + 1));
+        }
+    }
+}
+
+fn index_files(
+    root: &Path,
+    max_depth: usize,
+    max_entries: usize,
+    injector: &nucleo::Injector<IndexEntry>,
+) {
+    let mut count = 0;
     for entry in WalkDir::new(root)
         .max_depth(max_depth)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|entry| entry.depth() == 0 || !is_hidden(entry.path()))
+        .filter_entry(|e| e.depth() == 0 || !is_hidden(e.path()))
         .flatten()
-        .filter(|entry| entry.file_type().is_dir())
     {
-        inject_folder(entry.into_path(), home, seen, injector);
+        if entry.depth() == 0 || entry.file_type().is_dir() {
+            continue;
+        }
+        let path = entry.into_path();
+        let display = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
+        injector.push(IndexEntry { path, is_dir: false }, move |_item, cols| {
+            cols[0] = display.as_str().into();
+        });
+        count += 1;
+        if count >= max_entries {
+            break;
+        }
     }
 }
 
@@ -151,8 +199,45 @@ fn common_folders() -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::prioritize_folders;
+    use super::{index_tree, prioritize_folders};
+    use crate::search::nucleo_pool::NucleoPool;
+    use std::collections::HashSet;
     use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn fresh_project_folders_are_published_before_deep_subtrees() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path();
+        let project = root.join("developer/git/myproj");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(root.join("a-deep/one/two/three/four/beyond-limit")).unwrap();
+        std::fs::create_dir_all(root.join(".hidden/ignored")).unwrap();
+        let mut pool = NucleoPool::new();
+        let mut seen = HashSet::new();
+        index_tree(root, 5, root, &mut seen, &pool.injector());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pool.nucleo.snapshot().item_count() as usize != seen.len() {
+            pool.tick();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let snapshot = pool.nucleo.snapshot();
+        let paths: Vec<_> = (0..snapshot.item_count())
+            .map(|index| snapshot.get_item(index).unwrap().data.path.clone())
+            .collect();
+        let depths: Vec<_> = paths.iter().map(|path| path.strip_prefix(root).unwrap().components().count()).collect();
+        assert!(depths.windows(2).all(|pair| pair[0] <= pair[1]), "shallow project folders must arrive first");
+        assert!(paths.contains(&project));
+        assert!(!paths.contains(&root.join(".hidden")));
+        assert!(!paths.contains(&root.join("a-deep/one/two/three/four/beyond-limit")));
+        pool.set_pattern("myproj");
+        while pool.results(100).iter().all(|entry| entry.path != project) {
+            pool.tick();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
 
     #[test]
     fn prioritizes_current_folder_and_its_nearby_children() {

@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 //! Atlas — thin launcher. The gpui application lives in the `atlas-ui` crate;
 //! this binary only sets up logging, the tokio runtime, and hands off to
 //! [`atlas_ui::run`].

@@ -8,6 +8,7 @@ use crate::input::action::Action;
 use crate::ui::icons::AtlasIcon;
 use atlas_model::pane::PaneId;
 use atlas_model::settings::ViewMode;
+use atlas_core::search::navigation::{filename_match_quality, path_noise};
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, Context, MouseButton};
 use gpui_component::ActiveTheme;
@@ -89,7 +90,7 @@ impl CommandDef {
 }
 
 /// A goto row for `path`: navigate on Enter, bookmark/new-tab side buttons,
-/// description = full path. Directories (`expandable`) drill in with Tab: the
+/// description = parent location. Directories (`expandable`) drill in with Tab: the
 /// query becomes "<path><sep>" and the fuzzy scope moves into that folder.
 fn goto_entry(
     title: String,
@@ -109,9 +110,7 @@ fn goto_entry(
     };
     let mut item = PaletteItem::new(title.clone(), action);
     item.icon = Some(icon);
-    item.description = Some(path.to_string_lossy().into_owned().into());
-    // Files read as one line: "name › path" with the path always visible.
-    item.inline_description = true;
+    item.description = Some(goto_location_label(&path, dirs::home_dir().as_deref()).into());
     if expandable {
         item.expand = Some(format!("{}{}", path.display(), std::path::MAIN_SEPARATOR).into());
     }
@@ -206,6 +205,8 @@ fn goto_scope_pill(base: &std::path::Path, cx: &Context<App>) -> gpui::AnyElemen
 /// index is then scoped to the base dir.
 fn split_query_base(query: &str) -> Option<(PathBuf, String)> {
     let q = query.trim_start();
+    let expanded = dirs::home_dir().and_then(|home| expand_home_query(q, &home));
+    let q = expanded.as_deref().unwrap_or(q);
     let bytes = q.as_bytes();
     let absolute = q.starts_with('/')
         || q.starts_with("\\\\")
@@ -219,6 +220,143 @@ fn split_query_base(query: &str) -> Option<(PathBuf, String)> {
     let pos = q.rfind(['/', '\\'])?;
     let (base, rest) = q.split_at(pos + 1);
     Some((PathBuf::from(base), rest.to_string()))
+}
+
+fn expand_home_query(query: &str, home: &std::path::Path) -> Option<String> {
+    let rest = if query == "~" {
+        ""
+    } else {
+        query.strip_prefix("~/").or_else(|| query.strip_prefix("~\\"))?
+    };
+    Some(format!("{}{}{}", home.display(), std::path::MAIN_SEPARATOR, rest))
+}
+
+fn goto_service_pending(complete: bool, status: Option<&atlas_core::search::ServiceResponse>) -> bool {
+    !complete || matches!(status,
+        Some(atlas_core::search::ServiceResponse::Status(statuses))
+        if statuses.is_empty() || statuses.iter().any(|status| status.status == atlas_core::search::SearchBackendStatus::Loading)
+    )
+}
+
+fn merge_goto_entries(
+    mut local: Vec<atlas_core::search::nucleo_pool::IndexEntry>,
+    service: Vec<atlas_core::search::nucleo_pool::IndexEntry>,
+) -> Vec<atlas_core::search::nucleo_pool::IndexEntry> {
+    let mut paths = std::collections::HashSet::new();
+    local.extend(service);
+    local.retain(|entry| paths.insert(entry.path.clone()));
+    local
+}
+
+fn goto_location_label(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
+    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(path);
+    if let Some(relative) = home.and_then(|home| parent.strip_prefix(home).ok()) {
+        if relative.as_os_str().is_empty() {
+            return "~".to_owned();
+        }
+        return format!("~{}{}", std::path::MAIN_SEPARATOR, relative.display());
+    }
+    parent.to_string_lossy().into_owned()
+}
+
+/// Familiar locations break ties between equally relevant user folders. Exact
+/// names still win over a recently visited but only approximate match.
+fn goto_familiarity(path: &std::path::Path, current: &std::path::Path, bookmarks: &[PathBuf], recent: &[PathBuf]) -> usize {
+    if path == current { 0 }
+    else if bookmarks.iter().any(|bookmark| bookmark == path) { 1 }
+    else if let Some(index) = recent.iter().rev().position(|folder| folder == path) { 2 + index }
+    else if path.starts_with(current) { 2 + recent.len() }
+    else { 3 + recent.len() }
+}
+
+#[cfg(test)]
+mod goto_query_tests {
+    use super::{expand_home_query, filename_match_quality, goto_familiarity, goto_location_label, goto_service_pending, merge_goto_entries, split_query_base};
+    use std::path::Path;
+
+    #[test]
+    fn location_labels_keep_real_separators_and_omit_the_repeated_filename() {
+        let home = Path::new("C:\\Users\\user-test");
+        let path = home.join("developer").join("git").join("My Project");
+        assert_eq!(goto_location_label(&path, Some(home)), format!("~{0}developer{0}git", std::path::MAIN_SEPARATOR));
+        assert_eq!(goto_location_label(&home.join("myproj"), Some(home)), "~");
+        assert_eq!(goto_location_label(Path::new("D:\\Projects\\legacy-app"), Some(home)), "D:\\Projects");
+    }
+
+    #[test]
+    fn home_paths_scope_partial_folder_names() {
+        let home = Path::new("C:\\Users\\user-test");
+        for query in ["~\\developer\\git\\myproj", "~/developer/git/myproj"] {
+            let expanded = expand_home_query(query, home).unwrap();
+            let (base, needle) = split_query_base(&expanded).unwrap();
+            assert_eq!(base, home.join("developer").join("git"));
+            assert_eq!(needle, "myproj");
+        }
+    }
+
+    #[test]
+    fn home_root_and_trailing_separator_have_empty_needles() {
+        let home = Path::new("C:\\Users\\user-test");
+        for query in ["~", "~/", "~\\"] {
+            let expanded = expand_home_query(query, home).unwrap();
+            let (base, needle) = split_query_base(&expanded).unwrap();
+            assert_eq!(base, home);
+            assert!(needle.is_empty());
+        }
+    }
+
+    #[test]
+    fn filename_queries_and_named_users_are_not_home_paths() {
+        let home = Path::new("C:\\Users\\user-test");
+        for query in ["egui", "~someone/developer", "file~name"] {
+            assert!(expand_home_query(query, home).is_none());
+            assert!(split_query_base(query).is_none());
+        }
+    }
+
+    #[test]
+    fn incomplete_or_loading_service_queries_remain_pending() {
+        use atlas_core::search::{SearchBackendStatus, SearchProgress, ServiceResponse};
+        let status = |state| ServiceResponse::Status(vec![SearchProgress {
+            source: "C:".into(), status: state, indexed: 0, total: None,
+        }]);
+        assert!(goto_service_pending(false, Some(&status(SearchBackendStatus::Ready))));
+        assert!(goto_service_pending(true, Some(&status(SearchBackendStatus::Loading))));
+        assert!(goto_service_pending(true, Some(&ServiceResponse::Status(vec![]))));
+        assert!(!goto_service_pending(true, Some(&status(SearchBackendStatus::Ready))));
+        assert!(!goto_service_pending(true, None));
+    }
+
+    #[test]
+    fn service_matches_never_hide_a_fresh_local_folder() {
+        use atlas_core::search::nucleo_pool::IndexEntry;
+        let entry = |path: &str| IndexEntry { path: path.into(), is_dir: true };
+        let entries = merge_goto_entries(
+            vec![entry("developer/git/myproj"), entry("developer/git/myproj")],
+            vec![entry("node_modules/duplexer"), entry("developer/git/myproj")],
+        );
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].path, Path::new("developer/git/myproj"));
+    }
+
+    #[test]
+    fn literal_names_lead_weak_fuzzy_matches() {
+        assert!(filename_match_quality("myproj", "myproj") > filename_match_quality("duplexer", "myproj"));
+        assert!(filename_match_quality("egui-app", "egui") > filename_match_quality("bevy_egui", "egui"));
+        assert!(filename_match_quality("bevy_egui", "egui") > filename_match_quality("registry_utils", "egui"));
+        assert_eq!(filename_match_quality("Egui", "egui"), 4);
+        assert_eq!(filename_match_quality("egui", "Egui"), 1);
+    }
+
+    #[test]
+    fn familiar_projects_precede_other_copies_of_the_same_folder_name() {
+        let current = Path::new("home/developer");
+        let bookmarks = vec!["home/projects/My Project".into()];
+        let recent = vec!["home/old/My Project".into(), "home/work/My Project".into()];
+        let mut paths = vec![Path::new("other/My Project"), Path::new("home/old/My Project"), Path::new("home/work/My Project"), Path::new("home/projects/My Project"), current];
+        paths.sort_by_key(|path| goto_familiarity(path, current, &bookmarks, &recent));
+        assert_eq!(paths, vec![current, Path::new("home/projects/My Project"), Path::new("home/work/My Project"), Path::new("home/old/My Project"), Path::new("other/My Project")]);
+    }
 }
 
 /// Wrap `items` in one titled section, or no sections when empty (so the panel
@@ -258,6 +396,10 @@ impl App {
         let content_mode = self.state.profiles.active().search_in_content;
         let query = self.state.overlay.goto_state.query.clone();
         let trimmed = query.trim();
+        if self.goto_service_inflight.as_deref().is_some_and(|inflight| inflight != trimmed || content_mode) {
+            self.goto_service_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.goto_service_inflight = None;
+        }
 
         let mut search_prefix: Option<gpui::AnyElement> = None;
         let sections = if trimmed.is_empty() {
@@ -297,13 +439,127 @@ impl App {
             let (root, needle) = scoped
                 .clone()
                 .unwrap_or_else(|| (self.goto_default_root(), trimmed.to_string()));
+            let current_root = self.goto_default_root();
+            let recent = self.recent_folders();
+            let bookmarks: Vec<_> = self.state.profiles.active().bookmarks.iter().map(|bookmark| bookmark.path.clone()).collect();
             if let Some((base, _)) = &scoped {
                 search_prefix = Some(goto_scope_pill(base, cx));
             }
+
+            let service_entries = if scoped.is_none() {
+                if let Some((cached_query, items, complete)) = &self.goto_service_cache {
+                    if cached_query == trimmed {
+                        Some((items.as_ref().clone(), *complete))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if self.state.overlay.show_goto_bar
+                && scoped.is_none()
+                && service_entries.is_none()
+                && self.goto_service_inflight.as_deref() != Some(trimmed)
+                && self.goto_service_failed.as_deref() != Some(trimmed)
+            {
+                let gen = self.goto_service_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                self.goto_service_inflight = Some(trimmed.to_string());
+                let query_str = trimmed.to_string();
+                let tx = self.tx.clone();
+                let gen_arc = self.goto_service_generation.clone();
+                self.rt.spawn(async move {
+                    // Let a burst of typing finish before starting named-pipe
+                    // work. Superseded queries are discarded before any I/O.
+                    tokio::time::sleep(std::time::Duration::from_millis(180)).await;
+                    let mut req = atlas_core::search::SearchQuery::text(&query_str);
+                    req.generation = gen;
+                    req.limit = GOTO_SECTION_LIMIT;
+                    req.interactive = true;
+                    loop {
+                        if gen_arc.load(std::sync::atomic::Ordering::SeqCst) != gen {
+                            break;
+                        }
+                        let request = req.clone();
+                        let response = tokio::task::spawn_blocking(move || {
+                            let backend = atlas_core::search::WindowsServiceBackend::new();
+                            let mut request = request;
+                            request.filters.categories = vec![atlas_core::search::SearchCategory::Folder];
+                            let folders = backend.request(&atlas_core::search::ServiceRequest::Search(request.clone()))?;
+                            request.filters.categories = vec![atlas_core::search::SearchCategory::File];
+                            let files = backend.request(&atlas_core::search::ServiceRequest::Search(request))?;
+                            let response = match (folders, files) {
+                                (atlas_core::search::ServiceResponse::Search(mut folders), atlas_core::search::ServiceResponse::Search(files)) => {
+                                    folders.complete &= files.complete;
+                                    folders.results.extend(files.results);
+                                    atlas_core::search::ServiceResponse::Search(folders)
+                                }
+                                (atlas_core::search::ServiceResponse::Error(error), _)
+                                | (_, atlas_core::search::ServiceResponse::Error(error)) => atlas_core::search::ServiceResponse::Error(error),
+                                _ => return Err(std::io::Error::other("unexpected search response")),
+                            };
+                            let status = backend.request(&atlas_core::search::ServiceRequest::Status).ok();
+                            Ok::<_, std::io::Error>((response, status))
+                        })
+                        .await;
+                        if gen_arc.load(std::sync::atomic::Ordering::SeqCst) != gen {
+                            break;
+                        }
+                        match response {
+                            Ok(Ok((atlas_core::search::ServiceResponse::Search(batch), status))) => {
+                                let complete = !goto_service_pending(batch.complete, status.as_ref());
+                                // The persisted catalog can outlive deleted folders.
+                                // Validate this small page off the UI thread.
+                                let results = batch.results.into_iter().filter_map(|r| {
+                                    let metadata = std::fs::metadata(&r.path).ok()?;
+                                    Some((r.path, metadata.is_dir()))
+                                }).collect();
+                                let _ = tx.send(atlas_model::app_state::BgResult::GotoServiceResults {
+                                    gen,
+                                    query: query_str.clone(),
+                                    results,
+                                    complete,
+                                });
+                                if complete {
+                                    break;
+                                }
+                                // A loading index or canceled batch is not a final empty result.
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            }
+                            _ => {
+                                let _ = tx.send(atlas_model::app_state::BgResult::GotoServiceFailed {
+                                    gen,
+                                    query: query_str,
+                                });
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
+
+            // A persisted service index can miss newer folders that the live
+            // local walk already found. Keep both sources, with one row per path.
             self.ensure_goto_index(root, scoped.is_some());
-            self.nucleo.set_pattern(&needle);
+            self.nucleo.set_pattern(&atlas_core::search::navigation::normalized_name(&needle, true));
             self.nucleo.tick();
-            let entries = self.nucleo.results(GOTO_LIMIT);
+            let mut entries = merge_goto_entries(
+                self.nucleo.results(GOTO_LIMIT),
+                service_entries.map_or_else(Vec::new, |(items, _)| items),
+            );
+            let preference_root = scoped.as_ref().map(|(base, _)| base.as_path());
+            let relative_path = |path: &PathBuf| {
+                preference_root.and_then(|base| path.strip_prefix(base).ok()).unwrap_or(path.as_path()).to_path_buf()
+            };
+            entries.retain(|entry| {
+                let noise = path_noise(&relative_path(&entry.path), &needle);
+                (scoped.is_some() || noise < 3) && (self.state.settings.show_hidden || noise < 2)
+            });
+            let noise: Vec<_> = entries.iter().map(|entry| path_noise(&relative_path(&entry.path), &needle)).collect();
+            let familiarity: Vec<_> = entries.iter().map(|entry| goto_familiarity(&entry.path, &current_root, &bookmarks, &recent)).collect();
 
             // Name-first re-rank: nucleo scored the whole (relative) path, so
             // a strong match buried in a parent segment can outrank a weak one
@@ -323,17 +579,24 @@ impl App {
                 .fuzzy_scorer
                 .scores(&needle, names.iter().map(String::as_str));
             let mut order: Vec<usize> = (0..entries.len()).collect();
-            order.sort_by(|&a, &b| match (name_scores[a], name_scores[b]) {
-                (Some(x), Some(y)) => y.cmp(&x).then(a.cmp(&b)),
+            order.sort_by(|&a, &b| filename_match_quality(&names[b], &needle)
+                .min(2).cmp(&filename_match_quality(&names[a], &needle).min(2))
+                .then_with(|| noise[a].cmp(&noise[b]))
+                .then_with(|| filename_match_quality(&names[b], &needle).cmp(&filename_match_quality(&names[a], &needle)))
+                .then_with(|| familiarity[a].cmp(&familiarity[b]))
+                .then_with(|| match (name_scores[a], name_scores[b]) {
+                (Some(x), Some(y)) => y.cmp(&x),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => a.cmp(&b),
-            });
+                (None, None) => std::cmp::Ordering::Equal,
+            }).then_with(|| entries[a].path.components().count().cmp(&entries[b].path.components().count()))
+                .then_with(|| entries[a].path.cmp(&entries[b].path)));
 
-            // The category holding the overall best match leads.
-            let files_first = order
-                .first()
-                .is_some_and(|&i| entries.get(i).is_some_and(|e| !e.is_dir));
+            // Keep category positions stable while sources finish. Only a
+            // literal exact file match earns priority over the folders section.
+            let files_first = order.first().is_some_and(|&i| {
+                !entries[i].is_dir && filename_match_quality(&names[i], &needle) == 4
+            });
 
             // Each category capped — and the matched characters of the name
             // tinted for scanability.
@@ -386,7 +649,11 @@ impl App {
             search_prefix,
             search_buttons: vec![self.content_toggle_pill(content_mode, cx)],
             footer: FooterSpec::Default,
-            empty_text: rust_i18n::t!("palette_no_results").into(),
+            empty_text: if !content_mode && (self.goto_service_inflight.is_some() || self.nucleo.is_pending()) {
+                rust_i18n::t!("palette_searching").into()
+            } else {
+                rust_i18n::t!("palette_no_results").into()
+            },
         }
     }
 
@@ -409,6 +676,20 @@ impl App {
         }
         self.nucleo.reset();
         let injector = self.nucleo.injector();
+        // These folders are already known to the profile. Make them searchable
+        // immediately, even if a disk snapshot is stale or the walk is ongoing.
+        let known_paths: Vec<_> = self.recent_folders().into_iter().chain(self.state.profiles.active().bookmarks.iter().map(|bookmark| bookmark.path.clone())).collect();
+        let known_root = root.clone();
+        let known_injector = injector.clone();
+        self.rt.spawn_blocking(move || {
+            for path in known_paths {
+                if (scoped && !path.starts_with(&known_root)) || !path.is_dir() { continue; }
+                let display = if scoped { path.strip_prefix(&known_root).unwrap_or(&path) } else { &path }.to_string_lossy().into_owned();
+                known_injector.push(atlas_core::search::nucleo_pool::IndexEntry { path, is_dir: true }, move |_, cols| {
+                    cols[0] = display.as_str().into();
+                });
+            }
+        });
         if scoped {
             atlas_core::fs::index::build_index_scoped(root.clone(), injector);
         } else {
@@ -1426,6 +1707,7 @@ impl App {
         let themes: Vec<CommandDef> = gpui_component::ThemeRegistry::global(cx)
             .sorted_themes()
             .iter()
+            .filter(|cfg| crate::app::theme::theme_is_available(cfg.name.as_ref()))
             .map(|cfg| {
                 let name = cfg.name.to_string();
                 CommandDef::new(

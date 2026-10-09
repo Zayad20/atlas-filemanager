@@ -18,6 +18,7 @@ use crate::app::App;
 use crate::input::action::Action;
 use crate::ui::icons::{icon, AtlasIcon};
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{
     div, px, AnyElement, Context, KeyDownEvent, MouseButton, Pixels, Point, SharedString, Window,
 };

@@ -98,7 +98,7 @@ pub struct CatalogEntry {
     pub origin: SearchOrigin,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SearchResult {
     pub path: PathBuf,
     pub is_dir: bool,
@@ -125,7 +125,7 @@ pub struct SearchProgress {
     pub total: Option<u64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SearchBatch {
     pub generation: SearchGeneration,
     pub results: Vec<SearchResult>,

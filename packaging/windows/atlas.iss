@@ -28,10 +28,12 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
 Name: "cli"; Description: "Enable the atlas command in Terminal"; GroupDescription: "Personalize Atlas:"
 Name: "shell"; Description: "Add Open with Atlas to Explorer"; GroupDescription: "Personalize Atlas:"; Flags: checkedonce
+Name: "searchservice"; Description: "Enable ultra-fast background search service (instant NTFS indexing)"; GroupDescription: "Personalize Atlas:"; Flags: checkedonce
 Name: "launch"; Description: "Launch Atlas after install"; GroupDescription: "Finish:"; Flags: checkedonce
 
 [Files]
 Source: "..\..\target\release\atlas.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\target\release\atlas-search-service.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\icons\atlas.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
@@ -49,7 +51,12 @@ Root: HKCU; Subkey: "Software\Classes\Applications\atlas.exe"; ValueType: string
 Root: HKCU; Subkey: "Software\Classes\Applications\atlas.exe\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\atlas.exe"" ""%1"""; Tasks: shell
 
 [Run]
+Filename: "{app}\atlas-search-service.exe"; Parameters: "--install"; Flags: runhidden; Tasks: searchservice; StatusMsg: "Configuring Atlas Search Service..."
 Filename: "{app}\atlas.exe"; Description: "Launch Atlas"; Flags: nowait postinstall skipifsilent; Tasks: launch
+
+[UninstallRun]
+Filename: "{app}\atlas-search-service.exe"; Parameters: "--uninstall"; Flags: runhidden
+
 
 [Code]
 const

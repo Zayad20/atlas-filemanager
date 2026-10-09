@@ -77,13 +77,12 @@ impl Lsp {
                         let mut document_colors: Vec<(lsp_types::Range, Hsla)> = colors
                             .iter()
                             .map(|info| {
-                                let color = gpui::Rgba {
-                                    r: info.color.red,
-                                    g: info.color.green,
-                                    b: info.color.blue,
-                                    a: info.color.alpha,
-                                }
-                                .into();
+                                let color = gpui::rgb_to_hsla(gpui::Rgba::new(
+                                    info.color.red,
+                                    info.color.green,
+                                    info.color.blue,
+                                    info.color.alpha,
+                                ));
 
                                 (info.range, color)
                             })

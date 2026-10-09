@@ -5,6 +5,7 @@ use crate::app::App;
 use crate::ui::icons::{icon, AtlasIcon};
 use atlas_model::overlay::ToastKind;
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{deferred, div, px, AnyElement, Context, MouseButton, SharedString, Window};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{h_flex, v_flex, ActiveTheme};

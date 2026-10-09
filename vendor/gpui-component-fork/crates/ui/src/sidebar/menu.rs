@@ -6,6 +6,7 @@ use crate::{
     sidebar::SidebarItem,
     v_flex,
 };
+use gpui::ColorExt as _;
 use gpui::{
     AnyElement, App, ClickEvent, ElementId, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled,

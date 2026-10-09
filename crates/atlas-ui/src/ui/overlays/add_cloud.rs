@@ -9,6 +9,7 @@ use crate::app::App;
 use atlas_core::cloud::AccessKind;
 use atlas_model::cloud_state::AddRemoteKind;
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{
     div, px, AnyElement, Context, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton,
     SharedString, Window,

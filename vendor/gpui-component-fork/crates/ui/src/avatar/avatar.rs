@@ -1,3 +1,4 @@
+use gpui::ColorExt as _;
 use gpui::{
     App, Div, Hsla, ImageSource, InteractiveElement, Interactivity, IntoElement,
     ParentElement as _, RenderOnce, SharedString, StyleRefinement, Styled, Window, div, img,
@@ -5,7 +6,7 @@ use gpui::{
 };
 
 use crate::{
-    ActiveTheme, Colorize, Icon, IconName, Sizable, Size, StyledExt,
+    ActiveTheme, Colorize, Icon, IconName, Sizable, Size,
     avatar::{AvatarSized as _, avatar_size},
 };
 

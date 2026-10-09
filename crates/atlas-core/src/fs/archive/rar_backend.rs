@@ -169,7 +169,14 @@ fn unrar_exe_path() -> PathBuf {
 
 fn run_unrar(args: &[&str]) -> anyhow::Result<std::process::Output> {
     let unrar = unrar_exe_path();
-    let output = Command::new(&unrar).args(args).output().map_err(|e| {
+    let mut cmd = Command::new(&unrar);
+    cmd.args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let output = cmd.output().map_err(|e| {
         anyhow::anyhow!(
             "Failed to run UnRAR at «{}»: {e}. Install WinRAR or place UnRAR.exe next to atlas.exe.",
             unrar.display()

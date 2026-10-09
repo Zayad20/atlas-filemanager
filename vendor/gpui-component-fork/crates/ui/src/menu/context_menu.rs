@@ -205,7 +205,7 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                                         ),
                                 ),
                             )
-                            .with_priority(1)
+                            .priority(1)
                             .into_any(),
                         );
                     }

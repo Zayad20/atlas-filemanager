@@ -381,3 +381,25 @@ fn shell_image_from_parsing_name(
         Some((pixels, w, h))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_shell_thumbnail_video() {
+        let video = Path::new(r"C:\Users\user\Videos\2025-06-30 11-20-28.mp4");
+        if !video.exists() {
+            return;
+        }
+        let t0 = std::time::Instant::now();
+        let thumb = shell_thumbnail(video, 256);
+        let elapsed = t0.elapsed();
+        println!("shell_thumbnail took: {:?}", elapsed);
+        assert!(thumb.is_some(), "Expected thumbnail from Windows Shell for video");
+        let (rgba, w, h) = thumb.unwrap();
+        println!("Thumb dims: {}x{}, bytes: {}", w, h, rgba.len());
+        assert!(w > 0 && h > 0);
+        assert_eq!(rgba.len(), w * h * 4);
+    }
+}

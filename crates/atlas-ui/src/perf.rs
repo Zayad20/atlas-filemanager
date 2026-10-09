@@ -233,19 +233,31 @@ mod imp {
         }
 
         const START_DELAY_MS: u64 = 800;
-        const ACTION_INTERVAL_MS: u64 = 420;
-        const SPLITS: u64 = 12;
-        const CLOSES: u64 = 12;
-        const SET_GRID_STAGE: u64 = 1 + SPLITS + CLOSES;
-        const QUIT_STAGE: u64 = SET_GRID_STAGE + 1;
+        // Stress runs can interrupt the 240/180 ms transitions without changing
+        // the ordinary UI-lab sequence or its default timing.
+        static SEQUENCE: OnceLock<(u64, u64)> = OnceLock::new();
+        let &(action_interval_ms, splits) = SEQUENCE.get_or_init(|| {
+            let bounded = |key, default, min, max| std::env::var(key).ok()
+                .and_then(|v| v.parse::<u64>().ok()).unwrap_or(default).clamp(min, max);
+            (bounded("ATLAS_PERF_SPLIT_INTERVAL_MS", 420, 16, 2000),
+             bounded("ATLAS_PERF_SPLIT_COUNT", 12, 1, 64))
+        });
+        let set_grid_stage = 1 + splits * 2;
+        let quit_stage = set_grid_stage + 1;
 
         let elapsed_ms = config().started.elapsed().as_millis() as u64;
         if elapsed_ms < START_DELAY_MS {
             return None;
         }
-        let due_stage = (elapsed_ms - START_DELAY_MS) / ACTION_INTERVAL_MS;
+        let due_stage = (elapsed_ms - START_DELAY_MS) / action_interval_ms;
         let next = UI_LAB_NEXT_ACTION.load(Ordering::Relaxed);
-        if next > due_stage || next > QUIT_STAGE {
+        if next > due_stage || next > quit_stage {
+            return None;
+        }
+        // Let the final close settle and the teardown timer drain before the
+        // Grid/Quit stages, including when actions arrive faster than motion.
+        if next == set_grid_stage
+            && elapsed_ms < START_DELAY_MS + set_grid_stage * action_interval_ms + 400 {
             return None;
         }
         if UI_LAB_NEXT_ACTION
@@ -257,11 +269,11 @@ mod imp {
 
         Some(if next == 0 {
             super::UiLabAction::SetDetails
-        } else if next <= SPLITS {
+        } else if next <= splits {
             super::UiLabAction::SplitHorizontal
-        } else if next <= SPLITS + CLOSES {
+        } else if next <= splits * 2 {
             super::UiLabAction::ClosePane
-        } else if next == SET_GRID_STAGE {
+        } else if next == set_grid_stage {
             super::UiLabAction::SetGrid
         } else {
             super::UiLabAction::Quit

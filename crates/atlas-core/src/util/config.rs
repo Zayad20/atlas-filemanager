@@ -17,6 +17,11 @@ use std::path::PathBuf;
 const APP_NAME: &str = "atlas";
 
 pub fn config_dir() -> PathBuf {
+    // A separate profile directory makes diagnostic/UI-lab runs reproducible
+    // without overwriting the user's session or preferences.
+    if let Some(path) = std::env::var_os("ATLAS_CONFIG_DIR").filter(|path| !path.is_empty()) {
+        return PathBuf::from(path);
+    }
     dirs::config_dir().map_or_else(|| PathBuf::from("."), |p| p.join(APP_NAME))
 }
 

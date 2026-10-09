@@ -5,11 +5,16 @@ pub fn ensure_winfsp_ready() -> bool {
     if winfsp_service_running() {
         return true;
     }
-    let _ = std::process::Command::new("sc.exe")
-        .args(["start", "WinFsp"])
+    let mut cmd = std::process::Command::new("sc.exe");
+    cmd.args(["start", "WinFsp"])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let _ = cmd.status();
     if winfsp_service_running() {
         return true;
     }
@@ -17,9 +22,14 @@ pub fn ensure_winfsp_ready() -> bool {
 }
 
 fn winfsp_service_running() -> bool {
-    let Ok(output) = std::process::Command::new("sc.exe")
-        .args(["query", "WinFsp"])
-        .output()
+    let mut cmd = std::process::Command::new("sc.exe");
+    cmd.args(["query", "WinFsp"]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let Ok(output) = cmd.output()
     else {
         return false;
     };
@@ -69,8 +79,11 @@ pub async fn install_winfsp(progress: impl Fn(u64, u64) + Send + 'static) -> any
 
     // Run the installer. /passive shows a progress bar but no dialogs (UAC
     // is still triggered by Windows for the kernel driver installation).
-    let status = tokio::process::Command::new("msiexec")
-        .args(["/i", &msi_path.to_string_lossy(), "/passive", "/norestart"])
+    let mut cmd = tokio::process::Command::new("msiexec");
+    cmd.args(["/i", &msi_path.to_string_lossy(), "/passive", "/norestart"]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    let status = cmd
         .status()
         .await
         .context("run msiexec")?;

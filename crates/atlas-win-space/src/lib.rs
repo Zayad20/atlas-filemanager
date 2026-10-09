@@ -1,5 +1,7 @@
 #![cfg(windows)]
 
+pub mod ntfs;
+
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::mem::{size_of, zeroed};
@@ -533,4 +535,28 @@ fn volume_letter(path: &Path) -> Option<char> {
 
 fn wide(s: &OsStr) -> Vec<u16> {
     s.encode_wide().chain(std::iter::once(0)).collect()
+}
+
+pub fn call_named_pipe(name: &OsStr, input: &[u8], max_output_len: u32) -> std::io::Result<Vec<u8>> {
+    use windows_sys::Win32::System::Pipes::CallNamedPipeW;
+    let wide_name = wide(name);
+    let mut output = vec![0u8; max_output_len as usize];
+    let mut bytes_read = 0u32;
+    let ok = unsafe {
+        CallNamedPipeW(
+            wide_name.as_ptr(),
+            input.as_ptr().cast(),
+            input.len() as u32,
+            output.as_mut_ptr().cast(),
+            output.len() as u32,
+            &mut bytes_read,
+            3000,
+        )
+    };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        output.truncate(bytes_read as usize);
+        Ok(output)
+    }
 }

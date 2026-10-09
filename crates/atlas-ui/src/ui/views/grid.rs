@@ -4,10 +4,9 @@
 use crate::app::App;
 use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
-use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
+use crate::ui::glass::backdrop_tint;
 use crate::ui::layout_region::{
-    layout_region, timed_layout_region, PANE_CRUMBS_TIMINGS, PANE_PILLS_TIMINGS,
-    PANE_VIEWPORT_TIMINGS,
+    layout_region, timed_layout_region, PANE_CRUMBS_TIMINGS, PANE_VIEWPORT_TIMINGS,
 };
 use crate::ui::root::{ctrl_scroll, pane_bounds_recorder, rect_recorder};
 use crate::ui::selection_checkbox::SelectionCheckbox;
@@ -16,6 +15,7 @@ use crate::ui::views::virtual_grid::AnimatedVirtualGrid;
 use atlas_model::file_entry::{FileEntry, FileKind};
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{
     div, img, px, AbsoluteLength, AnyElement, Context, Entity, Hsla, MouseButton, SharedString,
     Window,
@@ -45,7 +45,8 @@ impl App {
     ) -> AnyElement {
         crate::perf::count("render.view.grid");
         let view = cx.entity();
-        let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
+        let active_theme = self.state.profiles.active().theme.as_str();
+        let is_glass = active_theme.ends_with(" Glass");
         let (fg, accent, accent_fg, hover, muted, border, _header_bg) = {
             let t = cx.theme();
             (
@@ -55,8 +56,8 @@ impl App {
                 t.list_active,
                 t.muted_foreground,
                 t.border,
-                if figma_glass {
-                    glass_header_fill()
+                if is_glass {
+                    t.list_head
                 } else {
                     backdrop_tint(t.secondary, 0.18)
                 },
@@ -64,7 +65,7 @@ impl App {
         };
         let font_size = window.text_style().font_size.to_pixels(window.rem_size());
         let row_font = window.text_style().font();
-        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border);
+        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border, _header_bg);
         // `thumb` stays in rem units (same meaning as before the zoom refactor) —
         // it flows into `render_cell`/`FileIcon::element`, which resolve it via
         // `rem_px()`. The virtualization math below runs against real measured
@@ -104,26 +105,6 @@ impl App {
         // (vertical_scrollbar must NOT be inside overflow_y_scroll — it scrolls away).
         let scroll = self.scroll_handle_for(pane_id);
         let base_scroll = scroll.0.borrow().base_handle.clone();
-
-        // Grid Snapping Smooth Scroll Interpolation
-        if let Some(&target) = self.scroll_targets.get(&pane_id) {
-            let current = f32::from(base_scroll.offset().y);
-            if (target - current).abs() > 0.5 {
-                let (ease, _) =
-                    crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
-                let mut next = current + (target - current) * ease;
-                if (target - next).abs() < 1.0 {
-                    next = target;
-                    self.scroll_targets.remove(&pane_id);
-                }
-                base_scroll.set_offset(gpui::point(gpui::px(0.0), gpui::px(next)));
-                window.request_animation_frame();
-            } else {
-                base_scroll.set_offset(gpui::point(gpui::px(0.0), gpui::px(target)));
-                self.scroll_targets.remove(&pane_id);
-            }
-        }
-        let app_handle = cx.entity().clone();
 
         let animate_grid_reflow = !self.state.settings.disable_animations
             && !self.suppress_window_resize_animations()
@@ -216,6 +197,7 @@ impl App {
                     row_font.clone(),
                     font_size,
                 )
+                .animated(animate_grid_reflow)
                 .absolute()
                 .inset_0()
                 .into_any_element()
@@ -395,33 +377,10 @@ impl App {
                     MouseButton::Left,
                     crate::ui::views::on_pane_rubber_mouse_down(&view, pane_id),
                 )
-                .on_scroll_wheel({
-                    let base_scroll = base_scroll.clone();
-                    let app_handle = app_handle.clone();
-                    move |ev, window, cx| {
-                        if ev.modifiers.control || ev.modifiers.platform {
-                            ctrl_scroll(ev, pane_id, &inner_scroll_view, window, cx);
-                        } else if cfg!(windows) {
-                            if let gpui::ScrollDelta::Lines(l) = ev.delta {
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                let dy = l.y * pitch * 2.0;
-
-                                app_handle.update(cx, |app, cx| {
-                                    let current_target = *app
-                                        .scroll_targets
-                                        .entry(pane_id)
-                                        .or_insert_with(|| f32::from(base_scroll.offset().y));
-                                    let mut new_y = current_target + dy;
-                                    let max_scroll = (content_h - viewport_h).max(0.0);
-                                    new_y = (new_y / pitch).round() * pitch;
-                                    new_y = new_y.clamp(-max_scroll, 0.0);
-
-                                    app.scroll_targets.insert(pane_id, new_y);
-                                    cx.notify();
-                                });
-                            }
-                        }
+                .on_scroll_wheel(move |ev, window, cx| {
+                    // Keep wheel travel independent of thumbnail size.
+                    if ev.modifiers.control || ev.modifiers.platform {
+                        ctrl_scroll(ev, pane_id, &inner_scroll_view, window, cx);
                     }
                 })
                 .when_some(tooltip_data, |el, (name, path, is_dir, size, modified)| {
@@ -467,7 +426,7 @@ impl App {
         // panel open/close and splitter drags, not just window resize). A
         // fractional width change does not alter this fixed-pitch surface until
         // it crosses a column boundary, so only invalidate the pane then.
-        .on_prepaint(move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {
+        .on_prepaint_child(move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {
             crate::perf::count("prepaint.grid_pane");
             let new_w = f32::from(bounds.size.width);
             let new_cols = grid_column_count(new_w, thumb_px, grid_gap_px, grid_pad_px);
@@ -484,7 +443,11 @@ impl App {
                         ts.last_pane_width = new_w;
                     }
                     crate::perf::count("grid.width.columns_changed");
-                    this.notify_pane(pane_id, cx);
+                    if this.is_pane_or_dock_animating() {
+                        this.defer_column_reflow(pane_id);
+                    } else {
+                        this.notify_pane(pane_id, cx);
+                    }
                 });
             }
             // Phase F: register this pane's bounds for OLE drop routing.
@@ -502,10 +465,9 @@ impl App {
                 .flex_1()
                 .min_h(px(0.))
                 .relative()
-                .when(figma_glass, |s| s.bg(glass_fill()))
                 .rounded_bl(px(12.0))
                 .rounded_br(px(12.0))
-                .on_prepaint(pane_bounds_recorder(pane_id, &bounds_view))
+                .on_prepaint_child(pane_bounds_recorder(pane_id, &bounds_view))
                 .child(layout_region("pane.viewport_body", inner))
                 .vertical_scrollbar(&base_scroll),
         ))
@@ -535,49 +497,47 @@ impl App {
                 let Some(entry) = ts.entries.get(entry_idx) else {
                     continue;
                 };
+                if entry.kind == FileKind::Dir {
+                    request_folder_icon |= windows_theme;
+                    continue;
+                }
+
+                if entry.kind != FileKind::File {
+                    continue;
+                }
+
                 let thumbable = is_thumbnailable(entry);
-                let shell_thumbable = windows_theme
-                    && !thumbable
-                    && entry.kind == FileKind::File
+                #[cfg(target_os = "windows")]
+                let shell_thumbable = !thumbable
                     && entry
                         .extension
                         .as_deref()
                         .is_some_and(is_windows_shell_thumbnail_ext);
-                request_folder_icon |= windows_theme && entry.kind == FileKind::Dir;
-
-                // Ask Shell only for types likely to have real thumbnails. Generic file
-                // and folder icons stay builtin/theme icons; per-path Shell calls are too
-                // expensive in huge dirs like C:\Windows\WinSxS.
-                #[cfg(target_os = "windows")]
-                let use_shell = shell_thumbable;
                 #[cfg(not(target_os = "windows"))]
-                let use_shell = false;
+                let shell_thumbable = false;
 
-                let ext_cmd = if !thumbable && entry.kind == FileKind::File {
-                    entry.extension.as_deref().and_then(|ext| {
+                if thumbable {
+                    all_visible.push(entry.path.clone());
+                    if !self.thumb_textures.contains_key(&entry.path) {
+                        imgs.push(entry.path.clone());
+                    }
+                } else if shell_thumbable {
+                    all_visible.push(entry.path.clone());
+                    if !self.thumb_textures.contains_key(&entry.path) {
+                        shell_paths.push((entry.path.clone(), false));
+                    }
+                } else if self.thumb_textures.contains_key(&entry.path) {
+                    all_visible.push(entry.path.clone());
+                } else {
+                    let ext_cmd = entry.extension.as_deref().and_then(|ext| {
                         self.ext_registry
                             .thumbnailer_for(ext)
                             .map(|cmd| (cmd.command.run.clone(), cmd.tools))
-                    })
-                } else {
-                    None
-                };
-
-                #[cfg(target_os = "windows")]
-                let use_shell = use_shell && ext_cmd.is_none();
-
-                if thumbable || use_shell || ext_cmd.is_some() {
-                    all_visible.push(entry.path.clone());
-                }
-                if self.thumb_textures.contains_key(&entry.path) {
-                    continue;
-                }
-                if thumbable {
-                    imgs.push(entry.path.clone());
-                } else if use_shell {
-                    shell_paths.push((entry.path.clone(), false));
-                } else if let Some((run, tools)) = ext_cmd {
-                    exts.push((entry.path.clone(), run, tools));
+                    });
+                    if let Some((run, tools)) = ext_cmd {
+                        all_visible.push(entry.path.clone());
+                        exts.push((entry.path.clone(), run, tools));
+                    }
                 }
             }
             (imgs, exts, shell_paths, request_folder_icon, all_visible)
@@ -650,7 +610,22 @@ fn is_image_ext(ext: &str) -> bool {
 fn is_video_ext(ext: &str) -> bool {
     matches!(
         ext.to_ascii_lowercase().as_str(),
-        "mov" | "mp4" | "m4v" | "mkv" | "webm" | "wmv"
+        "3gp"
+            | "asf"
+            | "avi"
+            | "flv"
+            | "m2ts"
+            | "m4v"
+            | "mkv"
+            | "mov"
+            | "mp4"
+            | "mpeg"
+            | "mpg"
+            | "mts"
+            | "ts"
+            | "vob"
+            | "webm"
+            | "wmv"
     )
 }
 
@@ -665,19 +640,27 @@ fn is_windows_shell_thumbnail_ext(ext: &str) -> bool {
     matches!(
         ext.to_ascii_lowercase().as_str(),
         "3fr"
+            | "3gp"
             | "arw"
+            | "asf"
+            | "avi"
             | "avif"
             | "cr2"
             | "cr3"
             | "crw"
             | "dng"
+            | "flv"
             | "heic"
             | "heif"
             | "iiq"
-            | "mov"
-            | "mp4"
+            | "m2ts"
             | "m4v"
             | "mkv"
+            | "mov"
+            | "mp4"
+            | "mpeg"
+            | "mpg"
+            | "mts"
             | "nef"
             | "orf"
             | "pdf"
@@ -687,6 +670,8 @@ fn is_windows_shell_thumbnail_ext(ext: &str) -> bool {
             | "rw2"
             | "srw"
             | "tga"
+            | "ts"
+            | "vob"
             | "webm"
             | "wmv"
     )
@@ -744,7 +729,7 @@ fn render_cell(props: GridCellProps) -> AnyElement {
     v_flex()
         .id(("cell", entry_idx))
         .when(record_rects && !is_animating, |s| {
-            s.on_prepaint(rect_recorder(pane_id, entry_idx, view))
+            s.on_prepaint_child(rect_recorder(pane_id, entry_idx, view))
         })
         .w(crate::ui::rem_px(cell_w))
         .p_1()
@@ -805,12 +790,15 @@ fn render_cell(props: GridCellProps) -> AnyElement {
                             .child(img(tex).size_full()),
                     )
                 }
-                FileIcon::IconTexture(tex) => area.child(
-                    img(tex)
-                        .max_h(crate::ui::rem_px(thumb * GRID_TEXTURE_ICON_MAX))
-                        .max_w(crate::ui::rem_px(thumb * GRID_TEXTURE_ICON_MAX))
-                        .flex_none(),
-                ),
+                FileIcon::IconTexture(tex) => {
+                    let sz = thumb * GRID_TEXTURE_ICON_MAX;
+                    area.child(
+                        img(tex.for_size(sz))
+                            .max_h(crate::ui::rem_px(sz))
+                            .max_w(crate::ui::rem_px(sz))
+                            .flex_none(),
+                    )
+                }
                 FileIcon::Builtin { kind, extension } => area.child(
                     FileIcon::Builtin { kind, extension }
                         .element(thumb * GRID_BUILTIN_ICON, accent),

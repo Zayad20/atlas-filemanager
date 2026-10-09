@@ -1,5 +1,5 @@
 use crate::{
-    IconName, Sizable, Size, StyledExt,
+    IconName, Sizable, Size,
     group_box::GroupBoxVariant,
     input::{Input, InputState},
     resizable::{h_resizable, resizable_panel},

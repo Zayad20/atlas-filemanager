@@ -14,6 +14,7 @@ windows-sys = { version = "0.52", features = [
     "Win32_System_Ioctl",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Pipes",
 ] }
 windows-sys-copy = { package = "windows-sys", version = "0.61", features = [
     "Win32_Foundation",

@@ -13,10 +13,12 @@
 use crate::app::{App as AtlasApp, PaneSignal};
 use crate::input::action::Action;
 use crate::ui::icons::{icon, AtlasIcon};
+use crate::ui::motion::MotionFeedbackExt as _;
 use crate::ui::tooltips::shortcut_tooltip;
 use atlas_core::util::display::display_name;
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{
     div, px, AnyView, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     MouseButton, Render, SharedString, WeakEntity, Window,
@@ -153,6 +155,7 @@ impl Panel for FilePanel {
                     .justify_center()
                     .cursor_pointer()
                     .text_color(muted)
+                    .motion_feedback()
                     .hover(|this| this.bg(hover_bg).text_color(danger))
                     .child(icon(AtlasIcon::X, 11.0, muted))
                     .tooltip(|window, cx| {
@@ -200,6 +203,7 @@ impl Panel for FilePanel {
                 .justify_center()
                 .cursor_pointer()
                 .text_color(muted)
+                .motion_feedback()
                 .hover(|this| this.bg(hover_bg).text_color(accent))
                 .child(icon(AtlasIcon::Plus, 14.0, muted))
                 .tooltip(|window, cx| {
@@ -246,7 +250,7 @@ impl Render for FilePanel {
                     .relative()
                     .overflow_hidden()
                     .child(content)
-                    .on_prepaint(move |bounds, _window, cx| {
+                    .on_prepaint_child(move |bounds, _window, cx| {
                         if let Some(app) = bounds_app.upgrade() {
                             let should_update = {
                                 let app_ref = app.read(cx);

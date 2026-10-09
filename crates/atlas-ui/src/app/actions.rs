@@ -141,20 +141,9 @@ impl App {
                     }
                 }
                 Action::ToggleInspector => {
-                    let was_visible = self.preview_visible_for_focused();
                     if let Some(tab) = self.state.active_tab_data_mut() {
                         tab.preview_enabled = !tab.preview_enabled;
                     }
-                    let is_visible = self.preview_visible_for_focused();
-                    if was_visible != is_visible {
-                        self.preview_panel_anim_seq = self.preview_panel_anim_seq.wrapping_add(1);
-                    }
-                    self.preview_panel_closing =
-                        if was_visible && !is_visible && !self.state.settings.disable_animations {
-                            Some(std::time::Instant::now())
-                        } else {
-                            None
-                        };
                 }
                 Action::ToggleSidebar => {
                     self.state.settings.show_sidebar = !self.state.settings.show_sidebar;
@@ -237,6 +226,9 @@ impl App {
                     // start the exit animation; `tick_palette_close` drops them when it
                     // finishes. If it was already closing, leave the in-flight fade.
                     if self.state.overlay.show_goto_bar {
+                        self.goto_service_generation
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        self.goto_service_inflight = None;
                         self.state.overlay.show_goto_bar = false;
                         self.palette_closing =
                             Some((crate::ui::palette::PaletteKind::Goto, Instant::now()));
@@ -286,6 +278,11 @@ impl App {
                     self.state.overlay.show_goto_bar = true;
                     self.state.overlay.show_palette = false;
                     self.state.overlay.goto_state.reset();
+                    self.goto_service_generation
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    self.goto_service_cache = None;
+                    self.goto_service_inflight = None;
+                    self.goto_service_failed = None;
                     // Cancel any in-flight exit fade and start fresh.
                     self.palette_closing = None;
                     self.goto_input = None;
@@ -373,8 +370,14 @@ impl App {
                         Some(Tile::Pane(p)) => {
                             if matches!(action, Action::ToggleShowFiles(_)) {
                                 p.show_files = !p.show_files;
+                                if !p.show_files && !p.show_folders {
+                                    p.show_folders = true;
+                                }
                             } else {
                                 p.show_folders = !p.show_folders;
+                                if !p.show_folders && !p.show_files {
+                                    p.show_files = true;
+                                }
                             }
                             Some((p.show_files, p.show_folders))
                         }

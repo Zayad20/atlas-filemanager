@@ -1,7 +1,8 @@
 use crate::ActiveTheme;
+use crate::Colorize;
 use gpui::{
     App, BoxShadow, Corners, DefiniteLength, Div, Edges, FocusHandle, Hsla, ParentElement, Pixels,
-    Refineable, StyleRefinement, Styled, Window, div, point, px,
+    StyleRefinement, Styled, Window, div, point, px,
 };
 use serde::{Deserialize, Serialize};
 
@@ -37,7 +38,7 @@ pub fn box_shadow(
         blur_radius: blur.into(),
         spread_radius: spread.into(),
         inset: false,
-        color,
+        color: color.into(),
     }
 }
 
@@ -57,12 +58,6 @@ macro_rules! font_weight {
     gpui_macros::derive_inspector_reflection
 )]
 pub trait StyledExt: Styled + Sized {
-    /// Refine the style of this element, applying the given style refinement.
-    fn refine_style(mut self, style: &StyleRefinement) -> Self {
-        self.style().refine(style);
-        self
-    }
-
     /// Apply self into a horizontal flex layout.
     #[inline(always)]
     fn h_flex(self) -> Self {

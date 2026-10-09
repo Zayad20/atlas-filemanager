@@ -15,7 +15,7 @@ use markdown::mdast;
 use ropey::Rope;
 
 use crate::{
-    ActiveTheme as _, Icon, IconName, StyledExt, h_flex,
+    ActiveTheme as _, Icon, IconName, h_flex,
     highlighter::{HighlightTheme, LanguageRegistry, SyntaxHighlighter},
     input::{InputEdit, Point, RopeExt as _},
     text::{
@@ -1226,7 +1226,11 @@ impl BlockNode {
                                                             |this| this.text_right(),
                                                         )
                                                         .min_w_16()
-                                                        .w(Length::Definite(relative(len as f32)))
+                                                        .w(Length::Definite(
+                                                            gpui::DefiniteLength::Relative(
+                                                                relative(len as f32),
+                                                            ),
+                                                        ))
                                                         .px_2()
                                                         .py_1()
                                                         .when(!is_last_col, |this| {

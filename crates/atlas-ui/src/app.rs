@@ -20,6 +20,7 @@ pub mod devices;
 pub mod ext;
 pub mod fs_sync;
 pub(crate) mod icon_loader;
+pub(crate) mod liquid_glass;
 pub mod nav;
 pub mod ops;
 pub mod pane_ops;
@@ -40,7 +41,6 @@ pub struct App {
     /// Per-pane virtualized-list scroll handles (UI-side), so keyboard nav can
     /// scroll the cursor into view.
     pub(crate) scroll_handles: HashMap<TileId, UniformListScrollHandle>,
-    pub(crate) scroll_targets: HashMap<TileId, f32>,
     pub(crate) miller_scroll_handles: HashMap<(TileId, usize), UniformListScrollHandle>,
     /// Runtime filesystem watcher handles keyed by pane tile. Kept out of
     /// `AppState` so model/state does not depend on `fs`.
@@ -58,6 +58,7 @@ pub struct App {
     pub(crate) goto_service_cache: Option<(
         String,
         std::sync::Arc<Vec<atlas_core::search::nucleo_pool::IndexEntry>>,
+        bool,
     )>,
     pub(crate) goto_service_inflight: Option<String>,
     pub(crate) goto_service_failed: Option<String>,
@@ -97,8 +98,7 @@ pub struct App {
     // Phase6: per-tab image-preview interaction state (scroll=zoom, drag=pan, Space=expand).
     // Pure UI/interaction state, kept out of `AppState` like the other render caches.
     pub(crate) preview_view: HashMap<TileId, PreviewView>,
-    pub(crate) preview_panel_anim_seq: u64,
-    pub(crate) preview_panel_closing: Option<Instant>,
+    pub(crate) inspector_animating: bool,
     pub(crate) last_viewport_size: Option<gpui::Size<gpui::Pixels>>,
     pub(crate) window_resize_suppress_until: Option<Instant>,
     // Transient: last cursor position while panning the preview image.
@@ -138,10 +138,18 @@ pub struct App {
     pub(crate) icon_theme: Option<crate::icon_theme::IconThemeIndex>,
     /// Rasterised icon textures. Key = `icon_theme::icon_key()` result.
     pub(crate) icon_cache: HashMap<String, crate::icon_theme::IconState>,
+    /// Default Icons8 Liquid Glass GPU textures for files and folders.
+    pub(crate) liquid_glass: liquid_glass::LiquidGlassCache,
     /// Dedicated channel for icon rasterisation results. Uses `Arc<RenderImage>` directly
     /// so GPUI types never enter atlas-model's `BgResult` enum.
-    pub(crate) icon_tx: flume::Sender<(String, Option<std::sync::Arc<gpui::RenderImage>>)>,
-    pub(crate) icon_rx: flume::Receiver<(String, Option<std::sync::Arc<gpui::RenderImage>>)>,
+    pub(crate) icon_tx: flume::Sender<(
+        String,
+        Option<std::sync::Arc<crate::icon_theme::MultiResIcon>>,
+    )>,
+    pub(crate) icon_rx: flume::Receiver<(
+        String,
+        Option<std::sync::Arc<crate::icon_theme::MultiResIcon>>,
+    )>,
     /// Cached `FilePanel` entities keyed by pane `TileId`. Reusing entities across
     /// `rebuild_dock_center` calls keeps gpui animation state alive on existing panes
     /// so they don't flash when a new split or close restructures the layout.
@@ -198,6 +206,9 @@ pub struct App {
     /// Tabs mid close-out animation inside an existing tab strip. Separate from
     /// `pane_closing` so a tab close never triggers split/pane collapse motion.
     pub(crate) tab_closing: HashMap<TileId, Instant>,
+    /// Panes whose column recalculation was deferred while split/close/sidebar
+    /// animations are in flight. Flushed once animations settle.
+    pub(crate) pending_column_reflow: HashSet<TileId>,
     /// When a pane's fresh listing last appeared (tab create / navigation). Views
     /// stagger-animate item rows in only while within `ITEM_APPEAR_WINDOW` of this,
     /// so scrolling later never re-triggers the appear. Set alongside `appear_seq`.
@@ -231,6 +242,8 @@ pub struct App {
     pub(crate) dropzone_rects: Vec<(PathBuf, gpui::Bounds<gpui::Pixels>)>,
     pub(crate) dropzone_bounds: Option<gpui::Bounds<gpui::Pixels>>,
     pub(crate) dropzone_drag_paths: HashSet<PathBuf>,
+    pub(crate) dropzone_pending_tags: HashMap<PathBuf, atlas_model::tag_cache::TagId>,
+    pub(crate) pending_transfers: std::collections::VecDeque<atlas_model::ops::TransferRequest>,
     // Phase F: pane drop-zones for the OLE drop target. Each frame's render path
     // pushes one DropZone per visible pane (via on_prepaint) into this vec; at the
     // start of the next frame the vec is committed to `dnd.zones` (Windows only) so
@@ -287,7 +300,7 @@ pub struct App {
     /// once the dock exists; set again by `switch_profile`.
     pub(crate) sidebar_width_dirty: bool,
     pub(crate) sidebar_render_width: Option<f32>,
-    pub(crate) sidebar_width_animation: Option<SidebarWidthAnimation>,
+    pub(crate) sidebar_width_animating: bool,
 
     // ── Windows OLE drag-and-drop ──────────────────────────────────────────
     // Raw HWND value (isize). Extracted once in App::new from gpui's
@@ -426,35 +439,6 @@ impl PaneAnimation {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct SidebarWidthAnimation {
-    pub(crate) from: f32,
-    pub(crate) to: f32,
-    pub(crate) started: Instant,
-}
-
-impl SidebarWidthAnimation {
-    const TTL: Duration = Duration::from_millis(crate::ui::motion::PANEL_MS);
-
-    pub(crate) fn new(from: f32, to: f32) -> Self {
-        Self {
-            from,
-            to,
-            started: Instant::now(),
-        }
-    }
-
-    pub(crate) fn width(self) -> f32 {
-        let t = (self.started.elapsed().as_secs_f32() / Self::TTL.as_secs_f32()).min(1.0);
-        let e = crate::ui::motion::ease_out_quart(t);
-        self.from + (self.to - self.from) * e
-    }
-
-    pub(crate) fn is_alive(self) -> bool {
-        self.started.elapsed() < Self::TTL
-    }
-}
-
 /// Marker for a pane mid layout transition. The FLIP offsets themselves now
 /// live in the gpui paint-offset patch; this only tracks liveness.
 #[derive(Clone, Copy, Debug)]
@@ -474,6 +458,12 @@ impl PaneLayoutAnimation {
 pub(crate) struct DockSplitAnimation {
     pub(crate) from: Vec<f32>,
     pub(crate) to: Vec<f32>,
+    /// Divider extents at interruption, expressed as a fraction of their 5 px
+    /// resting width. Retargeting shares alone still jumps a partly open seam.
+    pub(crate) from_gap_factors: Vec<f32>,
+    /// A close burst shares a bounded deadline instead of retaining every pane
+    /// until 180 ms after the user releases the close shortcut.
+    pub(crate) close_duration: Option<Duration>,
     pub(crate) started: Instant,
     pub(crate) closing: bool,
     /// Splitter immediately adjacent to the closing slot that should collapse
@@ -486,12 +476,16 @@ impl DockSplitAnimation {
     // Keep the pane geometry and its teardown in one calm motion. The previous
     // 150ms spring left a visible second jump when the 0.01-share slot was
     // finally removed, especially in nested split trees.
-    pub(crate) const DURATION: Duration = Duration::from_millis(220);
+    pub(crate) const DURATION: Duration = Duration::from_millis(crate::ui::motion::SPLIT_OPEN_MS);
+    pub(crate) const CLOSE_DURATION: Duration =
+        Duration::from_millis(crate::ui::motion::SPLIT_CLOSE_MS);
 
     pub(crate) fn new(to: Vec<f32>, inserted_ix: usize) -> Self {
         if to.is_empty() {
             return Self {
                 from: Vec::new(),
+                from_gap_factors: Vec::new(),
+                close_duration: None,
                 to,
                 started: Instant::now(),
                 closing: false,
@@ -504,61 +498,58 @@ impl DockSplitAnimation {
     }
 
     pub(crate) fn opening(mut from: Vec<f32>, mut to: Vec<f32>, inserted_ix: usize) -> Self {
-        normalize_split_shares(&mut from);
-        normalize_split_shares(&mut to);
+        normalize_split_shares_allow_zero(&mut from);
+        normalize_split_shares_allow_zero(&mut to);
+        let mut from_gap_factors = Self::gap_targets(&from);
         if from.len() + 1 == to.len() && inserted_ix <= from.len() {
-            let start = 0.01;
+            let start = 0.0;
             let old_sum = from.iter().sum::<f32>().max(f32::EPSILON);
             let scale = (to.len() as f32 - start) / old_sum;
             for share in &mut from {
                 *share *= scale;
             }
             from.insert(inserted_ix, start);
+            from_gap_factors.insert(inserted_ix.saturating_sub(1).min(from_gap_factors.len()), 0.0);
         } else {
             from = to.clone();
+            from_gap_factors = Self::gap_targets(&from);
         }
-        normalize_split_shares(&mut from);
+        normalize_split_shares_allow_zero(&mut from);
         Self {
             from,
             to,
+            from_gap_factors,
+            close_duration: None,
             started: Instant::now(),
             closing: false,
             closing_ix: None,
         }
     }
 
-    pub(crate) fn closing(mut from: Vec<f32>, closing_ix: usize) -> Self {
-        normalize_split_shares(&mut from);
+    pub(crate) fn closing(from: Vec<f32>, closing_ix: usize) -> Self {
+        Self::closing_many(from, &[closing_ix])
+    }
+
+    pub(crate) fn closing_many(mut from: Vec<f32>, closing_indices: &[usize]) -> Self {
+        normalize_split_shares_allow_zero(&mut from);
         let mut to = from.clone();
-        if closing_ix < to.len() {
-            let end = 0.0;
-            to[closing_ix] = end;
-            let survivor_sum = to
-                .iter()
-                .enumerate()
-                .filter(|(ix, _)| *ix != closing_ix)
-                .map(|(_, share)| *share)
-                .sum::<f32>();
-            if survivor_sum > f32::EPSILON {
-                // Preserve every survivor's relative size while they collectively
-                // absorb the closing pane. Giving the whole delta to one sibling
-                // made only that pane animate and left the rest visually stuck.
-                let survivor_target = to.len() as f32 - end;
-                let scale = survivor_target / survivor_sum;
-                for (ix, share) in to.iter_mut().enumerate() {
-                    if ix != closing_ix {
-                        *share *= scale;
-                    }
-                }
+        for &ix in closing_indices {
+            if let Some(share) = to.get_mut(ix) {
+                *share = 0.0;
             }
         }
+        // Every survivor absorbs space proportionally; an interrupted close
+        // retains its visible share in `from` and stays at zero in `to`.
         normalize_split_shares_allow_zero(&mut to);
+        let from_gap_factors = Self::gap_targets(&from);
         Self {
             from,
             to,
+            from_gap_factors,
+            close_duration: None,
             started: Instant::now(),
             closing: true,
-            closing_ix: Some(closing_ix),
+            closing_ix: closing_indices.last().copied(),
         }
     }
 
@@ -570,25 +561,85 @@ impl DockSplitAnimation {
             .zip(&self.to)
             .map(|(from, to)| from + (to - from) * eased)
             .collect::<Vec<_>>();
-        if self.closing {
-            normalize_split_shares_allow_zero(&mut shares);
-        } else {
-            normalize_split_shares(&mut shares);
-        }
+        normalize_split_shares_allow_zero(&mut shares);
         shares
+    }
+
+    pub(crate) fn gap_targets(shares: &[f32]) -> Vec<f32> {
+        let mut gaps = vec![1.0; shares.len().saturating_sub(1)];
+        for (ix, share) in shares.iter().enumerate() {
+            if *share == 0.0 && !gaps.is_empty() {
+                let adjacent = ix.min(gaps.len() - 1);
+                // A run of closing panes must collapse one distinct gap each.
+                // In particular, the last two slots share the same adjacent gap.
+                let gap_ix = (0..=adjacent).rev().chain(adjacent + 1..gaps.len())
+                    .find(|gap| gaps[*gap] != 0.0);
+                if let Some(gap_ix) = gap_ix { gaps[gap_ix] = 0.0; }
+            }
+        }
+        gaps
+    }
+
+    pub(crate) fn gap_factors(&self) -> Vec<f32> {
+        let progress = self.progress();
+        self.from_gap_factors.iter().zip(Self::gap_targets(&self.to))
+            .map(|(from, to)| from + (to - from) * progress).collect()
     }
 
     /// Visual progress for paint-only FLIP. Layout uses `to` immediately; only
     /// the cached scene moves from its previous origin to the final origin.
     pub(crate) fn progress(&self) -> f32 {
-        let t = (self.started.elapsed().as_secs_f32() / Self::DURATION.as_secs_f32()).min(1.0);
+        let duration = self.duration();
+        if duration.is_zero() {
+            return 1.0;
+        }
+        let t =
+            (self.started.elapsed().as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0);
         if self.closing {
             Self::closing_progress(t)
         } else {
-            // Modern, smooth, non-bouncy curve (Cubic Ease-Out)
-            let inv = 1.0 - t;
-            1.0 - inv * inv * inv
+            1.0 - (1.0 - t).powi(3)
         }
+    }
+
+    fn duration(&self) -> Duration {
+        if self.closing {
+            self.close_duration.unwrap_or(Self::CLOSE_DURATION)
+        } else {
+            Self::DURATION
+        }
+    }
+
+    pub(crate) fn retarget_close_deadline(&mut self, previous: &Self) {
+        if self.closing && previous.closing && !previous.done() {
+            self.close_duration = Some(previous.duration()
+                .saturating_sub(previous.started.elapsed())
+                .max(Duration::from_millis(32)));
+        }
+    }
+
+    /// Rebase a live transition when an already covered pane is removed. The
+    /// remaining geometry and dividers start at their current painted extents.
+    pub(crate) fn remove_child(&mut self, ix: usize) {
+        if ix >= self.to.len() { return; }
+        let remaining = self.duration().saturating_sub(self.started.elapsed());
+        let mut shares = self.shares();
+        let mut gaps = self.gap_factors();
+        if !gaps.is_empty() {
+            let adjacent = ix.min(gaps.len() - 1);
+            let gap = (0..=adjacent).rev().chain(adjacent + 1..gaps.len())
+                .find(|gap| gaps[*gap] <= f32::EPSILON).unwrap_or(adjacent);
+            gaps.remove(gap);
+        }
+        shares.remove(ix);
+        self.to.remove(ix);
+        normalize_split_shares_allow_zero(&mut shares);
+        normalize_split_shares_allow_zero(&mut self.to);
+        self.from = shares;
+        self.from_gap_factors = gaps;
+        self.closing_ix = self.to.iter().position(|share| *share == 0.0);
+        self.started = Instant::now();
+        if self.closing { self.close_duration = Some(remaining); }
     }
 
     /// Progress used by both the closing split geometry and its visual treatment.
@@ -596,13 +647,13 @@ impl DockSplitAnimation {
     /// has finished collapsing.
     pub(crate) fn closing_progress(t: f32) -> f32 {
         let t = t.clamp(0.0, 1.0);
-        // Smoothstep gives the close a soft start and a soft landing without
-        // the late overshoot that made survivors rush into the freed space.
-        t * t * (3.0 - 2.0 * t)
+        // Respond immediately and decelerate into settlement. Reversing the
+        // entrance's direction must not leave the exit nearly still for 90 ms.
+        1.0 - (1.0 - t).powi(3)
     }
 
     pub(crate) fn done(&self) -> bool {
-        self.started.elapsed() >= Self::DURATION
+        self.started.elapsed() >= self.duration()
     }
 }
 
@@ -628,7 +679,7 @@ pub(crate) fn normalize_split_shares(shares: &mut [f32]) {
 }
 
 /// Normalize split weights while preserving intentional zero-width slots used
-/// during pane close-out. Regular layout recovery still uses
+/// during pane reveal/close-out. Regular layout recovery still uses
 /// [`normalize_split_shares`], which replaces zeroes with sane defaults.
 pub(crate) fn normalize_split_shares_allow_zero(shares: &mut [f32]) {
     if shares.is_empty() {
@@ -685,7 +736,32 @@ mod tests {
             .iter()
             .chain(&anim.to)
             .all(|share| share.is_finite()));
-        assert!(anim.from.iter().chain(&anim.to).all(|share| *share > 0.0));
+        assert!(anim.from.iter().all(|share| *share >= 0.0));
+        assert!(anim.to.iter().all(|share| *share > 0.0));
+        assert_eq!(anim.from[1], 0.0, "new pane starts completely covered");
+    }
+
+    #[test]
+    fn split_motion_settles_exactly_and_close_finishes_sooner() {
+        let mut opening = DockSplitAnimation::new(vec![1.0, 1.0], 1);
+        assert_eq!(opening.from[1], 0.0);
+        assert!(opening.from[0] > 0.0);
+        opening.started = Instant::now() - DockSplitAnimation::DURATION;
+        assert!(opening.done());
+        assert_eq!(opening.progress(), 1.0);
+        assert_eq!(opening.shares(), opening.to);
+
+        let mut closing = DockSplitAnimation::closing(vec![1.0, 1.0], 1);
+        assert!(closing.duration() < opening.duration());
+        closing.started = Instant::now() - DockSplitAnimation::CLOSE_DURATION;
+        assert!(closing.done());
+        assert_eq!(closing.shares()[1], 0.0);
+        let mut previous = 0.0;
+        for step in 0..=100 {
+            let progress = DockSplitAnimation::closing_progress(step as f32 / 100.0);
+            assert!(progress >= previous && progress <= 1.0);
+            previous = progress;
+        }
     }
 
     #[test]
@@ -702,6 +778,74 @@ mod tests {
         let anim = DockSplitAnimation::closing(vec![1.0, 2.0, 3.0], 2);
 
         assert!((anim.to[1] / anim.to[0] - 2.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn rapid_close_keeps_pending_panes_and_current_geometry() {
+        let from = vec![1.4, 1.1, 0.5, 1.0];
+        let anim = DockSplitAnimation::closing_many(from.clone(), &[2, 3]);
+        assert_eq!(anim.from, from);
+        assert_eq!(anim.to[2], 0.0);
+        assert_eq!(anim.to[3], 0.0);
+        assert!((anim.to[0] / anim.to[1] - 1.4 / 1.1).abs() < 0.001);
+    }
+
+    #[test]
+    fn rapid_split_does_not_resurrect_zero_width_panes() {
+        let from = vec![2.0, 0.0];
+        let anim = DockSplitAnimation::opening(from, vec![1.5, 0.0, 1.5], 2);
+        assert_eq!(anim.from, vec![3.0, 0.0, 0.0]);
+        assert_eq!(anim.to[1], 0.0);
+    }
+
+    #[test]
+    fn closing_responds_immediately_and_does_not_wait_until_the_end() {
+        assert!(DockSplitAnimation::closing_progress(0.25) > 0.5);
+        assert!(DockSplitAnimation::closing_progress(0.5) > 0.85);
+        assert_eq!(DockSplitAnimation::closing_progress(1.0), 1.0);
+        let mut closing = DockSplitAnimation::closing(vec![1.0, 1.0], 1);
+        closing.close_duration = Some(Duration::ZERO);
+        assert_eq!(closing.progress(), 1.0);
+        assert_eq!(closing.shares(), closing.to);
+    }
+
+    #[test]
+    fn retargeted_dividers_keep_fractional_width_and_settle_to_zero() {
+        let mut closing = DockSplitAnimation::closing_many(vec![1.0, 1.0, 1.0, 1.0], &[2, 3]);
+        closing.from_gap_factors = vec![1.0, 0.4, 0.7];
+        closing.started = Instant::now() + Duration::from_secs(1);
+        assert_eq!(closing.gap_factors(), vec![1.0, 0.4, 0.7]);
+        closing.started = Instant::now() - DockSplitAnimation::CLOSE_DURATION;
+        assert_eq!(closing.gap_factors(), vec![1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn middle_split_adds_exactly_one_zero_width_divider() {
+        let opening = DockSplitAnimation::opening(vec![1.0, 1.0], vec![1.0, 1.0, 1.0], 1);
+        assert_eq!(opening.from_gap_factors, vec![0.0, 1.0]);
+        assert_eq!(DockSplitAnimation::gap_targets(&[0.0, 0.0, 1.0, 1.0]), vec![0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn close_bursts_keep_a_bounded_deadline() {
+        let mut previous = DockSplitAnimation::closing(vec![1.0, 1.0, 1.0], 2);
+        previous.started = Instant::now() - Duration::from_millis(100);
+        let mut next = DockSplitAnimation::closing_many(previous.shares(), &[1, 2]);
+        next.retarget_close_deadline(&previous);
+        assert!(next.duration() <= Duration::from_millis(80));
+        assert!(next.duration() >= Duration::from_millis(32));
+    }
+
+    #[test]
+    fn removing_covered_slot_preserves_the_remaining_geometry() {
+        let mut anim = DockSplitAnimation::closing_many(vec![1.8, 1.2, 0.0], &[1, 2]);
+        anim.started = Instant::now() + Duration::from_secs(1);
+        anim.remove_child(2);
+        assert_eq!(anim.from.len(), 2);
+        assert_eq!(anim.to.len(), 2);
+        assert!((anim.from[0] / anim.from[1] - 1.5).abs() < 0.001);
+        assert_eq!(anim.from_gap_factors, vec![1.0]);
+        assert_eq!(anim.to[1], 0.0);
     }
 
     #[test]
@@ -791,15 +935,29 @@ impl DetailsColumn {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DetailsReorderAnim {
     pub(crate) from_order: [DetailsColumn; 3],
+    pub(crate) from_positions: Option<[(DetailsColumn, f32); 3]>,
     pub(crate) started: Instant,
 }
 
 impl DetailsReorderAnim {
-    const TTL: Duration = Duration::from_millis(crate::ui::motion::MICRO_MS);
+    pub(crate) const DURATION_MS: u64 = 160;
+    const TTL: Duration = Duration::from_millis(Self::DURATION_MS);
 
     pub(crate) fn new(from_order: [DetailsColumn; 3]) -> Self {
         Self {
             from_order,
+            from_positions: None,
+            started: Instant::now(),
+        }
+    }
+
+    pub(crate) fn with_positions(
+        from_order: [DetailsColumn; 3],
+        from_positions: [(DetailsColumn, f32); 3],
+    ) -> Self {
+        Self {
+            from_order,
+            from_positions: Some(from_positions),
             started: Instant::now(),
         }
     }
@@ -1048,7 +1206,7 @@ const DRAIN_INTERVAL: Duration = Duration::from_millis(100);
 // `palette::PALETTE_CLOSE_MS` so the fade-out completes (it reaches opacity 0 first).
 const PALETTE_CLOSE_FINALIZE: Duration = Duration::from_millis(150);
 // How long a pane's close-out animation runs before it's removed from the dock.
-pub(crate) const PANE_CLOSE_FINALIZE: Duration = DockSplitAnimation::DURATION;
+pub(crate) const PANE_CLOSE_FINALIZE: Duration = DockSplitAnimation::CLOSE_DURATION;
 pub(crate) const TAB_CLOSE_FINALIZE: Duration = Duration::from_millis(crate::ui::motion::TAB_MS);
 
 /// Map the user's scroll-smoothness setting (0 = instant … 1 = silky) to the gpui
@@ -1059,10 +1217,9 @@ pub(crate) fn scroll_smooth_params(smoothness: f32) -> (f32, f32) {
     if s <= 0.0 {
         return (0.0, 1.0); // off → instant (ease 0 disables smoothing in gpui)
     }
-    // s=0.01→ease~0.46 (snappy), s=1→ease 0.12 (silky); boost 1.0→3.0.
-    let ease = 0.46_f32 - 0.34 * s;
-    let boost = 1.0_f32 + 2.0 * s;
-    (ease, boost)
+    // A short exponential glide, independent of how far one wheel notch travels.
+    // At the default 0.6, ease=0.32 settles a typical notch in about 240 ms.
+    (0.50_f32 - 0.30 * s, 1.0)
 }
 // Window after a fresh listing appears during which item rows stagger-animate in.
 // Must comfortably exceed the longest staggered row animation; past it, scrolling
@@ -1071,6 +1228,34 @@ pub(crate) fn scroll_smooth_params(smoothness: f32) -> (f32, f32) {
 pub(crate) const ITEM_APPEAR_WINDOW: Duration = Duration::from_millis(150);
 
 impl App {
+    /// True while any dock split, close, tab, or sidebar animation is actively playing.
+    pub(crate) fn is_pane_or_dock_animating(&self) -> bool {
+        !self.dock_split_animations.is_empty()
+            || !self.pane_animations.is_empty()
+            || !self.pane_closing.is_empty()
+            || !self.tab_closing.is_empty()
+            || self.sidebar_width_animating
+            || self.inspector_animating
+    }
+
+    /// Record a pane whose column calculation changed during an animation, deferring
+    /// its `notify_pane` until the motion settles to eliminate prepaint frame spikes.
+    pub(crate) fn defer_column_reflow(&mut self, pane_id: TileId) {
+        self.pending_column_reflow.insert(pane_id);
+    }
+
+    /// Flush any deferred column reflows once animations finish.
+    pub(crate) fn flush_pending_column_reflows(&mut self, cx: &mut gpui::Context<Self>) {
+        if self.pending_column_reflow.is_empty() {
+            return;
+        }
+        let pending: Vec<TileId> = self.pending_column_reflow.drain().collect();
+        crate::perf::event(|| format!("column_reflow.flush panes={}", pending.len()));
+        for pane_id in pending {
+            self.notify_pane(pane_id, cx);
+        }
+    }
+
     /// Notify only the signal entity for `pane_id`. The `PaneContentView` for that
     /// pane observes this signal, so only it re-renders — not every other pane.
     pub(crate) fn notify_pane(&self, pane_id: TileId, cx: &mut gpui::Context<Self>) {

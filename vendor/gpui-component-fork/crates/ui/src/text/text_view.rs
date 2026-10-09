@@ -1,3 +1,4 @@
+use gpui::AppContext;
 use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder as _;
@@ -8,7 +9,6 @@ use gpui::{
     Window, div,
 };
 
-use crate::StyledExt;
 use crate::scroll::{AutoScroll, ScrollableElement};
 use crate::text::TextViewFormat;
 use crate::text::node::CodeBlock;

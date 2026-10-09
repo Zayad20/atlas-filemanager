@@ -7,7 +7,7 @@ use gpui::{
     StyleRefinement, Styled, TextAlign, actions, prelude::FluentBuilder as _,
 };
 
-use crate::{Disableable, IconName, Sizable, Size, StyledExt as _, button::Button, h_flex};
+use crate::{Disableable, IconName, Sizable, Size, button::Button, h_flex};
 
 use super::{Input, InputState};
 

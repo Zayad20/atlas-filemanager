@@ -13,7 +13,7 @@ use crate::ui::drag_hover::{
     drag_hover_recorder, drag_hover_recorder_with_drop, sidebar_scroll_recorder, DragHoverCommand,
     DragHoverDropCommand, DragHoverId, DragHoverKind,
 };
-use crate::ui::glass::{glass_chip_fill, glass_fill, layer_color, GlassExt};
+use crate::ui::glass::{control_colors, control_hover, layer_color, GlassExt};
 use crate::ui::icons::{atlas_logo, file_type_icon, icon, is_windows_theme, theme_icon, AtlasIcon};
 use crate::ui::root::DraggedFiles;
 #[cfg(all(feature = "provider-host", windows))]
@@ -30,6 +30,7 @@ use atlas_model::location::Location;
 use atlas_model::profiles::{SectionKind, SidebarSection};
 use atlas_model::tag_cache::TagId;
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{
     auto, div, hsla, img, point, px, relative, Anchor, AnimationExt, AnyElement, App, Context,
     Entity, EventEmitter, FocusHandle, Focusable, Hsla, MouseButton, MouseDownEvent, RenderOnce,
@@ -129,6 +130,9 @@ fn sidebar_fingerprint(app: &AtlasApp) -> u64 {
 
     state.settings.sidebar_collapsed.hash(&mut hasher);
     state.settings.scroll_smoothness.to_bits().hash(&mut hasher);
+    state.settings.glass_opacity.to_bits().hash(&mut hasher);
+    dropzone_drag_over(app).hash(&mut hasher);
+    app.drag_hover_maybe_active().hash(&mut hasher);
     state.profiles.active_idx.hash(&mut hasher);
 
     for profile in &state.profiles.profiles {
@@ -219,8 +223,8 @@ fn profile_menu_panel(
     let border = cx.theme().border;
     let accent = cx.theme().accent;
     let accent_fg = cx.theme().accent_foreground;
-    let hover = hsla(0., 0., 1., 0.08);
-    let action_hover = hsla(0., 0., 1., 0.12);
+    let hover = control_hover(fg);
+    let action_hover = fg.opacity(0.12);
     let danger = hsla(0., 0.72, 0.52, 1.0);
 
     let menu_app = app.clone();
@@ -530,7 +534,7 @@ fn atlas_launcher_content(
     let border = cx.theme().border;
     let accent = cx.theme().accent;
     let accent_fg = cx.theme().accent_foreground;
-    let hover = hsla(0., 0., 1., 0.08);
+    let hover = control_hover(fg);
 
     let colors = MenuColors {
         fg,
@@ -555,7 +559,7 @@ fn atlas_launcher_content(
         .text_color(fg)
         .occlude()
         .gap(crate::ui::rem_px(2.))
-        .on_prepaint({
+        .on_prepaint_child({
             let anchor_app = app.clone();
             move |bounds, _window, cx| {
                 if let Some(app) = anchor_app.upgrade() {
@@ -924,22 +928,23 @@ impl Render for SidebarPanel {
         let Some(app) = self.app.upgrade() else {
             return div().into_any_element();
         };
-        let (fg, muted, accent, sidebar_bg) = {
+        // Replace geometry only when this retained view rebuilds. App renders
+        // alone must preserve the dropzone's occlusion and selection rectangles.
+        app.update(cx, |this, _| {
+            this.dropzone_rects.clear();
+            this.pending_drag_hover_targets.retain(|target| !matches!(target.id, DragHoverId::Sidebar(_)));
+        });
+        let (fg, muted, accent) = {
             let t = cx.theme();
-            (t.foreground, t.muted_foreground, t.accent, t.sidebar)
+            (t.foreground, t.muted_foreground, t.accent)
         };
         let active_theme = app.read(cx).state.profiles.active().theme.clone();
         let (smooth_ease, smooth_boost) =
             crate::app::scroll_smooth_params(app.read(cx).state.settings.scroll_smoothness);
         self.scroll.set_smooth(smooth_ease, smooth_boost);
         let windows_theme = is_windows_theme(&active_theme);
-        let figma_glass = active_theme == "Atlas Figma Glass";
-        // Subtle fills tuned for the light glass surface (Figma item states).
-        let hover = if figma_glass {
-            glass_chip_fill().opacity(0.26)
-        } else {
-            layer_color(sidebar_bg, 0.04, 0.18)
-        };
+        let is_glass = active_theme.ends_with(" Glass");
+        let hover = control_hover(fg);
         let active_bg = layer_color(accent, 0.0, 0.10);
         let style = SidebarStyle {
             hover,
@@ -978,8 +983,8 @@ impl Render for SidebarPanel {
                 fg,
                 muted,
                 bg: launcher_bg,
-                hover: hsla(0., 0., 1., 0.075),
-                active: hsla(0., 0., 1., 0.065),
+                hover,
+                active: fg.opacity(0.12),
             })
             .content({
                 let app = app.downgrade();
@@ -1008,6 +1013,7 @@ impl Render for SidebarPanel {
             };
             div()
                 .id("sidebar-collapse-toggle")
+                .block_mouse_except_scroll()
                 .size(crate::ui::rem_px(30.))
                 .flex_none()
                 .flex()
@@ -1015,7 +1021,7 @@ impl Render for SidebarPanel {
                 .justify_center()
                 .rounded(px(9.))
                 .bg(hsla(0., 0., 1., 0.0))
-                .hover(|s| s.bg(hsla(0., 0., 1., 0.055)).text_color(fg))
+                .hover(move |s| s.bg(hover).text_color(fg))
                 .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
                 .child(icon(AtlasIcon::SidebarSimple, 16.0, muted))
                 .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
@@ -1032,7 +1038,11 @@ impl Render for SidebarPanel {
                 .pb(crate::ui::rem_px(8.))
                 .items_center()
                 .justify_center()
-                .child(atlas_launcher_popover)
+                .child(
+                    div()
+                        .block_mouse_except_scroll()
+                        .child(atlas_launcher_popover),
+                )
                 .into_any_element()
         } else {
             h_flex()
@@ -1044,7 +1054,13 @@ impl Render for SidebarPanel {
                 // content width — without it, a long profile name grows the whole
                 // row past the sidebar and gets hard-clipped upstream instead of
                 // eliding via the trigger's own `.truncate()`.
-                .child(div().flex_1().min_w(px(0.)).child(atlas_launcher_popover))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .block_mouse_except_scroll()
+                        .child(atlas_launcher_popover),
+                )
                 .child(collapse_button)
                 .into_any_element()
         };
@@ -1052,7 +1068,6 @@ impl Render for SidebarPanel {
             .size_full()
             .p_2()
             .gap(crate::ui::rem_px(if windows_theme { 3.0 } else { 4.0 }))
-            .when(figma_glass, |s| s.bg(glass_fill()).rounded(px(12.0)))
             .text_color(fg)
             .text_sm()
             .child(atlas_header)
@@ -1217,7 +1232,7 @@ impl Render for SidebarPanel {
                 .id("sidebar-scroll")
                 .size_full()
                 .relative()
-                .on_prepaint(sidebar_scroll_recorder(app.clone(), self.scroll.clone()))
+                .on_prepaint_child(sidebar_scroll_recorder(app.clone(), self.scroll.clone()))
                 .child(
                     col.id("sidebar-scroll-content")
                         .size_full()
@@ -1297,7 +1312,8 @@ impl Render for SidebarPanel {
             .flex_1()
             .min_h(px(0.))
             .relative()
-            .on_prepaint(sidebar_scroll_recorder(app.clone(), self.scroll.clone()))
+            .overflow_hidden()
+            .on_prepaint_child(sidebar_scroll_recorder(app.clone(), self.scroll.clone()))
             .child(
                 col.id("sidebar-scroll-content")
                     .size_full()
@@ -1305,9 +1321,24 @@ impl Render for SidebarPanel {
                     .track_scroll(&self.scroll)
                     .pr(crate::ui::rem_px(SCROLLBAR_GUTTER)),
             )
+            // The scrollbar paints above this gutter. Protect its track from
+            // native caption dragging without blocking the scroll container.
+            .child(
+                div()
+                    .absolute()
+                    .right_0()
+                    .top_0()
+                    .w(crate::ui::rem_px(SCROLLBAR_GUTTER))
+                    .h_full()
+                    .block_mouse_except_scroll(),
+            )
             .vertical_scrollbar(&self.scroll);
 
         if sidebar_collapsed {
+            app.update(cx, |this, _| {
+                this.dropzone_bounds = None;
+                this.dropzone_rects.clear();
+            });
             return scroll.size_full().into_any_element();
         }
 
@@ -1336,11 +1367,19 @@ impl Render for SidebarPanel {
                 muted,
                 hover,
                 windows_theme,
-                figma_glass,
+                is_glass,
                 cx,
             ))
             .into_any_element()
     }
+}
+
+fn dropzone_drag_over(app: &AtlasApp) -> bool {
+    app.drag_hover_maybe_active()
+        && app
+            .dropzone_bounds
+            .zip(app.drag_hover.cursor)
+            .is_some_and(|(bounds, cursor)| bounds.contains(&cursor))
 }
 
 fn sidebar_drop_zone(
@@ -1353,7 +1392,7 @@ fn sidebar_drop_zone(
     muted: Hsla,
     hover: Hsla,
     windows_theme: bool,
-    figma_glass: bool,
+    is_glass: bool,
     cx: &mut Context<SidebarPanel>,
 ) -> impl IntoElement {
     let count = staged.len();
@@ -1398,26 +1437,34 @@ fn sidebar_drop_zone(
             selected.contains(&item.path),
         ));
     }
-    let drop_bg = layer_color(cx.theme().sidebar, 0.04, 0.18);
-    let drop_base = hsla(0., 0., 0.149, if figma_glass { 0.20 } else { 0.0 });
-    let drop_veil = hsla(0., 0., 1., if figma_glass { 0.67 } else { 0.0 });
-    let drop_border = cx
-        .theme()
-        .border
-        .opacity(if figma_glass { 0.36 } else { 0.50 });
+    let controls = control_colors(cx.theme(), is_glass);
+    let drop_bg = cx.theme().foreground.opacity(0.025);
+    let drag_over = dropzone_drag_over(app.read(cx));
     let action_color = muted.opacity(0.82);
+    let can_place = count > 0 && current_path.is_some();
     let app_start_rubber = app.clone();
     let app_record_bounds = app.clone();
 
     div()
         .id("sidebar-drop-zone")
         .relative()
+        .flex_shrink_0()
         .w(auto())
-        .h(crate::ui::rem_px(if count == 0 { 96.0 } else { 148.0 }))
+        .h(crate::ui::rem_px(if count == 0 { 88.0 } else { 144.0 }))
         .mx(crate::ui::rem_px(8.))
-        .mt(crate::ui::rem_px(4.))
-        .mb(crate::ui::rem_px(6.))
+        .my(crate::ui::rem_px(6.))
+        .p(crate::ui::rem_px(10.))
         .overflow_hidden()
+        .rounded(px(12.))
+        .bg(if drag_over {
+            accent.opacity(0.12)
+        } else {
+            drop_bg
+        })
+        .on_drag_over::<DraggedFiles>(move |s, _, _, _| s.bg(accent.opacity(0.12)))
+        .on_drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(accent.opacity(0.12)))
+        .occlude()
+        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, window, cx| {
             cx.stop_propagation();
             let additive = ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift;
@@ -1427,12 +1474,12 @@ fn sidebar_drop_zone(
                 cx.notify();
             });
         })
-        .on_prepaint(move |bounds, _window, cx| {
+        .on_prepaint_child(move |bounds, _window, cx| {
             app_record_bounds.update(cx, |this, _cx| {
                 this.dropzone_bounds = Some(bounds);
             });
         })
-        .on_prepaint(move |_bounds, _window, cx| {
+        .on_prepaint_child(move |_bounds, _window, cx| {
             app_prime.update(cx, |this, _cx| {
                 prime_drop_zone_thumbnails(this, &staged_paths, windows_theme)
             });
@@ -1445,9 +1492,6 @@ fn sidebar_drop_zone(
                 .child(
                     h_flex()
                         .w_full()
-                        .px_2()
-                        .pt(crate::ui::rem_px(12.))
-                        .pb(crate::ui::rem_px(4.))
                         .gap_1()
                         .items_center()
                         .text_color(muted)
@@ -1457,20 +1501,27 @@ fn sidebar_drop_zone(
                         .child(
                             div()
                                 .id("sidebar-drop-zone-place")
-                                .size(crate::ui::rem_px(22.))
+                                .size(crate::ui::rem_px(24.))
                                 .flex()
                                 .items_center()
                                 .justify_center()
                                 .rounded(px(6.))
                                 .text_color(action_color)
-                                .cursor_pointer()
-                                .hover(move |s| s.bg(hover).text_color(fg))
+                                .when(count == 0, |s| s.invisible())
+                                .when(can_place, |s| {
+                                    s.cursor_pointer()
+                                        .hover(move |s| s.bg(controls.hover).text_color(fg))
+                                })
+                                .when(count > 0 && !can_place, |s| s.opacity(0.4))
                                 .tooltip(move |window, cx| {
                                     Tooltip::new(place_tip.clone()).build(window, cx)
                                 })
                                 .child(icon(AtlasIcon::ArrowUp, 14.0, action_color))
                                 .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
                                     cx.stop_propagation();
+                                    if !can_place {
+                                        return;
+                                    }
                                     let Some(dest) = dest.clone() else {
                                         return;
                                     };
@@ -1483,14 +1534,14 @@ fn sidebar_drop_zone(
                         .child(
                             div()
                                 .id("sidebar-drop-zone-clear")
-                                .size(crate::ui::rem_px(22.))
+                                .size(crate::ui::rem_px(24.))
                                 .flex()
                                 .items_center()
                                 .justify_center()
                                 .rounded(px(6.))
                                 .text_color(action_color)
                                 .when(count == 0, |s| s.invisible())
-                                .hover(move |s| s.bg(hover).text_color(fg))
+                                .hover(move |s| s.bg(controls.hover).text_color(fg))
                                 .tooltip(move |window, cx| {
                                     Tooltip::new(clear_tip.clone()).build(window, cx)
                                 })
@@ -1501,6 +1552,8 @@ fn sidebar_drop_zone(
                                         this.state.sidebar_drop_zone.clear();
                                         this.dropzone_selected.clear();
                                         this.dropzone_rects.clear();
+                                        this.dropzone_pending_tags.clear();
+                                        this.cancel_dropzone_file_drag();
                                         cx.notify();
                                     });
                                 }),
@@ -1513,15 +1566,7 @@ fn sidebar_drop_zone(
                             .relative()
                             .items_center()
                             .justify_center()
-                            .px_2()
                             .gap(crate::ui::rem_px(6.))
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_dashed()
-                            .border_color(drop_border)
-                            .bg(drop_bg)
-                            .child(div().absolute().inset_0().bg(drop_base))
-                            .child(div().absolute().inset_0().bg(drop_veil))
                             .text_xs()
                             .text_color(muted)
                             .child(div().flex_none().child(icon(
@@ -1544,14 +1589,6 @@ fn sidebar_drop_zone(
                             .w_full()
                             .flex_1()
                             .relative()
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_dashed()
-                            .border_color(drop_border)
-                            .bg(drop_bg)
-                            .child(div().absolute().inset_0().bg(drop_base))
-                            .child(div().absolute().inset_0().bg(drop_veil))
-                            .p(crate::ui::rem_px(6.))
                             .overflow_x_scrollbar()
                             .child(grid),
                     )
@@ -1566,6 +1603,7 @@ fn sidebar_drop_zone(
                 );
                 cx.notify();
             });
+            cx.stop_propagation();
         })
         .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
             app_drop_ext.update(cx, |this, cx| {
@@ -1576,6 +1614,7 @@ fn sidebar_drop_zone(
                 );
                 cx.notify();
             });
+            cx.stop_propagation();
         })
 }
 
@@ -1668,7 +1707,7 @@ fn drop_zone_item(
         .cursor_pointer()
         .when(selected, |s| s.bg(accent.opacity(0.18)))
         .when(!selected, |s| s.hover(move |s| s.bg(hover)))
-        .on_prepaint(move |bounds, _window, cx| {
+        .on_prepaint_child(move |bounds, _window, cx| {
             app_record_item.update(cx, |this, _cx| {
                 if let Some((_, old)) = this
                     .dropzone_rects
@@ -1740,6 +1779,7 @@ fn drop_zone_item(
                         {
                             this.state.sidebar_drop_zone.remove(pos);
                             this.dropzone_selected.remove(&remove_path);
+                            this.dropzone_pending_tags.remove(&remove_path);
                             this.dropzone_rects.retain(|(path, _)| path != &remove_path);
                         }
                         cx.notify();
@@ -1836,48 +1876,12 @@ fn sidebar_drop_drag_paths(app: &AtlasApp, path: &std::path::Path) -> Vec<PathBu
 }
 
 fn place_sidebar_drop_zone(app: &mut AtlasApp, dest: PathBuf) {
-    use atlas_model::ops::{ConflictPolicy, TransferKind, TransferOrigin, TransferRequest};
-
-    let staged = std::mem::take(&mut app.state.sidebar_drop_zone);
-    app.dropzone_selected.clear();
-    app.dropzone_rects.clear();
-    let (internal, external): (Vec<_>, Vec<_>) =
-        staged.into_iter().partition(|item| item.from_self);
-    let internal = internal
-        .into_iter()
-        .map(|item| item.path)
-        .collect::<Vec<_>>();
-    let external = external
-        .into_iter()
-        .map(|item| item.path)
-        .collect::<Vec<_>>();
-    let mut actions = Vec::new();
-    if !internal.is_empty() {
-        let effect = crate::dnd::default_effect_for_paths(&internal, &dest);
-        actions.push(Action::Transfer(TransferRequest {
-            sources: internal,
-            target_names: None,
-            dest: dest.clone(),
-            kind: if effect.is_move() {
-                TransferKind::Move
-            } else {
-                TransferKind::Copy
-            },
-            policy: ConflictPolicy::Ask,
-            origin: TransferOrigin::DndInternal,
-        }));
+    let paths = app.state.sidebar_drop_zone.iter().map(|item| item.path.clone()).collect::<Vec<_>>();
+    if !paths.is_empty() {
+        // One request means one conflict dialog, including mixed-origin shelves.
+        // Completion removes only the sources that actually transferred.
+        app.execute_drag_hover_drop_command(DragHoverDropCommand::TransferTo(dest), paths, true);
     }
-    if !external.is_empty() {
-        actions.push(Action::Transfer(TransferRequest {
-            sources: external,
-            target_names: None,
-            dest,
-            kind: TransferKind::Copy,
-            policy: ConflictPolicy::Ask,
-            origin: TransferOrigin::DndExternal,
-        }));
-    }
-    app.process_actions(actions);
 }
 
 /// A 16px Phosphor icon (`icons/ph/<name>.svg`), tinted with `color`.
@@ -2187,6 +2191,23 @@ fn collapsed_divider() -> impl IntoElement {
         .bg(hsla(0., 0., 1., 0.08))
 }
 
+fn is_sidebar_drop_allowed(
+    app: &Entity<AtlasApp>,
+    pos: gpui::Point<gpui::Pixels>,
+    cx: &gpui::App,
+) -> bool {
+    let app_ref = app.read(cx);
+    if app_ref.dropzone_bounds.is_some_and(|b| b.contains(&pos)) {
+        return false;
+    }
+    if let Some((scroll_bounds, _)) = app_ref.sidebar_scroll_region {
+        if !scroll_bounds.contains(&pos) {
+            return false;
+        }
+    }
+    true
+}
+
 fn collapsed_nav_row(
     id: SharedString,
     label: String,
@@ -2219,12 +2240,18 @@ fn collapsed_nav_row(
     let icon_color = if active {
         accent
     } else {
-        hsla(fg.h, fg.s, fg.l, 0.84)
+        hsla(
+            (fg.hue.into_positive_degrees() / 360.0),
+            fg.saturation,
+            fg.lightness,
+            0.84,
+        )
     };
     h_flex()
         .id(id)
         .w_full()
         .h(crate::ui::rem_px(32.))
+        .block_mouse_except_scroll()
         .items_center()
         .justify_center()
         .rounded(px(9.))
@@ -2239,7 +2266,7 @@ fn collapsed_nav_row(
                 .into_any_element(),
             None => theme_icon(ph_icon(icon_name), 17.0, icon_color, windows_theme),
         })
-        .on_prepaint(move |_bounds, _window, cx| {
+        .on_prepaint_child(move |_bounds, _window, cx| {
             #[cfg(target_os = "windows")]
             if windows_theme {
                 shell_app.update(cx, |this, _cx| {
@@ -2247,14 +2274,17 @@ fn collapsed_nav_row(
                 });
             }
         })
-        .on_prepaint(drag_hover_recorder_with_drop(
+        .on_prepaint_child(drag_hover_recorder_with_drop(
             hover_id,
             DragHoverKind::Folder,
             DragHoverCommand::NavigatePath(path.clone()),
             DragHoverDropCommand::TransferTo(path.clone()),
             &app,
         ))
-        .on_drop::<DraggedFiles>(move |d, _window, cx| {
+        .on_drop::<DraggedFiles>(move |d, window, cx| {
+            if !is_sidebar_drop_allowed(&drop_app, window.mouse_position(), cx) {
+                return;
+            }
             let paths = d.paths.clone();
             drop_app.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
@@ -2265,7 +2295,10 @@ fn collapsed_nav_row(
                 cx.notify();
             });
         })
-        .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
+        .on_drop::<gpui::ExternalPaths>(move |paths, window, cx| {
+            if !is_sidebar_drop_allowed(&drop_app_external, window.mouse_position(), cx) {
+                return;
+            }
             let paths = paths.paths().to_vec();
             drop_app_external.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
@@ -2319,12 +2352,18 @@ fn collapsed_virtual_nav_row(
     let icon_color = if active {
         accent
     } else {
-        hsla(fg.h, fg.s, fg.l, 0.84)
+        hsla(
+            (fg.hue.into_positive_degrees() / 360.0),
+            fg.saturation,
+            fg.lightness,
+            0.84,
+        )
     };
     h_flex()
         .id(id)
         .w_full()
         .h(crate::ui::rem_px(32.))
+        .block_mouse_except_scroll()
         .items_center()
         .justify_center()
         .rounded(px(9.))
@@ -2337,7 +2376,7 @@ fn collapsed_virtual_nav_row(
             None => theme_icon(ph_icon(icon_name), 17.0, icon_color, windows_theme),
         })
         .when(request_recycle_icon, |row| {
-            row.on_prepaint(move |_bounds, _window, cx| {
+            row.on_prepaint_child(move |_bounds, _window, cx| {
                 recycle_icon_app.update(cx, |this, _cx| {
                     this.request_shell_recycle_bin_icon();
                 });
@@ -2347,7 +2386,7 @@ fn collapsed_virtual_nav_row(
             // Recycle Bin row doubles as a drop target: files dropped on it go
             // to the OS trash instead of just spring-navigating.
             if loc == Location::RecycleBin {
-                row.on_prepaint(drag_hover_recorder_with_drop(
+                row.on_prepaint_child(drag_hover_recorder_with_drop(
                     hover_id,
                     DragHoverKind::Nav,
                     DragHoverCommand::NavigateLocation(loc.clone()),
@@ -2355,7 +2394,7 @@ fn collapsed_virtual_nav_row(
                     &app,
                 ))
             } else {
-                row.on_prepaint(drag_hover_recorder(
+                row.on_prepaint_child(drag_hover_recorder(
                     hover_id,
                     DragHoverKind::Nav,
                     DragHoverCommand::NavigateLocation(loc.clone()),
@@ -2387,6 +2426,7 @@ fn collapsed_tag_row(
     let hover_id = DragHoverId::Sidebar(format!("rail-tag-{}", id.0));
     h_flex()
         .id(SharedString::from(format!("rail-tag-{}", id.0)))
+        .block_mouse_except_scroll()
         .w_full()
         .h(crate::ui::rem_px(32.))
         .items_center()
@@ -2402,7 +2442,7 @@ fn collapsed_tag_row(
                 .bg(rgb)
                 .shadow_sm(),
         )
-        .on_prepaint(drag_hover_recorder_with_drop(
+        .on_prepaint_child(drag_hover_recorder_with_drop(
             hover_id,
             DragHoverKind::Nav,
             DragHoverCommand::OpenTag(id),
@@ -2411,7 +2451,10 @@ fn collapsed_tag_row(
         ))
         .on_drop::<DraggedFiles>({
             let app = app.clone();
-            move |d, _window, cx| {
+            move |d, window, cx| {
+                if !is_sidebar_drop_allowed(&app, window.mouse_position(), cx) {
+                    return;
+                }
                 let paths = d.paths.clone();
                 app.update(cx, |this, cx| {
                     this.process_actions(vec![Action::AssignTagToFiles { tag: id, paths }]);
@@ -2421,7 +2464,10 @@ fn collapsed_tag_row(
         })
         .on_drop::<gpui::ExternalPaths>({
             let app = app.clone();
-            move |paths, _window, cx| {
+            move |paths, window, cx| {
+                if !is_sidebar_drop_allowed(&app, window.mouse_position(), cx) {
+                    return;
+                }
                 let paths = paths.paths().to_vec();
                 app.update(cx, |this, cx| {
                     this.process_actions(vec![Action::AssignTagToFiles { tag: id, paths }]);
@@ -2498,6 +2544,7 @@ fn collapsed_cloud_remote_row(
         .id(id)
         .w_full()
         .h(crate::ui::rem_px(32.))
+        .block_mouse_except_scroll()
         .items_center()
         .justify_center()
         .rounded(px(9.))
@@ -2511,11 +2558,16 @@ fn collapsed_cloud_remote_row(
             if is_mounted {
                 accent
             } else {
-                hsla(fg.h, fg.s, fg.l, 0.84)
+                hsla(
+                    (fg.hue.into_positive_degrees() / 360.0),
+                    fg.saturation,
+                    fg.lightness,
+                    0.84,
+                )
             },
             windows_theme,
         ))
-        .on_prepaint(drag_hover_recorder(
+        .on_prepaint_child(drag_hover_recorder(
             hover_id,
             DragHoverKind::Nav,
             DragHoverCommand::Process(target.clone()),
@@ -2798,6 +2850,7 @@ fn tag_row(
     let hover_id = DragHoverId::Sidebar(format!("tag-{}", id.0));
     h_flex()
         .id(SharedString::from(format!("tag-{}", id.0)))
+        .block_mouse_except_scroll()
         .group(group.clone())
         .w_full()
         .px_2()
@@ -2850,7 +2903,7 @@ fn tag_row(
                     }),
             )
         })
-        .on_prepaint(drag_hover_recorder_with_drop(
+        .on_prepaint_child(drag_hover_recorder_with_drop(
             hover_id,
             DragHoverKind::Nav,
             DragHoverCommand::OpenTag(id),
@@ -2859,7 +2912,10 @@ fn tag_row(
         ))
         .on_drop::<DraggedFiles>({
             let app = app.clone();
-            move |d, _window, cx| {
+            move |d, window, cx| {
+                if !is_sidebar_drop_allowed(&app, window.mouse_position(), cx) {
+                    return;
+                }
                 let paths = d.paths.clone();
                 app.update(cx, |this, cx| {
                     this.process_actions(vec![Action::AssignTagToFiles { tag: id, paths }]);
@@ -2869,7 +2925,10 @@ fn tag_row(
         })
         .on_drop::<gpui::ExternalPaths>({
             let app = app.clone();
-            move |paths, _window, cx| {
+            move |paths, window, cx| {
+                if !is_sidebar_drop_allowed(&app, window.mouse_position(), cx) {
+                    return;
+                }
                 let paths = paths.paths().to_vec();
                 app.update(cx, |this, cx| {
                     this.process_actions(vec![Action::AssignTagToFiles { tag: id, paths }]);
@@ -2924,13 +2983,19 @@ fn drive_row(
     let drop_path_external = path.clone();
     let id = SharedString::from(format!("drive-{}", drive.mount_point.display()));
     let hover_id = DragHoverId::Sidebar(format!("drive-{}", drive.mount_point.display()));
-    let icon_color = hsla(fg.h, fg.s, fg.l, 0.85);
+    let icon_color = hsla(
+        (fg.hue.into_positive_degrees() / 360.0),
+        fg.saturation,
+        fg.lightness,
+        0.85,
+    );
     let drop_app = app.clone();
     let drop_app_external = app.clone();
     let shell_path = path.clone();
     let shell_app = app.clone();
     let row = v_flex()
         .id(id)
+        .block_mouse_except_scroll()
         .w_full()
         .px_2()
         .py(crate::ui::rem_px(if windows_theme { 6.0 } else { 4.0 }))
@@ -2990,7 +3055,7 @@ fn drive_row(
                     ),
             )
         })
-        .on_prepaint(move |_bounds, _window, cx| {
+        .on_prepaint_child(move |_bounds, _window, cx| {
             #[cfg(target_os = "windows")]
             if windows_theme {
                 shell_app.update(cx, |this, _cx| {
@@ -2998,14 +3063,17 @@ fn drive_row(
                 });
             }
         })
-        .on_prepaint(drag_hover_recorder_with_drop(
+        .on_prepaint_child(drag_hover_recorder_with_drop(
             hover_id,
             DragHoverKind::Folder,
             DragHoverCommand::NavigatePath(path.clone()),
             DragHoverDropCommand::TransferTo(path.clone()),
             &app,
         ))
-        .on_drop::<DraggedFiles>(move |d, _window, cx| {
+        .on_drop::<DraggedFiles>(move |d, window, cx| {
+            if !is_sidebar_drop_allowed(&drop_app, window.mouse_position(), cx) {
+                return;
+            }
             let paths = d.paths.clone();
             drop_app.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
@@ -3016,7 +3084,10 @@ fn drive_row(
                 cx.notify();
             });
         })
-        .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
+        .on_drop::<gpui::ExternalPaths>(move |paths, window, cx| {
+            if !is_sidebar_drop_allowed(&drop_app_external, window.mouse_position(), cx) {
+                return;
+            }
             let paths = paths.paths().to_vec();
             drop_app_external.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
@@ -3094,6 +3165,7 @@ fn section_header(
     let menu_collapsed = section.collapsed;
     h_flex()
         .id(SharedString::from(format!("sidebar-section-{idx}")))
+        .block_mouse_except_scroll()
         .w_full()
         .mt(crate::ui::rem_px(10.))
         .px_2()
@@ -3232,12 +3304,18 @@ fn nav_row(
         accent
     } else {
         // Slightly dimmed icon for inactive rows (Figma: ~85% ink).
-        hsla(fg.h, fg.s, fg.l, 0.85)
+        hsla(
+            (fg.hue.into_positive_degrees() / 360.0),
+            fg.saturation,
+            fg.lightness,
+            0.85,
+        )
     };
     h_flex()
         .id(id)
         .w_full()
         .h(crate::ui::rem_px(if windows_theme { 30.0 } else { 24.0 }))
+        .block_mouse_except_scroll()
         .px_2()
         .gap(crate::ui::rem_px(if windows_theme { 10.0 } else { 8.0 }))
         .items_center()
@@ -3261,7 +3339,7 @@ fn nav_row(
             ),
         })
         .child(div().flex_1().truncate().child(SharedString::from(label)))
-        .on_prepaint(move |_bounds, _window, cx| {
+        .on_prepaint_child(move |_bounds, _window, cx| {
             #[cfg(target_os = "windows")]
             if windows_theme {
                 shell_app.update(cx, |this, _cx| {
@@ -3269,14 +3347,17 @@ fn nav_row(
                 });
             }
         })
-        .on_prepaint(drag_hover_recorder_with_drop(
+        .on_prepaint_child(drag_hover_recorder_with_drop(
             hover_id,
             DragHoverKind::Folder,
             DragHoverCommand::NavigatePath(path.clone()),
             DragHoverDropCommand::TransferTo(path.clone()),
             &app,
         ))
-        .on_drop::<DraggedFiles>(move |d, _window, cx| {
+        .on_drop::<DraggedFiles>(move |d, window, cx| {
+            if !is_sidebar_drop_allowed(&drop_app, window.mouse_position(), cx) {
+                return;
+            }
             let paths = d.paths.clone();
             drop_app.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
@@ -3287,7 +3368,10 @@ fn nav_row(
                 cx.notify();
             });
         })
-        .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
+        .on_drop::<gpui::ExternalPaths>(move |paths, window, cx| {
+            if !is_sidebar_drop_allowed(&drop_app_external, window.mouse_position(), cx) {
+                return;
+            }
             let paths = paths.paths().to_vec();
             drop_app_external.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
@@ -3343,12 +3427,18 @@ fn virtual_nav_row(
     let icon_color = if active {
         accent
     } else {
-        hsla(fg.h, fg.s, fg.l, 0.85)
+        hsla(
+            (fg.hue.into_positive_degrees() / 360.0),
+            fg.saturation,
+            fg.lightness,
+            0.85,
+        )
     };
     h_flex()
         .id(id)
         .w_full()
         .h(crate::ui::rem_px(if windows_theme { 30.0 } else { 24.0 }))
+        .block_mouse_except_scroll()
         .px_2()
         .gap(crate::ui::rem_px(if windows_theme { 10.0 } else { 8.0 }))
         .items_center()
@@ -3372,7 +3462,7 @@ fn virtual_nav_row(
             ),
         })
         .when(request_recycle_icon, |row| {
-            row.on_prepaint(move |_bounds, _window, cx| {
+            row.on_prepaint_child(move |_bounds, _window, cx| {
                 recycle_icon_app.update(cx, |this, _cx| {
                     this.request_shell_recycle_bin_icon();
                 });
@@ -3382,7 +3472,7 @@ fn virtual_nav_row(
         .map(|row| {
             // Recycle Bin row doubles as a drop target (drop = send to trash).
             if loc == Location::RecycleBin {
-                row.on_prepaint(drag_hover_recorder_with_drop(
+                row.on_prepaint_child(drag_hover_recorder_with_drop(
                     hover_id,
                     DragHoverKind::Nav,
                     DragHoverCommand::NavigateLocation(loc.clone()),
@@ -3390,7 +3480,7 @@ fn virtual_nav_row(
                     &app,
                 ))
             } else {
-                row.on_prepaint(drag_hover_recorder(
+                row.on_prepaint_child(drag_hover_recorder(
                     hover_id,
                     DragHoverKind::Nav,
                     DragHoverCommand::NavigateLocation(loc.clone()),
@@ -3454,13 +3544,13 @@ fn cloud_remote_row(
     };
 
     let is_mounted = matches!(status, RemoteStatus::Mounted(_));
-    // A mounted remote has a real local path, so files can be dropped onto it like
-    // any folder. Unmounted remotes stay hover-to-browse only (no transfer target).
+    // Mounted remotes use their filesystem path; Access remotes upload to root.
     let mount_path = match &status {
         RemoteStatus::Mounted(p) => Some(p.clone()),
         _ => None,
     };
     let is_busy = matches!(status, RemoteStatus::Connecting | RemoteStatus::Mounting);
+    let drop_dest = (!is_busy).then(|| mount_path.clone().unwrap_or_else(|| crate::app::cloud::remote_sentinel(&id, "")));
     let hover_action = if is_busy {
         None
     } else if is_mounted {
@@ -3469,11 +3559,17 @@ fn cloud_remote_row(
         Some(Action::Cloud(CloudAction::OpenAccess(id.clone())))
     };
     let hover_id = DragHoverId::Sidebar(format!("cloud-remote-{id}"));
-    let icon_color = hsla(fg.h, fg.s, fg.l, 0.85);
+    let icon_color = hsla(
+        (fg.hue.into_positive_degrees() / 360.0),
+        fg.saturation,
+        fg.lightness,
+        0.85,
+    );
     let app = app.clone();
 
     h_flex()
         .id(SharedString::from(format!("cloud-remote-{id}")))
+        .block_mouse_except_scroll()
         .w_full()
         .h(crate::ui::rem_px(24.))
         .px_2()
@@ -3495,16 +3591,15 @@ fn cloud_remote_row(
             )
         })
         .when_some(hover_action.clone(), |row, action| {
-            // Mounted: hover-browse + accept drops to the mount path. Otherwise hover only.
-            match mount_path.clone() {
-                Some(dest) => row.on_prepaint(drag_hover_recorder_with_drop(
+            match drop_dest.clone() {
+                Some(dest) => row.on_prepaint_child(drag_hover_recorder_with_drop(
                     hover_id,
                     DragHoverKind::Nav,
                     DragHoverCommand::Process(action),
                     DragHoverDropCommand::TransferTo(dest),
                     &app,
                 )),
-                None => row.on_prepaint(drag_hover_recorder(
+                None => row.on_prepaint_child(drag_hover_recorder(
                     hover_id,
                     DragHoverKind::Nav,
                     DragHoverCommand::Process(action),
@@ -3512,12 +3607,15 @@ fn cloud_remote_row(
                 )),
             }
         })
-        .when_some(mount_path.clone(), |row, dest| {
+        .when_some(drop_dest.clone(), |row, dest| {
             let drop_dest = dest.clone();
             let drop_dest_ext = dest;
             let drop_app = app.clone();
             let drop_app_ext = app.clone();
-            row.on_drop::<DraggedFiles>(move |d, _window, cx| {
+            row.on_drop::<DraggedFiles>(move |d, window, cx| {
+                if !is_sidebar_drop_allowed(&drop_app, window.mouse_position(), cx) {
+                    return;
+                }
                 let paths = d.paths.clone();
                 drop_app.update(cx, |this, cx| {
                     this.execute_drag_hover_drop_command(
@@ -3528,7 +3626,10 @@ fn cloud_remote_row(
                     cx.notify();
                 });
             })
-            .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
+            .on_drop::<gpui::ExternalPaths>(move |paths, window, cx| {
+                if !is_sidebar_drop_allowed(&drop_app_ext, window.mouse_position(), cx) {
+                    return;
+                }
                 let paths = paths.paths().to_vec();
                 drop_app_ext.update(cx, |this, cx| {
                     this.execute_drag_hover_drop_command(
@@ -3646,9 +3747,15 @@ fn add_cloud_row(app: &Entity<AtlasApp>, hover: Hsla, muted: Hsla, fg: Hsla) -> 
     use crate::input::action::Action;
 
     let app = app.clone();
-    let icon_color = hsla(muted.h, muted.s, muted.l, 0.7);
+    let icon_color = hsla(
+        (muted.hue.into_positive_degrees() / 360.0),
+        muted.saturation,
+        muted.lightness,
+        0.7,
+    );
     h_flex()
         .id("cloud-add-row")
+        .block_mouse_except_scroll()
         .w_full()
         .h(crate::ui::rem_px(24.))
         .px_2()

@@ -11,15 +11,16 @@
 use crate::app::App;
 use crate::input::action::Action;
 use crate::ui::drag_hover::drag_hover_layer;
-use crate::ui::glass::{backdrop_tint, glass_sidebar_fill, GlassExt};
-use crate::ui::icons::{icon, is_windows_theme, AtlasIcon};
+use crate::ui::glass::{backdrop_tint, GlassExt};
+use crate::ui::icons::is_windows_theme;
 use crate::ui::interactions::{ctrl_scroll_layer, rubber_layer};
 use atlas_model::pane::TabId;
 use atlas_model::settings::ViewMode;
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{
-    div, hsla, px, AnimationExt, Context, Entity, MouseButton, MouseDownEvent, NavigationDirection,
-    SharedString, Window, WindowControlArea,
+    div, px, Context, Entity, MouseButton, MouseDownEvent, NavigationDirection, SharedString,
+    Window,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 use std::path::PathBuf;
@@ -271,7 +272,6 @@ impl Render for App {
         {
             self.window_resize_suppress_until =
                 Some(std::time::Instant::now() + std::time::Duration::from_millis(180));
-            self.sidebar_width_animation = None;
             // The retained inspector body computes image/text geometry from
             // `Window::viewport_size()`, which is not part of AppState. A
             // window resize is therefore an explicit invalidation even when
@@ -300,12 +300,33 @@ impl Render for App {
             self.miller_row_rects.borrow_mut().clear();
             self.miller_column_bounds.clear();
             self.pane_view_bounds.clear();
-            self.dropzone_rects.clear();
-            self.dropzone_bounds = None;
+            // The sidebar is retained independently. Its geometry stays valid
+            // until SidebarPanel actually rebuilds; clearing it here lets targets
+            // scrolled behind the dropzone receive its clicks and file drops.
         }
         self.dock_linear_bounds.clear();
-        if !self.drag_hover_maybe_active() {
-            self.pending_drag_hover_targets.clear();
+        {
+            // Retained views own their hit geometry. Preserve it across OLE
+            // callbacks and remove targets when their owner stops being visible.
+            let tree = &self.state.pane_tree;
+            let closing = &self.tab_closing;
+            let pane_closing = &self.pane_closing;
+            let sidebar_visible = self.state.settings.show_sidebar && !crate::perf::skip_sidebar();
+            let inspector_visible = self.state.settings.show_inspector && self.preview_visible_for_focused();
+            let breadcrumb_menu_visible = self.breadcrumb_menu.is_some();
+            let visible_panes: std::collections::HashSet<_> = tree.tiles.iter().filter_map(|(_, tile)| {
+                match tile {
+                    atlas_model::layout_tree::Tile::Container(atlas_model::layout_tree::Container::Tabs(tabs)) => tabs.active,
+                    _ => None,
+                }
+            }).collect();
+            crate::ui::drag_hover::retain_visible_drop_targets(
+                &mut self.pending_drag_hover_targets,
+                |tab| matches!(tree.tiles.get(tab), Some(atlas_model::layout_tree::Tile::Pane(_)))
+                    && !closing.contains_key(&tab) && !pane_closing.contains_key(&tab),
+                |tab| visible_panes.contains(&tab),
+                sidebar_visible, inspector_visible, breadcrumb_menu_visible,
+            );
         }
         self.prune_pane_animations();
         self.prune_pane_layout_animations();
@@ -313,22 +334,9 @@ impl Render for App {
         // self-drives its own frames via `with_animation`, so the whole App tree no
         // longer re-renders every animation frame (was the stutter source under many
         // panes). FLIP starts re-trigger a frame from the pane's `on_prepaint`.
-        // Kick closing panes: the active panel view is `.cached()`, so a closing
-        // `FilePanel` won't re-render (and thus won't start its exit `with_animation`)
-        // on an App notify alone. Notify its entity directly; `with_animation` then
-        // self-drives the rest. Cheap: only runs while a pane is mid-close.
-        if !self.pane_closing.is_empty() {
-            let _perf = crate::perf::span_detail("pane_close.notify", || {
-                format!("closing={}", self.pane_closing.len())
-            });
-            crate::perf::count_by("pane_close.notify_count", self.pane_closing.len() as u64);
-            let closing: Vec<_> = self.pane_closing.keys().copied().collect();
-            for id in closing {
-                if let Some(panel) = self.file_panel_cache.get(&id) {
-                    panel.update(cx, |_, cx| cx.notify());
-                }
-            }
-        }
+        // DockHost drives the retained paint clip for closing panes. FilePanel
+        // has no separate exit animation; notifying it here invalidates the
+        // cached pane (and its ancestors) on every close frame.
         // Phase F (Windows): publish last frame's pane drop-zones to the OLE drop
         // target, then clear the vec so this frame re-populates it via on_prepaint.
         // One frame of lag is harmless — layout is stable between frames.
@@ -344,6 +352,18 @@ impl Render for App {
         if self.theme_dirty {
             self.theme_dirty = false;
             self.apply_active_theme(window, cx);
+            // Rebuild retained content after the global palette has been updated.
+            self.notify_all_panes(cx);
+            self.pane_tabs_fp.clear();
+            if let Some(sidebar) = &self.sidebar_panel {
+                sidebar.update(cx, |_, cx| cx.notify());
+            }
+            if let Some(inspector) = &self.inspector_host {
+                inspector.update(cx, |_, cx| cx.notify());
+            }
+            if let Some(dock) = &self.dock_host {
+                dock.update(cx, |_, cx| cx.notify());
+            }
         }
         if let Some((_, _, frames)) = &mut self.rename_visual_suppress {
             *frames = frames.saturating_sub(1);
@@ -401,7 +421,7 @@ impl Render for App {
         }
         // (Rename-profile is now a normal overlay layer rendered by `render_overlays`
         // + focused via the overlay-focus arbiter; no render-time dialog open.)
-        let sidebar_width_dirty = self.sidebar_width_dirty;
+        cx.set_reduce_motion(self.state.settings.disable_animations);
         self.sidebar_width_dirty = false;
         let (fg, _muted, _status_border, root_bg) = {
             let t = cx.theme();
@@ -409,9 +429,11 @@ impl Render for App {
         };
         let active_theme = self.state.profiles.active().theme.as_str();
         let windows_theme = is_windows_theme(active_theme);
-        let windows_glass = active_theme == "Atlas Windows Glass";
-        let figma_glass = active_theme == "Atlas Figma Glass";
-        let glass_theme = active_theme.ends_with(" Glass") || active_theme == "Atlas Frost";
+        let glass_theme = active_theme.ends_with(" Glass");
+        let workspace_inset = px(if glass_theme { 6.0 } else { 3.0 });
+        let caption_height = workspace_inset
+            + crate::ui::rem_px(if windows_theme { 46.0 } else { 34.0 })
+                .to_pixels(window.rem_size());
         let center_content = {
             let _perf = crate::perf::span("app.render.center_dock");
             // Re-assert pane focus every App frame (the dock now lives in its own
@@ -426,6 +448,14 @@ impl Render for App {
             .into_any_element()
         };
         // ATLAS_PERF_SKIP_SIDEBAR=1: omit sidebar build/paint for isolation runs.
+        if !self.state.settings.show_sidebar
+            || self.state.settings.sidebar_collapsed
+            || crate::perf::skip_sidebar()
+        {
+            self.dropzone_bounds = None;
+            self.dropzone_rects.clear();
+        }
+        self.sidebar_width_animating = false;
         let sidebar =
             (self.state.settings.show_sidebar && !crate::perf::skip_sidebar()).then(|| {
                 let target_width = if self.state.settings.sidebar_collapsed {
@@ -437,31 +467,19 @@ impl Render for App {
                 } else {
                     self.state.settings.sidebar_width
                 };
-                if sidebar_width_dirty {
-                    match self.sidebar_render_width {
-                        Some(from)
-                            if !self.state.settings.disable_animations
-                                && !suppress_resize_animations
-                                && (from - target_width).abs() > f32::EPSILON =>
-                        {
-                            self.sidebar_width_animation =
-                                Some(crate::app::SidebarWidthAnimation::new(from, target_width));
-                        }
-                        _ => {
-                            self.sidebar_width_animation = None;
-                        }
-                    }
-                }
-                let width = match self.sidebar_width_animation {
-                    Some(anim) if anim.is_alive() => {
-                        window.request_animation_frame();
-                        anim.width()
-                    }
-                    _ => {
-                        self.sidebar_width_animation = None;
-                        target_width
-                    }
-                };
+                let width_sample = crate::ui::motion::panel_transition(
+                    window,
+                    cx,
+                    "atlas-sidebar-width",
+                    target_width,
+                    target_width,
+                    gpui::spring(900.0, 60.0, 1.0),
+                    self.sidebar_resize.is_some()
+                        || self.state.settings.disable_animations
+                        || suppress_resize_animations,
+                );
+                let width = width_sample.value;
+                self.sidebar_width_animating = width_sample.is_active;
                 self.sidebar_render_width = Some(width);
                 let panel = if let Some(panel) = &self.sidebar_panel {
                     panel.clone()
@@ -487,14 +505,14 @@ impl Render for App {
                     self.sidebar_panel = Some(panel.clone());
                     panel
                 };
-                let panel_bg = if figma_glass {
-                    glass_sidebar_fill()
-                } else if windows_glass {
+                // A hidden sidebar clears its hit geometry. Re-showing a cached
+                // view must record it again before it can accept drops.
+                if !self.state.settings.sidebar_collapsed && self.dropzone_bounds.is_none() {
+                    panel.update(cx, |_, cx| cx.notify());
+                }
+                let is_glass = glass_theme;
+                let panel_bg = if glass_theme || windows_theme {
                     cx.theme().sidebar
-                } else if windows_theme {
-                    hsla(0., 0., 1., 0.20)
-                } else if glass_theme {
-                    cx.theme().sidebar.opacity(0.42)
                 } else {
                     backdrop_tint(cx.theme().secondary, 0.10)
                 };
@@ -503,10 +521,8 @@ impl Render for App {
                     .h_full()
                     .flex_none()
                     .overflow_hidden()
-                    .when(figma_glass, |s| s.glass_surface(panel_bg).shadow_lg())
-                    .when(!figma_glass, |s| {
-                        s.rounded(cx.theme().radius_lg).bg(panel_bg)
-                    });
+                    .when(is_glass, |s| s.glass_surface(panel_bg))
+                    .when(!is_glass, |s| s.rounded(cx.theme().radius_lg).bg(panel_bg));
                 // Keep the expensive sidebar tree, hitboxes, and paint commands
                 // retained while its fingerprint and bounds are unchanged.
                 let panel =
@@ -525,6 +541,7 @@ impl Render for App {
                 .w(px(12.))
                 .h_full()
                 .cursor_col_resize()
+                .block_mouse_except_scroll()
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
@@ -540,15 +557,21 @@ impl Render for App {
 
         // Phase5: inspector panel (right of body) + overlay layers (above root).
         let preview_visible = self.preview_visible_for_focused();
-        let preview_closing = self.preview_panel_closing.is_some_and(|started| {
-            started.elapsed() < std::time::Duration::from_millis(crate::ui::motion::PANEL_MS)
-        });
-        if self.preview_panel_closing.is_some() && !preview_closing {
-            self.preview_panel_closing = None;
-        }
-        if preview_closing {
-            window.request_animation_frame();
-        }
+        let preview_goal = if preview_visible { 1.0 } else { 0.0 };
+        let openness = crate::ui::motion::panel_transition(
+            window,
+            cx,
+            "atlas-preview-openness",
+            0.0,
+            preview_goal,
+            gpui::spring(1100.0, 66.0, 1.0),
+            self.state.settings.disable_animations
+                || suppress_resize_animations
+                || self.inspector_resize.is_some(),
+        );
+        let preview_progress = openness.value.clamp(0.0, 1.0);
+        self.inspector_animating = openness.is_active;
+        let preview_closing = !preview_visible && self.inspector_animating;
         let preview_expanded = self
             .preview_view
             .get(&self.state.focused_tile)
@@ -614,28 +637,14 @@ impl Render for App {
                     // all preview rows and controls.
                     .child(self.ensure_inspector_host(cx).into_any_element())
                     .children(resize_handle);
-                let panel: gpui::AnyElement = if self.state.settings.disable_animations {
-                    panel.into_any_element()
-                } else if suppress_resize_animations {
-                    panel.into_any_element()
-                } else {
-                    let closing = preview_closing && !preview_visible;
-                    panel
-                        .with_animation(
-                            SharedString::from(format!(
-                                "preview-panel-{}-{}",
-                                self.preview_panel_anim_seq, closing
-                            )),
-                            crate::ui::motion::animation(crate::ui::motion::PANEL_MS),
-                            move |this, t| {
-                                let openness = if closing { 1.0 - t } else { t };
-                                this.w(px(inspector_width * openness))
-                                    .opacity(openness)
-                                    .paint_offset(gpui::point(px(10.0 * (1.0 - openness)), px(0.0)))
-                            },
-                        )
-                        .into_any_element()
-                };
+                let panel = div()
+                    .h_full()
+                    .flex_shrink_0()
+                    .w(px(inspector_width * preview_progress))
+                    .overflow_hidden()
+                    .opacity(preview_progress)
+                    .paint_offset(gpui::point(px(10.0 * (1.0 - preview_progress)), px(0.0)))
+                    .child(panel);
                 crate::ui::layout_region::layout_region("inspector", panel).into_any_element()
             });
         let overlays = if crate::perf::skip_overlays() {
@@ -1033,116 +1042,18 @@ impl Render for App {
                     }
                 }),
             )
-            // Custom title bar: reserve the same vertical space the old Dock shell
-            // expected, so panes don't run under the window controls.
-            .children(self.state.settings.show_titlebar.then(|| {
-                let icon_dim = cx.theme().muted_foreground;
-                let is_max = window.is_maximized();
-                h_flex()
-                    .id("titlebar")
-                    .w_full()
-                    .h(px(10.))
-                    .items_center()
-                    .px(px(4.))
-                    .relative()
-                    .window_control_area(WindowControlArea::Drag)
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right(px(78.))
-                            .h(px(22.))
-                            .window_control_area(WindowControlArea::Drag),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        h_flex()
-                            .gap(px(1.))
-                            .items_center()
-                            // Minimize
-                            .child(
-                                div()
-                                    .id("wc-min")
-                                    .flex_none()
-                                    .w(px(24.))
-                                    .h(px(10.))
-                                    .rounded(px(3.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .hover(|s| s.bg(hsla(0., 0., 0.5, 0.10)))
-                                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                        window.prevent_default();
-                                        cx.stop_propagation();
-                                    })
-                                    .on_click(|_, window, cx| {
-                                        cx.stop_propagation();
-                                        window.minimize_window();
-                                    })
-                                    .child(icon(AtlasIcon::Minus, 7.0, icon_dim)),
-                            )
-                            // Maximize / Restore
-                            .child(
-                                div()
-                                    .id("wc-max")
-                                    .flex_none()
-                                    .w(px(24.))
-                                    .h(px(10.))
-                                    .rounded(px(3.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .hover(|s| s.bg(hsla(0., 0., 0.5, 0.10)))
-                                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                        window.prevent_default();
-                                        cx.stop_propagation();
-                                    })
-                                    .on_click(|_, window, cx| {
-                                        cx.stop_propagation();
-                                        window.zoom_window();
-                                    })
-                                    .child(icon(
-                                        if is_max {
-                                            AtlasIcon::Copy
-                                        } else {
-                                            AtlasIcon::Square
-                                        },
-                                        7.0,
-                                        icon_dim,
-                                    )),
-                            )
-                            // Close
-                            .child(
-                                div()
-                                    .id("wc-close")
-                                    .flex_none()
-                                    .w(px(24.))
-                                    .h(px(10.))
-                                    .rounded(px(3.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .hover(|s| s.bg(hsla(0., 0.65, 0.42, 0.75)))
-                                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                        window.prevent_default();
-                                        cx.stop_propagation();
-                                    })
-                                    .on_click(|_, window, cx| {
-                                        cx.stop_propagation();
-                                        window.remove_window();
-                                    })
-                                    .child(icon(AtlasIcon::X, 7.0, icon_dim)),
-                            ),
-                    )
-            }))
+            // Behind the workspace: foreground controls block caption hit testing,
+            // while padding and gaps stay draggable even in very narrow splits.
+            .children(
+                (self.state.settings.show_titlebar && !self.modal_overlay_active())
+                    .then(|| crate::ui::window_chrome::drag_region(caption_height)),
+            )
             .child(
                 h_flex()
                     .flex_1()
                     .min_h(px(0.))
-                    .px(px(if figma_glass { 10.0 } else { 3.0 }))
-                    .py(px(if figma_glass { 5.0 } else { 3.0 }))
-                    .gap(px(if figma_glass {
+                    .p(workspace_inset)
+                    .gap(px(if glass_theme {
                         4.0
                     } else if windows_theme {
                         0.0
@@ -1173,6 +1084,14 @@ impl Render for App {
             .child(drag_hover_layer(cx.entity()))
             // Floating glass search pill (Figma "Window/Search Global"), bottom-center.
             .children(search_pill)
+            .children(self.state.settings.show_titlebar.then(|| {
+                let top = crate::ui::window_chrome::controls_top(
+                    caption_height - workspace_inset,
+                    workspace_inset,
+                    f32::from(window.rem_size()) / crate::ui::BASE_PX,
+                );
+                crate::ui::window_chrome::corner_titlebar(top, window, cx)
+            }))
     }
 }
 

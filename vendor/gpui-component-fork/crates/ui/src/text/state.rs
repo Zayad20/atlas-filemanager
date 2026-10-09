@@ -419,7 +419,7 @@ impl Render for TextViewState {
                         .child(err.to_string()),
                 ),
             })
-            .on_prepaint(move |bounds, _, cx| {
+            .on_prepaint_child(move |bounds, _, cx| {
                 state.update(cx, |state, _| {
                     state.update_bounds(bounds);
                 })

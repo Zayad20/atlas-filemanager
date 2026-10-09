@@ -42,7 +42,7 @@ pub trait ElementExt: ParentElement + Sized {
     /// The first argument is the bounds of the element in pixels.
     ///
     /// See also [`gpui::canvas`].
-    fn on_prepaint<F>(self, f: F) -> Self
+    fn on_prepaint_child<F>(self, f: F) -> Self
     where
         F: FnOnce(Bounds<Pixels>, &mut Window, &mut App) + 'static,
     {

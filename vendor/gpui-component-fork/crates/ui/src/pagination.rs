@@ -7,7 +7,7 @@ use gpui::{
 use rust_i18n::t;
 
 use crate::{
-    Disableable, Icon, Sizable, Size, StyledExt,
+    Disableable, Icon, Sizable, Size,
     button::{Button, ButtonVariants},
     h_flex,
     icon::IconName,

@@ -133,7 +133,8 @@ impl Element for AnimatedVirtualGrid {
         };
 
         let mut style = gpui::Style::default();
-        style.size.width = gpui::Length::Definite(gpui::DefiniteLength::Fraction(1.0));
+        style.size.width =
+            gpui::Length::Definite(gpui::DefiniteLength::Relative(gpui::relative(1.0)));
         style.size.height = gpui::Length::Definite(gpui::DefiniteLength::Absolute(
             gpui::AbsoluteLength::Pixels(total_height),
         ));

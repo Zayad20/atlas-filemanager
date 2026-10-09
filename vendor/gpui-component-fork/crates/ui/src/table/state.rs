@@ -1,3 +1,4 @@
+use gpui::ColorExt as _;
 use std::{ops::Range, rc::Rc, time::Duration};
 
 use crate::{
@@ -1452,7 +1453,7 @@ where
             // resize handle
             .child(self.render_resize_handle(col_ix, window, cx))
             // to save the bounds of this col.
-            .on_prepaint({
+            .on_prepaint_child({
                 let view = cx.entity().clone();
                 move |bounds, _, cx| view.update(cx, |r, _| r.col_groups[col_ix].bounds = bounds)
             })
@@ -1617,7 +1618,7 @@ where
                                 .border_r_1()
                                 .border_color(cx.theme().border),
                         )
-                        .on_prepaint(move |bounds, _, cx| {
+                        .on_prepaint_child(move |bounds, _, cx| {
                             view.update(cx, |r, _| r.fixed_head_cols_bounds = bounds)
                         }),
                 )
@@ -2308,7 +2309,7 @@ where
                         }))
                     })
             })
-            .on_prepaint({
+            .on_prepaint_child({
                 let state = cx.entity();
                 move |bounds, _, cx| state.update(cx, |state, _| state.bounds = bounds)
             })

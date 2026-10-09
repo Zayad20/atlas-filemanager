@@ -49,6 +49,17 @@ impl App {
         };
         atlas_core::fs::paths::normalize_wsl_location_path(&mut loc);
         self.rubber = None;
+        // A glide belongs to its current listing, never to the next folder.
+        if let Some(handle) = self.scroll_handles.get(&tab_id) {
+            let scroll = &handle.0.borrow().base_handle;
+            scroll.set_offset(scroll.offset());
+        }
+        for ((pane, _), handle) in &self.miller_scroll_handles {
+            if *pane == tab_id {
+                let scroll = &handle.0.borrow().base_handle;
+                scroll.set_offset(scroll.offset());
+            }
+        }
 
         // Per-folder view/sort memory (F3 #14): looked up before the mutable
         // pane borrow below so it can be applied in the same pass.
@@ -128,10 +139,13 @@ impl App {
         // pane-bounds fallback reads the live location) and rewrite the OLE
         // zone dest in place, since the nested DoDragDrop loop may resolve a
         // drop before the next frame recommits zones.
-        if self.drag_hover_maybe_active() {
+        {
             self.pending_drag_hover_targets.retain(|target| {
                 !matches!(&target.id,
-                    crate::ui::drag_hover::DragHoverId::Folder(pane, _) if *pane == tab_id)
+                    crate::ui::drag_hover::DragHoverId::Folder(pane, _)
+                    | crate::ui::drag_hover::DragHoverId::Column(pane, _)
+                    | crate::ui::drag_hover::DragHoverId::Breadcrumb(pane, _)
+                    | crate::ui::drag_hover::DragHoverId::Chrome(_, pane) if *pane == tab_id)
             });
             self.row_rects.borrow_mut().remove(&tab_id);
             #[cfg(windows)]

@@ -1,3 +1,4 @@
+#![windows_subsystem = "windows"]
 #![cfg(windows)]
 
 mod mapped_index;
@@ -82,7 +83,7 @@ fn main() -> anyhow::Result<()> {
             .context("--probe requires a query")?;
         let state = State::default();
         let directory = data_directory();
-        for letter in ['C', 'E', 'F'] {
+        for letter in drive_letters() {
             let path = index_path(&directory, letter);
             if let Ok(volume) = MappedVolume::open(&path) {
                 state
@@ -103,12 +104,11 @@ fn main() -> anyhow::Result<()> {
         };
         for (index, text) in queries.iter().enumerate() {
             let generation = index as u64 + 1;
-            state.latest_query.store(generation, Ordering::Release);
             let mut request = SearchQuery::text(text);
             request.generation = generation;
             request.limit = 25;
-            request.interactive = sequence;
-            let batch = search_index(&state, &request);
+            request.interactive = sequence || arguments.iter().any(|argument| argument == "--interactive");
+            let batch = execute_search(&state, &request);
             if index + 1 == queries.len() {
                 for result in batch.results {
                     println!("{}", result.path.display());
@@ -121,11 +121,66 @@ fn main() -> anyhow::Result<()> {
         }
         return Ok(());
     }
+    if arguments.iter().any(|arg| arg == "--install") {
+        return install_service();
+    }
+    if arguments.iter().any(|arg| arg == "--uninstall") {
+        return uninstall_service();
+    }
     if arguments.iter().any(|arg| arg == "--console") {
         return run(Arc::new(AtomicBool::new(false)));
     }
     service_dispatcher::start(SERVICE_NAME, ffi_service_main)
         .context("start service dispatcher")?;
+    Ok(())
+}
+
+fn install_service() -> anyhow::Result<()> {
+    use std::os::windows::process::CommandExt;
+    let current_exe = std::env::current_exe()?;
+    let path_str = current_exe.to_string_lossy();
+    let status = std::process::Command::new("sc.exe")
+        .args([
+            "create",
+            SERVICE_NAME,
+            &format!("binPath= \"{}\"", path_str),
+            "start=",
+            "auto",
+            "DisplayName=",
+            "Atlas Search Service",
+        ])
+        .creation_flags(0x0800_0000)
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("sc.exe create failed with status {status}");
+    }
+    eprintln!("Service '{SERVICE_NAME}' registered with start=auto.");
+    let start_status = std::process::Command::new("sc.exe")
+        .args(["start", SERVICE_NAME])
+        .creation_flags(0x0800_0000)
+        .status()?;
+    if start_status.success() {
+        eprintln!("Service '{SERVICE_NAME}' started successfully.");
+    } else {
+        eprintln!("Service '{SERVICE_NAME}' registered; start returned {start_status}");
+    }
+    Ok(())
+}
+
+fn uninstall_service() -> anyhow::Result<()> {
+    use std::os::windows::process::CommandExt;
+    let _ = std::process::Command::new("sc.exe")
+        .args(["stop", SERVICE_NAME])
+        .creation_flags(0x0800_0000)
+        .status();
+    let status = std::process::Command::new("sc.exe")
+        .args(["delete", SERVICE_NAME])
+        .creation_flags(0x0800_0000)
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("sc.exe delete failed with status {status}");
+    }
+    eprintln!("Service '{SERVICE_NAME}' uninstalled successfully.");
     Ok(())
 }
 
@@ -168,13 +223,30 @@ fn service_main(_arguments: Vec<OsString>) {
 }
 
 fn run(stop: Arc<AtomicBool>) -> anyhow::Result<()> {
+    use windows_sys::Win32::Foundation::ERROR_ALREADY_EXISTS;
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+
+    let mutex_name: Vec<u16> = OsStr::new(r"Global\AtlasSearchServiceSingleInstance")
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let mutex = unsafe { CreateMutexW(null_mut(), 1, mutex_name.as_ptr()) };
+    if unsafe { windows_sys::Win32::Foundation::GetLastError() } == ERROR_ALREADY_EXISTS {
+        eprintln!("Atlas Search Service is already running.");
+        return Ok(());
+    }
+
     eprintln!("Atlas Search Service {}", env!("CARGO_PKG_VERSION"));
     eprintln!("Index directory: {}", data_directory().display());
     let state = Arc::new(State::default());
     let worker_state = state.clone();
     let worker_stop = stop.clone();
     thread::spawn(move || index_loop(&worker_state, &worker_stop));
-    serve_pipe(state, &stop)
+    let result = serve_pipe(state, &stop);
+    if !mutex.is_null() && mutex != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        unsafe { CloseHandle(mutex) };
+    }
+    result
 }
 
 fn index_loop(state: &State, stop: &AtomicBool) {
@@ -233,12 +305,16 @@ fn index_loop(state: &State, stop: &AtomicBool) {
                                 ),
                             }
                         }
-                        CheckpointError::Io(_) => set_progress(
-                            state,
-                            *letter,
-                            SearchBackendStatus::Error(error.to_string()),
-                            index.len() as u64,
-                        ),
+                        CheckpointError::Io(_) => {
+                            if index.len() == 0 {
+                                set_progress(
+                                    state,
+                                    *letter,
+                                    SearchBackendStatus::Error(error.to_string()),
+                                    0,
+                                );
+                            }
+                        }
                     },
                     Ok(()) => {}
                 }
@@ -259,12 +335,23 @@ fn load_or_build(letter: char, data_dir: &Path) -> anyhow::Result<MappedVolume> 
                 load_started.elapsed().as_secs_f64()
             );
             let replay_started = Instant::now();
-            if replay_mapped(letter, &mut index).is_ok() {
-                eprintln!(
-                    "[{letter}:\\] replayed pending USN changes in {:.3}s",
-                    replay_started.elapsed().as_secs_f64()
-                );
-                return Ok(index);
+            match replay_mapped(letter, &mut index) {
+                Ok(()) => {
+                    eprintln!(
+                        "[{letter}:\\] replayed pending USN changes in {:.3}s",
+                        replay_started.elapsed().as_secs_f64()
+                    );
+                    return Ok(index);
+                }
+                Err(CheckpointError::Io(err)) => {
+                    eprintln!(
+                        "[{letter}:\\] continuing with persisted records (USN replay unavailable: {err})"
+                    );
+                    return Ok(index);
+                }
+                Err(err) => {
+                    eprintln!("[{letter}:\\] journal error ({err:?}), rebuilding");
+                }
             }
         }
     }
@@ -492,24 +579,7 @@ fn handle_client(pipe: HANDLE, state: &State) {
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
         ),
-        Ok(ServiceRequest::Search(query)) => {
-            state
-                .latest_query
-                .fetch_max(query.generation, Ordering::AcqRel);
-            let _gate = state
-                .search_gate
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if state.latest_query.load(Ordering::Acquire) > query.generation {
-                ServiceResponse::Search(SearchBatch {
-                    generation: query.generation,
-                    results: Vec::new(),
-                    complete: false,
-                })
-            } else {
-                ServiceResponse::Search(search_index(state, &query))
-            }
-        }
+        Ok(ServiceRequest::Search(query)) => ServiceResponse::Search(execute_search(state, &query)),
         Err(error) => ServiceResponse::Error(error.to_string()),
     };
     let Ok(bytes) = serde_json::to_vec(&response) else {
@@ -527,7 +597,26 @@ fn handle_client(pipe: HANDLE, state: &State) {
     }
 }
 
-fn search_index(state: &State, query: &SearchQuery) -> SearchBatch {
+fn execute_search(state: &State, query: &SearchQuery) -> SearchBatch {
+    // Client generations identify replies within one app session. They can
+    // restart at zero or overlap another client's counter, so cancellation
+    // must use the service's own request order.
+    let request_id = state.latest_query.fetch_add(1, Ordering::AcqRel) + 1;
+    let _gate = state
+        .search_gate
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if state.latest_query.load(Ordering::Acquire) != request_id {
+        return SearchBatch {
+            generation: query.generation,
+            results: Vec::new(),
+            complete: false,
+        };
+    }
+    search_index(state, query, request_id)
+}
+
+fn search_index(state: &State, query: &SearchQuery, request_id: u64) -> SearchBatch {
     let started = Instant::now();
     let volumes = state.volumes.read().unwrap_or_else(|e| e.into_inner());
     let candidate_limit = query
@@ -572,6 +661,7 @@ fn search_index(state: &State, query: &SearchQuery) -> SearchBatch {
     const MAX_INCREMENTAL_MATCHES: usize = 250_000;
     let mut incremental_matches = Vec::new();
     let mut incremental_overflow = false;
+    let mut navigation_noise = std::collections::HashMap::new();
     {
         let mut consider = |letter: char, record: mapped_index::RecordRef<'_>| {
             if name_examined >= name_budget {
@@ -579,7 +669,7 @@ fn search_index(state: &State, query: &SearchQuery) -> SearchBatch {
                 return false;
             }
             name_examined += 1;
-            if state.latest_query.load(Ordering::Acquire) > query.generation {
+            if state.latest_query.load(Ordering::Acquire) != request_id {
                 canceled = true;
                 return false;
             }
@@ -609,6 +699,13 @@ fn search_index(state: &State, query: &SearchQuery) -> SearchBatch {
                     incremental_overflow = true;
                 }
             }
+            let score = if query.interactive {
+                let noise = volumes.iter().find(|(candidate, _)| *candidate == letter)
+                    .map_or(0, |(_, volume)| record_navigation_noise(volume, letter, record.id, &query.text, &mut navigation_noise));
+                score - i64::from(noise) * 5_000
+            } else {
+                score
+            };
             insert_candidate(&mut candidates, candidate_limit, score, letter, record.id);
             true
         };
@@ -630,7 +727,7 @@ fn search_index(state: &State, query: &SearchQuery) -> SearchBatch {
             for (letter, volume) in volumes.iter() {
                 let mut visit = |record: mapped_index::RecordRef<'_>| consider(*letter, record);
                 volume.for_each_name_candidate(required_mask, &mut visit);
-                if state.latest_query.load(Ordering::Acquire) > query.generation {
+                if state.latest_query.load(Ordering::Acquire) != request_id {
                     break;
                 }
             }
@@ -673,7 +770,7 @@ fn search_index(state: &State, query: &SearchQuery) -> SearchBatch {
                 let root = PathBuf::from(format!("{letter}:\\"));
                 let mut visit = |record: mapped_index::RecordRef<'_>| {
                     path_examined += 1;
-                    if state.latest_query.load(Ordering::Acquire) > query.generation {
+                    if state.latest_query.load(Ordering::Acquire) != request_id {
                         canceled = true;
                         return false;
                     }
@@ -703,6 +800,9 @@ fn search_index(state: &State, query: &SearchQuery) -> SearchBatch {
                     let Some(score) = score_path(&path, &compact_query) else {
                         return true;
                     };
+                    let score = if query.interactive {
+                        score - i64::from(atlas_core::search::navigation::path_noise(&path, &query.text)) * 5_000
+                    } else { score };
                     insert_candidate(&mut candidates, candidate_limit, score, *letter, record.id);
                     true
                 };
@@ -825,6 +925,39 @@ fn insert_candidate(
     }
 }
 
+/// Classify ancestors from the mapped catalog, with no filesystem I/O. Cache
+/// shared parents so histories containing thousands of matches stay cheap.
+fn record_navigation_noise(
+    volume: &MappedVolume,
+    letter: char,
+    id: u64,
+    query: &str,
+    cache: &mut std::collections::HashMap<(char, u64), u8>,
+) -> u8 {
+    let mut current = id;
+    let mut chain = Vec::new();
+    let mut inherited = 2;
+    const RECORD_NUMBER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
+    for _ in 0..128 {
+        if current & RECORD_NUMBER_MASK == volume.root_id & RECORD_NUMBER_MASK {
+            inherited = 0;
+            break;
+        }
+        if let Some(&noise) = cache.get(&(letter, current)) {
+            inherited = noise;
+            break;
+        }
+        let Some(record) = volume.record(current) else { break; };
+        chain.push((current, atlas_core::search::navigation::component_noise(record.name, query)));
+        current = record.parent;
+    }
+    for (id, noise) in chain.into_iter().rev() {
+        inherited = inherited.max(noise);
+        cache.insert((letter, id), inherited);
+    }
+    inherited
+}
+
 fn score_path(path: &Path, query: &str) -> Option<i64> {
     let compact_path: String = path
         .to_string_lossy()
@@ -842,16 +975,8 @@ fn score_name(name: &str, query: &str) -> Option<i64> {
     if name.is_ascii() && query.is_ascii() {
         return score_ascii_name(name.as_bytes(), query.as_bytes(), sensitive);
     }
-    let candidate = if sensitive {
-        name.to_owned()
-    } else {
-        name.to_lowercase()
-    };
-    let needle = if sensitive {
-        query.to_owned()
-    } else {
-        query.to_lowercase()
-    };
+    let candidate = atlas_core::search::navigation::normalized_name(name, sensitive);
+    let needle = atlas_core::search::navigation::normalized_name(query, sensitive);
     if candidate == needle {
         return Some(4_000);
     }
@@ -877,6 +1002,10 @@ fn score_name(name: &str, query: &str) -> Option<i64> {
 
 fn score_ascii_name(name: &[u8], query: &[u8], sensitive: bool) -> Option<i64> {
     let equal = |left: u8, right: u8| {
+        let is_separator = |byte: u8| byte.is_ascii_whitespace() || matches!(byte, b'-' | b'_');
+        if is_separator(left) && is_separator(right) {
+            return true;
+        }
         if sensitive {
             left == right
         } else {
@@ -1002,17 +1131,122 @@ fn data_directory() -> PathBuf {
 fn index_path(directory: &Path, letter: char) -> PathBuf {
     directory.join(format!("index-{}.atlasidx", letter.to_ascii_uppercase()))
 }
+fn is_ntfs_drive(letter: char) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetVolumeInformationW};
+    let root = format!(r"{letter}:\\");
+    let wide: Vec<u16> = OsStr::new(&root).encode_wide().chain(Some(0)).collect();
+    let drive_type = unsafe { GetDriveTypeW(wide.as_ptr()) };
+    // 2 = DRIVE_REMOVABLE, 3 = DRIVE_FIXED
+    if drive_type != 2 && drive_type != 3 {
+        return false;
+    }
+    let mut fs_name = [0u16; 32];
+    let ok = unsafe {
+        GetVolumeInformationW(
+            wide.as_ptr(),
+            null_mut(),
+            0,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            fs_name.as_mut_ptr(),
+            fs_name.len() as u32,
+        )
+    };
+    if ok == 0 {
+        return false;
+    }
+    let len = fs_name.iter().position(|&c| c == 0).unwrap_or(fs_name.len());
+    let name = String::from_utf16_lossy(&fs_name[..len]);
+    name.eq_ignore_ascii_case("NTFS")
+}
+
 fn drive_letters() -> Vec<char> {
     let mask = unsafe { GetLogicalDrives() };
+    let data_dir = data_directory();
     (0..26)
         .filter(|bit| mask & (1 << bit) != 0)
         .map(|bit| (b'A' + bit) as char)
+        .filter(|&letter| is_ntfs_drive(letter) || index_path(&data_dir, letter).exists())
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restarted_client_generations_still_return_folder_results() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "atlas-search-generation-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("index-C.atlasidx");
+        let mut index = VolumeIndex::new("C:".into(), 1, 0, 5);
+        index.replace_records([
+            FileRecord {
+                id: 5,
+                parent: 5,
+                name: String::new(),
+                is_dir: true,
+                size: 0,
+                modified: None,
+            },
+            FileRecord {
+                id: 6,
+                parent: (1 << 48) | 5,
+                name: "egui-app".into(),
+                is_dir: true,
+                size: 0,
+                modified: None,
+            },
+        ]);
+        index.apply(atlas_core::search::volume_index::ChangeRecord {
+            id: 7, parent: (1 << 48) | 5, name: ".claude".into(), is_dir: true,
+            reason: atlas_core::search::volume_index::REASON_FILE_CREATE,
+        });
+        // More history copies than the candidate heap can keep. Ranking must
+        // prefer the real project before the page is truncated.
+        for id in 8..308 {
+            index.apply(atlas_core::search::volume_index::ChangeRecord {
+                id, parent: 7, name: format!("C--Users-user-project-my-project-{id}"), is_dir: true,
+                reason: atlas_core::search::volume_index::REASON_FILE_CREATE,
+            });
+        }
+        index.apply(atlas_core::search::volume_index::ChangeRecord {
+            id: 308, parent: (1 << 48) | 5, name: "My Project".into(), is_dir: true,
+            reason: atlas_core::search::volume_index::REASON_FILE_CREATE,
+        });
+        save_index(&index, &path).unwrap();
+        let state = State::default();
+        state.volumes.write().unwrap().push(('C', MappedVolume::open(&path).unwrap()));
+        for generation in [1_000, 1, 0, 1] {
+            let mut query = SearchQuery::text("egui");
+            query.generation = generation;
+            query.limit = 1;
+            let batch = execute_search(&state, &query);
+            assert_eq!(batch.generation, generation);
+            assert!(batch.complete);
+            assert_eq!(batch.results.len(), 1);
+            assert_eq!(batch.results[0].path, PathBuf::from(r"C:\legacy-app"));
+            assert!(batch.results[0].is_dir);
+        }
+        let mut query = SearchQuery::text("my-project");
+        query.interactive = true;
+        query.limit = 1;
+        let batch = execute_search(&state, &query);
+        assert!(batch.complete);
+        assert_eq!(batch.results[0].path, PathBuf::from(r"C:\My Project"));
+        drop(state);
+        fs::remove_file(path.with_extension("atlasfind2")).unwrap();
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
 
     #[test]
     fn fuzzy_name_accepts_lazy_subsequence() {

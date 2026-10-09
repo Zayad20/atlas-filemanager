@@ -9,6 +9,7 @@ use crate::ui::surface::{
 };
 use atlas_model::location::Location;
 use atlas_model::pane::TabId;
+use gpui::ColorExt as _;
 use gpui::{
     point, px, size, App as GpuiApp, Bounds, ContentMask, DispatchPhase, Element, ElementId, Font,
     GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
@@ -87,7 +88,7 @@ impl CrumbStripElement {
         muted: Hsla,
         bg: Hsla,
         border: Hsla,
-        hover: Hsla,
+        _hover: Hsla,
         accent: Hsla,
     ) -> Self {
         Self {
@@ -106,7 +107,7 @@ impl CrumbStripElement {
             muted,
             bg,
             border,
-            hover,
+            hover: crate::ui::glass::control_hover(fg),
             accent,
             style: StyleRefinement::default(),
         }
@@ -198,7 +199,8 @@ impl Element for CrumbStripElement {
         let strip_h = if self.windows_theme { 44.0 } else { 36.0 } * zoom;
         let mut style = Style::default();
         style.refine(&self.style);
-        style.size.width = gpui::Length::Definite(gpui::DefiniteLength::Fraction(1.0));
+        style.size.width =
+            gpui::Length::Definite(gpui::DefiniteLength::Relative(gpui::relative(1.0)));
         style.size.height = gpui::Length::Definite(gpui::DefiniteLength::Absolute(
             gpui::AbsoluteLength::Pixels(px(strip_h)),
         ));
@@ -287,8 +289,8 @@ impl Element for CrumbStripElement {
                 let seg_bounds = slot.to_bounds(bounds.origin);
                 if let Location::Directory(path) = &seg.location {
                     targets.push(crate::ui::drag_hover::DragHoverTarget {
-                        id: crate::ui::drag_hover::DragHoverId::Folder(pane, path.clone()),
-                        bounds: seg_bounds,
+                        id: crate::ui::drag_hover::DragHoverId::Breadcrumb(pane, path.clone()),
+                        bounds: seg_bounds.intersect(&bounds),
                         kind: crate::ui::drag_hover::DragHoverKind::Folder,
                         command: crate::ui::drag_hover::DragHoverCommand::Process(
                             crate::input::action::Action::NavigateLocation {
@@ -304,7 +306,7 @@ impl Element for CrumbStripElement {
             }
             if !targets.is_empty() {
                 app.update(_cx, |this, _| {
-                    if this.drag_hover_maybe_active() {
+                    {
                         for target in targets {
                             this.register_drag_hover_target(target);
                         }
@@ -445,6 +447,7 @@ impl Element for CrumbStripElement {
                 window.with_content_mask(
                     Some(ContentMask {
                         bounds: b.intersect(&bounds),
+                        fade_out: Default::default(),
                     }),
                     |window| {
                         // line_height = slot height → GPUI centers glyphs (same as Details rows).

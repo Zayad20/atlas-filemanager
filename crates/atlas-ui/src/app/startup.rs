@@ -314,6 +314,15 @@ impl App {
             "icon.svg",
             crate::app::ext::DOCUMENT_PREVIEWS_ICON,
         );
+        let _ = atlas_core::ext::install::ensure_bundled(
+            "icon-manager",
+            crate::app::ext::ICON_MANAGER_MANIFEST,
+        );
+        let _ = atlas_core::ext::install::ensure_asset(
+            "icon-manager",
+            "icon.svg",
+            crate::app::ext::ICON_MANAGER_ICON,
+        );
         let runtime_tools_src =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions/runtime-tools");
         let _ = atlas_core::ext::install::ensure_bundled_with_assets(
@@ -360,6 +369,14 @@ impl App {
             let alive = this
                 .update(cx, |app, cx| {
                     let mut dirty = app.drain_bg_results(cx);
+                    // Publishing local search matches must repaint the finder
+                    // even when no new keystroke or service reply arrives.
+                    if app.state.overlay.show_goto_bar
+                        && !app.state.profiles.active().search_in_content
+                        && !app.state.overlay.goto_state.query.trim().is_empty()
+                    {
+                        dirty |= app.nucleo.tick();
+                    }
                     // Drain Windows OLE drop payloads enqueued by our IDropTarget.
                     #[cfg(windows)]
                     {
@@ -413,6 +430,12 @@ impl App {
             })
             .collect();
 
+        // Ensure background search service is active (instant multi-drive NTFS search)
+        #[cfg(windows)]
+        {
+            rt.spawn_blocking(atlas_core::search::ensure_service_started);
+        }
+
         // transfer_journal resume is WIP and not wired into atlas-core yet.
 
         Self {
@@ -424,7 +447,6 @@ impl App {
             rt,
             focus_handle,
             scroll_handles: HashMap::new(),
-            scroll_targets: HashMap::new(),
             miller_scroll_handles: HashMap::new(),
             watchers,
             nucleo,
@@ -446,8 +468,7 @@ impl App {
             multi_textures: HashMap::new(),
 
             preview_view: HashMap::new(),
-            preview_panel_anim_seq: 0,
-            preview_panel_closing: None,
+            inspector_animating: false,
             last_viewport_size: None,
             window_resize_suppress_until: None,
             preview_drag: None,
@@ -460,6 +481,7 @@ impl App {
             // VSCode auto-discovery).
             icon_theme,
             icon_cache: HashMap::new(),
+            liquid_glass: crate::app::liquid_glass::LiquidGlassCache::new(),
             icon_tx,
             icon_rx,
             // Phase A: dock built lazily on first render from the restored pane_tree.
@@ -495,6 +517,8 @@ impl App {
             dropzone_rects: Vec::new(),
             dropzone_bounds: None,
             dropzone_drag_paths: HashSet::new(),
+            dropzone_pending_tags: HashMap::new(),
+            pending_transfers: std::collections::VecDeque::new(),
             pending_pane_zones: std::cell::RefCell::new(Vec::new()),
             goto_input: None,
             palette_input: None,
@@ -518,7 +542,7 @@ impl App {
             theme_preview_before: None,
             sidebar_width_dirty: true,
             sidebar_render_width: None,
-            sidebar_width_animation: None,
+            sidebar_width_animating: false,
             #[cfg(windows)]
             hwnd: hwnd_opt,
             #[cfg(windows)]
@@ -562,6 +586,7 @@ impl App {
             dock_split_animations: HashMap::new(),
             pane_closing: HashMap::new(),
             tab_closing: HashMap::new(),
+            pending_column_reflow: HashSet::new(),
             pane_items_appear: HashMap::new(),
             ext_manager_input: None,
             ext_prompt_inputs: Vec::new(),

@@ -7,16 +7,16 @@ use crate::ui::drag_hover::{
     drag_hover_recorder, drag_hover_recorder_with_drop, DragHoverCommand, DragHoverDropCommand,
     DragHoverId, DragHoverKind,
 };
-use crate::ui::glass::{
-    glass_fill, glass_header_fill, glass_shadows_enabled, layer_color, GlassExt,
-};
+use crate::ui::glass::{control_colors, control_hover, glass_shadows_enabled, GlassExt};
 use crate::ui::icons::{is_windows_theme, theme_icon, AtlasIcon};
+use crate::ui::motion::MotionFeedbackExt as _;
 use crate::ui::search_shell::search_icon;
 use crate::ui::tooltips::shortcut_tooltip;
 use atlas_model::location::Location;
 use atlas_model::pane::TabId;
 use atlas_model::settings::ViewMode;
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{
     div, px, AnimationExt, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window,
 };
@@ -31,13 +31,11 @@ impl App {
     #[allow(dead_code)]
     pub(crate) fn render_floating_search_pill(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
-        let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
-        let windows_theme = is_windows_theme(&self.state.profiles.active().theme);
-        let bg = if figma_glass {
-            glass_fill()
-        } else {
-            layer_color(cx.theme().secondary, 0.02, 0.92)
-        };
+        let active_theme = self.state.profiles.active().theme.as_str();
+        let is_glass = active_theme.ends_with(" Glass");
+        let controls = control_colors(cx.theme(), is_glass);
+        let windows_theme = is_windows_theme(active_theme);
+        let bg = controls.surface;
         div()
             .absolute()
             .left_0()
@@ -55,17 +53,15 @@ impl App {
                     .items_center()
                     .rounded_full()
                     .bg(bg)
-                    .border_1()
-                    .border_color(
-                        cx.theme()
-                            .border
-                            .opacity(if figma_glass { 0.45 } else { 0.60 }),
-                    )
+                    .when(!is_glass, |s| {
+                        s.border_1().border_color(cx.theme().border.opacity(0.60))
+                    })
                     .when(glass_shadows_enabled(), |s| s.shadow_lg())
                     .cursor_pointer()
                     .text_color(muted)
-                    .hover(move |s| s.bg(bg.opacity(0.82)))
-                    .active(move |s| s.bg(bg.opacity(0.92)))
+                    .motion_feedback()
+                    .hover(move |s| s.bg(bg.blend(&controls.hover)))
+                    .active(move |s| s.bg(bg.blend(&controls.pressed)))
                     .child(if windows_theme {
                         theme_icon(AtlasIcon::Search, 15.0, muted, true)
                     } else {
@@ -98,6 +94,7 @@ impl App {
         fg: Hsla,
         muted: Hsla,
         border: Hsla,
+        header_bg: Hsla,
     ) -> AnyElement {
         let pane_archive_inner = self.tab_data_for(pane_id).and_then(|t| {
             t.location
@@ -120,8 +117,10 @@ impl App {
                 )
             })
             .unwrap_or_default();
-        let windows_theme = is_windows_theme(&self.state.profiles.active().theme);
-        let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
+        let active_theme = self.state.profiles.active().theme.as_str();
+        let windows_theme = is_windows_theme(active_theme);
+        let is_glass = active_theme.ends_with(" Glass");
+        let button_hover = control_hover(fg);
         let crumbs: Option<AnyElement> = if let Some((archive, inner)) = pane_archive_inner.as_ref()
         {
             Some(
@@ -132,7 +131,7 @@ impl App {
                     inner,
                     fg,
                     muted,
-                    border,
+                    button_hover,
                     windows_theme,
                 )
                 .into_any_element(),
@@ -140,7 +139,7 @@ impl App {
         } else {
             pane_location.as_ref().map(|location| match location {
                 Location::Directory(p) => {
-                    breadcrumb(view, pane_id, p, fg, muted, border, windows_theme)
+                    breadcrumb(view, pane_id, p, fg, muted, button_hover, windows_theme)
                         .into_any_element()
                 }
                 // Virtual locations (tag results, recycle bin, remotes) have no
@@ -156,9 +155,8 @@ impl App {
                     .into_any_element(),
             })
         };
-        let button_hover = layer_color(border, 0.04, 0.42);
-        let strip_bg = if figma_glass {
-            glass_header_fill()
+        let strip_bg = if is_glass {
+            header_bg
         } else {
             border.opacity(0.03)
         };
@@ -171,8 +169,9 @@ impl App {
             .gap(crate::ui::rem_px(if windows_theme { 9.0 } else { 6.0 }))
             .items_center()
             .bg(strip_bg)
-            .border_b_1()
-            .border_color(border.opacity(0.45))
+            .when(!is_glass, |s| {
+                s.border_b_1().border_color(border.opacity(0.45))
+            })
             .when(!windows_theme, |s| s.text_sm())
             .when(windows_theme, |s| s.text_base())
             .text_color(muted)
@@ -323,12 +322,12 @@ impl App {
     /// activates) and a controls pill on the right (visibility toggles,
     /// folders-first, view selector). Both sit on translucent glass so the
     /// listing shows through.
-    pub(crate) fn render_pane_bottom_bar(
+    pub(crate) fn render_pane_pills(
         &mut self,
         pane_id: TabId,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> (AnyElement, AnyElement) {
         // Mirror the per-tab toggles into the TabState so its cached filtering
         // (and the counts below) pick them up.
         let (folders_first, show_files, show_folders) = self
@@ -398,7 +397,17 @@ impl App {
             .map(|ts| ts.selection.selected.len())
             .unwrap_or_default();
         let filtering = active && !value.trim().is_empty();
-        let (border, muted, fg, accent, accent_fg, secondary) = {
+        let is_glass = self.state.profiles.active().theme.ends_with(" Glass");
+        let controls = control_colors(
+            cx.theme(),
+            is_glass,
+        );
+        let pill_surface = if is_glass {
+            controls.surface.opacity(0.55)
+        } else {
+            controls.surface
+        };
+        let (border, muted, fg, accent, accent_fg) = {
             let t = cx.theme();
             (
                 t.border,
@@ -406,7 +415,6 @@ impl App {
                 t.foreground,
                 t.accent,
                 t.accent_foreground,
-                t.secondary,
             )
         };
         let view = cx.entity();
@@ -432,14 +440,19 @@ impl App {
                 let open_view = view.clone();
                 h_flex()
                     .id(SharedString::from(format!("filter-badge-{}", pane_id.0)))
+                    .absolute()
+                    .bottom_2()
+                    .left_2()
                     .px_2()
                     .py(crate::ui::rem_px(3.))
                     .gap_1()
                     .items_center()
                     .rounded_full()
                     .border_1()
-                    .border_color(accent.opacity(0.45))
-                    .bg(layer_color(secondary, 0.04, 0.86))
+                    .border_color(controls.border)
+                    .bg(pill_surface)
+                    .when(is_glass, |s| s.backdrop_blur(px(12.0)))
+                    .raised_surface()
                     .text_xs()
                     .cursor_pointer()
                     .child(theme_icon(AtlasIcon::Search, 12.0, accent, windows_theme))
@@ -460,7 +473,7 @@ impl App {
             } else {
                 div().into_any_element()
             };
-            return badge;
+            return (badge, div().into_any_element());
         }
 
         // ── Left pill: fuzzy filter (lone magnifier until active) ──
@@ -469,6 +482,9 @@ impl App {
             let close_view = view.clone();
             h_flex()
                 .id(SharedString::from(format!("filter-pill-{}", pane_id.0)))
+                .absolute()
+                .bottom_2()
+                .left_2()
                 .px_2()
                 .py_1()
                 .gap_1()
@@ -478,9 +494,11 @@ impl App {
                 .border_color(if filtering {
                     accent.opacity(0.8)
                 } else {
-                    border.opacity(0.35)
+                    controls.border
                 })
-                .bg(layer_color(secondary, 0.04, 0.92))
+                .bg(pill_surface)
+                .when(is_glass, |s| s.backdrop_blur(px(12.0)))
+                .raised_surface()
                 .text_xs()
                 // Keep pill clicks away from the pane underneath (rubber band,
                 // pane-focus click handlers).
@@ -532,8 +550,10 @@ impl App {
                         .p(crate::ui::rem_px(3.))
                         .rounded_md()
                         .cursor_pointer()
+                        .bg(controls.hover.opacity(0.0))
                         .when(recursive, |s| s.bg(accent))
-                        .hover(|s| s.bg(layer_color(border, 0.04, 0.42)))
+                        .motion_feedback()
+                        .when(!recursive, |s| s.hover(move |s| s.bg(controls.hover)))
                         .child(theme_icon(
                             AtlasIcon::TreeStructure,
                             14.0,
@@ -572,7 +592,10 @@ impl App {
                         .p(crate::ui::rem_px(3.))
                         .rounded_md()
                         .cursor_pointer()
-                        .hover(|s| s.bg(layer_color(border, 0.04, 0.42)))
+                        .bg(controls.hover.opacity(0.0))
+                        .motion_feedback()
+                        .hover(move |s| s.bg(controls.hover))
+                        .active(move |s| s.bg(controls.pressed))
                         .child(theme_icon(AtlasIcon::X, 12.0, muted, windows_theme))
                         .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
                             close_view.update(cx, |this, cx| {
@@ -586,14 +609,26 @@ impl App {
             let open_view = view.clone();
             div()
                 .id(SharedString::from(format!("filter-pill-{}", pane_id.0)))
+                .absolute()
+                .bottom_2()
+                .left_2()
                 .p(crate::ui::rem_px(6.))
                 .rounded_full()
                 .border_1()
-                .border_color(border.opacity(0.35))
-                .bg(layer_color(secondary, 0.04, 0.82))
+                .border_color(controls.border)
+                .bg(pill_surface)
+                .when(is_glass, |s| s.backdrop_blur(px(12.0)))
+                .raised_surface()
                 .cursor_pointer()
-                .hover(|s| s.bg(layer_color(secondary, 0.07, 0.92)))
-                .child(theme_icon(AtlasIcon::Search, 14.0, muted, windows_theme))
+                .motion_feedback()
+                .hover(move |s| s.bg(pill_surface.blend(&controls.hover)))
+                .active(move |s| s.bg(pill_surface.blend(&controls.pressed)))
+                .child(theme_icon(
+                    AtlasIcon::Search,
+                    14.0,
+                    controls.foreground,
+                    windows_theme,
+                ))
                 .tooltip(|window, cx| {
                     gpui_component::tooltip::Tooltip::new(
                         rust_i18n::t!("tooltip_filter_files").into_owned(),
@@ -624,12 +659,14 @@ impl App {
                 .p(crate::ui::rem_px(4.))
                 .rounded_md()
                 .cursor_pointer()
-                .when(!on, |s| s.opacity(0.45))
-                .hover(move |s| s.bg(layer_color(border, 0.04, 0.42)))
+                .bg(controls.hover.opacity(0.0))
+                .motion_feedback()
+                .hover(move |s| s.bg(controls.hover))
+                .active(move |s| s.bg(controls.pressed))
                 .child(theme_icon(
                     glyph,
                     14.0,
-                    if on { on_color } else { muted },
+                    if on { on_color } else { controls.muted },
                     windows_theme,
                 ))
                 .tooltip(move |window, cx| {
@@ -703,7 +740,7 @@ impl App {
         )))
         .ghost()
         .xsmall()
-        .child(theme_icon(view_icon, 14.0, accent, windows_theme))
+        .child(theme_icon(view_icon, 14.0, controls.muted, windows_theme))
         .tooltip(format!("{} - Ctrl+scroll", view_label))
         // Anchored to the bottom so the menu opens upward, above the icon.
         .dropdown_menu_with_anchor(
@@ -786,18 +823,18 @@ impl App {
                                         slider.clone(),
                                     ))
                                     .child(row(
-                                        AtlasIcon::Details,
-                                        rust_i18n::t!("view_details").into_owned(),
-                                        ViewMode::Details,
-                                        active_mode == ViewMode::Details,
-                                        view.clone(),
-                                        slider.clone(),
-                                    ))
-                                    .child(row(
                                         AtlasIcon::List,
                                         rust_i18n::t!("view_list").into_owned(),
                                         ViewMode::List,
                                         active_mode == ViewMode::List,
+                                        view.clone(),
+                                        slider.clone(),
+                                    ))
+                                    .child(row(
+                                        AtlasIcon::Details,
+                                        rust_i18n::t!("view_details").into_owned(),
+                                        ViewMode::Details,
+                                        active_mode == ViewMode::Details,
                                         view.clone(),
                                         slider.clone(),
                                     ))
@@ -829,14 +866,19 @@ impl App {
         let animate_selection_badge = !self.state.settings.disable_animations;
         let controls_pill = h_flex()
             .id(SharedString::from(format!("controls-pill-{}", pane_id.0)))
+            .absolute()
+            .bottom_2()
+            .right_2()
             .px_1()
             .py(crate::ui::rem_px(3.))
             .gap_1()
             .items_center()
             .rounded_lg()
             .border_1()
-            .border_color(border.opacity(0.35))
-            .bg(layer_color(secondary, 0.04, 0.88))
+            .border_color(controls.border)
+            .bg(pill_surface)
+            .when(is_glass, |s| s.backdrop_blur(px(12.0)))
+            .raised_surface()
             // The view-selector actions act on the focused pane; make sure that's
             // us — and keep the click away from the pane underneath.
             .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
@@ -881,7 +923,7 @@ impl App {
                 format!("bb-folders-{}", pane_id.0),
                 AtlasIcon::Folder,
                 show_folders,
-                fg,
+                accent,
                 rust_i18n::t!("tooltip_toggle_folders").into_owned(),
                 Action::ToggleShowFolders(pane_id),
                 view.clone(),
@@ -890,7 +932,7 @@ impl App {
                 format!("bb-files-{}", pane_id.0),
                 AtlasIcon::File,
                 show_files,
-                fg,
+                accent,
                 rust_i18n::t!("tooltip_toggle_files").into_owned(),
                 Action::ToggleShowFiles(pane_id),
                 view.clone(),
@@ -913,16 +955,20 @@ impl App {
             .child(view_btn)
             .into_any_element();
 
-        h_flex()
-            .id(SharedString::from(format!("pane-bottom-bar-{}", pane_id.0)))
-            .w_full()
-            .h(px(32.0))
-            .px_2()
-            .items_center()
-            .justify_between()
-            .border_t_1()
-            .border_color(border.opacity(0.35))
-            .bg(layer_color(secondary, 0.04, 0.6))
+        (filter_pill, controls_pill)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn render_pane_bottom_bar(
+        &mut self,
+        pane_id: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (filter_pill, controls_pill) = self.render_pane_pills(pane_id, window, cx);
+        div()
+            .relative()
+            .size_full()
             .child(filter_pill)
             .child(controls_pill)
             .into_any_element()
@@ -980,7 +1026,9 @@ fn nav_button(props: NavButtonProps) -> impl IntoElement {
         .justify_center()
         .cursor_pointer()
         .when(!props.enabled, |s| s.opacity(0.35))
-        .hover(move |s| s.bg(props.hover_bg))
+        .bg(props.hover_bg.opacity(0.0))
+        .motion_feedback()
+        .when(props.enabled, |s| s.hover(move |s| s.bg(props.hover_bg)))
         .child(theme_icon(
             props.glyph,
             if props.windows_theme { 18.0 } else { 15.0 },
@@ -988,7 +1036,7 @@ fn nav_button(props: NavButtonProps) -> impl IntoElement {
             props.windows_theme,
         ))
         .when(props.enabled, |s| {
-            s.on_prepaint(drag_hover_recorder(
+            s.on_prepaint_child(drag_hover_recorder(
                 hover_id,
                 DragHoverKind::Folder,
                 hover_command,
@@ -1059,6 +1107,8 @@ fn bookmark_button(
         .justify_center()
         .cursor_pointer()
         .when(!enabled && !active, |s| s.opacity(0.35))
+        .bg(hover_bg.opacity(0.0))
+        .motion_feedback()
         .hover(move |s| s.bg(hover_bg))
         .child(theme_icon(
             AtlasIcon::BookmarkSimple,
@@ -1224,13 +1274,13 @@ struct BreadcrumbSegmentProps {
 fn breadcrumb_segment(props: BreadcrumbSegmentProps) -> gpui::Stateful<gpui::Div> {
     let down_v = props.view.clone();
     let down_location = props.location.clone();
-    let hover_bg = layer_color(props.layer_base, 0.04, 0.42);
+    let hover_bg = props.layer_base;
     let hover_id = match &props.location {
-        Location::Directory(path) => DragHoverId::Folder(props.tile, path.clone()),
+        Location::Directory(path) => DragHoverId::Breadcrumb(props.tile, path.clone()),
         Location::Archive { archive, inner } => {
-            DragHoverId::Folder(props.tile, archive.join(inner))
+            DragHoverId::Breadcrumb(props.tile, archive.join(inner))
         }
-        _ => DragHoverId::Chrome("breadcrumb", props.tile),
+        _ => DragHoverId::Breadcrumb(props.tile, props.location.display_path()),
     };
     let command = DragHoverCommand::Process(Action::NavigateLocation {
         tab: props.tile,
@@ -1265,6 +1315,8 @@ fn breadcrumb_segment(props: BreadcrumbSegmentProps) -> gpui::Stateful<gpui::Div
         .text_ellipsis()
         .whitespace_nowrap()
         .child(SharedString::from(props.label))
+        .bg(hover_bg.opacity(0.0))
+        .motion_feedback()
         .hover(move |s| s.bg(hover_bg))
         .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
             let location = down_location.clone();
@@ -1279,24 +1331,26 @@ fn breadcrumb_segment(props: BreadcrumbSegmentProps) -> gpui::Stateful<gpui::Div
             cx.stop_propagation();
         });
 
-    if let Some(dest) = props.drop_dest {
+    let drop_command = props.drop_dest.map(DragHoverDropCommand::TransferTo)
+        .unwrap_or_else(|| crate::ui::drag_hover::location_drop_command(&props.location));
+    {
         let drop_v = props.view.clone();
         let drop_v_external = props.view.clone();
-        let drop_target = dest.clone();
-        let drop_target_external = dest.clone();
+        let drop_target = drop_command.clone();
+        let drop_target_external = drop_command.clone();
         el = el
-            .on_prepaint(drag_hover_recorder_with_drop(
+            .on_prepaint_child(drag_hover_recorder_with_drop(
                 hover_id,
                 DragHoverKind::Folder,
                 command,
-                DragHoverDropCommand::TransferTo(dest),
+                drop_command,
                 &props.view,
             ))
             .on_drop::<crate::ui::root::DraggedFiles>(move |d, _window, cx| {
                 let paths = d.paths.clone();
                 drop_v.update(cx, |this, cx| {
                     this.execute_drag_hover_drop_command(
-                        DragHoverDropCommand::TransferTo(drop_target.clone()),
+                        drop_target.clone(),
                         paths,
                         true,
                     );
@@ -1307,20 +1361,13 @@ fn breadcrumb_segment(props: BreadcrumbSegmentProps) -> gpui::Stateful<gpui::Div
                 let paths = paths.paths().to_vec();
                 drop_v_external.update(cx, |this, cx| {
                     this.execute_drag_hover_drop_command(
-                        DragHoverDropCommand::TransferTo(drop_target_external.clone()),
+                        drop_target_external.clone(),
                         paths,
                         false,
                     );
                     cx.notify();
                 });
             });
-    } else {
-        el = el.on_prepaint(drag_hover_recorder(
-            hover_id,
-            DragHoverKind::Folder,
-            command,
-            &props.view,
-        ));
     }
 
     el
@@ -1335,8 +1382,13 @@ fn breadcrumb_chevron(
     windows_theme: bool,
 ) -> impl IntoElement {
     let v = view.clone();
-    let hover_bg = layer_color(layer_base, 0.04, 0.42);
+    let hover_bg = layer_base;
     div()
+        .id(SharedString::from(format!(
+            "crumb-chevron-{}-{}",
+            tile.0,
+            dir.display()
+        )))
         .flex_none()
         .size(crate::ui::rem_px(if windows_theme { 22.0 } else { 18.0 }))
         .flex()
@@ -1344,6 +1396,8 @@ fn breadcrumb_chevron(
         .justify_center()
         .rounded(px(if windows_theme { 6.0 } else { 5.0 }))
         .cursor_pointer()
+        .bg(hover_bg.opacity(0.0))
+        .motion_feedback()
         .hover(move |s| s.bg(hover_bg))
         .child(theme_icon(
             AtlasIcon::CaretRight,

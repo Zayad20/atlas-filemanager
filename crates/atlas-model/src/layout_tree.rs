@@ -507,8 +507,9 @@ mod tests {
 
         tree.sanitize();
 
-        assert_eq!(tree.root, Some(pane));
-        assert_eq!(tree.tiles.iter().count(), 1);
+        assert_eq!(tree.root, Some(tabs));
+        assert_eq!(tree.tiles.iter().count(), 2);
+        assert!(matches!(tree.tiles.get(tabs), Some(Tile::Container(Container::Tabs(_)))));
         assert!(matches!(tree.tiles.get(pane), Some(Tile::Pane(_))));
     }
 

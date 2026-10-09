@@ -30,9 +30,23 @@ impl App {
         // focus handle, and an active inline rename focuses its row input.
         self.sync_overlay_focus(window, cx);
 
+        if self.state.overlay.show_settings {
+            layers.push(self.render_settings(window, cx));
+        }
+        if self.state.overlay.show_getting_started {
+            layers.push(self.render_getting_started(window, cx));
+        }
+        if self.state.overlay.getting_started_welcome_since.is_some() {
+            layers.push(self.render_getting_started_welcome(window, cx));
+        }
+        if self.state.ext.show_manager {
+            layers.push(self.render_ext_manager(window, cx));
+        }
+
         // Each palette is hosted in its own view so the open animation only
         // re-renders the overlay, not App + every file pane. The goto is kept
         // mounted while `palette_closing` is set so the exit animation can play.
+        // Palettes and prompt dialogs render above full-screen sheets like ExtManager.
         use crate::ui::palette::PaletteKind;
         let goto_closing = matches!(self.palette_closing, Some((PaletteKind::Goto, _)));
         if self.state.overlay.show_goto_bar || goto_closing {
@@ -53,17 +67,8 @@ impl App {
                     .into_any_element(),
             );
         }
-        if self.state.overlay.show_settings {
-            layers.push(self.render_settings(window, cx));
-        }
-        if self.state.overlay.show_getting_started {
-            layers.push(self.render_getting_started(window, cx));
-        }
-        if self.state.overlay.getting_started_welcome_since.is_some() {
-            layers.push(self.render_getting_started_welcome(window, cx));
-        }
-        if self.state.ext.show_manager {
-            layers.push(self.render_ext_manager(window, cx));
+        if self.state.ext.pending.is_some() {
+            layers.push(self.render_ext_prompt(window, cx));
         }
         if self.state.overlay.transfer_conflict.is_some() {
             layers.push(self.render_transfer_conflict(cx));
@@ -184,6 +189,7 @@ pub(crate) mod add_cloud;
 mod batch_rename;
 mod create_tag;
 mod ext_manager;
+mod ext_prompt;
 mod getting_started;
 mod properties;
 mod rename_profile;

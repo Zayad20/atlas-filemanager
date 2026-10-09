@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use anyhow::{Context as _, Result};
 use atlas_core::cloud::provider::{CloudProvider, ProgressSink};
 use atlas_core::cloud::rclone::{rc_api::RcClient, sidecar, RcloneProvider};

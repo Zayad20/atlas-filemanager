@@ -87,7 +87,14 @@ fn find_existing() -> Option<PathBuf> {
     {
         return Some(bundled);
     }
-    if let Ok(out) = std::process::Command::new("rclone").arg("version").output() {
+    let mut cmd = std::process::Command::new("rclone");
+    cmd.arg("version");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    if let Ok(out) = cmd.output() {
         if out.status.success() {
             return Some(PathBuf::from("rclone"));
         }
@@ -235,8 +242,8 @@ pub fn spawn_daemon(binary: &Path) -> anyhow::Result<Daemon> {
     let cache_dir = crate::util::config::data_dir().join("rclone-cache");
     let _ = std::fs::create_dir_all(&cache_dir);
 
-    let child = Command::new(binary)
-        .arg("rcd")
+    let mut cmd = Command::new(binary);
+    cmd.arg("rcd")
         .arg("--rc-addr")
         .arg(&addr)
         .arg("--rc-user")
@@ -247,7 +254,11 @@ pub fn spawn_daemon(binary: &Path) -> anyhow::Result<Daemon> {
         .arg(&cache_dir)
         .kill_on_drop(true)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+
+    let child = cmd
         .spawn()
         .context("spawn rclone rcd")?;
     RCD_PID.store(child.id().unwrap_or(0), Ordering::SeqCst);

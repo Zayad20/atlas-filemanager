@@ -1,3 +1,4 @@
+#![windows_subsystem = "windows"]
 #![allow(clippy::disallowed_methods)]
 
 use anyhow::{Context as _, Result};
@@ -11,6 +12,10 @@ async fn main() -> Result<()> {
     anyhow::ensure!(request.version == 1, "unsupported command protocol version");
     let response = match request.command_id.as_str() {
         "icon-manager.download-theme" => download_theme(&request).await,
+        "icon-manager.download-material" => download_theme_id(&request, "PKief/material-icon-theme").await,
+        "icon-manager.download-catppuccin" => download_theme_id(&request, "catppuccin/catppuccin-vsc-icons").await,
+        "icon-manager.download-flow" => download_theme_id(&request, "thang-nm/flow-icons").await,
+        "icon-manager.reset-default" => reset_default(&request).await,
         other => anyhow::bail!("unsupported icon-manager command: {other}"),
     };
     let response = match response {
@@ -34,6 +39,10 @@ async fn download_theme(request: &SidecarCommandRequest) -> Result<()> {
         .map(String::as_str)
         .unwrap_or("PKief/material-icon-theme")
         .trim();
+    download_theme_id(request, extension_id).await
+}
+
+async fn download_theme_id(request: &SidecarCommandRequest, extension_id: &str) -> Result<()> {
     anyhow::ensure!(
         valid_extension_id(extension_id),
         "invalid Open VSX extension id"
@@ -74,6 +83,9 @@ fn valid_extension_id(value: &str) -> bool {
     let mut parts = value.split('/');
     let valid = |part: &str| {
         !part.is_empty()
+            && part != "."
+            && part != ".."
+            && !part.starts_with('.')
             && part
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
@@ -102,6 +114,14 @@ fn extract_zip(bytes: &[u8], destination: &Path) -> Result<()> {
     Ok(())
 }
 
+async fn reset_default(request: &SidecarCommandRequest) -> Result<()> {
+    let mappings_path = request.data_dir.join("theme_mappings.json");
+    if mappings_path.exists() {
+        let _ = std::fs::remove_file(mappings_path);
+    }
+    Ok(())
+}
+
 fn build_mappings(data_dir: &Path, theme_root: &Path) -> Result<()> {
     let package_path = theme_root.join("extension/package.json");
     let package: serde_json::Value = serde_json::from_reader(std::fs::File::open(package_path)?)?;
@@ -123,10 +143,6 @@ fn build_mappings(data_dir: &Path, theme_root: &Path) -> Result<()> {
         .collect::<Vec<_>>()
         .join("\n");
     let theme: serde_json::Value = serde_json::from_str(&clean)?;
-    let extensions = theme
-        .get("fileExtensions")
-        .and_then(serde_json::Value::as_object)
-        .context("theme contains no file extension mappings")?;
     let definitions = theme
         .get("iconDefinitions")
         .and_then(serde_json::Value::as_object)
@@ -135,21 +151,51 @@ fn build_mappings(data_dir: &Path, theme_root: &Path) -> Result<()> {
         .parent()
         .context("theme has no parent directory")?;
     let mut mappings = serde_json::Map::new();
-    for (extension, icon_id) in extensions {
-        let Some(icon_path) = icon_id
-            .as_str()
-            .and_then(|id| definitions.get(id))
-            .and_then(|definition| definition.get("iconPath"))
-            .and_then(serde_json::Value::as_str)
-        else {
-            continue;
-        };
-        let path = normalize_icon_path(&theme_root.join("extension"), theme_dir, icon_path)?;
-        mappings.insert(
-            extension.clone(),
-            serde_json::Value::String(path.to_string_lossy().into_owned()),
-        );
+
+    // Map default directory icon
+    if let Some(folder_id) = theme.get("folder").and_then(serde_json::Value::as_str) {
+        if let Some(icon_path) = definitions.get(folder_id).and_then(|d| d.get("iconPath")).and_then(serde_json::Value::as_str) {
+            if let Ok(path) = normalize_icon_path(&theme_root.join("extension"), theme_dir, icon_path) {
+                mappings.insert(
+                    "/".to_string(),
+                    serde_json::Value::String(path.to_string_lossy().into_owned()),
+                );
+            }
+        }
     }
+
+    // Map generic file icon
+    if let Some(file_id) = theme.get("file").and_then(serde_json::Value::as_str) {
+        if let Some(icon_path) = definitions.get(file_id).and_then(|d| d.get("iconPath")).and_then(serde_json::Value::as_str) {
+            if let Ok(path) = normalize_icon_path(&theme_root.join("extension"), theme_dir, icon_path) {
+                mappings.insert(
+                    "".to_string(),
+                    serde_json::Value::String(path.to_string_lossy().into_owned()),
+                );
+            }
+        }
+    }
+
+    // Map file extensions
+    if let Some(extensions) = theme.get("fileExtensions").and_then(serde_json::Value::as_object) {
+        for (extension, icon_id) in extensions {
+            let Some(icon_path) = icon_id
+                .as_str()
+                .and_then(|id| definitions.get(id))
+                .and_then(|definition| definition.get("iconPath"))
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            if let Ok(path) = normalize_icon_path(&theme_root.join("extension"), theme_dir, icon_path) {
+                mappings.insert(
+                    extension.clone(),
+                    serde_json::Value::String(path.to_string_lossy().into_owned()),
+                );
+            }
+        }
+    }
+
     let mut output = std::fs::File::create(data_dir.join("theme_mappings.json"))?;
     serde_json::to_writer(&mut output, &mappings)?;
     output.flush()?;

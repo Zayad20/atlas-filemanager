@@ -1,3 +1,4 @@
+use gpui::ColorExt as _;
 use std::sync::Arc;
 
 use gpui::{
@@ -24,7 +25,7 @@ use super::{
 };
 
 fn backdrop_tint(color: gpui::Hsla, alpha: f32) -> gpui::Hsla {
-    if color.a >= 1.0 {
+    if color.alpha >= 1.0 {
         color.opacity(alpha)
     } else {
         color

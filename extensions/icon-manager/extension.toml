@@ -1,6 +1,6 @@
 id = "icon-manager"
 name = "Icon Theme Manager"
-version = "0.2.0"
+version = "0.3.0"
 author = "Atlas Team"
 description = "Downloads and activates VS Code icon themes from Open VSX."
 kind = "sidecar"
@@ -9,8 +9,26 @@ kind = "sidecar"
 command = "atlas-icon-extension.exe"
 
 [[commands]]
+id = "icon-manager.download-material"
+title = "Install Material Icon Theme"
+per_file = false
+accepts = { any = true }
+
+[[commands]]
+id = "icon-manager.download-catppuccin"
+title = "Install Catppuccin Icons"
+per_file = false
+accepts = { any = true }
+
+[[commands]]
+id = "icon-manager.download-flow"
+title = "Install Flow Icons"
+per_file = false
+accepts = { any = true }
+
+[[commands]]
 id = "icon-manager.download-theme"
-title = "Download and activate icon theme…"
+title = "Download custom icon theme from Open VSX…"
 per_file = false
 accepts = { any = true }
 
@@ -18,3 +36,16 @@ accepts = { any = true }
 name = "theme"
 label = "Open VSX extension (publisher/name)"
 default = "PKief/material-icon-theme"
+
+[[commands]]
+id = "icon-manager.select-theme"
+title = "Select icon theme variant…"
+per_file = false
+accepts = { any = true }
+
+[[commands]]
+id = "icon-manager.reset-default"
+title = "Reset to default icons (Liquid Glass)"
+per_file = false
+accepts = { any = true }
+

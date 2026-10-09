@@ -3,6 +3,7 @@ use crate::input::action::Action;
 use crate::ui::icons::{atlas_logo, icon, AtlasIcon};
 use atlas_model::settings::ViewMode;
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{
     deferred, div, hsla, linear_color_stop, linear_gradient, point, px, AnyElement, BoxShadow,
     Context, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton, SharedString, Window,
@@ -498,6 +499,7 @@ impl App {
         let themes = gpui_component::ThemeRegistry::global(cx)
             .sorted_themes()
             .iter()
+            .filter(|cfg| crate::app::theme::theme_is_available(cfg.name.as_ref()))
             .map(|cfg| {
                 let name = cfg.name.to_string();
                 let selected = name == active;
@@ -846,7 +848,7 @@ fn step_dots(step: usize, muted: gpui::Hsla) -> AnyElement {
 
 fn soft_shadow() -> Vec<BoxShadow> {
     vec![BoxShadow {
-        color: hsla(0., 0., 0., 0.24),
+        color: hsla(0., 0., 0., 0.24).into(),
         offset: point(px(0.0), px(24.0)),
         blur_radius: px(64.0),
         spread_radius: px(-24.0),
@@ -856,7 +858,7 @@ fn soft_shadow() -> Vec<BoxShadow> {
 
 fn soft_card_shadow() -> Vec<BoxShadow> {
     vec![BoxShadow {
-        color: hsla(0., 0., 0., 0.18),
+        color: hsla(0., 0., 0., 0.18).into(),
         offset: point(px(0.0), px(14.0)),
         blur_radius: px(34.0),
         spread_radius: px(-20.0),

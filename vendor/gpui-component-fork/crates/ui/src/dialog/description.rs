@@ -3,7 +3,7 @@ use gpui::{
     StyleRefinement, Styled, Window, div,
 };
 
-use crate::{ActiveTheme as _, StyledExt as _};
+use crate::ActiveTheme as _;
 
 /// Description element for a dialog header.
 ///

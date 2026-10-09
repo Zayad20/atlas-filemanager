@@ -15,6 +15,7 @@ use crate::ui::icons::{icon, AtlasIcon};
 use atlas_model::ext_state::ExtManagerTab;
 use gpui::prelude::*;
 use gpui::AnimationExt;
+use gpui::ColorExt as _;
 use gpui::{div, px, AnyElement, Context, Hsla, MouseButton, SharedString, Window};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{h_flex, v_flex, ActiveTheme};
@@ -215,6 +216,40 @@ impl App {
                                     .when(!description.is_empty(), |r| {
                                         r.child(
                                             div().text_xs().text_color(muted).child(description),
+                                        )
+                                    })
+                                    .when(enabled && !ext.manifest.commands.is_empty(), |r| {
+                                        let id_for_cmds = id.clone();
+                                        r.child(
+                                            h_flex()
+                                                .flex_wrap()
+                                                .gap_1()
+                                                .mt_1()
+                                                .children(ext.manifest.commands.iter().map(|cmd| {
+                                                    let cmd_id = cmd.id.clone();
+                                                    let cmd_title = cmd.title.clone();
+                                                    let ext_id_clone = id_for_cmds.clone();
+                                                    let view_cmd = view.clone();
+                                                    div()
+                                                        .id(SharedString::from(format!("ext-cmd-{cmd_id}")))
+                                                        .px_2()
+                                                        .py_0p5()
+                                                        .rounded(px(crate::ui::RADIUS))
+                                                        .bg(accent.opacity(0.12))
+                                                        .text_color(accent)
+                                                        .text_xs()
+                                                        .cursor_pointer()
+                                                        .hover(|h| h.bg(accent.opacity(0.24)))
+                                                        .child(cmd_title)
+                                                        .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
+                                                            view_cmd.update(cx, |this, _cx| {
+                                                                this.handle_ext_action(ExtAction::Run {
+                                                                    ext_id: ext_id_clone.clone(),
+                                                                    cmd_id: cmd_id.clone(),
+                                                                });
+                                                            });
+                                                        })
+                                                })),
                                         )
                                     }),
                             )

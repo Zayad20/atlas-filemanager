@@ -139,7 +139,7 @@ impl ProfileScoped for RecentFoldersFeature {
 
 /// Name of the theme applied to new profiles. Must match a theme registered in
 /// `ThemeRegistry` (see `crates/atlas-ui/assets/themes/atlas-themes.json`).
-pub const DEFAULT_THEME: &str = "Atlas Figma Glass";
+pub const DEFAULT_THEME: &str = "Atlas Light Glass";
 
 fn default_theme() -> String {
     DEFAULT_THEME.to_string()

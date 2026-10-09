@@ -1,3 +1,4 @@
+use gpui::ColorExt as _;
 use gpui::{
     AnyElement, App, ClickEvent, Context, DismissEvent, Edges, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding, Length, ParentElement,
@@ -539,7 +540,7 @@ where
                                 this.child(icon.xsmall().text_color(cx.theme().muted_foreground))
                             }),
                     )
-                    .on_prepaint({
+                    .on_prepaint_child({
                         let state = cx.entity();
                         move |bounds, _, cx| state.update(cx, |r, _| r.state.bounds = bounds)
                     }),
@@ -581,7 +582,7 @@ where
                                 })),
                         ),
                     )
-                    .with_priority(1),
+                    .priority(1),
                 )
             })
     }

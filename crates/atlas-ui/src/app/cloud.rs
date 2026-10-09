@@ -578,6 +578,12 @@ impl App {
                 }
             }
             BgResult::TransferUpdate(snapshot) => {
+                let completed = snapshot.iter().filter(|transfer| {
+                    transfer.kind == atlas_model::cloud_model::TransferKind::Upload
+                        && transfer.state == atlas_model::cloud_model::TransferState::Done
+                        && !self.state.cloud.transfers.iter().any(|old| old.id == transfer.id && old.state == atlas_model::cloud_model::TransferState::Done)
+                }).map(|transfer| transfer.local_path.clone()).collect::<Vec<_>>();
+                self.consume_completed_staged_paths(&completed);
                 let any_active = snapshot.iter().any(|t| !t.state.is_terminal());
                 self.state.cloud.transfers = snapshot;
                 if any_active {

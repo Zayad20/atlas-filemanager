@@ -17,15 +17,17 @@ use crate::ui::views::grid::{
 };
 use atlas_model::file_entry::FileKind;
 use atlas_model::pane::TabId;
+use gpui::ColorExt as _;
 use gpui::{
-    point, px, size, App as GpuiApp, Bounds, ContentMask, Corners, DispatchPhase, Element,
+    point, px, size, App as GpuiApp, Bounds, Corners, DispatchPhase, Element,
     ElementId, Font, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
     IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Refineable,
     ShapedLine, SharedString, Style, StyleRefinement, Styled, TextAlign, WeakEntity, Window,
 };
+use crate::ui::motion::ease_out_quart;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const FILE_SURFACE_SHAPE_CAPACITY: usize = 8_192;
 
@@ -124,9 +126,31 @@ impl GridSurfaceLayout {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ItemBounds2D {
+    visual_x: f32,
+    visual_y: f32,
+    visual_w: f32,
+    visual_h: f32,
+    target_x: f32,
+    target_y: f32,
+    target_w: f32,
+    target_h: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ActiveFlipAnim {
+    start_time: Instant,
+    start_dx: f32,
+    start_dy: f32,
+    start_dw: f32,
+    start_dh: f32,
+}
+
 #[derive(Clone)]
 struct GridSurfaceSlot {
     row: usize,
+    entry_idx: usize,
     shape_key: u64,
     selected: bool,
     selected_at: Option<Instant>,
@@ -143,6 +167,9 @@ struct SharedGridSurfaceState(std::rc::Rc<std::cell::RefCell<GridSurfaceState>>)
 #[derive(Default)]
 struct GridSurfaceState {
     slots: Vec<Option<GridSurfaceSlot>>,
+    last_bounds: HashMap<usize, ItemBounds2D>,
+    animations: HashMap<usize, ActiveFlipAnim>,
+    last_layout: Option<GridSurfaceLayout>,
 }
 
 impl GridSurfaceState {
@@ -242,6 +269,7 @@ pub(crate) struct GridSurfaceElement {
     font_size: Pixels,
     style: StyleRefinement,
     layout: GridSurfaceLayout,
+    animate: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -303,7 +331,13 @@ impl GridSurfaceElement {
             font_size,
             style: StyleRefinement::default(),
             layout: GridSurfaceLayout::Thumbnail,
+            animate: false,
         }
+    }
+
+    pub(crate) fn animated(mut self, animate: bool) -> Self {
+        self.animate = animate;
+        self
     }
 
     pub(crate) fn compact_list(mut self) -> Self {
@@ -330,6 +364,82 @@ impl Styled for GridSurfaceElement {
     }
 }
 
+const FLIP_DURATION: Duration = Duration::from_millis(180);
+
+fn compute_flip(
+    entry_idx: usize,
+    target_x: f32,
+    target_y: f32,
+    target_w: f32,
+    target_h: f32,
+    animate: bool,
+    now: Instant,
+    last_bounds: &HashMap<usize, ItemBounds2D>,
+    animations: &mut HashMap<usize, ActiveFlipAnim>,
+    has_active_anims: &mut bool,
+) -> (f32, f32, f32, f32) {
+    if !animate {
+        return (target_x, target_y, target_w, target_h);
+    }
+
+    let mut cur_dx = 0.0_f32;
+    let mut cur_dy = 0.0_f32;
+    let mut cur_dw = 0.0_f32;
+    let mut cur_dh = 0.0_f32;
+
+    if let Some(prev) = last_bounds.get(&entry_idx) {
+        let target_moved = (prev.target_x - target_x).abs() > 0.5
+            || (prev.target_y - target_y).abs() > 0.5
+            || (prev.target_w - target_w).abs() > 0.5
+            || (prev.target_h - target_h).abs() > 0.5;
+
+        if target_moved {
+            let dx = prev.visual_x - target_x;
+            let dy = prev.visual_y - target_y;
+            let dw = prev.visual_w - target_w;
+            let dh = prev.visual_h - target_h;
+
+            if dx.abs() > 0.5 || dy.abs() > 0.5 || dw.abs() > 0.5 || dh.abs() > 0.5 {
+                animations.insert(
+                    entry_idx,
+                    ActiveFlipAnim {
+                        start_time: now,
+                        start_dx: dx,
+                        start_dy: dy,
+                        start_dw: dw,
+                        start_dh: dh,
+                    },
+                );
+                cur_dx = dx;
+                cur_dy = dy;
+                cur_dw = dw;
+                cur_dh = dh;
+                *has_active_anims = true;
+            }
+        } else if let Some(anim) = animations.get_mut(&entry_idx) {
+            let elapsed = now.saturating_duration_since(anim.start_time);
+            if elapsed < FLIP_DURATION {
+                let t = (elapsed.as_secs_f32() / FLIP_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+                let factor = 1.0 - ease_out_quart(t);
+                cur_dx = anim.start_dx * factor;
+                cur_dy = anim.start_dy * factor;
+                cur_dw = anim.start_dw * factor;
+                cur_dh = anim.start_dh * factor;
+                *has_active_anims = true;
+            } else {
+                animations.remove(&entry_idx);
+            }
+        }
+    }
+
+    (
+        target_x + cur_dx,
+        target_y + cur_dy,
+        (target_w + cur_dw).max(1.0),
+        (target_h + cur_dh).max(1.0),
+    )
+}
+
 impl Element for GridSurfaceElement {
     type RequestLayoutState = Style;
     type PrepaintState = GridSurfacePrepaint;
@@ -352,8 +462,10 @@ impl Element for GridSurfaceElement {
         crate::perf::count(self.layout.layout_metric());
         let mut style = Style::default();
         style.refine(&self.style);
-        style.size.width = gpui::Length::Definite(gpui::DefiniteLength::Fraction(1.0));
-        style.size.height = gpui::Length::Definite(gpui::DefiniteLength::Fraction(1.0));
+        style.size.width =
+            gpui::Length::Definite(gpui::DefiniteLength::Relative(gpui::relative(1.0)));
+        style.size.height =
+            gpui::Length::Definite(gpui::DefiniteLength::Relative(gpui::relative(1.0)));
         (window.request_layout(style.clone(), [], cx), style)
     }
 
@@ -460,7 +572,8 @@ impl Element for GridSurfaceElement {
                 }
             }
 
-            if app.drag_hover_maybe_active() {
+            {
+                app.pending_drag_hover_targets.retain(|target| !matches!(target.id, DragHoverId::Folder(tab, _) if tab == pane_id));
                 let targets = app
                     .state
                     .tab_states
@@ -472,7 +585,7 @@ impl Element for GridSurfaceElement {
                                 let entry = tab_state.entries.get(entry_idx)?;
                                 matches!(entry.kind, FileKind::Dir).then(|| DragHoverTarget {
                                     id: DragHoverId::Folder(pane_id, entry.path.clone()),
-                                    bounds: model.cell_bounds(visible_pos),
+                                    bounds: model.cell_bounds(visible_pos).intersect(&model.bounds).intersect(&window.content_mask().bounds),
                                     kind: DragHoverKind::Folder,
                                     command: DragHoverCommand::NavigatePathIn(
                                         pane_id,
@@ -536,7 +649,8 @@ impl Element for GridSurfaceElement {
                         let text_w = self.cell_w - 8.0;
                         (text_w / (f32::from(font_size) * 0.55)) as usize
                     }
-                }.max(5);
+                }
+                .max(5);
                 let key = grid_shape_key(
                     entry_idx,
                     &entry.name,
@@ -547,7 +661,8 @@ impl Element for GridSurfaceElement {
                     font_size,
                     name_color,
                 );
-                let icon = app.file_icon_for_entry(&entry.path, &entry.kind, entry.extension.as_deref());
+                let icon =
+                    app.file_icon_for_entry(&entry.path, &entry.kind, entry.extension.as_deref());
                 let previous_selected = state
                     .slots
                     .get(state.index(row))
@@ -569,6 +684,7 @@ impl Element for GridSurfaceElement {
                         };
                         GridSurfaceSlot {
                             row,
+                            entry_idx,
                             shape_key: key,
                             selected,
                             selected_at: (selected && !previous_selected).then(Instant::now),
@@ -588,6 +704,7 @@ impl Element for GridSurfaceElement {
                                             background_color: None,
                                             underline: None,
                                             strikethrough: None,
+                                            letter_spacing: None,
                                         }],
                                         None,
                                     )
@@ -673,6 +790,27 @@ impl Element for GridSurfaceElement {
         let pitch_y = self.pitch_y;
         let thumb = self.thumb;
         let layout = self.layout;
+        let animate = self.animate;
+
+        let mut state_rc = prepaint.state.0.borrow_mut();
+        let state = &mut *state_rc;
+
+        if state.last_layout != Some(layout) {
+            state.last_bounds.clear();
+            state.animations.clear();
+            state.last_layout = Some(layout);
+        }
+
+        let now = Instant::now();
+        let mut has_active_anims = false;
+        let mut next_bounds = HashMap::with_capacity(prepaint.end_idx.saturating_sub(prepaint.start_idx));
+
+        let GridSurfaceState {
+            slots,
+            last_bounds,
+            animations,
+            ..
+        } = state;
 
         style.paint(bounds, window, cx, |window, cx| {
             let origin_x = px(f32::from(bounds.origin.x).round());
@@ -681,23 +819,53 @@ impl Element for GridSurfaceElement {
             let icon_area_h = thumb * GRID_ICON_AREA;
             let label_h = GRID_LABEL_H * zoom;
 
-            let state = prepaint.state.0.borrow();
-            
             if layout == GridSurfaceLayout::CompactList {
                 let pad_x = 24.0 * zoom;
                 let icon_slot_w = 16.0 * zoom;
                 let icon_size = 14.0 * zoom;
                 let text_gap = 4.0 * zoom;
                 for r in prepaint.start_idx..prepaint.end_idx {
-                    let Some(slot) = state.slots.get(state.index(r)).and_then(|s| s.as_ref()) else { continue; };
-                    if slot.row != r { continue; }
+                    let Some(slot) = slots.get(r % slots.len()).and_then(|s| s.as_ref())
+                    else {
+                        continue;
+                    };
+                    if slot.row != r {
+                        continue;
+                    }
                     let col = slot.row % cols;
                     let row = slot.row / cols;
-                    let x = origin_x + px(col as f32 * pitch_x);
-                    let y = origin_y + px(row as f32 * pitch_y);
+                    let target_x = col as f32 * pitch_x;
+                    let target_y = row as f32 * pitch_y;
+                    let (visual_x, visual_y, visual_w, visual_h) = compute_flip(
+                        slot.entry_idx,
+                        target_x,
+                        target_y,
+                        cell_w,
+                        cell_h,
+                        animate,
+                        now,
+                        last_bounds,
+                        animations,
+                        &mut has_active_anims,
+                    );
+                    next_bounds.insert(
+                        slot.entry_idx,
+                        ItemBounds2D {
+                            visual_x,
+                            visual_y,
+                            visual_w,
+                            visual_h,
+                            target_x,
+                            target_y,
+                            target_w: cell_w,
+                            target_h: cell_h,
+                        },
+                    );
+                    let x = origin_x + px(visual_x);
+                    let y = origin_y + px(visual_y);
                     let cell = Bounds {
                         origin: point(x, y),
-                        size: size(px(cell_w), px(cell_h)),
+                        size: size(px(visual_w), px(visual_h)),
                     };
 
                     let background = if slot.selected {
@@ -711,13 +879,13 @@ impl Element for GridSurfaceElement {
                     };
                     if let Some(mut color) = background {
                         if slot.dimmed {
-                            color = color.opacity(color.a * 0.45);
+                            color = color.opacity(color.alpha * 0.45);
                         }
                         paint_rounded(window, cell, 4.0 * zoom, color);
                     }
 
                     let icon_center =
-                        point(x + px(pad_x + icon_slot_w * 0.5), y + px(cell_h * 0.5));
+                        point(x + px(pad_x + icon_slot_w * 0.5), y + px(visual_h * 0.5));
                     if slot.selected && prepaint.show_checkboxes {
                         selection_checkbox::paint_animated(
                             window,
@@ -728,25 +896,53 @@ impl Element for GridSurfaceElement {
                         );
                     } else {
                         match &slot.icon {
-                            FileIcon::PreviewTexture(tex) | FileIcon::IconTexture(tex) => {
+                            FileIcon::PreviewTexture(tex) => {
                                 let natural = tex.size(0);
                                 let natural_w = i32::from(natural.width).max(1) as f32;
                                 let natural_h = i32::from(natural.height).max(1) as f32;
                                 let scale =
                                     (icon_size / natural_w).min(icon_size / natural_h).min(1.0);
-                                let w = natural_w * scale;
-                                let h = natural_h * scale;
+                                let w = (natural_w * scale).round();
+                                let h = (natural_h * scale).round();
+                                let half_w = (w * 0.5).round();
+                                let half_h = (h * 0.5).round();
+                                let cx = f32::from(icon_center.x).round();
+                                let cy = f32::from(icon_center.y).round();
                                 let icon_bounds = Bounds {
-                                    origin: point(
-                                        icon_center.x - px(w * 0.5),
-                                        icon_center.y - px(h * 0.5),
-                                    ),
+                                    origin: point(px(cx - half_w), px(cy - half_h)),
                                     size: size(px(w), px(h)),
                                 };
                                 let _ = window.paint_image(
                                     icon_bounds,
+                                    icon_bounds,
                                     Corners::default(),
                                     tex.clone(),
+                                    0,
+                                    false,
+                                );
+                            }
+                            FileIcon::IconTexture(tex) => {
+                                let resolved = tex.for_size(icon_size);
+                                let natural = resolved.size(0);
+                                let natural_w = i32::from(natural.width).max(1) as f32;
+                                let natural_h = i32::from(natural.height).max(1) as f32;
+                                let scale =
+                                    (icon_size / natural_w).min(icon_size / natural_h).min(1.0);
+                                let w = (natural_w * scale).round();
+                                let h = (natural_h * scale).round();
+                                let half_w = (w * 0.5).round();
+                                let half_h = (h * 0.5).round();
+                                let cx = f32::from(icon_center.x).round();
+                                let cy = f32::from(icon_center.y).round();
+                                let icon_bounds = Bounds {
+                                    origin: point(px(cx - half_w), px(cy - half_h)),
+                                    size: size(px(w), px(h)),
+                                };
+                                let _ = window.paint_image(
+                                    icon_bounds,
+                                    icon_bounds,
+                                    Corners::default(),
+                                    resolved,
                                     0,
                                     false,
                                 );
@@ -780,13 +976,13 @@ impl Element for GridSurfaceElement {
                     let name_bounds = Bounds {
                         origin: point(name_x, y),
                         size: size(
-                            px((cell_w - (pad_x + icon_slot_w + text_gap + pad_x)).max(0.0)),
-                            px(cell_h),
+                            px((visual_w - (pad_x + icon_slot_w + text_gap + pad_x)).max(0.0)),
+                            px(visual_h),
                         ),
                     };
                     let _ = slot.name.paint(
                         name_bounds.origin,
-                        px(cell_h),
+                        px(visual_h),
                         TextAlign::Left,
                         None,
                         window,
@@ -795,15 +991,47 @@ impl Element for GridSurfaceElement {
                 }
             } else {
                 for r in prepaint.start_idx..prepaint.end_idx {
-                    let Some(slot) = state.slots.get(state.index(r)).and_then(|s| s.as_ref()) else { continue; };
-                    if slot.row != r { continue; }
+                    let Some(slot) = slots.get(r % slots.len()).and_then(|s| s.as_ref())
+                    else {
+                        continue;
+                    };
+                    if slot.row != r {
+                        continue;
+                    }
                     let col = slot.row % cols;
                     let row = slot.row / cols;
-                    let x = origin_x + px(col as f32 * pitch_x);
-                    let y = origin_y + px(row as f32 * pitch_y);
+                    let target_x = col as f32 * pitch_x;
+                    let target_y = row as f32 * pitch_y;
+                    let (visual_x, visual_y, visual_w, visual_h) = compute_flip(
+                        slot.entry_idx,
+                        target_x,
+                        target_y,
+                        cell_w,
+                        cell_h,
+                        animate,
+                        now,
+                        last_bounds,
+                        animations,
+                        &mut has_active_anims,
+                    );
+                    next_bounds.insert(
+                        slot.entry_idx,
+                        ItemBounds2D {
+                            visual_x,
+                            visual_y,
+                            visual_w,
+                            visual_h,
+                            target_x,
+                            target_y,
+                            target_w: cell_w,
+                            target_h: cell_h,
+                        },
+                    );
+                    let x = origin_x + px(visual_x);
+                    let y = origin_y + px(visual_y);
                     let cell = Bounds {
                         origin: point(x, y),
-                        size: size(px(cell_w), px(cell_h)),
+                        size: size(px(visual_w), px(visual_h)),
                     };
 
                     let background = if slot.selected {
@@ -817,14 +1045,16 @@ impl Element for GridSurfaceElement {
                     };
                     if let Some(mut color) = background {
                         if slot.dimmed {
-                            color = color.opacity(color.a * 0.45);
+                            color = color.opacity(color.alpha * 0.45);
                         }
                         paint_rounded(window, cell, 6.0 * zoom, color);
                     }
 
+                    let scale_h = if cell_h > 1.0 { (visual_h / cell_h).clamp(0.2, 5.0) } else { 1.0 };
+                    let item_icon_area_h = (icon_area_h * scale_h).min(visual_h - label_h).max(0.0);
                     let icon_center = point(
-                        x + px(cell_w * 0.5),
-                        y + px((icon_area_h.min(cell_h - label_h)) * 0.5),
+                        x + px(visual_w * 0.5),
+                        y + px(item_icon_area_h * 0.5),
                     );
                     if slot.selected && prepaint.show_checkboxes {
                         selection_checkbox::paint_animated(
@@ -837,21 +1067,24 @@ impl Element for GridSurfaceElement {
                     } else {
                         match &slot.icon {
                             FileIcon::PreviewTexture(tex) => {
+                                let item_thumb = (thumb * scale_h).max(1.0);
                                 let natural = tex.size(0);
                                 let natural_w = i32::from(natural.width).max(1) as f32;
                                 let natural_h = i32::from(natural.height).max(1) as f32;
-                                let max_h = (thumb * GRID_PREVIEW_MAX).min(icon_area_h);
-                                let scale = (thumb / natural_w).min(max_h / natural_h).min(1.0);
-                                let w = natural_w * scale;
-                                let h = natural_h * scale;
+                                let max_h = (item_thumb * GRID_PREVIEW_MAX).min(item_icon_area_h);
+                                let scale = (item_thumb / natural_w).min(max_h / natural_h).min(1.0);
+                                let w = (natural_w * scale).round();
+                                let h = (natural_h * scale).round();
+                                let half_w = (w * 0.5).round();
+                                let half_h = (h * 0.5).round();
+                                let cx = f32::from(icon_center.x).round();
+                                let cy = f32::from(icon_center.y).round();
                                 let icon_bounds = Bounds {
-                                    origin: point(
-                                        icon_center.x - px(w * 0.5),
-                                        icon_center.y - px(h * 0.5),
-                                    ),
+                                    origin: point(px(cx - half_w), px(cy - half_h)),
                                     size: size(px(w), px(h)),
                                 };
                                 let _ = window.paint_image(
+                                    icon_bounds,
                                     icon_bounds,
                                     Corners::default(),
                                     tex.clone(),
@@ -860,18 +1093,21 @@ impl Element for GridSurfaceElement {
                                 );
                             }
                             FileIcon::IconTexture(tex) => {
-                                let sz = (thumb * GRID_TEXTURE_ICON_MAX).min(icon_area_h);
+                                let item_thumb = (thumb * scale_h).max(1.0);
+                                let sz = ((item_thumb * GRID_TEXTURE_ICON_MAX).min(item_icon_area_h)).round();
+                                let half = (sz * 0.5).round();
+                                let cx = f32::from(icon_center.x).round();
+                                let cy = f32::from(icon_center.y).round();
                                 let icon_bounds = Bounds {
-                                    origin: point(
-                                        icon_center.x - px(sz * 0.5),
-                                        icon_center.y - px(sz * 0.5),
-                                    ),
+                                    origin: point(px(cx - half), px(cy - half)),
                                     size: size(px(sz), px(sz)),
                                 };
+                                let resolved = tex.for_size(sz);
                                 let _ = window.paint_image(
                                     icon_bounds,
+                                    icon_bounds,
                                     Corners::default(),
-                                    tex.clone(),
+                                    resolved,
                                     0,
                                     false,
                                 );
@@ -882,7 +1118,8 @@ impl Element for GridSurfaceElement {
                                 } else {
                                     AtlasIcon::File
                                 };
-                                let sz = thumb * GRID_BUILTIN_ICON;
+                                let item_thumb = (thumb * scale_h).max(1.0);
+                                let sz = (item_thumb * GRID_BUILTIN_ICON).min(item_icon_area_h);
                                 let icon_bounds = Bounds {
                                     origin: point(
                                         icon_center.x - px(sz * 0.5),
@@ -907,8 +1144,8 @@ impl Element for GridSurfaceElement {
                     }
 
                     let name_bounds = Bounds {
-                        origin: point(x + px(4.0 * zoom), y + px(icon_area_h)),
-                        size: size(px((cell_w - 8.0 * zoom).max(0.0)), px(label_h)),
+                        origin: point(x + px(4.0 * zoom), y + px(item_icon_area_h)),
+                        size: size(px((visual_w - 8.0 * zoom).max(0.0)), px(label_h)),
                     };
                     let _ = slot.name.paint(
                         point(name_bounds.origin.x, name_bounds.origin.y),
@@ -920,6 +1157,12 @@ impl Element for GridSurfaceElement {
                     );
                 }
             }
+
+            if has_active_anims {
+                window.request_animation_frame();
+            }
+            animations.retain(|_, anim| now.saturating_duration_since(anim.start_time) < FLIP_DURATION);
+            *last_bounds = next_bounds;
 
             let Some(app_entity) = app.upgrade() else {
                 return;
@@ -1036,10 +1279,12 @@ fn grid_shape_key(
     dimmed.hash(&mut hasher);
     font.hash(&mut hasher);
     f32::from(font_size).to_bits().hash(&mut hasher);
-    color.h.to_bits().hash(&mut hasher);
-    color.s.to_bits().hash(&mut hasher);
-    color.l.to_bits().hash(&mut hasher);
-    color.a.to_bits().hash(&mut hasher);
+    (color.hue.into_positive_degrees() / 360.0)
+        .to_bits()
+        .hash(&mut hasher);
+    color.saturation.to_bits().hash(&mut hasher);
+    color.lightness.to_bits().hash(&mut hasher);
+    color.alpha.to_bits().hash(&mut hasher);
     hasher.finish()
 }
 
@@ -1078,5 +1323,165 @@ mod tests {
         assert!(!cache.lines.contains_key(&1));
         assert!(cache.lines.contains_key(&2));
         assert!(cache.lines.contains_key(&3));
+    }
+
+    #[test]
+    fn compute_flip_interpolates_target_motion() {
+        use super::{compute_flip, ActiveFlipAnim, ItemBounds2D, FLIP_DURATION};
+        use std::collections::HashMap;
+        use std::time::Instant;
+
+        let mut last_bounds = HashMap::new();
+        let mut animations = HashMap::new();
+        let mut has_active_anims = false;
+
+        // Baseline: item at (100, 100, 80, 80)
+        last_bounds.insert(
+            42,
+            ItemBounds2D {
+                visual_x: 100.0,
+                visual_y: 100.0,
+                visual_w: 80.0,
+                visual_h: 80.0,
+                target_x: 100.0,
+                target_y: 100.0,
+                target_w: 80.0,
+                target_h: 80.0,
+            },
+        );
+
+        let t0 = Instant::now();
+        // Zoom happens: target shifts to (150, 120, 100, 100)
+        let (vx0, vy0, vw0, vh0) = compute_flip(
+            42,
+            150.0,
+            120.0,
+            100.0,
+            100.0,
+            true,
+            t0,
+            &last_bounds,
+            &mut animations,
+            &mut has_active_anims,
+        );
+
+        // At t0, visual position is preserved at old position (100, 100, 80, 80)
+        assert!(has_active_anims);
+        assert!((vx0 - 100.0).abs() < 0.01);
+        assert!((vy0 - 100.0).abs() < 0.01);
+        assert!((vw0 - 80.0).abs() < 0.01);
+        assert!((vh0 - 80.0).abs() < 0.01);
+
+        // Frame ends: last_bounds updated with frame 0 output
+        last_bounds.insert(
+            42,
+            ItemBounds2D {
+                visual_x: vx0,
+                visual_y: vy0,
+                visual_w: vw0,
+                visual_h: vh0,
+                target_x: 150.0,
+                target_y: 120.0,
+                target_w: 100.0,
+                target_h: 100.0,
+            },
+        );
+
+        // Mid-flight: halfway through FLIP_DURATION
+        has_active_anims = false;
+        let t_mid = t0 + FLIP_DURATION / 2;
+        let (vx_mid, vy_mid, _, _) = compute_flip(
+            42,
+            150.0,
+            120.0,
+            100.0,
+            100.0,
+            true,
+            t_mid,
+            &last_bounds,
+            &mut animations,
+            &mut has_active_anims,
+        );
+        // Visual position has progressed towards target (between 100 and 150)
+        assert!(has_active_anims);
+        assert!(vx_mid > 100.0 && vx_mid < 150.0);
+        assert!(vy_mid > 100.0 && vy_mid < 120.0);
+
+        // Frame ends: last_bounds updated with mid-flight output
+        last_bounds.insert(
+            42,
+            ItemBounds2D {
+                visual_x: vx_mid,
+                visual_y: vy_mid,
+                visual_w: 100.0,
+                visual_h: 100.0,
+                target_x: 150.0,
+                target_y: 120.0,
+                target_w: 100.0,
+                target_h: 100.0,
+            },
+        );
+
+        // Settled: after FLIP_DURATION
+        has_active_anims = false;
+        let t_end = t0 + FLIP_DURATION + std::time::Duration::from_millis(10);
+        let (vx_end, vy_end, vw_end, vh_end) = compute_flip(
+            42,
+            150.0,
+            120.0,
+            100.0,
+            100.0,
+            true,
+            t_end,
+            &last_bounds,
+            &mut animations,
+            &mut has_active_anims,
+        );
+        assert!(!has_active_anims);
+        assert!((vx_end - 150.0).abs() < 0.01);
+        assert!((vy_end - 120.0).abs() < 0.01);
+        assert!((vw_end - 100.0).abs() < 0.01);
+        assert!((vh_end - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn compute_flip_is_noop_when_disabled() {
+        use super::{compute_flip, ItemBounds2D};
+        use std::collections::HashMap;
+        use std::time::Instant;
+
+        let mut last_bounds = HashMap::new();
+        let mut animations = HashMap::new();
+        let mut has_active_anims = false;
+
+        last_bounds.insert(
+            1,
+            ItemBounds2D {
+                visual_x: 0.0,
+                visual_y: 0.0,
+                visual_w: 50.0,
+                visual_h: 50.0,
+                target_x: 0.0,
+                target_y: 0.0,
+                target_w: 50.0,
+                target_h: 50.0,
+            },
+        );
+
+        let (vx, vy, vw, vh) = compute_flip(
+            1,
+            200.0,
+            200.0,
+            100.0,
+            100.0,
+            false,
+            Instant::now(),
+            &last_bounds,
+            &mut animations,
+            &mut has_active_anims,
+        );
+
+        assert!(!has_active_anims);
+        assert_eq!((vx, vy, vw, vh), (200.0, 200.0, 100.0, 100.0));
     }
 }

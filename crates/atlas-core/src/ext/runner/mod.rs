@@ -7,6 +7,7 @@
 
 mod argv;
 mod ext_preview;
+mod icon_manager;
 mod img;
 mod office;
 
@@ -36,7 +37,14 @@ pub fn run_thumbnail(
     let argv = argv::build_thumb_argv(run_tmpl, input, &output);
     let (program, args) = argv.split_first()?;
     let program = approved_program(tools, program)?;
-    let ran = std::process::Command::new(program).args(args).output();
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let ran = cmd.output();
     let ok = matches!(&ran, Ok(out) if out.status.success());
     let decoded = if ok {
         ::image::open(&output).ok().map(|img| {
@@ -76,6 +84,11 @@ pub fn run(
     paths: Vec<PathBuf>,
     answers: HashMap<String, String>,
 ) {
+    if cmd.ext_id == "icon-manager" {
+        icon_manager::run_icon_manager(rt, bg_tx, cmd, answers);
+        return;
+    }
+
     if cmd.kind == ExtKind::Sidecar {
         run_sidecar_command(rt, bg_tx, cmd, paths, answers);
         return;
@@ -110,7 +123,14 @@ pub fn run(
                 errors.push(format!("extension command uses undeclared tool: {program}"));
                 continue;
             };
-            match std::process::Command::new(program).args(args).output() {
+            let mut cmd = std::process::Command::new(program);
+            cmd.args(args);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x0800_0000);
+            }
+            match cmd.output() {
                 Ok(out) if out.status.success() => {}
                 Ok(out) => errors.push(String::from_utf8_lossy(&out.stderr).trim().to_string()),
                 Err(e) => errors.push(e.to_string()),
@@ -141,13 +161,18 @@ fn run_sidecar_command(
                 .ok_or_else(|| anyhow::anyhow!("sidecar extension has no process configuration"))?;
             let program =
                 super::provider_sidecar::confined_program(&cmd.ext_dir, &sidecar.command)?;
-            let mut child = std::process::Command::new(program)
-                .args(&sidecar.args)
+            let mut proc_cmd = std::process::Command::new(program);
+            proc_cmd.args(&sidecar.args)
                 .current_dir(&cmd.ext_dir)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()?;
+                .stderr(std::process::Stdio::piped());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                proc_cmd.creation_flags(0x0800_0000);
+            }
+            let mut child = proc_cmd.spawn()?;
             let request = SidecarCommandRequest {
                 version: 1,
                 command_id: cmd.command.id.clone(),

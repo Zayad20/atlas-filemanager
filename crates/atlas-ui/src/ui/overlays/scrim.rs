@@ -27,8 +27,16 @@ impl App {
             Action::ResolveTransferConflict(_) => "scrim-paste".into(),
             _ => "scrim-goto".into(),
         };
+        // Search and command palettes sit above the workspace without recoloring it.
+        // A transfer decision retains a light cue that the workspace is inactive.
+        let backdrop = if matches!(&close_action, Action::ResolveTransferConflict(_)) {
+            scrim_color()
+        } else {
+            gpui::transparent_black()
+        };
         let v = view;
         let scrim = scrim_base(id, top)
+            .bg(backdrop)
             .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
                 let close = close_action.clone();
                 v.update(cx, |this, cx| {
@@ -111,5 +119,5 @@ fn scrim_base(id: SharedString, top: bool) -> gpui::Stateful<gpui::Div> {
 }
 
 fn scrim_color() -> Hsla {
-    gpui::hsla(0., 0., 0., 0.45)
+    gpui::hsla(0., 0., 0., 0.08)
 }

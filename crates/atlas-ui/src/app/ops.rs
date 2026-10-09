@@ -105,6 +105,11 @@ impl App {
     /// Single entry point for every copy/move: validates, detects conflicts
     /// (opening the dialog when the policy is `Ask`), then spawns the engine.
     pub(crate) fn request_transfer(&mut self, req: TransferRequest) {
+        if self.state.overlay.transfer_conflict.is_some() {
+            self.pending_transfers.push_back(req);
+            return;
+        }
+        tracing::info!(origin = ?req.origin, kind = ?req.kind, dest = %req.dest.display(), sources = ?req.sources, "transfer requested");
         // Remote sentinel dest (`remote:<id>/…`): route to the cloud uploader
         // instead of the local pipeline. Centralized here so every entry point
         // (paste, DnD, spring-load drops) gets it for free.
@@ -179,12 +184,14 @@ impl App {
         let Some(state) = self.state.overlay.transfer_conflict.take() else {
             return;
         };
-        let Some(policy) = policy else {
-            return; // cancelled — sources stay untouched
-        };
-        let built =
-            transfer::build_pairs(&state.clean, &state.conflicts, &policy, &state.request.dest);
-        self.spawn_transfer(built.pairs, state.request.kind, state.request.origin);
+        if let Some(policy) = policy {
+            let built = transfer::build_pairs(&state.clean, &state.conflicts, &policy, &state.request.dest);
+            self.spawn_transfer(built.pairs, state.request.kind, state.request.origin);
+        }
+        while self.state.overlay.transfer_conflict.is_none() {
+            let Some(next) = self.pending_transfers.pop_front() else { break; };
+            self.request_transfer(next);
+        }
     }
 
     /// Spawn the transfer engine over already-resolved pairs.

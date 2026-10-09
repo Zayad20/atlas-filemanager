@@ -1,3 +1,4 @@
+use gpui::ColorExt as _;
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use gpui::{
@@ -18,7 +19,7 @@ use crate::{
 };
 
 fn backdrop_tint(color: gpui::Hsla, alpha: f32) -> gpui::Hsla {
-    if color.a >= 1.0 {
+    if color.alpha >= 1.0 {
         color.opacity(alpha)
     } else {
         color
@@ -463,7 +464,7 @@ impl RenderOnce for TabBar {
                             this.track_scroll(&scroll_handle)
                         })
                         .when_some(bounds_rc.clone(), |this, rc| {
-                            this.on_prepaint(move |bounds, _, _| {
+                            this.on_prepaint_child(move |bounds, _, _| {
                                 rc.borrow_mut().container = bounds;
                             })
                         })
@@ -493,7 +494,7 @@ impl RenderOnce for TabBar {
                             if let Some(ref rc) = bounds_rc {
                                 let rc = rc.clone();
                                 div()
-                                    .on_prepaint(move |bounds, _, _| {
+                                    .on_prepaint_child(move |bounds, _, _| {
                                         if let Some(slot) = rc.borrow_mut().tabs.get_mut(ix) {
                                             *slot = bounds;
                                         }

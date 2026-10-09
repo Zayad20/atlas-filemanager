@@ -17,7 +17,7 @@
 
 use crate::app::App;
 use crate::input::action::Action;
-use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill, layer_color, GlassExt};
+use crate::ui::glass::{backdrop_tint, layer_color, GlassExt};
 use crate::ui::icons::{file_type_icon, icon, AtlasIcon};
 use crate::ui::root::DraggedFiles;
 use atlas_core::util::display::{format_date, format_size};
@@ -29,6 +29,7 @@ use atlas_model::preview_cache::{
 use atlas_model::settings::ViewMode;
 use atlas_model::tab::TabState;
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::SharedString;
 use gpui::{
     div, img, px, AnyElement, ClickEvent, Context, Entity, Hsla, MouseButton, MouseDownEvent,
@@ -36,6 +37,7 @@ use gpui::{
 };
 use gpui_component::input::InputEvent;
 use gpui_component::scroll::ScrollableElement;
+use gpui_component::ElementExt;
 use gpui_component::{h_flex, v_flex, ActiveTheme, Sizable as _};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -79,6 +81,7 @@ impl Render for InspectorHost {
         self.is_rendering = true;
         let el = match self.app.upgrade() {
             Some(app) => app.update(cx, |app, cx| {
+                app.pending_drag_hover_targets.retain(|target| !matches!(target.id, crate::ui::drag_hover::DragHoverId::Inspector(_)));
                 crate::perf::count("render.inspector_body");
                 app.render_inspector(window, cx)
             }),
@@ -95,9 +98,13 @@ impl Render for InspectorHost {
 /// invalidating on each meaningful result transition.
 fn preview_fingerprint(app: &App) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    app.drag_hover_maybe_active().hash(&mut hasher);
     let tab = app.state.focused_tile;
     tab.hash(&mut hasher);
     app.state.settings.show_inspector.hash(&mut hasher);
+    app.state.settings.show_titlebar.hash(&mut hasher);
+    app.state.profiles.active().theme.hash(&mut hasher);
+    app.state.settings.glass_opacity.to_bits().hash(&mut hasher);
     app.state
         .settings
         .inspector_width
@@ -723,12 +730,13 @@ impl App {
             .map(|(tab, data)| selection_summary(tab, &data.view_mode))
             .unwrap_or_default();
 
-        let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
+        let active_theme = self.state.profiles.active().theme.as_str();
+        let is_glass = active_theme.ends_with(" Glass");
         let (panel_bg, panel_border) = {
             let t = cx.theme();
             (
-                if figma_glass {
-                    glass_fill()
+                if is_glass {
+                    t.sidebar
                 } else {
                     backdrop_tint(t.secondary, 0.10)
                 },
@@ -741,10 +749,16 @@ impl App {
             .text_color(fg)
             .bg(panel_bg)
             .rounded(px(10.))
-            .border_1()
-            .border_color(panel_border.opacity(if figma_glass { 0.18 } else { 0.28 }))
-            .when(figma_glass, |s| s.glass_surface(panel_bg))
+            .when(!is_glass && !crate::ui::icons::is_windows_theme(active_theme), |s| {
+                s.border_1().border_color(panel_border.opacity(0.28))
+            })
+            .when(is_glass, |s| s.glass_surface(panel_bg))
             .p_3()
+            .when(self.state.settings.show_titlebar, |s| {
+                s.pt(crate::ui::rem_px(
+                    if crate::ui::icons::is_windows_theme(active_theme) { 46.0 } else { 34.0 },
+                ))
+            })
             .gap_3();
 
         if summary.count == 0 {
@@ -1439,18 +1453,18 @@ impl App {
         else {
             return div().into_any_element();
         };
-        let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
+        let is_glass = self.state.profiles.active().theme.ends_with(" Glass");
         let (border, stripe, header_bg, fg) = {
             let t = cx.theme();
             (
                 t.border,
-                if figma_glass {
-                    t.list_even.opacity(0.12)
+                if is_glass {
+                    t.list_even
                 } else {
                     backdrop_tint(t.list_even, 0.08)
                 },
-                if figma_glass {
-                    glass_header_fill()
+                if is_glass {
+                    t.list_head
                 } else {
                     layer_color(t.secondary, 0.04, 0.88)
                 },
@@ -1792,17 +1806,24 @@ impl App {
                         let mv = view.clone();
                         let cpv = view.clone();
                         move |row| {
-                            row.on_drop::<DraggedFiles>(move |d, _window, cx| {
+                            use crate::ui::drag_hover::{drag_hover_recorder_with_drop, DragHoverId, DragHoverKind, DragHoverCommand, DragHoverDropCommand};
+                            row.on_prepaint_child(drag_hover_recorder_with_drop(
+                                DragHoverId::Inspector(dest_move.clone()),
+                                DragHoverKind::Folder,
+                                DragHoverCommand::NavigatePathIn(tab, dest_move.clone()),
+                                DragHoverDropCommand::TransferTo(dest_move.clone()),
+                                &mv,
+                            )).on_drop::<DraggedFiles>(move |d, _window, cx| {
                                 let (paths, dest) = (d.paths.clone(), dest_move.clone());
                                 mv.update(cx, |this, cx| {
-                                    this.process_actions(vec![Action::Move { paths, dest }]);
+                                    this.execute_drag_hover_drop_command(DragHoverDropCommand::TransferTo(dest), paths, true);
                                     cx.notify();
                                 });
                             })
                             .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
                                 let (paths, dest) = (paths.paths().to_vec(), dest_copy.clone());
                                 cpv.update(cx, |this, cx| {
-                                    this.process_actions(vec![Action::CopyTo { paths, dest }]);
+                                    this.execute_drag_hover_drop_command(DragHoverDropCommand::TransferTo(dest), paths, false);
                                     cx.notify();
                                 });
                             })

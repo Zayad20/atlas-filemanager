@@ -7,9 +7,7 @@ use gpui::{
 };
 use smallvec::{SmallVec, smallvec};
 
-use crate::{
-    ActiveTheme, Disableable, Icon, Sizable, Size, StyledExt, h_flex, tooltip::ComponentTooltip,
-};
+use crate::{ActiveTheme, Disableable, Icon, Sizable, Size, h_flex, tooltip::ComponentTooltip};
 
 #[derive(Default, Copy, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ToggleVariant {

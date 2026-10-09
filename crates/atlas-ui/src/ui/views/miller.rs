@@ -6,7 +6,7 @@ use crate::app::App;
 use crate::input::action::Action;
 use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
-use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
+use crate::ui::glass::backdrop_tint;
 use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::root::{miller_column_bounds_recorder, miller_rect_recorder, zone_recorder};
 use crate::ui::selection_checkbox::SelectionCheckbox;
@@ -15,6 +15,7 @@ use atlas_model::file_entry::{FileEntry, FileKind};
 use atlas_model::pane::TabId;
 use atlas_model::tab::LoadState;
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{
     div, px, uniform_list, AnyElement, Context, Entity, Hsla, MouseButton, Pixels, SharedString,
     Window,
@@ -54,7 +55,8 @@ impl App {
             }
         }
         let view = cx.entity();
-        let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
+        let active_theme = self.state.profiles.active().theme.as_str();
+        let is_glass = active_theme.ends_with(" Glass");
         let (fg, accent, accent_fg, hover, muted, border, header_bg) = {
             let t = cx.theme();
             (
@@ -64,16 +66,14 @@ impl App {
                 t.list_active,
                 t.muted_foreground,
                 t.border,
-                if figma_glass {
-                    glass_header_fill()
+                if is_glass {
+                    t.list_head
                 } else {
                     backdrop_tint(t.secondary, 0.18)
                 },
             )
         };
-        let font_size = window.text_style().font_size.to_pixels(window.rem_size());
-        let row_font = window.text_style().font();
-        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border);
+        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border, header_bg);
 
         // Snapshot each column's rows up-front; Miller dirs are browsed one level at a
         // time, so a column is rarely huge — a scrollable v_flex per column is enough.
@@ -225,7 +225,7 @@ impl App {
                     .border_r_1()
                     .border_color(header_bg)
                     .when(column_flashing, |s| s.border_color(accent))
-                    .on_prepaint(miller_column_bounds_recorder(pane_id, ci, &bounds_view))
+                    .on_prepaint_child(miller_column_bounds_recorder(pane_id, ci, &bounds_view))
                     .on_mouse_down(MouseButton::Left, move |ev, _window, cx| {
                         let (pos, additive) = (
                             ev.position,
@@ -260,7 +260,7 @@ impl App {
                     let dest_internal = col_path.clone();
                     let dest_external = col_path.clone();
                     let hover_id =
-                        crate::ui::drag_hover::DragHoverId::Folder(pane_id, col_path.clone());
+                        crate::ui::drag_hover::DragHoverId::Column(pane_id, col_path.clone());
                     let hover_record = crate::ui::drag_hover::drag_hover_recorder_with_drop(
                         hover_id,
                         crate::ui::drag_hover::DragHoverKind::Folder,
@@ -275,7 +275,7 @@ impl App {
                         .drag_over::<crate::ui::root::DraggedFiles>(|s, _, _, _| {
                             s.bg(crate::ui::glass::glass_fill().opacity(0.1))
                         })
-                        .on_prepaint(move |bounds, window, cx| {
+                        .on_prepaint_child(move |bounds, window, cx| {
                             bounds_v.update(cx, |this, _| {
                                 this.miller_column_bounds.insert((pane_id, ci), bounds);
                             });
@@ -285,9 +285,7 @@ impl App {
                             let paths = d.paths.clone();
                             mv.update(cx, |this, cx| {
                                 this.execute_drag_hover_drop_command(
-                                    crate::ui::drag_hover::DragHoverDropCommand::TransferTo(
-                                        dest_internal.clone(),
-                                    ),
+                                    this.folder_drop_command(pane_id, &dest_internal),
                                     paths,
                                     true,
                                 );
@@ -299,9 +297,7 @@ impl App {
                             let paths = paths.paths().to_vec();
                             cpv.update(cx, |this, cx| {
                                 this.execute_drag_hover_drop_command(
-                                    crate::ui::drag_hover::DragHoverDropCommand::TransferTo(
-                                        dest_external.clone(),
-                                    ),
+                                    this.folder_drop_command(pane_id, &dest_external),
                                     paths,
                                     false,
                                 );
@@ -326,7 +322,7 @@ impl App {
         )
         // Phase F: register this pane's window-space rect each frame for OLE drop routing.
         .when(cfg!(windows), |el| {
-            el.on_prepaint(zone_recorder(pane_id, &zone_view))
+            el.on_prepaint_child(zone_recorder(pane_id, &zone_view))
         })
         .child(crumb_strip)
         .child(
@@ -334,7 +330,6 @@ impl App {
                 .flex_1()
                 .min_h(px(0.))
                 .relative()
-                .when(figma_glass, |s| s.bg(glass_fill()))
                 .rounded_bl(px(12.0))
                 .rounded_br(px(12.0))
                 .child(
@@ -410,7 +405,7 @@ fn render_miller_row(props: MillerRowProps) -> AnyElement {
     let font_size: Pixels = window.text_style().font_size.to_pixels(window.rem_size());
     let mut row = h_flex()
         .id(("mrow", idx))
-        .on_prepaint(miller_rect_recorder(pane_id, column, idx, view))
+        .on_prepaint_child(miller_rect_recorder(pane_id, column, idx, view))
         .w_full()
         .px_2()
         .py(crate::ui::rem_px(3.))
@@ -584,11 +579,7 @@ fn render_miller_row(props: MillerRowProps) -> AnyElement {
                 #[cfg(not(windows))]
                 {
                     let _ = in_archive;
-                    let urls: Vec<String> = paths
-                        .iter()
-                        .map(|p| format!("file://{}", p.display()))
-                        .collect();
-                    _window.start_urilist_drag(urls);
+                    let _ = _window;
                     cx.new(|_| crate::ui::root::DraggedFiles { paths })
                 }
             }

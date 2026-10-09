@@ -1,11 +1,7 @@
-//! Liquid-glass surface styling, extracted from the Figma "Design" frame
-//! (file 4rz5LAf…, node 1:4 "Design"). The design floats rounded, translucent
-//! panels — panes, sidebar, chrome — over the window background so they read as
-//! one glass material with a soft rim light and drop shadow.
-//!
-//! gpui supplies the blurred window backdrop; this file keeps the Figma glass
-//! material: translucent fill, bright 1px rim, radius and soft shadow.
+//! Frosted surface geometry and optional soft depth. Theme application owns the
+//! palette and material weights; glass surfaces never add a decorative rim.
 
+use gpui::ColorExt as _;
 use gpui::{
     div, hsla, linear_color_stop, linear_gradient, point, px, BoxShadow, Hsla, InteractiveElement,
     IntoElement, ParentElement, Styled,
@@ -19,6 +15,10 @@ pub const GLASS_RADIUS: f32 = 12.0;
 /// between the previous airy panes and dense sidebar.
 pub fn glass_fill() -> Hsla {
     hsla(0., 0., 0.93, 0.80)
+}
+
+pub fn glass_fill_with_opacity(opacity: f32) -> Hsla {
+    hsla(0., 0., 0.93, opacity.clamp(0.0, 1.0))
 }
 
 /// Same material as panes so the shell reads as one glass sheet.
@@ -48,64 +48,95 @@ pub fn glass_shadows_enabled() -> bool {
 }
 
 pub fn backdrop_tint(color: Hsla, alpha: f32) -> Hsla {
-    if color.a >= 1.0 {
-        color.opacity(alpha)
-    } else {
-        color
-    }
+    color.opacity(alpha)
 }
 
 pub fn layer_color(base: Hsla, delta_l: f32, alpha: f32) -> Hsla {
-    hsla(base.h, base.s, (base.l + delta_l).clamp(0.0, 1.0), alpha)
+    hsla(
+        (base.hue.into_positive_degrees() / 360.0),
+        base.saturation,
+        (base.lightness + delta_l).clamp(0.0, 1.0),
+        // Hover and floating controls inherit the theme's material density.
+        // Replacing alpha here creates opaque islands on otherwise frosted panes.
+        base.alpha * alpha,
+    )
+}
+
+/// Floating controls need their own readable material above the pane. Their
+/// state overlays must not compound the pane's alpha or fade their icons.
+#[derive(Clone, Copy)]
+pub(crate) struct ControlColors {
+    pub surface: Hsla,
+    pub hover: Hsla,
+    pub pressed: Hsla,
+    pub border: Hsla,
+    pub foreground: Hsla,
+    pub muted: Hsla,
+}
+
+pub(crate) fn control_hover(foreground: Hsla) -> Hsla {
+    foreground.opacity(0.08)
+}
+
+pub(crate) fn control_colors(theme: &gpui_component::Theme, glass: bool) -> ControlColors {
+    let mut surface = theme.secondary;
+    surface.alpha = if glass {
+        // The floating toolbar and magnifier share a translucent backing;
+        // only the fill fades, so icons retain their full contrast.
+        let (min, max) = if theme.is_dark() {
+            (0.54, 0.72)
+        } else {
+            (0.62, 0.78)
+        };
+        (theme.colors.list.alpha * 0.85).clamp(min, max)
+    } else {
+        1.0
+    };
+    ControlColors {
+        surface,
+        hover: control_hover(theme.foreground),
+        pressed: theme.foreground.opacity(0.14),
+        border: theme
+            .foreground
+            .opacity(if theme.is_dark() { 0.14 } else { 0.12 }),
+        foreground: theme.foreground,
+        muted: theme.muted_foreground,
+    }
 }
 
 pub fn raised_shadow() -> Vec<BoxShadow> {
-    vec![
-        BoxShadow {
-            color: hsla(0., 0., 1., 0.30),
-            offset: point(px(0.0), px(-1.0)),
-            blur_radius: px(0.0),
-            spread_radius: px(0.0),
-            inset: false,
-        },
-        BoxShadow {
-            color: hsla(0., 0., 0., 0.18),
-            offset: point(px(0.0), px(8.0)),
-            blur_radius: px(18.0),
-            spread_radius: px(-8.0),
-            inset: false,
-        },
-    ]
+    vec![BoxShadow {
+        color: hsla(0., 0., 0., 0.18).into(),
+        offset: point(px(0.0), px(8.0)),
+        blur_radius: px(18.0),
+        spread_radius: px(-8.0),
+        inset: false,
+    }]
 }
 
 pub fn sunken_shadow() -> Vec<BoxShadow> {
-    vec![
-        BoxShadow {
-            color: hsla(0., 0., 0., 0.18),
-            offset: point(px(0.0), px(1.0)),
-            blur_radius: px(2.0),
-            spread_radius: px(0.0),
-            inset: true,
-        },
-        BoxShadow {
-            color: hsla(0., 0., 1., 0.28),
-            offset: point(px(0.0), px(-1.0)),
-            blur_radius: px(1.0),
-            spread_radius: px(0.0),
-            inset: true,
-        },
-    ]
+    vec![BoxShadow {
+        color: hsla(0., 0., 0., 0.18).into(),
+        offset: point(px(0.0), px(1.0)),
+        blur_radius: px(2.0),
+        spread_radius: px(0.0),
+        inset: true,
+    }]
 }
 
-/// Bright rim light (Figma stroke: white `0.4 → 0.2`). One flat value here.
+/// Transparent border for seamless glass styling.
 pub fn glass_border() -> Hsla {
-    hsla(0., 0., 1., 0.40)
+    gpui::transparent_black()
 }
 
 /// Subtle inner separator used for the segmented tab/selector track
 /// (Figma "Utility Panel/Tabs" fill: black @ 10%).
 pub fn track_fill() -> Hsla {
     hsla(0., 0., 0., 0.10)
+}
+
+pub fn glass_separator() -> Hsla {
+    track_fill()
 }
 
 /// Active segment fill (Figma active tab: light raised `#a8a5a5 @ 20%`).
@@ -143,17 +174,17 @@ pub fn glass_backdrop() -> impl IntoElement {
         )))
 }
 
-/// Style any element as a floating glass panel: rounded, translucent, rim-lit,
-/// shadowed. Apply a focus/accent border *after* this to override the rim.
+/// Style a floating frosted panel with rounded corners and optional soft depth.
+/// Functional focus/accent borders belong to the caller.
 pub trait GlassExt: Styled + Sized {
-    /// Full floating panel — rounded corners, glass fill, rim light, soft shadow.
+    /// Full floating panel — rounded corners, glass fill, soft shadow.
     #[must_use]
     fn glass_panel(self) -> Self {
         let surface = self
             .rounded(px(GLASS_RADIUS))
-            .bg(glass_fill())
-            .border_1()
-            .border_color(glass_border());
+            .rounded_smoothing_ios()
+            .backdrop_blur(px(12.0))
+            .bg(glass_fill());
         if glass_shadows_enabled() {
             surface.shadow(raised_shadow())
         } else {
@@ -162,15 +193,15 @@ pub trait GlassExt: Styled + Sized {
     }
 
     /// Glass with an explicit fill (sidebar/chrome variants): same floating
-    /// material as `glass_panel` (rounded corners + rim + soft shadow) but with a
+    /// material as `glass_panel` (rounded corners + soft shadow) but with a
     /// caller-chosen fill so the sidebar/chrome can sit a touch denser than the panes.
     #[must_use]
     fn glass_surface(self, fill: Hsla) -> Self {
         let surface = self
             .rounded(px(GLASS_RADIUS))
-            .bg(fill)
-            .border_1()
-            .border_color(glass_border());
+            .rounded_smoothing_ios()
+            .backdrop_blur(px(12.0))
+            .bg(fill);
         if glass_shadows_enabled() {
             surface.shadow(raised_shadow())
         } else {

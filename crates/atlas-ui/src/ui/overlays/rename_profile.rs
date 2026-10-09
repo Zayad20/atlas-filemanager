@@ -1,6 +1,6 @@
 //! Rename-active-profile modal — an app-own overlay (scrim + panel + native
 //! input), like `create_tag`/`batch_rename`. We use our own overlay rather than a
-//! gpui-component `Dialog` because the Atlas Frost glass theme makes the library
+//! gpui-component `Dialog` because the Atlas Frost Glass theme makes the library
 //! dialog's `theme.overlay` backdrop transparent (the modal opened but was
 //! invisible). Keyboard focus is granted by the overlay-focus arbiter's claim for
 //! `overlay.renaming_profile`.

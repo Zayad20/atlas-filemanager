@@ -1,3 +1,4 @@
+use gpui::ColorExt as _;
 use std::rc::Rc;
 
 use crate::{ActiveTheme, Icon, IconName, Selectable, Sizable, Size, StyledExt, h_flex};
@@ -9,7 +10,7 @@ use gpui::{
 };
 
 fn backdrop_tint(color: Hsla, alpha: f32) -> Hsla {
-    if color.a >= 1.0 {
+    if color.alpha >= 1.0 {
         color.opacity(alpha)
     } else {
         color

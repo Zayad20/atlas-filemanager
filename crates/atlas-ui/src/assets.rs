@@ -29,6 +29,7 @@ pub fn bundled_fonts() -> Vec<Cow<'static, [u8]>> {
 
 macro_rules! phosphor_icons {
     ($($name:literal),* $(,)?) => {
+        const PHOSPHOR_PATHS: &[&str] = &[$(concat!("icons/ph/", $name, ".svg")),*];
         /// Resolve an `icons/ph/<name>.svg` path to its embedded bytes.
         fn phosphor(path: &str) -> Option<&'static [u8]> {
             match path {
@@ -45,8 +46,9 @@ macro_rules! phosphor_icons {
 
 macro_rules! liquid_glass_filetype_icons {
     ($($name:literal),* $(,)?) => {
+        const LIQUID_GLASS_PATHS: &[&str] = &[$(concat!("icons/filetypes/liquid-glass/", $name, ".png")),*];
         /// Resolve an `icons/filetypes/liquid-glass/<name>.png` path to embedded bytes.
-        fn liquid_glass_filetype(path: &str) -> Option<&'static [u8]> {
+        pub(crate) fn liquid_glass_filetype(path: &str) -> Option<&'static [u8]> {
             match path {
                 $(
                     concat!("icons/filetypes/liquid-glass/", $name, ".png") => Some(include_bytes!(
@@ -157,6 +159,42 @@ impl AssetSource for AtlasAssets {
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        gpui_component_assets::Assets.list(path)
+        // CE constructs its on-demand registry from list(""). Every Atlas
+        // asset must be enumerated as well as resolvable through load().
+        let mut paths = gpui_component_assets::Assets.list(path)?;
+        paths.extend(
+            PHOSPHOR_PATHS
+                .iter()
+                .chain(LIQUID_GLASS_PATHS.iter())
+                .chain(["icons/atlas-logo.png", "icons/atlas-app-icon.png"].iter())
+                .filter(|name| name.starts_with(path))
+                .map(|name| SharedString::from(*name)),
+        );
+        paths.sort_unstable();
+        paths.dedup();
+        Ok(paths)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ce_registry_includes_every_embedded_atlas_resource() {
+        let registry = gpui::AssetRegistry::from(AtlasAssets);
+        for path in PHOSPHOR_PATHS
+            .iter()
+            .chain(LIQUID_GLASS_PATHS.iter())
+            .chain(["icons/atlas-logo.png", "icons/atlas-app-icon.png"].iter())
+        {
+            let bytes = registry
+                .load(path)
+                .unwrap_or_else(|| panic!("missing CE asset {path}"));
+            assert!(!bytes.is_empty(), "empty asset {path}");
+        }
+        let listed = AtlasAssets.list("icons/ph/").unwrap();
+        assert_eq!(listed.len(), PHOSPHOR_PATHS.len());
+        assert!(listed.iter().all(|name| name.starts_with("icons/ph/")));
     }
 }

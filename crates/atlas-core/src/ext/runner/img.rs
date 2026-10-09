@@ -29,15 +29,20 @@ pub(crate) fn run_magick_preview(path: &Path, magick: &Path) -> PreviewResult {
     let output =
         std::env::temp_dir().join(format!("atlas-magick-preview-{}.png", uuid::Uuid::new_v4()));
     let input = format!("{}[0]", path.to_string_lossy());
-    let ran = std::process::Command::new(magick)
-        .args([
-            input.as_str(),
-            "-flatten",
-            "-resize",
-            "1600x1600>",
-            output.to_string_lossy().as_ref(),
-        ])
-        .output();
+    let mut cmd = std::process::Command::new(magick);
+    cmd.args([
+        input.as_str(),
+        "-flatten",
+        "-resize",
+        "1600x1600>",
+        output.to_string_lossy().as_ref(),
+    ]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let ran = cmd.output();
     let result = match ran {
         Ok(out) if out.status.success() => image_file_to_preview(&output),
         Ok(out) => PreviewResult::Error(String::from_utf8_lossy(&out.stderr).trim().to_string()),

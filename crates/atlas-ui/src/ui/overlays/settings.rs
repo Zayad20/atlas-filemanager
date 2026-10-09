@@ -92,6 +92,20 @@ impl App {
                     "ventana",
                 ],
             );
+        let glass_opacity_row = show_all
+            || setting_matches(
+                &query_lower,
+                &[
+                    "glass",
+                    "transparency",
+                    "transparencia",
+                    "opacity",
+                    "opacidad",
+                    "cristal",
+                    "blur",
+                    "desenfoque",
+                ],
+            );
         let placement_row =
             show_all || setting_matches(&query_lower, &["placement", "inspector", "global", "tab"]);
         let view_row = show_all
@@ -142,6 +156,8 @@ impl App {
             active_section == 2
         } else {
             titlebar_row
+                || glass_opacity_row
+                || setting_matches(&query_lower, &["appearance", "theme", "tema", "aspecto"])
         };
         let show_layout = if show_all {
             active_section == 3
@@ -780,18 +796,93 @@ impl App {
                     })
             })
             .when(show_theme, |panel| {
-                panel.when(titlebar_row, |panel| {
-                    panel.child(toggle(
-                        &rust_i18n::t!("settings_show_titlebar"),
-                        s.show_titlebar,
-                        "set-show-titlebar",
-                        |app| {
-                            app.state.settings.show_titlebar = !app.state.settings.show_titlebar;
-                            atlas_core::util::config::save_settings(&app.state.settings);
-                        },
-                        view.clone(),
-                    ))
-                })
+                panel
+                    .when(titlebar_row, |panel| {
+                        panel.child(toggle(
+                            &rust_i18n::t!("settings_show_titlebar"),
+                            s.show_titlebar,
+                            "set-show-titlebar",
+                            |app| {
+                                app.state.settings.show_titlebar = !app.state.settings.show_titlebar;
+                                atlas_core::util::config::save_settings(&app.state.settings);
+                            },
+                            view.clone(),
+                        ))
+                    })
+                    .when(glass_opacity_row, |panel| {
+                        let glass_pct = (s.glass_opacity * 100.0).round();
+                        panel.child(
+                            h_flex()
+                                .id("setting-glass-opacity")
+                                .w_full()
+                                .justify_between()
+                                .items_center()
+                                .py_1()
+                                .child(
+                                    v_flex()
+                                        .gap(px(2.))
+                                        .child(rust_i18n::t!("settings_glass_opacity").to_string())
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(muted)
+                                                .child(rust_i18n::t!("settings_glass_opacity_desc").to_string()),
+                                        ),
+                                )
+                                .child(
+                                    h_flex()
+                                        .gap_1()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .cursor_pointer()
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_md()
+                                                .bg(surface)
+                                                .text_color(fg)
+                                                .child("−")
+                                                .on_mouse_down(MouseButton::Left, {
+                                                    let view = view.clone();
+                                                    move |_ev, _w, cx| {
+                                                        view.update(cx, |this, cx| {
+                                                            dec_glass_opacity(this);
+                                                            cx.notify();
+                                                        });
+                                                    }
+                                                }),
+                                        )
+                                        .child(
+                                            div()
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_md()
+                                                .bg(surface)
+                                                .text_color(fg)
+                                                .child(format!("{glass_pct:.0}%")),
+                                        )
+                                        .child(
+                                            div()
+                                                .cursor_pointer()
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_md()
+                                                .bg(surface)
+                                                .text_color(fg)
+                                                .child("+")
+                                                .on_mouse_down(MouseButton::Left, {
+                                                    let view = view.clone();
+                                                    move |_ev, _w, cx| {
+                                                        view.update(cx, |this, cx| {
+                                                            inc_glass_opacity(this);
+                                                            cx.notify();
+                                                        });
+                                                    }
+                                                }),
+                                        ),
+                                ),
+                        )
+                    })
             })
             .when(show_layout, |panel| {
                 panel
@@ -1142,6 +1233,21 @@ fn set_scroll_smoothness(app: &mut App, delta: f32) {
     app.state.settings.scroll_smoothness =
         (app.state.settings.scroll_smoothness + delta).clamp(0.0, 1.0);
     atlas_core::util::config::save_settings(&app.state.settings);
+}
+
+fn set_glass_opacity(app: &mut App, delta: f32) {
+    let raw = (app.state.settings.glass_opacity + delta) * 20.0;
+    app.state.settings.glass_opacity = (raw.round() / 20.0).clamp(0.20, 1.0);
+    app.theme_dirty = true;
+    atlas_core::util::config::save_settings(&app.state.settings);
+}
+
+fn dec_glass_opacity(app: &mut App) {
+    set_glass_opacity(app, -0.05);
+}
+
+fn inc_glass_opacity(app: &mut App) {
+    set_glass_opacity(app, 0.05);
 }
 
 fn setting_matches(query: &str, terms: &[&str]) -> bool {

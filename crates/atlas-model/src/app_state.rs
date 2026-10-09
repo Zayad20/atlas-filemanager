@@ -109,6 +109,8 @@ pub enum BgResult {
         result: Result<(), Vec<crate::ops::OpError>>,
         affected_tabs: Vec<TabId>,
     },
+    /// Only paths whose delete/trash operation actually succeeded.
+    PathsDeleted(Vec<PathBuf>),
     /// A paste target wrote `Performed DropEffect` onto our clipboard data
     /// object (e.g. Explorer pasting an Atlas cut). `effect` is the raw
     /// `DROPEFFECT` value: 0 = optimized move (target moved the files itself),
@@ -149,6 +151,16 @@ pub enum BgResult {
     ContentResults {
         gen: u64,
         paths: Vec<PathBuf>,
+    },
+    GotoServiceResults {
+        gen: u64,
+        query: String,
+        results: Vec<(PathBuf, bool)>,
+        complete: bool,
+    },
+    GotoServiceFailed {
+        gen: u64,
+        query: String,
     },
     ExtCommandDone {
         ext_id: String,

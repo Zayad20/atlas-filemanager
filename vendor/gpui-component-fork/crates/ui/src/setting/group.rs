@@ -4,7 +4,7 @@ use gpui::{
 };
 
 use crate::{
-    ActiveTheme, StyledExt,
+    ActiveTheme,
     group_box::{GroupBox, GroupBoxVariants},
     label::Label,
     setting::{RenderOptions, SettingItem},

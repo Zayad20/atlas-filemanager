@@ -23,10 +23,9 @@ atlas-model.workspace = true
 rust-i18n.workspace = true
 
 # --- gpui (renderer) ----------------------------------------------------------
-# Same bare-git zed source spec as gpui-component's transitive dep (no `rev`), or
-# cargo treats them as two distinct `App` types. Commit pinned by Cargo.lock.
-gpui = { git = "https://github.com/zed-industries/zed" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+# The component fork uses the same vendored CE packages to share entity types.
+gpui = { package = "gpui-ce", git = "https://github.com/gpui-ce/gpui-ce", rev = "175ef66578817bf96b2e26b0cd568dd4f4793529" }
+gpui_platform = { package = "gpui_ce_platform", git = "https://github.com/gpui-ce/gpui-ce", rev = "175ef66578817bf96b2e26b0cd568dd4f4793529", features = ["font-kit", "x11", "wayland"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "b2472cd798422b05e2448d07aaab1550c21155f7" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "b2472cd798422b05e2448d07aaab1550c21155f7" }
 

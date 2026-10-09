@@ -4,10 +4,9 @@
 use crate::app::App;
 use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
-use crate::ui::glass::{backdrop_tint, glass_fill, glass_header_fill};
+use crate::ui::glass::backdrop_tint;
 use crate::ui::layout_region::{
-    layout_region, timed_layout_region, PANE_CRUMBS_TIMINGS, PANE_PILLS_TIMINGS,
-    PANE_VIEWPORT_TIMINGS,
+    layout_region, timed_layout_region, PANE_CRUMBS_TIMINGS, PANE_VIEWPORT_TIMINGS,
 };
 use crate::ui::root::{ctrl_scroll, pane_bounds_recorder, rect_recorder, zone_recorder};
 use crate::ui::selection_checkbox::SelectionCheckbox;
@@ -15,6 +14,7 @@ use crate::ui::views::grid_surface_element::{GridSurfaceColors, GridSurfaceEleme
 use atlas_model::file_entry::{FileEntry, FileKind};
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{div, px, AnyElement, Context, Entity, Hsla, MouseButton, SharedString, Window};
 use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt};
 
@@ -32,7 +32,7 @@ impl App {
     ) -> AnyElement {
         crate::perf::count("render.view.list");
         let view = cx.entity();
-        let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
+        let is_glass = self.state.profiles.active().theme.ends_with(" Glass");
         let (fg, accent, accent_fg, hover, muted, border, _header_bg) = {
             let t = cx.theme();
             (
@@ -42,8 +42,8 @@ impl App {
                 t.list_active,
                 t.muted_foreground,
                 t.border,
-                if figma_glass {
-                    glass_header_fill()
+                if is_glass {
+                    t.list_head
                 } else {
                     backdrop_tint(t.secondary, 0.18)
                 },
@@ -51,7 +51,7 @@ impl App {
         };
         let font_size = window.text_style().font_size.to_pixels(window.rem_size());
         let row_font = window.text_style().font();
-        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border);
+        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border, _header_bg);
         let count = self
             .state
             .tab_states
@@ -109,26 +109,6 @@ impl App {
             let base_scroll = scroll.0.borrow().base_handle.clone();
             let mut scroll_y = (-f32::from(base_scroll.offset().y)).max(0.0);
 
-            // Grid Snapping Smooth Scroll Interpolation
-            if let Some(&target) = self.scroll_targets.get(&pane_id) {
-                let current = f32::from(base_scroll.offset().y);
-                if (target - current).abs() > 0.5 {
-                    let (ease, _) =
-                        crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
-                    let mut next = current + (target - current) * ease;
-                    if (target - next).abs() < 1.0 {
-                        next = target;
-                        self.scroll_targets.remove(&pane_id);
-                    }
-                    base_scroll.set_offset(gpui::point(gpui::px(0.0), gpui::px(next)));
-                    window.request_animation_frame();
-                } else {
-                    base_scroll.set_offset(gpui::point(gpui::px(0.0), gpui::px(target)));
-                    self.scroll_targets.remove(&pane_id);
-                }
-                scroll_y = (-f32::from(base_scroll.offset().y)).max(0.0);
-            }
-            let app_handle = cx.entity().clone();
             let viewport_h = {
                 let tracked = f32::from(base_scroll.bounds().size.height);
                 if tracked > 1.0 {
@@ -220,6 +200,7 @@ impl App {
                     font_size,
                 )
                 .compact_list()
+                .animated(animate_list_reflow)
                 .absolute()
                 .inset_0()
                 .into_any_element()
@@ -389,33 +370,10 @@ impl App {
                     MouseButton::Left,
                     crate::ui::views::on_pane_rubber_mouse_down(&view, pane_id),
                 )
-                .on_scroll_wheel({
-                    let base_scroll = base_scroll.clone();
-                    let app_handle = app_handle.clone();
-                    move |ev, window, cx| {
-                        if ev.modifiers.control || ev.modifiers.platform {
-                            ctrl_scroll(ev, pane_id, &scroll_view, window, cx);
-                        } else if cfg!(windows) {
-                            if let gpui::ScrollDelta::Lines(l) = ev.delta {
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                let dy = l.y * pitch * 3.0;
-
-                                app_handle.update(cx, |app, cx| {
-                                    let current_target = *app
-                                        .scroll_targets
-                                        .entry(pane_id)
-                                        .or_insert_with(|| f32::from(base_scroll.offset().y));
-                                    let mut new_y = current_target + dy;
-                                    let max_scroll = (content_h - viewport_h).max(0.0);
-                                    new_y = (new_y / pitch).round() * pitch;
-                                    new_y = new_y.clamp(-max_scroll, 0.0);
-
-                                    app.scroll_targets.insert(pane_id, new_y);
-                                    cx.notify();
-                                });
-                            }
-                        }
+                .on_scroll_wheel(move |ev, window, cx| {
+                    // Share the handle's glide with Details and Grid.
+                    if ev.modifiers.control || ev.modifiers.platform {
+                        ctrl_scroll(ev, pane_id, &scroll_view, window, cx);
                     }
                 })
                 .when_some(tooltip_data, |el, (name, path, is_dir, size, modified)| {
@@ -455,7 +413,7 @@ impl App {
             &pane_view,
             pane_id,
         )
-        .on_prepaint({
+        .on_prepaint_child({
             let v = prepaint_view.clone();
             move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {
                 crate::perf::count("prepaint.list_pane");
@@ -474,14 +432,18 @@ impl App {
                             ts.last_pane_width = new_w;
                         }
                         crate::perf::count("list.width.columns_changed");
-                        this.notify_pane(pane_id, cx);
+                        if this.is_pane_or_dock_animating() {
+                            this.defer_column_reflow(pane_id);
+                        } else {
+                            this.notify_pane(pane_id, cx);
+                        }
                     });
                 }
             }
         })
         // Phase F: register this pane's window-space rect each frame for OLE drop routing.
         .when(cfg!(windows), |el| {
-            el.on_prepaint(zone_recorder(pane_id, &zone_view))
+            el.on_prepaint_child(zone_recorder(pane_id, &zone_view))
         })
         .child(timed_layout_region(
             "pane.crumbs",
@@ -495,10 +457,9 @@ impl App {
                 .flex_1()
                 .min_h(px(0.))
                 .relative()
-                .when(figma_glass, |s| s.bg(glass_fill()))
                 .rounded_bl(px(12.0))
                 .rounded_br(px(12.0))
-                .on_prepaint(pane_bounds_recorder(pane_id, &bounds_view))
+                .on_prepaint_child(pane_bounds_recorder(pane_id, &bounds_view))
                 .child(layout_region("pane.viewport_body", inner)),
         ))
         .into_any_element()
@@ -579,7 +540,7 @@ fn render_cell_compact(props: ListCellProps) -> AnyElement {
     h_flex()
         .id(("lc", entry_idx))
         .when(record_rects, |s| {
-            s.on_prepaint(rect_recorder(pane_id, entry_idx, view))
+            s.on_prepaint_child(rect_recorder(pane_id, entry_idx, view))
         })
         .w(crate::ui::rem_px(220.))
         .px_1()

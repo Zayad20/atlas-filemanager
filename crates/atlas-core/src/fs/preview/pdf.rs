@@ -20,21 +20,25 @@ fn preview_pdf(path: &Path, pdftoppm: &Path) -> PreviewResult {
     let output_prefix =
         std::env::temp_dir().join(format!("atlas-pdf-preview-{}", uuid::Uuid::new_v4()));
     let png_path = output_prefix.with_extension("png");
-    let output = match Command::new(pdftoppm)
-        .args([
-            "-f",
-            "1",
-            "-l",
-            "1",
-            "-scale-to",
-            MAX_PDF_PREVIEW_EDGE,
-            "-png",
-            "-singlefile",
-        ])
-        .arg(path)
-        .arg(&output_prefix)
-        .output()
+    let mut cmd = Command::new(pdftoppm);
+    cmd.args([
+        "-f",
+        "1",
+        "-l",
+        "1",
+        "-scale-to",
+        MAX_PDF_PREVIEW_EDGE,
+        "-png",
+        "-singlefile",
+    ])
+    .arg(path)
+    .arg(&output_prefix);
+    #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let output = match cmd.output() {
         Ok(output) => output,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return PreviewResult::Error("PDF preview unavailable: pdftoppm not found".to_string());

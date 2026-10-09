@@ -25,19 +25,19 @@ impl App {
 
     pub(crate) fn slider_value_for_view(mode: &ViewMode, thumbnail_size: f32) -> f32 {
         match mode {
-            ViewMode::Details => 0.0,
-            ViewMode::List => 1.0,
+            ViewMode::List => 0.0,
+            ViewMode::Details => 1.0,
             ViewMode::Grid => 2.0 + ((thumbnail_size - 64.0) / 16.0).round().clamp(0.0, 20.0),
-            ViewMode::Miller => 0.0,
+            ViewMode::Miller => 1.0,
         }
     }
 
     pub(crate) fn set_pane_view_from_slider_value(&mut self, pane_id: TabId, value: f32) -> bool {
         let value = value.round().clamp(0.0, 22.0);
         if value <= 0.0 {
-            self.set_pane_view_mode(pane_id, ViewMode::Details)
-        } else if value <= 1.0 {
             self.set_pane_view_mode(pane_id, ViewMode::List)
+        } else if value <= 1.0 {
+            self.set_pane_view_mode(pane_id, ViewMode::Details)
         } else {
             let thumbnail_size = 64.0 + (value - 2.0) * 16.0;
             self.set_pane_grid_thumbnail_size(pane_id, thumbnail_size)
@@ -1457,6 +1457,17 @@ mod tests {
         assert_eq!(rename_select_chars("README"), None);
         assert_eq!(rename_select_chars(".gitignore"), None);
     }
+
+    #[test]
+    fn slider_values_order_list_details_grid() {
+        use atlas_model::settings::ViewMode;
+        use crate::app::App;
+
+        assert_eq!(App::slider_value_for_view(&ViewMode::List, 64.0), 0.0);
+        assert_eq!(App::slider_value_for_view(&ViewMode::Details, 64.0), 1.0);
+        assert_eq!(App::slider_value_for_view(&ViewMode::Grid, 64.0), 2.0);
+        assert_eq!(App::slider_value_for_view(&ViewMode::Grid, 384.0), 22.0);
+    }
 }
 
 /// Global rubber-band motor: a full-size invisible canvas painted last so its
@@ -1494,12 +1505,12 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                     };
                     let t = cx.theme();
                     let mut fill = t.accent;
-                    fill.a = 0.15;
+                    fill.alpha = 0.15;
 
                     window.paint_quad(gpui::fill(rect, fill));
 
                     let mut border = t.accent;
-                    border.a = 0.8;
+                    border.alpha = 0.8;
                     let t_px = gpui::px(1.0);
                     window.paint_quad(gpui::fill(
                         gpui::Bounds {

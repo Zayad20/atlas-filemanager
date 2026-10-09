@@ -23,6 +23,12 @@ pub const DOCUMENT_PREVIEWS_MANIFEST: &str =
 pub const DOCUMENT_PREVIEWS_ICON: &[u8] =
     include_bytes!("../../../../extensions/document-previews/icon.svg");
 
+/// Bundled icon-manager extension (Open VSX VSCode icon themes).
+pub const ICON_MANAGER_MANIFEST: &str =
+    include_str!("../../../../extensions/icon-manager/extension.toml");
+pub const ICON_MANAGER_ICON: &[u8] =
+    include_bytes!("../../../../extensions/icon-manager/icon.svg");
+
 /// Hidden shared tool-provider extension (portable binaries by OS/arch).
 pub const RUNTIME_TOOLS_MANIFEST: &str =
     include_str!("../../../../extensions/runtime-tools/extension.toml");
@@ -289,7 +295,12 @@ impl App {
             .join("theme_mappings.json");
 
         let mut icons_changed = false;
-        if mappings_path.exists() {
+        if ext_id == "icon-manager" && !mappings_path.exists() {
+            // Reset to default Liquid Glass icons.
+            self.persist_icon_selection(std::collections::HashMap::new());
+            icons_changed = true;
+            self.state.ext.feedback = Some("Restablecido a iconos por defecto (Liquid Glass)".to_string());
+        } else if mappings_path.exists() {
             #[allow(clippy::disallowed_methods)] // reason: small JSON read on command completion
             let contents = std::fs::read_to_string(&mappings_path);
             if let Ok(contents) = contents {
@@ -300,6 +311,7 @@ impl App {
                     // per-profile store) and apply it to the live icon cache.
                     self.persist_icon_selection(map);
                     icons_changed = true;
+                    self.state.ext.feedback = Some("Tema de iconos activado".to_string());
                 }
             }
         }

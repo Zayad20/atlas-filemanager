@@ -12,6 +12,7 @@ use atlas_model::file_entry::FileKind;
 use atlas_model::location::Location;
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{
     div, px, AnyElement, Context, InteractiveElement, KeyDownEvent, MouseButton, ParentElement,
     Pixels, Point, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window,
@@ -86,6 +87,7 @@ impl App {
     }
 
     pub(crate) fn close_breadcrumb_menu(&mut self, cx: &mut Context<Self>) {
+        self.pending_drag_hover_targets.retain(|target| !matches!(target.id, DragHoverId::BreadcrumbMenu(_, _)));
         self.breadcrumb_menu = None;
         self.breadcrumb_menu_input = None;
         self.breadcrumb_menu_sub = None;
@@ -97,6 +99,7 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.pending_drag_hover_targets.retain(|target| !matches!(target.id, DragHoverId::BreadcrumbMenu(_, _)));
         let Some(state) = self.breadcrumb_menu.as_ref() else {
             return div().into_any_element();
         };
@@ -205,8 +208,8 @@ impl App {
                         let drop_target = path.clone();
                         let drop_target_external = path.clone();
                         row = row
-                            .on_prepaint(drag_hover_recorder_with_drop(
-                                DragHoverId::Folder(pane, hover_path.clone()),
+                            .on_prepaint_child(drag_hover_recorder_with_drop(
+                                DragHoverId::BreadcrumbMenu(pane, hover_path.clone()),
                                 DragHoverKind::Folder,
                                 DragHoverCommand::Process(Action::NavigateLocation {
                                     tab: pane,

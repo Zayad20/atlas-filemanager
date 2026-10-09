@@ -1,3 +1,4 @@
+use gpui::ColorExt as _;
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, DismissEvent, Edges, ElementId, Entity,
     EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, KeyBinding,
@@ -672,7 +673,7 @@ where
                         dismiss_handler,
                         cx,
                     ))
-                    .with_priority(1),
+                    .priority(1),
                 )
             })
     }
@@ -950,7 +951,7 @@ fn render_trigger_container(
                 .child(trigger_body)
                 .child(trailing),
         )
-        .on_prepaint(prepaint_handler)
+        .on_prepaint_child(prepaint_handler)
 }
 
 /// Renders the deferred anchored popup shell containing the searchable list and optional footer.

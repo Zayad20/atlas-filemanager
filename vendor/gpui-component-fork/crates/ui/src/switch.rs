@@ -1,6 +1,6 @@
+use crate::Colorize;
 use crate::{
-    ActiveTheme, Disableable, Side, Sizable, Size, StyledExt, h_flex, text::Text,
-    tooltip::ComponentTooltip,
+    ActiveTheme, Disableable, Side, Sizable, Size, h_flex, text::Text, tooltip::ComponentTooltip,
 };
 use gpui::{
     Animation, AnimationExt as _, App, ElementId, Hsla, InteractiveElement, IntoElement,

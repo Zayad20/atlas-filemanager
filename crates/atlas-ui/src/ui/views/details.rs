@@ -5,17 +5,18 @@ use crate::app::{App, ColResizeState, DetailsColumn, RubberTarget};
 use crate::input::action::Action;
 use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
-use crate::ui::glass::{backdrop_tint, glass_header_fill};
+use crate::ui::glass::backdrop_tint;
 use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::layout_region::{
     layout_region, timed_layout_region, PANE_CRUMBS_TIMINGS, PANE_DETAILS_HEADER_TIMINGS,
-    PANE_PILLS_TIMINGS, PANE_VIEWPORT_TIMINGS,
+    PANE_VIEWPORT_TIMINGS,
 };
 use crate::ui::root::{ctrl_scroll, pane_bounds_recorder, rect_recorder, zone_recorder};
 use atlas_model::file_entry::{FileEntry, FileKind, SortColumn, SortDir};
 use atlas_model::pane::TabId;
 use atlas_model::settings::ViewMode;
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{
     div, img, px, AnyElement, Context, Div, Entity, Hsla, MouseButton, Pixels, SharedString,
     Stateful, Window,
@@ -59,6 +60,8 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.pending_drag_hover_targets.retain(|target| !matches!(target.id,
+            crate::ui::drag_hover::DragHoverId::Folder(tab, _) | crate::ui::drag_hover::DragHoverId::Column(tab, _) | crate::ui::drag_hover::DragHoverId::Breadcrumb(tab, _) | crate::ui::drag_hover::DragHoverId::Chrome(_, tab) if tab == pane_id));
         if self.space_lens.contains_key(&pane_id) {
             return self.render_space_lens(pane_id, window, cx);
         }
@@ -118,7 +121,8 @@ impl App {
             ViewMode::Details => {}
         }
         let view = cx.entity();
-        let figma_glass = self.state.profiles.active().theme == "Atlas Figma Glass";
+        let active_theme = self.state.profiles.active().theme.as_str();
+        let is_glass = active_theme.ends_with(" Glass");
         let (fg, accent, accent_fg, hover, muted, header_bg, stripe_bg, border) = {
             let t = cx.theme();
             (
@@ -127,23 +131,27 @@ impl App {
                 t.accent_foreground,
                 t.list_active,
                 t.muted_foreground,
-                if figma_glass {
-                    glass_header_fill()
+                if is_glass {
+                    t.list_head
                 } else {
                     backdrop_tint(t.secondary, 0.18)
                 },
-                if figma_glass {
-                    t.list_even.opacity(0.12)
+                if is_glass {
+                    t.list_even
                 } else {
                     backdrop_tint(t.list_even, 0.08)
                 },
-                t.border,
+                if is_glass {
+                    gpui::transparent_black()
+                } else {
+                    t.border
+                },
             )
         };
         let font_size = window.text_style().font_size.to_pixels(window.rem_size());
         let row_font = window.text_style().font();
 
-        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border);
+        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border, header_bg);
         let (sort_col, sort_dir) = self
             .tab_data_for(pane_id)
             .map(|t| (t.sort_col.clone(), t.sort_dir.clone()))
@@ -173,6 +181,7 @@ impl App {
                 crate::perf::event(|| format!("details.reorder_anim pane={}", pane_id.0));
                 window.request_animation_frame();
                 blend_layouts(
+                    anim.from_positions.as_ref(),
                     &details_row_layout(col_widths, &anim.from_order, zoom_scale),
                     &to_layout,
                     anim.progress(),
@@ -260,27 +269,6 @@ impl App {
             let base_scroll = scroll.0.borrow().base_handle.clone();
             let scroll_view = view.clone();
 
-            // Grid Snapping Smooth Scroll Interpolation
-            if let Some(&target) = self.scroll_targets.get(&pane_id) {
-                let current = f32::from(base_scroll.offset().y);
-                if (target - current).abs() > 0.5 {
-                    let (ease, _) =
-                        crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
-                    let mut next = current + (target - current) * ease;
-                    // If almost there, snap to target.
-                    if (target - next).abs() < 1.0 {
-                        next = target;
-                        self.scroll_targets.remove(&pane_id);
-                    }
-                    base_scroll.set_offset(gpui::point(gpui::px(0.0), gpui::px(next)));
-                    window.request_animation_frame();
-                } else {
-                    base_scroll.set_offset(gpui::point(gpui::px(0.0), gpui::px(target)));
-                    self.scroll_targets.remove(&pane_id);
-                }
-            }
-
-            let app_handle = cx.entity().clone();
             // First frames after a split often report 0-height scroll bounds (layout
             // not committed yet). Shaping with viewport_h=0 builds an empty canvas and
             // used to stick for the whole seam animation via cache force-reuse.
@@ -308,8 +296,8 @@ impl App {
             // The scroll transform can advance before this virtual Element gets its
             // next render. Keep a generous paint/shaping runway on both sides so a
             // fast wheel/trackpad fling never exposes an unpainted (black) frame.
-            let overscan_rows = ((viewport_h * DETAILS_SCROLL_OVERSCAN_VIEWPORTS) / row_h)
-                .ceil() as usize;
+            let overscan_rows =
+                ((viewport_h * DETAILS_SCROLL_OVERSCAN_VIEWPORTS) / row_h).ceil() as usize;
             let start_idx =
                 ((scroll_y / row_h).floor().max(0.0) as usize).saturating_sub(overscan_rows);
             let end_idx = ((scroll_y + viewport_h) / row_h).ceil() as usize + overscan_rows;
@@ -388,6 +376,7 @@ impl App {
                     colors,
                     row_font.clone(),
                     font_size,
+                    dragging,
                 )
                 .absolute()
                 .inset_0()
@@ -468,33 +457,11 @@ impl App {
                         .size_full()
                         .overflow_y_scroll()
                         .track_scroll(&base_scroll)
-                        .on_scroll_wheel({
-                            let base_scroll = base_scroll.clone();
-                            let app_handle = app_handle.clone();
-                            move |ev, window, cx| {
-                                if ev.modifiers.control || ev.modifiers.platform {
-                                    ctrl_scroll(ev, pane_id, &scroll_view, window, cx);
-                                } else if cfg!(windows) {
-                                    if let gpui::ScrollDelta::Lines(l) = ev.delta {
-                                        window.prevent_default();
-                                        cx.stop_propagation();
-                                        let dy = l.y * row_h * 3.0;
-
-                                        app_handle.update(cx, |app, cx| {
-                                            let current_target =
-                                                *app.scroll_targets.entry(pane_id).or_insert_with(
-                                                    || f32::from(base_scroll.offset().y),
-                                                );
-                                            let mut new_y = current_target + dy;
-                                            let max_scroll = (total_height - viewport_h).max(0.0);
-                                            new_y = (new_y / row_h).round() * row_h;
-                                            new_y = new_y.clamp(-max_scroll, 0.0);
-
-                                            app.scroll_targets.insert(pane_id, new_y);
-                                            cx.notify();
-                                        });
-                                    }
-                                }
+                        .on_scroll_wheel(move |ev, window, cx| {
+                            // Ordinary wheel input uses the handle's time-based glide.
+                            // Platform line counts already include the OS wheel setting.
+                            if ev.modifiers.control || ev.modifiers.platform {
+                                ctrl_scroll(ev, pane_id, &scroll_view, window, cx);
                             }
                         })
                         .child(
@@ -538,38 +505,43 @@ impl App {
             PANE_VIEWPORT_TIMINGS,
             layout_region("pane.viewport_body", inner),
         ))
-        .on_prepaint({
+        .on_prepaint_child({
             let v = prepaint_view;
             move |bounds: gpui::Bounds<gpui::Pixels>, _window, cx| {
                 crate::perf::count("prepaint.details_pane");
                 let new_w = f32::from(bounds.size.width);
                 let new_h = f32::from(bounds.size.height);
-                let should_update = {
+                let (width_changed, height_changed) = {
                     if let Some(ts) = v.read(cx).state.tab_states.get(&pane_id) {
-                        (ts.last_pane_width - new_w).abs() > 1.5
-                            || (ts.last_pane_height - new_h).abs() > 1.5
+                        (
+                            (ts.last_pane_width - new_w).abs() > 1.5,
+                            (ts.last_pane_height - new_h).abs() > 1.5,
+                        )
                     } else {
-                        false
+                        (false, false)
                     }
                 };
-                if should_update {
+                if width_changed || height_changed {
                     v.update(cx, |this, cx| {
                         if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
                             ts.last_pane_width = new_w;
                             ts.last_pane_height = new_h;
-                            // The responsive column projection depends on this
-                            // measured width. One notification updates the next
-                            // frame; the bounds comparison prevents a loop.
-                            cx.notify();
+                            // Width changes are absorbed directly by GPU overflow clipping
+                            // without invalidating the GPUI tree (eliminates 1-frame lag).
+                            // Only vertical height changes (which affect virtual scroll runway)
+                            // trigger notification.
+                            if height_changed && !this.is_pane_or_dock_animating() {
+                                cx.notify();
+                            }
                         }
                     });
                 }
             }
         })
         .when(cfg!(windows), |el| {
-            el.on_prepaint(zone_recorder(pane_id, &zone_view))
+            el.on_prepaint_child(zone_recorder(pane_id, &zone_view))
         })
-        .on_prepaint(pane_bounds_recorder(pane_id, &bounds_view))
+        .on_prepaint_child(pane_bounds_recorder(pane_id, &bounds_view))
         .into_any_element()
     }
 }
@@ -605,20 +577,29 @@ pub(crate) fn format_entries(entries: &mut [FileEntry]) {
 }
 
 impl App {
-    fn details_widths_for_pane(&self, pane_id: TabId, zoom_scale: f32) -> crate::app::ColWidths {
-        let available_width = self
-            .state
-            .tab_states
-            .get(&pane_id)
-            .map(|state| state.last_pane_width)
-            .filter(|width| width.is_finite() && *width > 1.0);
-        fit_details_widths(self.col_widths, available_width, zoom_scale)
+    fn details_widths_for_pane(&self, _pane_id: TabId, zoom_scale: f32) -> crate::app::ColWidths {
+        // Atlas / Explorer architecture: column widths are stable, legible, and unconstrained
+        // by the fluctuating pane width. They do not compress aggressively on split/resize;
+        // overflowing columns clip naturally at the pane boundary with subpixel GPU scissor.
+        let mins = [
+            ROW_NAME_MIN_W * zoom_scale,
+            DETAILS_SIZE_MIN_W,
+            DETAILS_MODIFIED_MIN_W,
+            DETAILS_TYPE_MIN_W,
+        ];
+        crate::app::ColWidths {
+            name: self.col_widths.name.max(mins[0]),
+            size: self.col_widths.size.max(mins[1]),
+            modified: self.col_widths.modified.max(mins[2]),
+            type_w: self.col_widths.type_w.max(mins[3]),
+        }
     }
 
     /// Live drag-reorder: place `dragged` at the slot the cursor is over (`local_x`
-    /// is header-relative). Every position is reachable, including the last (when the
-    /// cursor passes every other column's centre). On a real change we snapshot the
-    /// previous order so the columns *slide* to their new slots instead of snapping.
+    /// is header-relative). Every position is reachable, including the last.
+    /// Hysteresis prevents rapid jitter around midpoints. On a real change we snapshot
+    /// the previous visual layout so the columns smoothly glide to their new slots
+    /// without teleporting or cutting off in-flight animation.
     pub(crate) fn reorder_details_live(
         &mut self,
         pane_id: TabId,
@@ -630,16 +611,24 @@ impl App {
         self.col_drag_x = local_x;
         let old = self.details_column_order;
 
-        // Insertion index = how many of the *other* columns the cursor has passed
-        // (compared against each column's centre in the current left-anchored layout).
-        // Matches `details_row_layout`'s `name_w` computation.
+        // Insertion index: check against each column's midpoint with hysteresis
         let widths = self.details_widths_for_pane(pane_id, zoom_scale);
         let mut x = widths.name.max(ROW_NAME_MIN_W * zoom_scale);
         let mut passed = 0usize;
-        for column in old {
-            let w = details_column_width_raw(column, widths.size, widths.modified, widths.type_w);
-            if column != dragged && local_x > x + w * 0.5 {
-                passed += 1;
+        let dragged_idx = old.iter().position(|c| *c == dragged).unwrap_or(0);
+        let hysteresis = 14.0 * zoom_scale;
+
+        for (i, column) in old.iter().enumerate() {
+            let w = details_column_width_raw(*column, widths.size, widths.modified, widths.type_w);
+            if *column != dragged {
+                let threshold = if dragged_idx < i {
+                    x + w * 0.5 + hysteresis
+                } else {
+                    x + w * 0.5 - hysteresis
+                };
+                if local_x > threshold {
+                    passed += 1;
+                }
             }
             x += w;
         }
@@ -648,8 +637,45 @@ impl App {
         order.insert(passed.min(order.len()), dragged);
         if let Ok(order) = <[DetailsColumn; 3]>::try_from(order) {
             if order != old {
+                let new_anim = if let Some(prev) = self.details_reorder.filter(|a| a.is_alive()) {
+                    let prev_from = details_row_layout(widths, &prev.from_order, zoom_scale);
+                    let prev_to = details_row_layout(widths, &old, zoom_scale);
+                    let t = prev.progress();
+                    let lerp = |a: f32, b: f32| a + (b - a) * t;
+                    let mut current_positions = [(DetailsColumn::Size, 0.0); 3];
+                    for (slot_idx, col) in old.iter().enumerate() {
+                        let from_x = if let Some(positions) = &prev.from_positions {
+                            positions
+                                .iter()
+                                .find(|(c, _)| c == col)
+                                .map(|(_, x)| *x)
+                                .unwrap_or_else(|| {
+                                    prev_from
+                                        .columns
+                                        .iter()
+                                        .find(|f| f.column == *col)
+                                        .map_or(0.0, |f| f.x)
+                                })
+                        } else {
+                            prev_from
+                                .columns
+                                .iter()
+                                .find(|f| f.column == *col)
+                                .map_or(0.0, |f| f.x)
+                        };
+                        let to_x = prev_to
+                            .columns
+                            .iter()
+                            .find(|f| f.column == *col)
+                            .map_or(0.0, |f| f.x);
+                        current_positions[slot_idx] = (*col, lerp(from_x, to_x));
+                    }
+                    crate::app::DetailsReorderAnim::with_positions(old, current_positions)
+                } else {
+                    crate::app::DetailsReorderAnim::new(old)
+                };
                 self.details_column_order = order;
-                self.details_reorder = Some(crate::app::DetailsReorderAnim::new(old));
+                self.details_reorder = Some(new_anim);
             }
         }
     }
@@ -975,9 +1001,9 @@ const DETAILS_TYPE_MIN_W: f32 = 56.0;
 /// This is deliberately expressed in viewports, not a fixed row count, so it also
 /// covers high-DPI / zoomed layouts and large trackpad deltas.
 // We use a small overscan (0.2 viewports) instead of a large one (like 1.5).
-// A large overscan forces GPUI to process and submit thousands of invisible primitives 
-// (text glyphs, icons, quads) to the scene builder every frame, which can cause 
-// `gpui-draw` to take 9+ ms to process 3000+ scene_ops. By keeping this small, 
+// A large overscan forces GPUI to process and submit thousands of invisible primitives
+// (text glyphs, icons, quads) to the scene builder every frame, which can cause
+// `gpui-draw` to take 9+ ms to process 3000+ scene_ops. By keeping this small,
 // we ensure only the visible rows (plus a tiny runway) are processed.
 const DETAILS_SCROLL_OVERSCAN_VIEWPORTS: f32 = 0.2;
 
@@ -1025,16 +1051,15 @@ impl DetailsContentLod {
     }
 
     pub(crate) fn paints_metadata(self) -> bool {
-        matches!(self, Self::Full)
+        !matches!(self, Self::IconOnly)
     }
 
     /// Quantize the narrow-name state so a resize does not produce a new glyph
     /// count for every pixel. `paint_mono_truncated` adds the shared ellipsis.
-    pub(crate) fn name_paint_width(self, available: f32, zoom_scale: f32) -> f32 {
+    pub(crate) fn name_paint_width(self, available: f32, _zoom_scale: f32) -> f32 {
         match self {
             Self::IconOnly => 0.0,
-            Self::Initials => available.min(30.0 * zoom_scale),
-            Self::NameOnly | Self::Full => available,
+            Self::Initials | Self::NameOnly | Self::Full => available,
         }
     }
 
@@ -1135,6 +1160,7 @@ fn details_column_width_raw(
 /// preserved. When there is not, the available shrink is distributed in proportion
 /// to each column's flexible surplus above its minimum; below the minimum total,
 /// clipping is intentional and stable.
+#[allow(dead_code)]
 fn fit_details_widths(
     widths: crate::app::ColWidths,
     available_width: Option<f32>,
@@ -1237,20 +1263,37 @@ fn details_row_layout(
     }
 }
 
-/// Interpolate column x-positions from `from` (pre-swap order) to `to` (current
-/// order) by `t`, keeping `to`'s widths/order. Drives the reorder slide so headers
-/// and rows glide to their new slots.
-fn blend_layouts(from: &DetailsRowLayout, to: &DetailsRowLayout, t: f32) -> DetailsRowLayout {
+/// Interpolate column x-positions from `from` (pre-swap order or in-flight positions)
+/// to `to` (current order) by `t`, keeping `to`'s widths/order. Drives the reorder
+/// slide so headers and rows glide seamlessly to their new slots.
+fn blend_layouts(
+    from_positions: Option<&[(DetailsColumn, f32); 3]>,
+    from: &DetailsRowLayout,
+    to: &DetailsRowLayout,
+    t: f32,
+) -> DetailsRowLayout {
     let lerp = |a: f32, b: f32| a + (b - a) * t;
     let columns = to
         .columns
         .iter()
         .map(|c| {
-            let from_x = from
-                .columns
-                .iter()
-                .find(|f| f.column == c.column)
-                .map_or(c.x, |f| f.x);
+            let from_x = if let Some(positions) = from_positions {
+                positions
+                    .iter()
+                    .find(|(col, _)| *col == c.column)
+                    .map(|(_, x)| *x)
+                    .unwrap_or_else(|| {
+                        from.columns
+                            .iter()
+                            .find(|f| f.column == c.column)
+                            .map_or(c.x, |f| f.x)
+                    })
+            } else {
+                from.columns
+                    .iter()
+                    .find(|f| f.column == c.column)
+                    .map_or(c.x, |f| f.x)
+            };
             DetailsColumnLayout {
                 x: lerp(from_x, c.x),
                 ..*c
@@ -1327,7 +1370,7 @@ fn render_rename_row(
     div()
         .id(("row", entry_idx))
         .when(record_rects, |s| {
-            s.on_prepaint(rect_recorder(pane_id, entry_idx, view))
+            s.on_prepaint_child(rect_recorder(pane_id, entry_idx, view))
         })
         .w_full()
         .h(px(row_h))
@@ -1503,5 +1546,96 @@ mod tests {
             details_content_lod_for_width(80.0, 1.0, false),
             DetailsContentLod::Full
         );
+    }
+
+    #[test]
+    fn blend_layouts_interpolates_smoothly() {
+        let widths = crate::app::ColWidths::default();
+        let from_layout = details_row_layout(
+            widths,
+            &[
+                DetailsColumn::Size,
+                DetailsColumn::Modified,
+                DetailsColumn::Type,
+            ],
+            1.0,
+        );
+        let to_layout = details_row_layout(
+            widths,
+            &[
+                DetailsColumn::Modified,
+                DetailsColumn::Size,
+                DetailsColumn::Type,
+            ],
+            1.0,
+        );
+
+        let mid = blend_layouts(None, &from_layout, &to_layout, 0.5);
+        let from_size_x = from_layout
+            .columns
+            .iter()
+            .find(|c| c.column == DetailsColumn::Size)
+            .unwrap()
+            .x;
+        let to_size_x = to_layout
+            .columns
+            .iter()
+            .find(|c| c.column == DetailsColumn::Size)
+            .unwrap()
+            .x;
+        let mid_size_x = mid
+            .columns
+            .iter()
+            .find(|c| c.column == DetailsColumn::Size)
+            .unwrap()
+            .x;
+
+        assert!((mid_size_x - (from_size_x + to_size_x) * 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn blend_layouts_uses_in_flight_positions_without_snap() {
+        let widths = crate::app::ColWidths::default();
+        let from_layout = details_row_layout(
+            widths,
+            &[
+                DetailsColumn::Size,
+                DetailsColumn::Modified,
+                DetailsColumn::Type,
+            ],
+            1.0,
+        );
+        let to_layout = details_row_layout(
+            widths,
+            &[
+                DetailsColumn::Modified,
+                DetailsColumn::Size,
+                DetailsColumn::Type,
+            ],
+            1.0,
+        );
+
+        let in_flight = [
+            (DetailsColumn::Size, 250.0),
+            (DetailsColumn::Modified, 180.0),
+            (DetailsColumn::Type, 400.0),
+        ];
+
+        let blended = blend_layouts(Some(&in_flight), &from_layout, &to_layout, 0.0);
+        let size_x = blended
+            .columns
+            .iter()
+            .find(|c| c.column == DetailsColumn::Size)
+            .unwrap()
+            .x;
+        assert_eq!(size_x, 250.0);
+    }
+
+    #[test]
+    fn paints_metadata_stays_active_for_smooth_clipping() {
+        assert!(DetailsContentLod::Full.paints_metadata());
+        assert!(DetailsContentLod::NameOnly.paints_metadata());
+        assert!(DetailsContentLod::Initials.paints_metadata());
+        assert!(!DetailsContentLod::IconOnly.paints_metadata());
     }
 }

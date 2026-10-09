@@ -1,5 +1,5 @@
 use crate::{
-    ActiveTheme, ElementExt, Placement, StyledExt,
+    ActiveTheme, ElementExt, Placement,
     dialog::{ANIMATION_DURATION, Dialog},
     focus_trap::FocusTrapManager,
     input::InputState,
@@ -187,7 +187,9 @@ impl Root {
                 div()
                     .relative()
                     .child(sheet)
-                    .on_prepaint(move |_, _, cx| root.update(cx, |r, _| r.sheet_size = Some(size))),
+                    .on_prepaint_child(move |_, _, cx| {
+                        root.update(cx, |r, _| r.sheet_size = Some(size))
+                    }),
             );
         }
 

@@ -85,7 +85,19 @@ impl App {
         let done: Vec<TileId> = self
             .pane_closing
             .iter()
-            .filter(|(_, started)| started.elapsed() >= crate::app::PANE_CLOSE_FINALIZE)
+            .filter(|(id, started)| {
+                started.elapsed() >= crate::app::PANE_CLOSE_FINALIZE
+                    && self.state.find_tabs_container(**id)
+                        .and_then(|tabs| self.state.find_parent_of(tabs))
+                        .and_then(|parent| self.dock_split_animations.get(&parent).map(|animation| (parent, animation)))
+                        .is_none_or(|(parent, animation)| {
+                            animation.done() || matches!(self.state.pane_tree.tiles.get(parent),
+                                Some(Tile::Container(Container::Linear(linear))) if
+                                    linear.children.iter().position(|child| self.state.container_contains_pane(*child, **id))
+                                        .and_then(|ix| animation.shares().get(ix).copied())
+                                        .is_some_and(|share| share <= f32::EPSILON))
+                        })
+            })
             .map(|(id, _)| *id)
             .collect();
         if !done.is_empty() {
@@ -151,7 +163,6 @@ impl App {
     pub(crate) fn drain_dnd_queue(&mut self) -> bool {
         use crate::dnd::windows::DndEvent;
         use crate::input::action::Action;
-        use atlas_model::ops::{ConflictPolicy, TransferKind, TransferOrigin, TransferRequest};
 
         let Some(dnd) = &self.dnd else { return false };
         let events = {
@@ -200,21 +211,26 @@ impl App {
             // A real drop landed inside Atlas: it's a deliberate release, not an
             // ESC-cancel, so keep any spring-load nav and tear the engine down here
             // (the synthetic mouse-up no longer clears it on Windows).
-            tracing::debug!(
+            tracing::info!(
                 x = p.x,
                 y = p.y,
                 paths = p.paths.len(),
                 from_self = p.from_self,
                 "dnd drop in"
             );
-            self.mark_drag_committed();
-            self.drag_hover.clear();
-            if let Some(command) = self.drag_hover_drop_command_at(p.x, p.y) {
-                tracing::debug!("dnd drop resolved by drag-hover command");
+            // Resolve before ending hover state. OLE has already ended its
+            // drag; the target must still identify the tab under the cursor.
+            let tab_target = self.tab_drop_target_at(p.x, p.y);
+            let hover_command = self.drag_hover_drop_command_at(p.x, p.y);
+            if tab_target.is_some() && hover_command.is_none() {
+                tracing::warn!(tab = ?tab_target, "dnd drop ignored: tab no longer accepts files");
+                self.cancel_dropzone_file_drag();
+                self.drag_hover_external_left();
                 had = true;
-                self.execute_drag_hover_drop_command(command, p.paths, p.from_self);
                 continue;
             }
+            self.mark_drag_committed();
+            self.drag_hover.clear();
             if self.dropzone_bounds.is_some_and(|bounds| {
                 p.x >= f32::from(bounds.left())
                     && p.x <= f32::from(bounds.right())
@@ -230,6 +246,12 @@ impl App {
                 );
                 continue;
             }
+            if let Some(command) = hover_command {
+                tracing::debug!("dnd drop resolved by drag-hover command");
+                had = true;
+                self.execute_drag_hover_drop_with_modifiers(command, p.paths, p.from_self, p.ctrl, p.shift);
+                continue;
+            }
             let dest = if p.x >= 0.0 && p.y >= 0.0 {
                 if p.paths.is_empty() {
                     continue;
@@ -238,13 +260,16 @@ impl App {
                 // space (no zone, no drag-hover target) is a no-op — never fall back
                 // to the active pane dir, which silently transferred to the wrong place.
                 let pane_dest = self.pane_drop_dest_at(p.x, p.y);
-                let (zone_dest, zone_count) = self
+                let (zone_pane, zone_count) = self
                     .dnd
                     .as_ref()
                     .and_then(|d| d.zones.lock().ok())
-                    .map(|z| (z.hit(p.x, p.y).map(|z| z.dest.clone()), z.len()))
+                    .map(|z| (z.hit(p.x, p.y).map(|z| TileId(z.pane_id)), z.len()))
                     .unwrap_or((None, 0));
-                tracing::debug!(
+                let zone_dest = zone_pane.filter(|pane| self.pane_accepts_visible_drop(*pane))
+                    .and_then(|pane| self.tab_data_for(pane))
+                    .and_then(|tab| tab.location.fs_dir().map(|path| path.to_path_buf()));
+                tracing::info!(
                     pane_hit = pane_dest.is_some(),
                     zone_hit = zone_dest.is_some(),
                     zone_count,
@@ -309,24 +334,8 @@ impl App {
             // Vtable always enqueues Copy; decide move vs copy here by volume.
             // Conflicts always go through the dialog (policy `Ask`) — a drop
             // must never overwrite or vanish silently.
-            let vol_effect = crate::dnd::default_effect_for_paths(&p.paths, &dest);
-            self.clear_committed_dropzone_drag(&p.paths);
-            actions.push(Action::Transfer(TransferRequest {
-                sources: p.paths,
-                target_names: None,
-                dest,
-                kind: if vol_effect.is_move() {
-                    TransferKind::Move
-                } else {
-                    TransferKind::Copy
-                },
-                policy: ConflictPolicy::Ask,
-                origin: if p.from_self {
-                    TransferOrigin::DndInternal
-                } else {
-                    TransferOrigin::DndExternal
-                },
-            }));
+            self.cancel_dropzone_file_drag();
+            actions.push(Action::Transfer(crate::ui::drag_hover::drop_transfer_with_modifiers(p.paths, dest, p.from_self, p.ctrl, p.shift)));
         }
         let had = had || !actions.is_empty();
         self.process_actions(actions);
@@ -340,15 +349,19 @@ impl App {
     pub(crate) fn drain_bg_results(&mut self, cx: &mut gpui::Context<Self>) -> bool {
         let _perf = crate::perf::span("bg.drain");
         let start = std::time::Instant::now();
-        let max_duration = std::time::Duration::from_millis(2);
+        let max_duration = if self.is_pane_or_dock_animating() {
+            std::time::Duration::from_micros(500)
+        } else {
+            std::time::Duration::from_millis(2)
+        };
 
         // Drain icon channel first.
         let mut icon_results = Vec::new();
         for res in self.icon_rx.try_iter() {
-            icon_results.push(res);
             if start.elapsed() > max_duration {
                 break;
             }
+            icon_results.push(res);
         }
         let icon_len = icon_results.len();
         let icon_changed = !icon_results.is_empty();
@@ -410,6 +423,9 @@ impl App {
                 self.notify_pane(id, cx);
             }
         }
+        if !self.is_pane_or_dock_animating() && !self.pending_column_reflow.is_empty() {
+            self.flush_pending_column_reflows(cx);
+        }
         changed
     }
 
@@ -419,14 +435,18 @@ impl App {
     pub(crate) fn drain_bg_results_state_only(&mut self) -> bool {
         let _perf = crate::perf::span("bg.drain_state_only");
         let start = std::time::Instant::now();
-        let max_duration = std::time::Duration::from_millis(2);
+        let max_duration = if self.is_pane_or_dock_animating() {
+            std::time::Duration::from_micros(500)
+        } else {
+            std::time::Duration::from_millis(2)
+        };
 
         let mut icon_results = Vec::new();
         for res in self.icon_rx.try_iter() {
-            icon_results.push(res);
             if start.elapsed() > max_duration {
                 break;
             }
+            icon_results.push(res);
         }
         let icon_len = icon_results.len();
         let icon_changed = !icon_results.is_empty();
@@ -760,6 +780,10 @@ impl App {
                     }
                     info.notify_panes.push(tab);
                 }
+                BgResult::PathsDeleted(paths) => {
+                    self.consume_completed_staged_paths(&paths);
+                    info.notify_all = true;
+                }
                 BgResult::OpComplete {
                     id,
                     result,
@@ -834,13 +858,17 @@ impl App {
                                 .into_owned(),
                         );
                     }
-                    if !report.cancelled && report.errors.is_empty() {
+                    if !report.cancelled && report.errors.is_empty() && !report.completed.is_empty() {
                         self.toast_info(
                             rust_i18n::t!("op_transfer_complete", count = report.completed.len())
                                 .into_owned(),
                         );
                     }
                     if !report.completed.is_empty() {
+                        if matches!(origin, atlas_model::ops::TransferOrigin::DndInternal | atlas_model::ops::TransferOrigin::DndExternal) {
+                            let sources = report.completed.iter().map(|(src, _)| src.clone()).collect::<Vec<_>>();
+                            self.consume_completed_staged_paths(&sources);
+                        }
                         // Tags follow files moved within the app (real pairs,
                         // so this survives conflict renames).
                         if kind == atlas_model::ops::TransferKind::Move {
@@ -894,6 +922,13 @@ impl App {
                     self.state.tag_cache.apply_definitions(defs);
                 }
                 BgResult::TagsForPaths { tags } => {
+                    let completed = self.dropzone_pending_tags.iter()
+                        .filter(|(path, tag)| tags.get(*path).is_some_and(|assigned| assigned.contains(tag)))
+                        .map(|(path, _)| path.clone()).collect::<Vec<_>>();
+                    if !completed.is_empty() {
+                        self.consume_completed_staged_paths(&completed);
+                        info.notify_all = true;
+                    }
                     // Scope the repaint to panes whose dir contains a tagged path.
                     let mut tabs = std::collections::HashSet::new();
                     for path in tags.keys() {
@@ -903,6 +938,8 @@ impl App {
                     info.notify_panes.extend(tabs);
                 }
                 BgResult::PathsForTag { tag, paths } => {
+                    let completed = paths.iter().filter(|path| self.dropzone_pending_tags.get(*path) == Some(&tag)).cloned().collect::<Vec<_>>();
+                    self.consume_completed_staged_paths(&completed);
                     self.populate_tag_tabs(tag, paths);
                     info.notify_all = true;
                 }
@@ -910,6 +947,26 @@ impl App {
                     // Drop stale batches from a superseded query generation.
                     if gen == self.content_gen {
                         self.content_results.append(&mut paths);
+                    }
+                }
+                BgResult::GotoServiceResults { gen, query, results, complete } => {
+                    if gen == self.goto_service_generation.load(std::sync::atomic::Ordering::SeqCst) {
+                        let entries: Vec<atlas_core::search::nucleo_pool::IndexEntry> = results
+                            .into_iter()
+                            .map(|(path, is_dir)| atlas_core::search::nucleo_pool::IndexEntry { path, is_dir })
+                            .collect();
+                        self.goto_service_cache = Some((query, std::sync::Arc::new(entries), complete));
+                        if complete {
+                            self.goto_service_inflight = None;
+                        }
+                        info.changed = true;
+                    }
+                }
+                BgResult::GotoServiceFailed { gen, query } => {
+                    if gen == self.goto_service_generation.load(std::sync::atomic::Ordering::SeqCst) {
+                        self.goto_service_failed = Some(query);
+                        self.goto_service_inflight = None;
+                        info.changed = true;
                     }
                 }
                 BgResult::DeviceMounted(path) => {

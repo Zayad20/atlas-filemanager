@@ -671,7 +671,7 @@ impl RenderOnce for Slider {
                             )
                             .when(is_range, |this| {
                                 this.child(self.render_thumb(
-                                    relative(percentage.start),
+                                    gpui::DefiniteLength::Relative(relative(percentage.start)),
                                     true,
                                     bar_color,
                                     thumb_color,
@@ -681,7 +681,7 @@ impl RenderOnce for Slider {
                                 ))
                             })
                             .child(self.render_thumb(
-                                relative(percentage.end),
+                                gpui::DefiniteLength::Relative(relative(percentage.end)),
                                 false,
                                 bar_color,
                                 thumb_color,
@@ -689,7 +689,7 @@ impl RenderOnce for Slider {
                                 window,
                                 cx,
                             ))
-                            .on_prepaint({
+                            .on_prepaint_child({
                                 let state = self.state.clone();
                                 move |bounds, _, cx| state.update(cx, |r, _| r.bounds = bounds)
                             }),

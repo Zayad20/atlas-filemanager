@@ -8,7 +8,7 @@ use gpui::{
 };
 
 use crate::{
-    Selectable as _, StyledExt,
+    Selectable as _,
     actions::{Confirm, SelectDown, SelectLeft, SelectRight, SelectUp},
     list::ListItem,
     menu::{ContextMenuExt as _, PopupMenu},

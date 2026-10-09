@@ -509,7 +509,7 @@ impl RenderOnce for DatePicker {
                                 ),
                         ),
                     )
-                    .with_priority(2),
+                    .priority(2),
                 )
             })
     }

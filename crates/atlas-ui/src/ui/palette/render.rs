@@ -18,6 +18,7 @@ use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::motion;
 use gpui::prelude::*;
 use gpui::AnimationExt;
+use gpui::ColorExt as _;
 use gpui::{
     div, px, relative, AnyElement, Context, Entity, FontWeight, HighlightStyle, Hsla, KeyDownEvent,
     MouseButton, SharedString, StyledText, Window,
@@ -415,7 +416,7 @@ impl App {
             for item in &section.items {
                 let shows_description = !item.inline_description
                     && item.description.is_some()
-                    && (expanded || row_i == selected_idx);
+                    && (matches!(kind, PaletteKind::Goto) || expanded || row_i == selected_idx);
                 rows_h += if shows_description {
                     PANEL_ITEM_WITH_DESC_HEIGHT
                 } else {
@@ -526,7 +527,16 @@ impl App {
         } else {
             rows_h
         };
-        let panel_h = (chrome_h + rows_h).clamp(min_panel_h, max_panel_h);
+        let panel_h = if kind == PaletteKind::Goto
+            && !self.state.overlay.goto_state.query.trim().is_empty()
+        {
+            // Reserve the same viewport throughout typing and source updates;
+            // changing result counts should scroll, not resize the whole panel.
+            (chrome_h + PANEL_LIST_PADDING + 2.0 * PANEL_HEADER_HEIGHT + 10.0 * PANEL_ITEM_HEIGHT)
+                .clamp(min_panel_h, max_panel_h)
+        } else {
+            (chrome_h + rows_h).clamp(min_panel_h, max_panel_h)
+        };
 
         // Capture phase: intercept navigation/confirm/dismiss/expand before the
         // focused `TextInput` consumes them. Everything else falls through to
@@ -775,7 +785,8 @@ impl App {
             }
             row.into_any_element()
         } else {
-            let show_desc = props.item.description.is_some() && (props.selected || props.expanded);
+            let show_desc = props.item.description.is_some()
+                && (matches!(kind, PaletteKind::Goto) || props.selected || props.expanded);
             v_flex()
                 .min_w(px(0.))
                 .flex_1()
@@ -785,7 +796,6 @@ impl App {
                         div()
                             .text_xs()
                             .text_color(desc_color)
-                            .opacity(0.85)
                             .truncate()
                             .child(desc)
                     }))
@@ -857,6 +867,11 @@ impl App {
             .collect();
 
         let row_action = props.item.action.clone();
+        let path_tooltip = match &row_action {
+            Action::Navigate { path, .. } => Some(path.to_string_lossy().into_owned()),
+            Action::Open(paths) => paths.first().map(|path| path.to_string_lossy().into_owned()),
+            _ => None,
+        };
         let row_close = kind.close_action();
         let row_view = view;
         div()
@@ -870,14 +885,21 @@ impl App {
             .when(!props.indent, |s| s.pl_2())
             .pr_2()
             .py_1()
+            .when(matches!(kind, PaletteKind::Goto), |row| {
+                row.h(px(PANEL_ITEM_WITH_DESC_HEIGHT)).flex().items_center()
+            })
             .rounded_sm()
             .cursor_pointer()
+            .when_some(path_tooltip, |row, path| {
+                row.tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
+            })
             .when(props.selected, |s| {
                 s.bg(props.colors.accent).text_color(props.colors.accent_fg)
             })
             .when(!props.selected, |s| s.hover(|h| h.bg(props.colors.border)))
             .child(
                 h_flex()
+                    .w_full()
                     .gap_2()
                     .items_center()
                     .children(icon_el)

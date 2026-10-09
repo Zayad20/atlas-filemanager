@@ -12,12 +12,58 @@ use std::sync::Arc;
 use gpui::RenderImage;
 
 // ---------------------------------------------------------------------------
+// Multi-resolution icon representation (avoids GPU downsampling undersampling)
+// ---------------------------------------------------------------------------
+
+/// Cached vector icon rasterised at multiple resolution tiers so the GPU
+/// bilinear filter never has to downscale by more than ~1.5×-2×, avoiding
+/// Nyquist-Shannon undersampling aliasing (jagged/chewed edges on curves).
+#[derive(Clone)]
+pub struct MultiResIcon {
+    /// 32px: for list / compact list / details / sidebar (<= 28px display)
+    pub small: Arc<RenderImage>,
+    /// 64px: for small grid thumbnails (29px .. 56px display)
+    pub medium: Arc<RenderImage>,
+    /// 128px: for medium grid thumbnails (57px .. 112px display)
+    pub large: Arc<RenderImage>,
+    /// 256px: for large grid thumbnails (> 112px display)
+    pub full: Arc<RenderImage>,
+}
+
+impl MultiResIcon {
+    /// Pick the closest resolution tier for the target rendered pixel edge.
+    #[inline]
+    pub fn for_size(&self, px: f32) -> Arc<RenderImage> {
+        if px <= 28.0 {
+            self.small.clone()
+        } else if px <= 56.0 {
+            self.medium.clone()
+        } else if px <= 112.0 {
+            self.large.clone()
+        } else {
+            self.full.clone()
+        }
+    }
+
+    /// Construct a multi-res representation from a single texture for fallbacks/tests.
+    #[allow(dead_code)]
+    pub fn from_single(tex: Arc<RenderImage>) -> Self {
+        Self {
+            small: tex.clone(),
+            medium: tex.clone(),
+            large: tex.clone(),
+            full: tex,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Icon state (mirrors ThumbState from ui::thumbs)
 // ---------------------------------------------------------------------------
 
 pub enum IconState {
     Loading,
-    Ready(Arc<RenderImage>),
+    Ready(Arc<MultiResIcon>),
     Missing,
 }
 
@@ -50,18 +96,20 @@ impl IconThemeIndex {
     /// downloading a VSCode icon theme. Extensions are lowercased to match
     /// [`svg_for_ext`]. Returns `None` when the map is empty so callers can fall
     /// back to auto-discovery.
-    pub fn from_mappings(map: HashMap<String, PathBuf>) -> Option<Self> {
+    pub fn from_mappings(mut map: HashMap<String, PathBuf>) -> Option<Self> {
         if map.is_empty() {
             return None;
         }
+        let default_folder = map.remove("/").filter(|p| p.exists());
+        let default_file = map.remove("").filter(|p| p.exists());
         let ext_to_svg = map
             .into_iter()
             .map(|(ext, path)| (ext.to_ascii_lowercase(), path))
             .collect();
         Some(Self {
             ext_to_svg,
-            default_file: None,
-            default_folder: None,
+            default_file,
+            default_folder,
         })
     }
 }

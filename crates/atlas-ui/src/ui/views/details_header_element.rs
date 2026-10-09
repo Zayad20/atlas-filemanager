@@ -12,6 +12,7 @@ use crate::ui::views::details::{
 };
 use atlas_model::file_entry::{SortColumn, SortDir};
 use atlas_model::pane::TabId;
+use gpui::ColorExt as _;
 use gpui::{
     point, px, size, App as GpuiApp, Bounds, ContentMask, DispatchPhase, Element, ElementId, Font,
     GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
@@ -191,7 +192,8 @@ impl Element for DetailsHeaderElement {
         let header_h = DETAILS_ROW_H * zoom_scale;
         let mut style = Style::default();
         style.refine(&self.style);
-        style.size.width = gpui::Length::Definite(gpui::DefiniteLength::Fraction(1.0));
+        style.size.width =
+            gpui::Length::Definite(gpui::DefiniteLength::Relative(gpui::relative(1.0)));
         style.size.height = gpui::Length::Definite(gpui::DefiniteLength::Absolute(
             gpui::AbsoluteLength::Pixels(px(header_h)),
         ));
@@ -349,6 +351,7 @@ impl Element for DetailsHeaderElement {
                     window.with_content_mask(
                         Some(ContentMask {
                             bounds: name_clip.intersect(&bounds),
+                            fade_out: Default::default(),
                         }),
                         |window| {
                             if let Some(line) = &prepaint.name_line {
@@ -396,6 +399,7 @@ impl Element for DetailsHeaderElement {
                     window.with_content_mask(
                         Some(ContentMask {
                             bounds: clip.intersect(&bounds),
+                            fade_out: Default::default(),
                         }),
                         |window| {
                             let _ = line.paint(

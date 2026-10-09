@@ -3,6 +3,8 @@
 //! Grid uses the element form as an overlay; canvas-backed views use `paint` so
 //! they retain their virtualized paint path. Both forms share the same palette.
 
+use gpui::prelude::FluentBuilder;
+use gpui::ColorExt as _;
 use gpui::{
     div, point, px, size, AnimationExt, Bounds, Hsla, InteractiveElement, IntoElement,
     ParentElement, RenderOnce, SharedString, Styled, Window,
@@ -47,12 +49,18 @@ pub(crate) fn paint_animated(
     size_px: f32,
     selected_at: Option<std::time::Instant>,
 ) {
-    let elapsed = selected_at
-        .map(|at| at.elapsed().as_secs_f32())
-        .unwrap_or(ANIM_SECS);
-    let progress = (elapsed / ANIM_SECS).clamp(0.0, 1.0);
-    let scale = SPRING.value(elapsed).max(0.0);
-    if progress < 1.0 {
+    let elapsed = selected_at.map(|at| at.elapsed().as_secs_f32());
+    let active = !cx.reduce_motion() && elapsed.is_some_and(|t| t < SPRING.settle_secs(0.02));
+    let (progress, scale) = if active {
+        let elapsed = elapsed.unwrap();
+        (
+            (elapsed / ANIM_SECS).clamp(0.0, 1.0),
+            SPRING.value(elapsed).max(0.0),
+        )
+    } else {
+        (1.0, 1.0)
+    };
+    if active {
         window.request_animation_frame();
     }
     let colors = SelectionCheckboxColors::from_theme(cx);
@@ -80,7 +88,7 @@ pub(crate) fn paint_animated(
 
     let check_size = size_px * (0.64 + 0.28 * crate::ui::motion::ease_out_quart(progress));
     let mut mark = colors.mark;
-    mark.a *= progress;
+    mark.alpha *= progress;
     let _ = window.paint_svg(
         Bounds {
             origin: point(
@@ -145,16 +153,23 @@ impl RenderOnce for SelectionCheckbox {
                             .size(px(size_px * 0.62))
                             .text_color(colors.mark),
                     )
-                    .with_animation(
-                        SharedString::from("selection-checkbox-pop"),
-                        crate::ui::motion::linear_anim(std::time::Duration::from_secs_f32(
-                            ANIM_SECS,
-                        )),
-                        move |this, t| {
-                            let scale = SPRING.value(t * ANIM_SECS).max(0.0);
-                            this.opacity(t).size(px(size_px * scale))
-                        },
-                    ),
+                    .map(|this| {
+                        if cx.reduce_motion() {
+                            this.into_any_element()
+                        } else {
+                            this.with_spring(
+                                SharedString::from("selection-checkbox-pop"),
+                                gpui::SpringAnimation::new(SPRING.config())
+                                    .to(1.0_f32)
+                                    .from(0.0),
+                                move |this, scale| {
+                                    this.opacity(scale.clamp(0.0, 1.0))
+                                        .size(px(size_px * scale.max(0.0)))
+                                },
+                            )
+                            .into_any_element()
+                        }
+                    }),
             )
     }
 }

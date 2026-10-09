@@ -120,7 +120,7 @@ pub(super) fn folder_drop_target(
     let mv = view.clone();
     let cpv = view.clone();
     el.drag_over::<DraggedFiles>(|s, _, _, _| s.opacity(0.6))
-        .on_prepaint(drag_hover_recorder_with_drop(
+        .on_prepaint_child(drag_hover_recorder_with_drop(
             hover_id,
             DragHoverKind::Folder,
             DragHoverCommand::NavigatePathIn(pane_id, dest.clone()),
@@ -131,7 +131,7 @@ pub(super) fn folder_drop_target(
             let paths = d.paths.clone();
             mv.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
-                    DragHoverDropCommand::TransferTo(dest_internal.clone()),
+                    this.folder_drop_command(pane_id, &dest_internal),
                     paths,
                     true,
                 );
@@ -142,7 +142,7 @@ pub(super) fn folder_drop_target(
             let paths = paths.paths().to_vec();
             cpv.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
-                    DragHoverDropCommand::TransferTo(dest_external.clone()),
+                    this.folder_drop_command(pane_id, &dest_external),
                     paths,
                     false,
                 );

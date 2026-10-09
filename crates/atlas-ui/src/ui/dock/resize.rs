@@ -1,4 +1,5 @@
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{div, px, AnyElement, Entity, MouseButton};
 use gpui_component::ActiveTheme as _;
 

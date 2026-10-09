@@ -1,3 +1,4 @@
+use gpui::ColorExt as _;
 use std::{borrow::Cow, rc::Rc};
 
 use chrono::{Datelike, Local, NaiveDate};
@@ -10,7 +11,7 @@ use gpui::{
 use rust_i18n::t;
 
 use crate::{
-    ActiveTheme, Disableable as _, IconName, Selectable, Sizable, Size, StyledExt as _,
+    ActiveTheme, Disableable as _, IconName, Selectable, Sizable, Size,
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };

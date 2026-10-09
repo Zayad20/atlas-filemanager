@@ -28,6 +28,11 @@ pub(crate) enum DragHoverId {
     Sidebar(String),
     Chrome(&'static str, TileId),
     Folder(TileId, PathBuf),
+    Column(TileId, PathBuf),
+    Breadcrumb(TileId, PathBuf),
+    BreadcrumbMenu(TileId, PathBuf),
+    Inspector(PathBuf),
+    Tab(TileId),
 }
 
 #[derive(Clone)]
@@ -49,6 +54,7 @@ pub(crate) enum DragHoverDropCommand {
     TransferTo(PathBuf),
     /// Send the dropped paths to the OS trash (drop on the Recycle Bin).
     TrashPaths,
+    RejectArchive,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -83,6 +89,9 @@ pub(crate) struct DragHoverState {
     /// navigation that fired while dragging.
     nav_snapshot:
         Option<std::collections::HashMap<TileId, (Location, Vec<Location>, Vec<Location>)>>,
+    /// Focused tile captured when the drag began, so an abandoned drag restores
+    /// the pre-drag tab.
+    initial_focused_tile: Option<TileId>,
     /// Set once a real drop lands inside Atlas; suppresses the cancel-revert.
     committed: bool,
     /// Time of the last fired nav, used to drive the confirmation pulse glow.
@@ -115,6 +124,7 @@ impl DragHoverState {
         self.blink_started_at = None;
         self.blink_bounds = None;
         self.nav_snapshot = None;
+        self.initial_focused_tile = None;
         self.committed = false;
         self.confirm_pulse_at = None;
         self.confirm_pulse_bounds = None;
@@ -125,6 +135,7 @@ impl App {
     pub(crate) fn begin_drag_hover(&mut self) {
         self.drag_hover.active = true;
         self.drag_hover.committed = false;
+        self.drag_hover.initial_focused_tile = Some(self.state.focused_tile);
         // Snapshot every pane's nav state so a cancel can undo spring-load nav.
         use atlas_model::layout_tree::Tile;
         let snap: std::collections::HashMap<_, _> = self
@@ -160,6 +171,11 @@ impl App {
         if self.drag_hover.committed {
             return;
         }
+        if let Some(initial) = self.drag_hover.initial_focused_tile.take() {
+            if self.state.focused_tile != initial {
+                self.activate_tab(initial);
+            }
+        }
         let Some(snap) = self.drag_hover.nav_snapshot.take() else {
             return;
         };
@@ -188,17 +204,22 @@ impl App {
         }
     }
 
-    pub(crate) fn register_drag_hover_target(&mut self, target: DragHoverTarget) {
-        if self.drag_hover_maybe_active() {
-            if let Some(existing) = self
-                .pending_drag_hover_targets
-                .iter_mut()
-                .find(|existing| existing.id == target.id)
-            {
-                *existing = target;
-            } else {
-                self.pending_drag_hover_targets.push(target);
+    pub(crate) fn register_drag_hover_target(&mut self, mut target: DragHoverTarget) {
+        if let DragHoverId::Folder(pane, path) | DragHoverId::Column(pane, path) = &target.id {
+            if let Some(tab) = self.tab_data_for(*pane) {
+                let location = folder_location(&tab.location, path);
+                target.drop_command = Some(location_drop_command(&location));
+                target.command = DragHoverCommand::Process(Action::NavigateLocation { tab: *pane, location });
             }
+        }
+        if let Some(existing) = self
+            .pending_drag_hover_targets
+            .iter_mut()
+            .find(|existing| existing.id == target.id)
+        {
+            *existing = target;
+        } else {
+            self.pending_drag_hover_targets.push(target);
         }
     }
 
@@ -216,6 +237,9 @@ impl App {
     }
 
     pub(crate) fn drag_hover_set_cursor(&mut self, pos: gpui::Point<gpui::Pixels>) {
+        if !self.drag_hover.active && self.drag_hover_maybe_active() {
+            self.begin_drag_hover();
+        }
         self.drag_hover.cursor = Some(pos);
     }
 
@@ -250,6 +274,7 @@ impl App {
         if dirty || !self.dirty_panes.is_empty() {
             self.drain_bg_results_state_only();
             self.flush_dirty_panes(cx);
+            cx.notify();
         }
     }
 
@@ -262,27 +287,40 @@ impl App {
         };
         let now = Instant::now();
         let in_dropzone = self.dropzone_bounds.is_some_and(|b| contains(b, pos));
-        let hit = self
-            .pending_drag_hover_targets
-            .iter()
-            .rev()
-            .find(|target| {
-                if !contains(target.bounds, pos) {
-                    return false;
-                }
-                if in_dropzone {
-                    return false;
-                }
-                true
-            })
-            .cloned();
+        let hit = hover_target_at(
+            &self.pending_drag_hover_targets,
+            pos,
+            self.dropzone_bounds,
+            self.sidebar_scroll_region.as_ref().map(|(bounds, _)| *bounds),
+        )
+        .cloned();
 
-        let scrolled = self.tick_edge_scroll(pos, now);
+        // A drop over the fixed shelf must not scroll or activate sidebar rows
+        // beneath it, even when their retained bounds overlap the shelf.
+        let scrolled = !in_dropzone && self.tick_edge_scroll(pos, now);
 
         let Some(target) = hit else {
             self.drag_hover.reset_target(None, now);
             return scrolled;
         };
+        if let DragHoverId::Tab(pane_id) = target.id {
+            let is_already_active = self
+                .state
+                .find_tabs_container(pane_id)
+                .and_then(|cid| match self.state.pane_tree.tiles.get(cid) {
+                    Some(atlas_model::layout_tree::Tile::Container(
+                        atlas_model::layout_tree::Container::Tabs(tabs),
+                    )) => tabs.active,
+                    _ => None,
+                })
+                .map_or(self.state.focused_tile == pane_id, |active_id| {
+                    active_id == pane_id && self.state.focused_tile == pane_id
+                });
+            if is_already_active {
+                self.drag_hover.reset_target(None, now);
+                return scrolled;
+            }
+        }
         self.drag_hover.reset_target(Some(target.id.clone()), now);
         let delay = match target.kind {
             DragHoverKind::Nav => NAV_HOVER_DELAY,
@@ -330,7 +368,8 @@ impl App {
         self.drag_hover.fired_id = Some(target.id.clone());
         // Hand the dwell glow off to a short confirmation pulse on the same rect.
         self.drag_hover.confirm_pulse_at = Some(now);
-        self.drag_hover.confirm_pulse_bounds = self.drag_hover.blink_bounds.take();
+        self.drag_hover.confirm_pulse_bounds =
+            self.drag_hover.blink_bounds.take().or(Some(target.bounds));
         self.drag_hover.blink_id = None;
         self.drag_hover.blink_started_at = None;
         true
@@ -353,11 +392,11 @@ impl App {
             if t <= 1.0 {
                 let e = ease_out_quart(t);
                 let mut fill = accent;
-                fill.a = 0.34 * (1.0 - e);
+                fill.alpha = 0.34 * (1.0 - e);
                 let mut ring = accent;
-                ring.a = 0.85 * (1.0 - e);
+                ring.alpha = 0.85 * (1.0 - e);
                 let mut glow = accent;
-                glow.a = 0.5 * (1.0 - e);
+                glow.alpha = 0.5 * (1.0 - e);
                 return Some(glow_rect(bounds, fill, ring, glow, 8.0 + 22.0 * e, 2.0));
             }
         }
@@ -367,13 +406,23 @@ impl App {
         let elapsed = now.duration_since(started).as_secs_f32();
         let fade_in = ease_out_quart((elapsed / 0.18).clamp(0.0, 1.0));
         // ~1.6 Hz pulse mapped to 0..1.
-        let pulse = 0.5 + 0.5 * (elapsed * std::f32::consts::TAU * 1.6).sin();
+        let pulse = if cx.reduce_motion() {
+            0.5
+        } else {
+            gpui::Motion::new(gpui::millis(312))
+                .with_easing(gpui::ease_in_out)
+                .repeat_forever()
+                .alternate()
+                .sample(now.duration_since(started))
+                .progress
+                .get()
+        };
         let mut fill = accent;
-        fill.a = (0.12 + 0.16 * pulse) * fade_in;
+        fill.alpha = (0.12 + 0.16 * pulse) * fade_in;
         let mut ring = accent;
-        ring.a = (0.40 + 0.38 * pulse) * fade_in;
+        ring.alpha = (0.40 + 0.38 * pulse) * fade_in;
         let mut glow = accent;
-        glow.a = (0.30 + 0.30 * pulse) * fade_in;
+        glow.alpha = (0.30 + 0.30 * pulse) * fade_in;
         Some(glow_rect(
             bounds,
             fill,
@@ -382,6 +431,18 @@ impl App {
             10.0 + 12.0 * pulse,
             1.5,
         ))
+    }
+
+    pub(crate) fn tab_drop_target_at(&self, x: f32, y: f32) -> Option<TileId> {
+        let pos = gpui::point(gpui::px(x), gpui::px(y));
+        hover_target_at(
+            &self.pending_drag_hover_targets,
+            pos,
+            self.dropzone_bounds,
+            self.sidebar_scroll_region.as_ref().map(|(bounds, _)| *bounds),
+        ).and_then(|target| match target.id {
+            DragHoverId::Tab(tab) => Some(tab), _ => None,
+        })
     }
 
     pub(crate) fn drag_hover_drop_command_at(
@@ -393,30 +454,47 @@ impl App {
             x: gpui::px(x),
             y: gpui::px(y),
         };
-        self.pending_drag_hover_targets
-            .iter()
-            .rev()
-            .find(|target| contains(target.bounds, pos))
-            .and_then(|target| target.drop_command.clone())
-            .or_else(|| {
-                self.pane_view_bounds
-                    .iter()
-                    .find(|(_, bounds)| contains(**bounds, pos))
-                    .and_then(|(pane, _)| {
-                        self.tab_data_for(*pane)
-                            .and_then(|tab| match &tab.location {
-                                Location::Tag(tag) => Some(DragHoverDropCommand::AssignTag(*tag)),
-                                Location::RecycleBin => Some(DragHoverDropCommand::TrashPaths),
-                                #[cfg(feature = "provider-host")]
-                                Location::Remote { id, path } => {
-                                    Some(DragHoverDropCommand::TransferTo(
-                                        crate::app::cloud::remote_sentinel(id, path),
-                                    ))
-                                }
-                                _ => None,
-                            })
-                    })
-            })
+        if let Some(target) = hover_target_at(
+            &self.pending_drag_hover_targets,
+            pos,
+            self.dropzone_bounds,
+            self.sidebar_scroll_region.as_ref().map(|(bounds, _)| *bounds),
+        ) {
+            if let DragHoverId::Tab(tab) = target.id {
+                let command = resolve_drop_command(target, |id| self.tab_drop_command(id));
+                tracing::info!(tab = tab.0, target_count = self.pending_drag_hover_targets.len(), accepting = command.is_some(), "dnd tab drop resolved");
+                return command;
+            }
+        }
+        drop_command_at(
+            &self.pending_drag_hover_targets,
+            pos,
+            self.dropzone_bounds,
+            self.sidebar_scroll_region.as_ref().map(|(bounds, _)| *bounds),
+        )
+        .or_else(|| {
+            self.pane_view_bounds
+                .iter()
+                .chain(self.pane_layout_bounds.iter())
+                .find(|(pane, bounds)| contains(**bounds, pos) && self.pane_accepts_visible_drop(**pane))
+                .and_then(|(pane, _)| {
+                    self.tab_drop_command(*pane)
+                })
+        })
+    }
+
+    pub(crate) fn tab_drop_command(&self, pane_id: TileId) -> Option<DragHoverDropCommand> {
+        if self.tab_closing.contains_key(&pane_id) || self.pane_closing.contains_key(&pane_id) {
+            return None;
+        }
+        self.tab_data_for(pane_id).map(|tab| location_drop_command(&tab.location))
+    }
+
+    pub(crate) fn folder_drop_command(&self, pane: TileId, path: &std::path::Path) -> DragHoverDropCommand {
+        self.tab_data_for(pane).map_or_else(
+            || DragHoverDropCommand::TransferTo(path.to_path_buf()),
+            |tab| location_drop_command(&folder_location(&tab.location, path)),
+        )
     }
 
     pub(crate) fn active_drag_hover_drop_command(&self) -> Option<DragHoverDropCommand> {
@@ -434,7 +512,7 @@ impl App {
             .iter()
             .chain(self.pane_layout_bounds.iter())
         {
-            if contains(*bounds, pos) {
+            if contains(*bounds, pos) && self.pane_accepts_visible_drop(*pane) {
                 if let Some(dest) = self
                     .tab_data_for(*pane)
                     .and_then(|tab| tab.location.fs_dir().map(|path| path.to_path_buf()))
@@ -446,71 +524,68 @@ impl App {
         None
     }
 
+    pub(crate) fn pane_accepts_visible_drop(&self, pane: TileId) -> bool {
+        if self.tab_closing.contains_key(&pane) || self.pane_closing.contains_key(&pane) {
+            return false;
+        }
+        self.state.find_tabs_container(pane).is_some_and(|container| {
+            matches!(self.state.pane_tree.tiles.get(container),
+                Some(atlas_model::layout_tree::Tile::Container(atlas_model::layout_tree::Container::Tabs(tabs))) if tabs.active == Some(pane))
+        })
+    }
+
     pub(crate) fn execute_drag_hover_drop_command(
         &mut self,
         command: DragHoverDropCommand,
         paths: Vec<PathBuf>,
         from_self: bool,
     ) {
+        self.execute_drag_hover_drop_with_modifiers(command, paths, from_self, false, false);
+    }
+
+    pub(crate) fn execute_drag_hover_drop_with_modifiers(
+        &mut self,
+        command: DragHoverDropCommand,
+        paths: Vec<PathBuf>,
+        from_self: bool,
+        ctrl: bool,
+        shift: bool,
+    ) {
         self.mark_drag_committed();
         self.rubber = None;
         match command {
             DragHoverDropCommand::AssignTag(tag) => {
-                self.clear_committed_dropzone_drag(&paths);
+                for path in &paths {
+                    if self.state.sidebar_drop_zone.iter().any(|item| &item.path == path) {
+                        self.dropzone_pending_tags.insert(path.clone(), tag);
+                    }
+                }
                 self.process_actions(vec![Action::AssignTagToFiles { tag, paths }]);
             }
             DragHoverDropCommand::StageInSidebar => {
-                let existing = self
-                    .state
-                    .sidebar_drop_zone
-                    .iter()
-                    .map(|item| item.path.clone())
-                    .collect::<std::collections::HashSet<_>>();
-                self.state.sidebar_drop_zone.extend(
-                    paths
-                        .into_iter()
-                        .filter(|path| !existing.contains(path))
-                        // Only stage real filesystem paths: virtual (archive/remote)
-                        // entries make dead chips, and `$R` recycle payloads would
-                        // later "place" with mangled names.
-                        .filter(|path| {
-                            path.exists() && !atlas_core::fs::paths::is_recycle_bin_path(path)
-                        })
-                        .map(|path| atlas_model::app_state::StagedDrop { path, from_self }),
-                );
+                stage_paths(&mut self.state.sidebar_drop_zone, paths, from_self);
                 self.cancel_dropzone_file_drag();
             }
             DragHoverDropCommand::TransferTo(dest) => {
-                use atlas_model::ops::{
-                    ConflictPolicy, TransferKind, TransferOrigin, TransferRequest,
+                let request = if ctrl || shift {
+                    drop_transfer_with_modifiers(paths, dest, from_self, ctrl, shift)
+                } else {
+                    drop_transfer_request(paths, dest, from_self)
                 };
-                let effect = crate::dnd::default_effect_for_paths(&paths, &dest);
-                self.clear_committed_dropzone_drag(&paths);
-                self.process_actions(vec![Action::Transfer(TransferRequest {
-                    sources: paths,
-                    target_names: None,
-                    dest,
-                    kind: if effect.is_move() {
-                        TransferKind::Move
-                    } else {
-                        TransferKind::Copy
-                    },
-                    policy: ConflictPolicy::Ask,
-                    origin: if from_self {
-                        TransferOrigin::DndInternal
-                    } else {
-                        TransferOrigin::DndExternal
-                    },
-                })]);
+                self.process_actions(vec![Action::Transfer(request)]);
             }
             DragHoverDropCommand::TrashPaths => {
-                self.clear_committed_dropzone_drag(&paths);
                 // Direct call (not Action::Delete): that action re-routes by the
                 // *focused* tab and would purge instead of trash when a recycle
                 // pane happens to hold focus.
                 self.delete_files(paths, true);
             }
+            DragHoverDropCommand::RejectArchive => {
+                self.toast_error(rust_i18n::t!("dnd_archive_drop_blocked").into_owned());
+            }
         }
+        // Staged references are consumed by completion, never by submission.
+        self.cancel_dropzone_file_drag();
     }
 
     pub(crate) fn drop_files_on_pane(
@@ -519,41 +594,8 @@ impl App {
         paths: Vec<PathBuf>,
         external: bool,
     ) {
-        self.mark_drag_committed();
-        self.rubber = None;
-        let Some(location) = self.tab_data_for(pane_id).map(|t| t.location.clone()) else {
-            return;
-        };
-        match location {
-            Location::Tag(tag) => {
-                self.clear_committed_dropzone_drag(&paths);
-                self.process_actions(vec![Action::AssignTagToFiles { tag, paths }]);
-            }
-            Location::Directory(dest) => {
-                self.clear_committed_dropzone_drag(&paths);
-                if external {
-                    self.process_actions(vec![Action::CopyTo { paths, dest }]);
-                } else {
-                    self.process_actions(vec![Action::Move { paths, dest }]);
-                }
-            }
-            Location::RecycleBin => {
-                self.clear_committed_dropzone_drag(&paths);
-                self.delete_files(paths, true);
-            }
-            Location::Archive { .. } => {
-                // Writing into archives isn't supported yet — say so instead of
-                // swallowing the drop.
-                self.toast_error(rust_i18n::t!("dnd_archive_drop_blocked").into_owned());
-            }
-            #[cfg(feature = "provider-host")]
-            Location::Remote { id, path } => {
-                self.clear_committed_dropzone_drag(&paths);
-                // Drop into a remote always uploads as copy; move-on-drop
-                // (delete local source) when someone asks for it.
-                let dest = crate::app::cloud::remote_sentinel(&id, &path);
-                self.try_remote_upload(&paths, &dest, false);
-            }
+        if let Some(command) = self.tab_drop_command(pane_id) {
+            self.execute_drag_hover_drop_command(command, paths, !external);
         }
     }
 
@@ -565,26 +607,18 @@ impl App {
         self.dropzone_drag_paths.clear();
     }
 
-    pub(crate) fn clear_committed_dropzone_drag(&mut self, paths: &[PathBuf]) {
-        if self.dropzone_drag_paths.is_empty() {
-            return;
-        }
-        let committed = paths
-            .iter()
-            .filter(|path| self.dropzone_drag_paths.contains(*path))
-            .cloned()
-            .collect::<std::collections::HashSet<_>>();
+    pub(crate) fn consume_completed_staged_paths(&mut self, paths: &[PathBuf]) {
+        let committed = paths.iter().cloned().collect::<std::collections::HashSet<_>>();
         if committed.is_empty() {
             return;
         }
-        self.state
-            .sidebar_drop_zone
-            .retain(|item| !committed.contains(&item.path));
+        consume_staged_paths(&mut self.state.sidebar_drop_zone, &committed);
         self.dropzone_selected
             .retain(|path| !committed.contains(path));
         self.dropzone_rects
             .retain(|(path, _)| !committed.contains(path));
-        self.dropzone_drag_paths.clear();
+        self.dropzone_drag_paths.retain(|path| !committed.contains(path));
+        self.dropzone_pending_tags.retain(|path, _| !committed.contains(path));
     }
 
     /// DnD uses proximity-only edge activation. The shared core integrates the
@@ -681,10 +715,8 @@ pub(crate) fn drag_hover_recorder(
     view: &Entity<App>,
 ) -> impl Fn(gpui::Bounds<gpui::Pixels>, &mut Window, &mut gpui::App) + 'static {
     let view = view.clone();
-    move |bounds, _window, cx| {
-        if !view.read(cx).drag_hover_maybe_active() {
-            return;
-        }
+    move |bounds, window, cx| {
+        let bounds = bounds.intersect(&window.content_mask().bounds);
         crate::perf::count("prepaint.drag_hover_target");
         let target = DragHoverTarget {
             id: id.clone(),
@@ -705,10 +737,8 @@ pub(crate) fn drag_hover_recorder_with_drop(
     view: &Entity<App>,
 ) -> impl Fn(gpui::Bounds<gpui::Pixels>, &mut Window, &mut gpui::App) + 'static {
     let view = view.clone();
-    move |bounds, _window, cx| {
-        if !view.read(cx).drag_hover_maybe_active() {
-            return;
-        }
+    move |bounds, window, cx| {
+        let bounds = bounds.intersect(&window.content_mask().bounds);
         crate::perf::count("prepaint.drag_hover_drop_target");
         let target = DragHoverTarget {
             id: id.clone(),
@@ -796,7 +826,7 @@ fn glow_rect(
         .border(gpui::px(border))
         .border_color(ring)
         .shadow(vec![gpui::BoxShadow {
-            color: glow,
+            color: glow.into(),
             offset: gpui::point(gpui::px(0.0), gpui::px(0.0)),
             blur_radius: gpui::px(blur),
             spread_radius: gpui::px(1.0),
@@ -807,7 +837,401 @@ fn glow_rect(
 
 fn contains(bounds: gpui::Bounds<gpui::Pixels>, pos: gpui::Point<gpui::Pixels>) -> bool {
     pos.x >= bounds.left()
-        && pos.x <= bounds.right()
+        && pos.x < bounds.right()
         && pos.y >= bounds.top()
-        && pos.y <= bounds.bottom()
+        && pos.y < bounds.bottom()
+}
+
+fn hover_target_at(
+    targets: &[DragHoverTarget],
+    pos: gpui::Point<gpui::Pixels>,
+    dropzone: Option<gpui::Bounds<gpui::Pixels>>,
+    sidebar_viewport: Option<gpui::Bounds<gpui::Pixels>>,
+) -> Option<&DragHoverTarget> {
+    if dropzone.is_some_and(|bounds| contains(bounds, pos)) {
+        return None;
+    }
+    let visible_hit = |target: &&DragHoverTarget| {
+        contains(target.bounds, pos)
+            && (!matches!(target.id, DragHoverId::Sidebar(_))
+                || sidebar_viewport.is_none_or(|bounds| contains(bounds, pos)))
+    };
+    // A cached/scrolled body row can retain bounds overlapping the tab strip.
+    // The tab under the cursor owns the drop before any underlying row.
+    targets.iter().rev().filter(|target| matches!(target.id, DragHoverId::BreadcrumbMenu(_, _))).find(visible_hit)
+        .or_else(|| targets.iter().rev().filter(|target| matches!(target.id, DragHoverId::Tab(_))).find(visible_hit))
+        .or_else(|| targets.iter().rev().filter(|target| !matches!(target.id, DragHoverId::Column(_, _))).find(visible_hit))
+        .or_else(|| targets.iter().rev().find(visible_hit))
+}
+
+fn drop_command_at(
+    targets: &[DragHoverTarget],
+    pos: gpui::Point<gpui::Pixels>,
+    dropzone: Option<gpui::Bounds<gpui::Pixels>>,
+    sidebar_viewport: Option<gpui::Bounds<gpui::Pixels>>,
+) -> Option<DragHoverDropCommand> {
+    if dropzone.is_some_and(|bounds| contains(bounds, pos)) {
+        return Some(DragHoverDropCommand::StageInSidebar);
+    }
+    hover_target_at(targets, pos, dropzone, sidebar_viewport)
+        .and_then(|target| target.drop_command.clone())
+}
+
+/// Cached tab chrome may keep an older destination after spring navigation.
+/// Read the current tab by ID at drop time instead of using the captured path.
+fn resolve_drop_command(
+    target: &DragHoverTarget,
+    tab_command: impl FnOnce(TileId) -> Option<DragHoverDropCommand>,
+) -> Option<DragHoverDropCommand> {
+    match target.id {
+        DragHoverId::Tab(tab) => tab_command(tab),
+        _ => target.drop_command.clone(),
+    }
+}
+
+pub(crate) fn retain_visible_drop_targets(
+    targets: &mut Vec<DragHoverTarget>,
+    exists: impl Fn(TileId) -> bool,
+    pane_visible: impl Fn(TileId) -> bool,
+    sidebar_visible: bool,
+    inspector_visible: bool,
+    menu_visible: bool,
+) {
+    targets.retain(|target| match &target.id {
+        DragHoverId::Sidebar(_) => sidebar_visible,
+        DragHoverId::Inspector(_) => inspector_visible,
+        DragHoverId::Tab(tab) => exists(*tab),
+        DragHoverId::BreadcrumbMenu(tab, _) => menu_visible && exists(*tab) && pane_visible(*tab),
+        DragHoverId::Folder(tab, _) | DragHoverId::Column(tab, _) | DragHoverId::Breadcrumb(tab, _) | DragHoverId::Chrome(_, tab) => exists(*tab) && pane_visible(*tab),
+    });
+}
+
+pub(crate) fn drop_transfer_request(
+    paths: Vec<PathBuf>,
+    dest: PathBuf,
+    from_self: bool,
+) -> atlas_model::ops::TransferRequest {
+    drop_transfer_with_modifiers(paths, dest, from_self, false, false)
+}
+
+pub(crate) fn location_drop_command(location: &Location) -> DragHoverDropCommand {
+    match location {
+        Location::Directory(path) => DragHoverDropCommand::TransferTo(path.clone()),
+        Location::Tag(tag) => DragHoverDropCommand::AssignTag(*tag),
+        Location::RecycleBin => DragHoverDropCommand::TrashPaths,
+        Location::Archive { .. } => DragHoverDropCommand::RejectArchive,
+        #[cfg(feature = "provider-host")]
+        Location::Remote { id, path } => DragHoverDropCommand::TransferTo(crate::app::cloud::remote_sentinel(id, path)),
+    }
+}
+
+fn folder_location(parent: &Location, path: &std::path::Path) -> Location {
+    match parent {
+        Location::Archive { archive, .. } => Location::Archive { archive: archive.clone(), inner: path.to_path_buf() },
+        #[cfg(feature = "provider-host")]
+        Location::Remote { id, .. } => Location::Remote { id: id.clone(), path: path.to_string_lossy().replace('\\', "/") },
+        _ => Location::Directory(path.to_path_buf()),
+    }
+}
+
+pub(crate) fn drop_transfer_with_modifiers(
+    paths: Vec<PathBuf>, dest: PathBuf, from_self: bool, ctrl: bool, shift: bool,
+) -> atlas_model::ops::TransferRequest {
+    use atlas_model::ops::{ConflictPolicy, TransferKind, TransferOrigin, TransferRequest};
+    let effect = if dest.to_string_lossy().starts_with("remote:") {
+        crate::dnd::DropEffect::Copy
+    } else {
+        crate::dnd::effect_with_modifiers(crate::dnd::default_effect_for_paths(&paths, &dest), ctrl, shift)
+    };
+    TransferRequest {
+        sources: paths,
+        target_names: None,
+        dest,
+        kind: if effect.is_move() { TransferKind::Move } else { TransferKind::Copy },
+        policy: ConflictPolicy::Ask,
+        origin: if from_self { TransferOrigin::DndInternal } else { TransferOrigin::DndExternal },
+    }
+}
+
+fn stage_paths(staged: &mut Vec<atlas_model::app_state::StagedDrop>, paths: Vec<PathBuf>, from_self: bool) {
+    let mut existing: std::collections::HashSet<_> = staged.iter().map(|item| item.path.clone()).collect();
+    staged.extend(paths.into_iter()
+        .filter(|path| path.exists() && !atlas_core::fs::paths::is_recycle_bin_path(path))
+        .filter(|path| existing.insert(path.clone()))
+        .map(|path| atlas_model::app_state::StagedDrop { path, from_self }));
+}
+
+fn consume_staged_paths(staged: &mut Vec<atlas_model::app_state::StagedDrop>, completed: &std::collections::HashSet<PathBuf>) {
+    staged.retain(|item| !completed.contains(&item.path));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{point, px, size, Bounds, Pixels};
+
+    fn rect(y: f32, height: f32) -> Bounds<Pixels> {
+        Bounds::new(point(px(0.0), px(y)), size(px(240.0), px(height)))
+    }
+
+    fn sidebar_row(id: &str, bounds: Bounds<Pixels>) -> DragHoverTarget {
+        DragHoverTarget {
+            id: DragHoverId::Sidebar(id.into()),
+            bounds,
+            kind: DragHoverKind::Nav,
+            command: DragHoverCommand::NavigatePath(PathBuf::from(id)),
+            drop_command: Some(DragHoverDropCommand::TransferTo(PathBuf::from(id))),
+        }
+    }
+
+    #[test]
+    fn dropzone_stages_instead_of_activating_overlapping_sidebar_rows() {
+        let targets = [sidebar_row("drive", rect(640.0, 120.0))];
+        let dropzone = Some(rect(660.0, 76.0));
+        // Even stale row/viewport geometry that extends under the shelf cannot
+        // navigate, assign a tag or transfer a drop to an underlying location.
+        let viewport = Some(rect(0.0, 780.0));
+        let pos = point(px(100.0), px(700.0));
+        assert!(hover_target_at(&targets, pos, dropzone, viewport).is_none());
+        assert!(matches!(
+            drop_command_at(&targets, pos, dropzone, viewport),
+            Some(DragHoverDropCommand::StageInSidebar)
+        ));
+    }
+
+    #[test]
+    fn clipped_sidebar_rows_cannot_receive_hover_or_drop() {
+        let targets = [sidebar_row("bookmark", rect(500.0, 120.0))];
+        let viewport = Some(rect(0.0, 550.0));
+        let pos = point(px(100.0), px(580.0));
+        assert!(hover_target_at(&targets, pos, None, viewport).is_none());
+        assert!(drop_command_at(&targets, pos, None, viewport).is_none());
+
+        let visible_pos = point(px(100.0), px(520.0));
+        assert!(matches!(
+            drop_command_at(&targets, visible_pos, None, viewport),
+            Some(DragHoverDropCommand::TransferTo(path)) if path == PathBuf::from("bookmark")
+        ));
+    }
+
+    #[test]
+    fn topmost_visible_target_keeps_priority_outside_dropzone() {
+        let targets = [
+            sidebar_row("underneath", rect(0.0, 60.0)),
+            sidebar_row("topmost", rect(0.0, 60.0)),
+        ];
+        let pos = point(px(100.0), px(30.0));
+        let dropzone = Some(rect(660.0, 76.0));
+        assert!(matches!(
+            drop_command_at(&targets, pos, dropzone, Some(rect(0.0, 550.0))),
+            Some(DragHoverDropCommand::TransferTo(path)) if path == PathBuf::from("topmost")
+        ));
+    }
+
+    fn tab_target(tab: TileId, destination: PathBuf) -> DragHoverTarget {
+        DragHoverTarget {
+            id: DragHoverId::Tab(tab),
+            bounds: rect(0.0, 36.0),
+            kind: DragHoverKind::Nav,
+            command: DragHoverCommand::Process(Action::FocusTab(tab)),
+            drop_command: Some(DragHoverDropCommand::TransferTo(destination)),
+        }
+    }
+
+    #[test]
+    fn idle_renders_keep_cached_tabs_and_remove_closed_tabs_and_rows() {
+        let live = TileId(1);
+        let mut targets = vec![
+            tab_target(live, "live".into()),
+            tab_target(TileId(2), "closed".into()),
+            sidebar_row("row", rect(0.0, 60.0)),
+        ];
+        retain_visible_drop_targets(&mut targets, |tab| tab == live, |_| true, false, false, false);
+        assert_eq!(targets.len(), 1);
+        let target = hover_target_at(&targets, point(px(100.0), px(18.0)), None, None).unwrap();
+        assert_eq!(target.id, DragHoverId::Tab(live));
+        // A tab that no longer accepts drops must not use its captured folder.
+        assert!(resolve_drop_command(target, |_| None).is_none());
+    }
+
+    #[test]
+    fn tab_header_wins_over_stale_body_geometry() {
+        let tab = TileId(1);
+        let targets = vec![tab_target(tab, "tab-folder".into()), sidebar_row("stale-body", rect(0.0, 60.0))];
+        let hit = hover_target_at(&targets, point(px(100.0), px(18.0)), None, None).unwrap();
+        assert_eq!(hit.id, DragHoverId::Tab(tab));
+    }
+
+    #[test]
+    fn cached_geometry_survives_idle_but_hidden_owners_are_pruned() {
+        let pane = TileId(1);
+        let mut folder = sidebar_row("folder", rect(40.0, 30.0));
+        folder.id = DragHoverId::Folder(pane, "folder".into());
+        let mut menu = sidebar_row("menu", rect(0.0, 30.0));
+        menu.id = DragHoverId::BreadcrumbMenu(pane, "menu".into());
+        let mut inspector = sidebar_row("inspector", rect(0.0, 30.0));
+        inspector.id = DragHoverId::Inspector("inspector".into());
+        let mut targets = vec![tab_target(pane, "tab".into()), folder, sidebar_row("sidebar", rect(0.0, 30.0)), menu, inspector];
+        retain_visible_drop_targets(&mut targets, |_| true, |_| true, true, true, true);
+        assert_eq!(targets.len(), 5, "OLE may release between cached paints; retain all visible owners");
+        retain_visible_drop_targets(&mut targets, |_| true, |_| false, false, false, false);
+        assert_eq!(targets.len(), 1, "inactive pane bodies and closed panels/popups cannot receive drops");
+        assert_eq!(targets[0].id, DragHoverId::Tab(pane));
+        retain_visible_drop_targets(&mut targets, |_| false, |_| false, false, false, false);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn pane_and_tab_location_matrix() {
+        let directory = PathBuf::from(r"C:\destination");
+        assert!(matches!(location_drop_command(&Location::Directory(directory.clone())), DragHoverDropCommand::TransferTo(path) if path == directory));
+        let tag = TagId(7);
+        assert!(matches!(location_drop_command(&Location::Tag(tag)), DragHoverDropCommand::AssignTag(id) if id == tag));
+        assert!(matches!(location_drop_command(&Location::RecycleBin), DragHoverDropCommand::TrashPaths));
+        assert!(matches!(location_drop_command(&Location::Archive { archive: "example.zip".into(), inner: "folder".into() }), DragHoverDropCommand::RejectArchive));
+        #[cfg(feature = "provider-host")]
+        assert!(matches!(location_drop_command(&Location::Remote { id: "drive".into(), path: "folder".into() }), DragHoverDropCommand::TransferTo(path) if path == PathBuf::from("remote:drive/folder")));
+    }
+
+    #[test]
+    fn every_filesystem_target_uses_volume_rules_and_modifiers() {
+        use atlas_model::ops::{ConflictPolicy, TransferKind};
+        for from_self in [false, true] {
+            for (dest, ctrl, shift, expected) in [
+                (r"C:\destination", false, false, TransferKind::Move),
+                (r"D:\destination", false, false, TransferKind::Copy),
+                (r"C:\destination", true, false, TransferKind::Copy),
+                (r"D:\destination", false, true, TransferKind::Move),
+                ("remote:drive/folder", false, true, TransferKind::Copy),
+            ] {
+                let request = drop_transfer_with_modifiers(vec![r"C:\source\file.txt".into()], dest.into(), from_self, ctrl, shift);
+                assert_eq!(request.kind, expected);
+                assert_eq!(request.policy, ConflictPolicy::Ask);
+            }
+        }
+    }
+
+    #[test]
+    fn virtual_folder_rows_keep_their_provider_and_archive_semantics() {
+        let archive = Location::Archive { archive: r"C:\data\example.zip".into(), inner: "parent".into() };
+        let folder = folder_location(&archive, std::path::Path::new("parent/child"));
+        assert!(matches!(folder, Location::Archive { inner, .. } if inner == PathBuf::from("parent/child")));
+        assert!(matches!(location_drop_command(&archive), DragHoverDropCommand::RejectArchive));
+        #[cfg(feature = "provider-host")]
+        {
+            let remote = Location::Remote { id: "drive".into(), path: "parent".into() };
+            let folder = folder_location(&remote, std::path::Path::new(r"parent\child"));
+            assert!(matches!(location_drop_command(&folder), DragHoverDropCommand::TransferTo(path) if path == PathBuf::from("remote:drive/parent/child")));
+        }
+    }
+
+    #[test]
+    fn clipped_inspector_folder_cannot_receive_a_drop() {
+        let mut target = sidebar_row("inspector-folder", rect(500.0, 100.0));
+        target.id = DragHoverId::Inspector("inspector-folder".into());
+        target.bounds = target.bounds.intersect(&rect(0.0, 540.0));
+        let targets = [target];
+        assert!(drop_command_at(&targets, point(px(100.0), px(530.0)), None, None).is_some());
+        assert!(drop_command_at(&targets, point(px(100.0), px(560.0)), None, None).is_none());
+    }
+
+    #[test]
+    fn adjacent_targets_have_unambiguous_edges() {
+        let targets = [sidebar_row("first", rect(0.0, 30.0)), sidebar_row("second", rect(30.0, 30.0))];
+        let hit = hover_target_at(&targets, point(px(100.0), px(30.0)), None, None).unwrap();
+        assert_eq!(hit.id, DragHoverId::Sidebar("second".into()));
+        assert!(hover_target_at(&targets, point(px(100.0), px(60.0)), None, None).is_none());
+    }
+
+    #[test]
+    fn miller_folder_row_wins_over_its_column_background() {
+        let pane = TileId(1);
+        let path = PathBuf::from("same-folder");
+        let mut row = sidebar_row("row", rect(40.0, 30.0));
+        row.id = DragHoverId::Folder(pane, path.clone());
+        let mut column = sidebar_row("column", rect(0.0, 300.0));
+        column.id = DragHoverId::Column(pane, path);
+        assert_ne!(row.id, column.id);
+        let targets = [row, column];
+        assert!(matches!(hover_target_at(&targets, point(px(100.0), px(50.0)), None, None).unwrap().id, DragHoverId::Folder(_, _)));
+        assert!(matches!(hover_target_at(&targets, point(px(100.0), px(200.0)), None, None).unwrap().id, DragHoverId::Column(_, _)));
+    }
+
+    #[test]
+    fn cached_tab_drop_transfers_to_its_current_folder_on_disk() {
+        use atlas_core::fs::transfer;
+        use atlas_model::app_state::BgResult;
+        use atlas_model::ops::{ConflictPolicy, TransferKind, TransferOrigin, TransferRequest};
+        use std::sync::{atomic::AtomicBool, Arc};
+
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("atlas-tab-drop-{}-{stamp}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct TempTree(PathBuf);
+        impl Drop for TempTree {
+            fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+        }
+        let _cleanup = TempTree(root.clone());
+        let source_dir = root.join("source");
+        let current_dir = root.join("tab-current");
+        let old_dir = root.join("tab-before-navigation");
+        let active_dir = root.join("other-active-pane");
+        for dir in [&source_dir, &current_dir, &old_dir, &active_dir] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        for kind in [TransferKind::Move, TransferKind::Copy] {
+            let name = format!("{kind:?}.txt");
+            let source = source_dir.join(&name);
+            std::fs::write(&source, b"tab drop payload").unwrap();
+            let skipped = source_dir.join(format!("skipped-{name}"));
+            std::fs::write(&skipped, b"keep source").unwrap();
+            std::fs::write(current_dir.join(skipped.file_name().unwrap()), b"keep destination").unwrap();
+            let mut staged = Vec::new();
+            stage_paths(&mut staged, vec![source.clone(), source.clone(), skipped.clone()], true);
+            stage_paths(&mut staged, vec![source.clone()], false);
+            assert_eq!(staged.len(), 2, "duplicates within and across payloads must collapse");
+            let tab = TileId(2);
+            let mut targets = vec![tab_target(tab, old_dir.clone())];
+            // The root renders idle after OLE's Drop; the tab strip stays cached.
+            retain_visible_drop_targets(&mut targets, |_| true, |_| true, true, true, false);
+            let hit = hover_target_at(&targets, point(px(100.0), px(18.0)), None, None).unwrap();
+            let command = resolve_drop_command(hit, |id| {
+                assert_eq!(id, tab);
+                Some(DragHoverDropCommand::TransferTo(current_dir.clone()))
+            }).unwrap();
+            let DragHoverDropCommand::TransferTo(dest) = command else { panic!("expected a folder drop"); };
+            let request = TransferRequest {
+                sources: vec![source.clone(), skipped.clone()], target_names: None, dest,
+                kind, policy: ConflictPolicy::SkipAll, origin: TransferOrigin::DndInternal,
+            };
+            let valid = transfer::validate(&request);
+            assert!(valid.fatal.is_none() && valid.errors.is_empty());
+            let (conflicts, clean) = transfer::detect_conflicts(&valid.valid, None, &request.dest);
+            let built = transfer::build_pairs(&clean, &conflicts, &request.policy, &request.dest);
+            let (tx, rx) = flume::unbounded();
+            runtime.block_on(transfer::execute(built.pairs, kind, request.origin, 1, tx, Arc::new(AtomicBool::new(false)), vec![]));
+            let report = rx.try_iter().find_map(|event| match event {
+                BgResult::TransferComplete { report, .. } => Some(report), _ => None,
+            }).unwrap();
+            assert!(report.errors.is_empty() && !report.cancelled);
+            assert_eq!(report.completed, vec![(source.clone(), current_dir.join(&name))]);
+            consume_staged_paths(&mut staged, &report.completed.iter().map(|(src, _)| src.clone()).collect());
+            assert_eq!(staged.len(), 1);
+            assert_eq!(staged[0].path, skipped);
+            assert_eq!(std::fs::read(&skipped).unwrap(), b"keep source");
+            assert_eq!(std::fs::read(current_dir.join(skipped.file_name().unwrap())).unwrap(), b"keep destination");
+            let pairs = transfer::build_pairs(&clean, &conflicts, &ConflictPolicy::RenameAll, &request.dest);
+            let (tx, rx) = flume::unbounded();
+            runtime.block_on(transfer::execute(pairs.pairs, kind, request.origin, 2, tx, Arc::new(AtomicBool::new(true)), vec![]));
+            let report = rx.try_iter().find_map(|event| match event { BgResult::TransferComplete { report, .. } => Some(report), _ => None }).unwrap();
+            assert!(report.cancelled && report.completed.is_empty());
+            consume_staged_paths(&mut staged, &report.completed.iter().map(|(src, _)| src.clone()).collect());
+            assert_eq!(staged.len(), 1, "cancelled operations must preserve staged sources");
+            assert_eq!(std::fs::read(current_dir.join(&name)).unwrap(), b"tab drop payload");
+            assert_eq!(source.exists(), kind == TransferKind::Copy);
+            assert!(!old_dir.join(&name).exists());
+            assert!(!active_dir.join(&name).exists());
+        }
+    }
 }

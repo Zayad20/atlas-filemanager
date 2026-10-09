@@ -1,6 +1,6 @@
 use std::{panic::Location, rc::Rc};
 
-use crate::{StyledExt, scroll::ScrollbarHandle};
+use crate::scroll::ScrollbarHandle;
 
 use super::{Scrollbar, ScrollbarAxis};
 use gpui::{

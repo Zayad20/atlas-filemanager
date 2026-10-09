@@ -94,13 +94,11 @@ pub(crate) fn shape_text(
         background_color: None,
         underline: None,
         strikethrough: None,
+        letter_spacing: None,
     };
-    window.text_system().shape_line(
-        text_ss,
-        font_size,
-        &[run],
-        None,
-    )
+    window
+        .text_system()
+        .shape_line(text_ss, font_size, &[run], None)
 }
 
 #[inline]

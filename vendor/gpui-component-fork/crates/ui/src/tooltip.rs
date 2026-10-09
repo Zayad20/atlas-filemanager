@@ -8,7 +8,7 @@ use gpui::{
 };
 
 use crate::{
-    ActiveTheme, StyledExt,
+    ActiveTheme,
     animation::{Transition, ease_in_out_cubic, ease_out_cubic},
     h_flex,
     kbd::Kbd,
@@ -546,7 +546,7 @@ impl Render for TooltipOverlay {
                 }
             })),
         )
-        .with_priority(2)
+        .priority(2)
         .into_any_element()
     }
 }
@@ -601,7 +601,7 @@ pub(crate) trait ManagedTooltipExt:
         let trigger_bounds_cell: Rc<Cell<Bounds<Pixels>>> = Rc::new(Cell::new(Bounds::default()));
         let bounds_writer = trigger_bounds_cell.clone();
 
-        self.on_prepaint(move |bounds, _, _| {
+        self.on_prepaint_child(move |bounds, _, _| {
             bounds_writer.set(bounds);
         })
         .on_hover({

@@ -142,6 +142,9 @@ impl App {
         });
     }
 
+    #[cfg(not(target_os = "windows"))]
+    pub(crate) fn request_shell_recycle_bin_icon(&mut self) {}
+
     /// Ensure a thumbnail decode is requested for `path`. If the native-decode cap is
     /// reached the request is silently dropped (the cell will re-request next frame
     /// because no Loading marker is inserted). The task checks `thumb_wanted` before
@@ -207,27 +210,51 @@ impl App {
             .insert(path.clone(), ThumbState::Loading);
         self.ext_thumb_inflight.insert(path.clone());
         let tx = self.tx.clone();
+        let wanted = self.thumb_wanted.clone();
         self.rt.spawn(async move {
             let report = path.clone();
+            if !wanted
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains(&path)
+            {
+                let _ = tx.send(BgResult::GridThumbnailSkipped { path: report });
+                return;
+            }
+            let wanted_check = wanted.clone();
             let result = tokio::task::spawn_blocking(move || {
-                atlas_core::ext::runner::run_thumbnail(&path, &run_tmpl, &tools, THUMB_MAX_EDGE)
+                if !wanted_check
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .contains(&path)
+                {
+                    return Err(());
+                }
+                let thumb = atlas_core::ext::runner::run_thumbnail(
+                    &path,
+                    &run_tmpl,
+                    &tools,
+                    THUMB_MAX_EDGE,
+                );
+                Ok(thumb)
             })
-            .await
-            .ok()
-            .flatten();
+            .await;
+
             let bg = match result {
-                Some((rgba, width, height)) => BgResult::GridThumbnailReady {
+                Ok(Err(())) => BgResult::GridThumbnailSkipped { path: report },
+                Ok(Ok(Some((rgba, width, height)))) => BgResult::GridThumbnailReady {
                     path: report,
                     rgba,
                     width,
                     height,
                 },
-                None => BgResult::GridThumbnailReady {
+                Ok(Ok(None)) => BgResult::GridThumbnailReady {
                     path: report,
                     rgba: Vec::new(),
                     width: 0,
                     height: 0,
                 },
+                Err(_) => BgResult::GridThumbnailSkipped { path: report },
             };
             let _ = tx.send(bg);
         });
@@ -281,29 +308,40 @@ impl App {
                 let _ = tx.send(BgResult::GridThumbnailSkipped { path: report });
                 return;
             }
+            let wanted_check = wanted.clone();
             let result = tokio::task::spawn_blocking(move || {
-                if allow_icon {
+                if visible_only
+                    && !wanted_check
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .contains(&path)
+                {
+                    return Err(());
+                }
+                let thumb = if allow_icon {
                     crate::shell_thumb::shell_thumbnail_or_icon(&path, THUMB_MAX_EDGE)
                 } else {
                     crate::shell_thumb::shell_thumbnail(&path, THUMB_MAX_EDGE)
-                }
+                };
+                Ok(thumb)
             })
-            .await
-            .ok()
-            .flatten();
+            .await;
+
             let bg = match result {
-                Some((rgba, width, height)) => BgResult::GridThumbnailReady {
+                Ok(Err(())) => BgResult::GridThumbnailSkipped { path: report },
+                Ok(Ok(Some((rgba, width, height)))) => BgResult::GridThumbnailReady {
                     path: report,
                     rgba,
                     width,
                     height,
                 },
-                None => BgResult::GridThumbnailReady {
+                Ok(Ok(None)) => BgResult::GridThumbnailReady {
                     path: report,
                     rgba: Vec::new(),
                     width: 0,
                     height: 0,
                 },
+                Err(_) => BgResult::GridThumbnailSkipped { path: report },
             };
             let _ = tx.send(bg);
         });

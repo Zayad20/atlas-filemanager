@@ -94,8 +94,15 @@ pub struct Settings {
     pub autosave_session: bool,
     /// Visually de-emphasize panes other than the focused pane.
     pub dim_inactive_panes: bool,
+    /// Background opacity for Glass themes (0.20 to 1.00, default 0.80).
+    #[serde(default = "default_glass_opacity")]
+    pub glass_opacity: f32,
     /// True after the first-run setup has been dismissed or completed.
     pub getting_started_seen: bool,
+}
+
+pub fn default_glass_opacity() -> f32 {
+    0.80
 }
 
 impl Settings {
@@ -158,7 +165,28 @@ impl Default for Settings {
             eco_mode: true,
             autosave_session: true,
             dim_inactive_panes: false,
+            glass_opacity: default_glass_opacity(),
             getting_started_seen: false,
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_defaults_glass_opacity_when_absent() {
+        let json = r#"{"font_size": 13.0}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert!((s.glass_opacity - 0.80).abs() < 1e-4);
+    }
+
+    #[test]
+    fn settings_preserves_custom_glass_opacity() {
+        let json = r#"{"glass_opacity": 0.55}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert!((s.glass_opacity - 0.55).abs() < 1e-4);
+    }
+}
+

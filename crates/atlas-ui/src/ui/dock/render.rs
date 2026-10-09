@@ -1,4 +1,5 @@
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{
     div, px, relative, AnimationExt, AnyElement, Context, Entity, Focusable, MouseButton,
     SharedString, Window,
@@ -8,9 +9,14 @@ use gpui_component::{h_flex, v_flex, ActiveTheme as _, ElementExt as _};
 use crate::app::{App, PaneAnimationKind};
 use crate::input::action::Action;
 use crate::ui::dock::drag::{tab_drag_entity, TabDrag};
-use crate::ui::glass::{backdrop_tint, glass_chip_fill, glass_fill, GlassExt};
+use crate::ui::drag_hover::{
+    drag_hover_recorder, drag_hover_recorder_with_drop, DragHoverCommand, DragHoverId,
+    DragHoverKind,
+};
+use crate::ui::glass::{backdrop_tint, GlassExt};
 use crate::ui::icons::{icon, is_windows_theme, theme_icon, AtlasIcon};
 use crate::ui::layout_region::{layout_region, timed_layout_region, LayoutRegionTimings};
+use crate::ui::motion::MotionFeedbackExt as _;
 use crate::ui::pane_panel::FilePanel;
 use atlas_core::util::display::display_name;
 use atlas_model::layout_tree::{Container, LinearDir, Tile, TileId};
@@ -42,16 +48,19 @@ const PANE_TABS_BAR_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
     prepaint: "pane.tabs_bar.prepaint",
     paint: "pane.tabs_bar.paint",
 };
+#[allow(dead_code)]
 const PANE_CONTENT_SHELL_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
     request_layout: "pane.content_shell.request_layout",
     prepaint: "pane.content_shell.prepaint",
     paint: "pane.content_shell.paint",
 };
+#[allow(dead_code)]
 const PANE_CONTENT_LAYERS_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
     request_layout: "pane.content_layers.request_layout",
     prepaint: "pane.content_layers.prepaint",
     paint: "pane.content_layers.paint",
 };
+#[allow(dead_code)]
 const PANE_BODY_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
     request_layout: "pane.body.request_layout",
     prepaint: "pane.body.prepaint",
@@ -66,7 +75,7 @@ const PANE_DROP_ZONES_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
 #[derive(Clone, Copy, Debug)]
 enum SplitMotion {
     Opening,
-    Closing(Instant),
+    Closing,
 }
 
 #[derive(Clone, Copy)]
@@ -95,6 +104,72 @@ struct FlatSplitter {
     rect: FlatRect,
 }
 
+/// Stable cached layout with a moving paint clip. Prepaint must see the same
+/// bounds and mask throughout the reveal, otherwise GPUI rebuilds the pane.
+struct PaneReveal {
+    child: AnyElement,
+    clip_offset: gpui::Point<gpui::Pixels>,
+    clip_size: gpui::Size<gpui::Pixels>,
+}
+
+impl IntoElement for PaneReveal {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui::Element for PaneReveal {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> (gpui::LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        _bounds: gpui::Bounds<gpui::Pixels>,
+        _layout: &mut (),
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) {
+        self.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        _layout: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) {
+        let clip = gpui::Bounds {
+            origin: bounds.origin + self.clip_offset,
+            size: self.clip_size,
+        };
+        window.with_paint_clip(clip, |window| self.child.paint(window, cx));
+    }
+}
+
 fn split_child_span(share: f32, share_sum: f32, available: f32, child_count: usize) -> f32 {
     if share_sum > f32::EPSILON {
         share / share_sum * available
@@ -121,16 +196,50 @@ fn pane_visual_layout(
     current: FlatRect,
     final_rect: FlatRect,
     closing: bool,
+    opening: bool,
     stable_flip: bool,
+    previous_rect: Option<FlatRect>,
 ) -> (FlatRect, (f32, f32)) {
-    if stable_flip && !closing {
-        (
-            final_rect,
-            (current.x - final_rect.x, current.y - final_rect.y),
-        )
-    } else {
-        (current, (0.0, 0.0))
+    if !stable_flip {
+        return (current, (0.0, 0.0));
     }
+    // Retain the larger content extent throughout a transition. The moving
+    // paint clip reveals/covers it; shrinking content reflows once at settlement.
+    // Opening panes have no previous layout to retain.
+    let previous = previous_rect.unwrap_or(current);
+    if closing {
+        // A closing right/bottom pane's final origin is outside the dock. Keep
+        // prepaint at its original visible origin or virtualized rows disappear
+        // before paint can translate and clip the retained scene.
+        return (previous, (current.x - previous.x, current.y - previous.y));
+    }
+    let (old_w, old_h) = if opening {
+        (0.0, 0.0)
+    } else {
+        (previous.w, previous.h)
+    };
+    let rect = FlatRect {
+        w: final_rect.w.max(old_w),
+        h: final_rect.h.max(old_h),
+        ..final_rect
+    };
+    (rect, (current.x - rect.x, current.y - rect.y))
+}
+
+fn pane_exit_paint_offset(
+    current: FlatRect,
+    retained: FlatRect,
+    collapse_axis: (f32, f32),
+) -> (f32, f32) {
+    // A trailing pane's origin follows the seam outward. An earlier pane
+    // leaves through its leading edge by right/bottom-aligning its retained
+    // content to the shrinking slot. Both move the content, not just its clip.
+    (
+        current.x - retained.x
+            + if collapse_axis.0 > 0.0 { current.w - retained.w } else { 0.0 },
+        current.y - retained.y
+            + if collapse_axis.1 > 0.0 { current.h - retained.h } else { 0.0 },
+    )
 }
 
 /// Tabs-like tile (tab strip + body) hosted in its own entity so it can be embedded
@@ -205,6 +314,12 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.tick_pane_close() {
+            // Finish on the dock's frame clock instead of waiting up to 100 ms
+            // for the background drain. Notify chrome once, after teardown.
+            cx.notify();
+            window.request_animation_frame();
+        }
         if self.tick_tab_close() {
             // Self-drive the next frame on the host view (DockHost), not App.
             window.request_animation_frame();
@@ -236,6 +351,10 @@ impl App {
 
         // Poda de views/fingerprints de tiles que ya no existen (split/close/dnd).
         let tiles = &self.state.pane_tree.tiles;
+        self.dock_split_animations.retain(|id, animation| {
+            matches!(tiles.get(*id), Some(Tile::Container(Container::Linear(linear)))
+                if linear.children.len() == animation.to.len())
+        });
         self.pane_tabs_cache
             .retain(|id, _| tiles.get(*id).is_some());
         self.pane_tabs_fp.retain(|id, _| tiles.get(*id).is_some());
@@ -259,7 +378,7 @@ impl App {
             .min_h(px(0.))
             .overflow_hidden()
             .child(content)
-            .on_prepaint(move |bounds, window, cx| {
+            .on_prepaint_child(move |bounds, window, cx| {
                 view.update(cx, |this, _cx| {
                     let old = this
                         .dock_root_bounds
@@ -295,13 +414,13 @@ impl App {
             w,
             h,
         };
-        // Only the newest interrupted/restarted split supplies visual motion.
-        // Older entries may still be settling, but combining axes makes a lateral
-        // split travel diagonally.
+        // The newest transition owns the seam accent. Every live container still
+        // interpolates its geometry, so a rapid split on another axis cannot snap
+        // an earlier transition to its destination.
         let active_animation = self
             .dock_split_animations
             .values()
-            .filter(|animation| !animation.done())
+            .filter(|animation| !self.state.settings.disable_animations && !animation.done())
             .max_by_key(|animation| animation.started)
             .map(|animation| animation.started);
         if !self.collect_flat_layout(
@@ -328,12 +447,62 @@ impl App {
 
         for pane in panes {
             let motion = self.split_motion_for_tile(pane.tile);
-            let is_closing = matches!(motion, Some(SplitMotion::Closing(_)));
+            let is_closing = matches!(motion, Some(SplitMotion::Closing));
+            let is_opening = matches!(motion, Some(SplitMotion::Opening));
             let current_rect = pane.rect;
-            let (rect, paint_offset) =
-                pane_visual_layout(current_rect, pane.layout_rect, is_closing, stable_flip);
-            if stable_flip && !is_closing {
-                crate::perf::count("dock.stable_flip.pane");
+            if is_closing && (current_rect.w <= 0.5 || current_rect.h <= 0.5) {
+                // A fully departed pane needs no scene replay while its logical
+                // teardown is pending during another pane's transition.
+                continue;
+            }
+            let (rect, paint_offset) = pane_visual_layout(
+                current_rect,
+                pane.layout_rect,
+                is_closing,
+                is_opening,
+                stable_flip,
+                self.pane_tabs_bounds
+                    .get(&pane.tile)
+                    .map(|previous| FlatRect {
+                        x: f32::from(previous.origin.x - bounds.origin.x),
+                        y: f32::from(previous.origin.y - bounds.origin.y),
+                        w: f32::from(previous.size.width),
+                        h: f32::from(previous.size.height),
+                    }),
+            );
+            if stable_flip {
+                crate::perf::count("dock.retained_reveal.pane");
+                let offset = if is_closing {
+                    pane_exit_paint_offset(current_rect, rect, pane.close_axis)
+                } else {
+                    paint_offset
+                };
+                let content = self.render_cached_tabs(pane.tile, is_closing, window, cx);
+                host = host.child(layout_region(
+                    "dock.pane_slot",
+                    PaneReveal {
+                        child: div()
+                            .absolute()
+                            .left(px(rect.x))
+                            .top(px(rect.y))
+                            .w(px(rect.w.max(0.0)))
+                            .h(px(rect.h.max(0.0)))
+                            .paint_offset(gpui::point(px(offset.0), px(offset.1)))
+                            .child(content)
+                            .into_any_element(),
+                        // Clip in window space; cached prepaint stays at the stable
+                        // layout origin while the content moves only during paint.
+                        clip_offset: gpui::point(
+                            px(current_rect.x - rect.x),
+                            px(current_rect.y - rect.y),
+                        ),
+                        clip_size: gpui::size(
+                            px(current_rect.w.max(0.0)),
+                            px(current_rect.h.max(0.0)),
+                        ),
+                    },
+                ));
+                continue;
             }
             let content = if rect.w <= 4.0 || rect.h <= 4.0 {
                 div().size_full().into_any_element()
@@ -343,12 +512,12 @@ impl App {
                     .get(&pane.tile)
                     .cloned()
                     .unwrap_or_default();
-                let left_shift = if pane.close_axis.0 < 0.0 {
+                let left_shift = if pane.close_axis.0 > 0.0 {
                     current_rect.w - f32::from(bounds.size.width)
                 } else {
                     0.0
                 };
-                let top_shift = if pane.close_axis.1 < 0.0 {
+                let top_shift = if pane.close_axis.1 > 0.0 {
                     current_rect.h - f32::from(bounds.size.height)
                 } else {
                     0.0
@@ -361,15 +530,20 @@ impl App {
                     .h(bounds.size.height)
                     .child(self.render_cached_tabs(pane.tile, true, window, cx))
                     .into_any_element()
+            } else if is_opening {
+                // Target-First: inner content is laid out at its final destination dimensions,
+                // while the outer container (rect) smoothly expands from 0 to final width,
+                // cleanly revealing the content as the splitter seam slides.
+                div()
+                    .w(px(pane.layout_rect.w))
+                    .h(px(pane.layout_rect.h))
+                    .overflow_hidden()
+                    .child(self.render_cached_tabs(pane.tile, false, window, cx))
+                    .into_any_element()
             } else {
                 self.render_cached_tabs(pane.tile, false, window, cx)
             };
-            let animated = div().size_full().child(self.render_split_intro(
-                pane.tile,
-                content,
-                motion,
-                pane.close_axis,
-            ));
+            let animated = div().size_full().child(content);
             let pane = div()
                 .absolute()
                 .left(px(rect.x))
@@ -378,16 +552,14 @@ impl App {
                 .h(px(rect.h.max(0.0)))
                 .min_w(px(0.))
                 .min_h(px(0.))
-                // A final-bounds clip can hide most of a translated survivor.
-                // Let panes overlap while FLIP is active; the dock root remains clipped.
-                .when(!flip_active || is_closing, |this| this.overflow_hidden())
+                .overflow_hidden()
                 .when(paint_offset.0 != 0.0 || paint_offset.1 != 0.0, |this| {
                     this.paint_offset(gpui::point(px(paint_offset.0), px(paint_offset.1)))
                 })
                 .child(animated);
             if is_closing {
                 closing_panes.push(pane);
-            } else if matches!(motion, Some(SplitMotion::Opening)) {
+            } else if is_opening {
                 opening_panes.push(pane);
             } else {
                 live_panes.push(pane);
@@ -418,6 +590,29 @@ impl App {
                 cx,
                 thickness,
             );
+            // One quiet seam highlight acknowledges the changed boundary. A
+            // single quad fades with the layout clock; no glow/filter/extra timer.
+            let seam = self
+                .dock_split_animations
+                .get(&splitter.container)
+                .filter(|animation| !animation.closing && Some(animation.started) == active_animation)
+                .map(|animation| {
+                    let p = animation.progress();
+                    let color = cx.theme().primary.opacity(0.32 * 4.0 * p * (1.0 - p));
+                    let seam = div().absolute().bg(color);
+                    match splitter.dir {
+                        LinearDir::Horizontal => seam
+                            .left(px((thickness - 1.0).max(0.0) * 0.5))
+                            .top_0()
+                            .bottom_0()
+                            .w(px(thickness.min(1.0))),
+                        LinearDir::Vertical => seam
+                            .top(px((thickness - 1.0).max(0.0) * 0.5))
+                            .left_0()
+                            .right_0()
+                            .h(px(thickness.min(1.0))),
+                    }
+                });
             host = host.child(timed_layout_region(
                 "dock.splitters",
                 DOCK_SPLITTER_TIMINGS,
@@ -427,7 +622,8 @@ impl App {
                     .top(px(splitter.rect.y))
                     .w(px(splitter.rect.w.max(0.0)))
                     .h(px(splitter.rect.h.max(0.0)))
-                    .child(splitter_el),
+                    .child(splitter_el)
+                    .children(seam),
             ));
         }
 
@@ -509,7 +705,7 @@ impl App {
                     || linear.children.iter().any(|child| {
                         matches!(
                             self.split_motion_for_tile(*child),
-                            Some(SplitMotion::Closing(_))
+                            Some(SplitMotion::Closing)
                         )
                     });
                 if closing_layout {
@@ -521,8 +717,7 @@ impl App {
                     .dock_split_animations
                     .get(&id)
                     .filter(|animation| {
-                        Some(animation.started) == active_animation
-                            && !animation.done()
+                        !self.state.settings.disable_animations && !animation.done()
                             && animation.from.len() == linear.children.len()
                     })
                     .cloned();
@@ -553,17 +748,20 @@ impl App {
                         linear.children.iter().position(|child| {
                             matches!(
                                 self.split_motion_for_tile(*child),
-                                Some(SplitMotion::Closing(_))
+                                Some(SplitMotion::Closing)
                             )
                         })
                     });
-                let closing_splitter_ix =
-                    closing_ix.and_then(|pane_ix| closing_splitter_index(pane_ix, num_splitters));
-                let mut splitter_gaps = vec![splitter_size; num_splitters];
-                if let Some(splitter_ix) = closing_splitter_ix {
+                let mut splitter_gaps = crate::app::DockSplitAnimation::gap_targets(&shares)
+                    .iter().map(|factor| splitter_size * factor).collect::<Vec<_>>();
+                if let Some(splitter_ix) = closing_ix.and_then(|ix| closing_splitter_index(ix, num_splitters)) {
                     splitter_gaps[splitter_ix] = 0.0;
                 }
-                let start_splitter_gaps = vec![splitter_size; num_splitters];
+                let start_splitter_gaps = flip_animation.as_ref()
+                    .filter(|animation| animation.from_gap_factors.len() == num_splitters)
+                    .map(|animation| animation.from_gap_factors.iter()
+                        .map(|factor| splitter_size * factor).collect::<Vec<_>>())
+                    .unwrap_or_else(|| splitter_gaps.clone());
                 let available = (span - splitter_gaps.iter().sum::<f32>()).max(0.0);
                 let layout_available = (layout_span - splitter_gaps.iter().sum::<f32>()).max(0.0);
                 let start_available = (span - start_splitter_gaps.iter().sum::<f32>()).max(0.0);
@@ -631,11 +829,7 @@ impl App {
                         split_child_span(share, share_sum, available, linear.children.len());
                     let layout_child_span =
                         split_child_span(share, share_sum, layout_available, linear.children.len());
-                    let start_share = if closing_layout {
-                        start_shares.get(ix).copied().unwrap_or(1.0).max(0.0)
-                    } else {
-                        start_shares.get(ix).copied().unwrap_or(1.0).max(0.01)
-                    };
+                    let start_share = start_shares.get(ix).copied().unwrap_or(1.0).max(0.0);
                     let start_child_span = split_child_span(
                         start_share,
                         start_share_sum,
@@ -680,7 +874,7 @@ impl App {
                     layout_offset += layout_child_span;
                     let child_close_axis = if matches!(
                         self.split_motion_for_tile(child_id),
-                        Some(SplitMotion::Closing(_))
+                        Some(SplitMotion::Closing)
                     ) {
                         match linear.dir {
                             LinearDir::Horizontal => {
@@ -785,7 +979,7 @@ impl App {
                     || linear.children.iter().any(|child| {
                         matches!(
                             self.split_motion_for_tile(*child),
-                            Some(SplitMotion::Closing(_))
+                            Some(SplitMotion::Closing)
                         )
                     });
                 if closing_layout {
@@ -814,7 +1008,7 @@ impl App {
                         linear.children.iter().position(|child| {
                             matches!(
                                 self.split_motion_for_tile(*child),
-                                Some(SplitMotion::Closing(_))
+                                Some(SplitMotion::Closing)
                             )
                         })
                     });
@@ -827,7 +1021,7 @@ impl App {
                 let total_splitter_size = splitter_gaps.iter().sum::<f32>();
                 let mut current_offset = 0.0;
 
-                for (ix, (child_id, child, intro)) in children.into_iter().enumerate() {
+                for (ix, (_child_id, child, intro)) in children.into_iter().enumerate() {
                     let share = if closing_layout {
                         shares[ix].max(0.0)
                     } else {
@@ -889,41 +1083,20 @@ impl App {
                     }
 
                     // A closing pane whose span has already collapsed paints no content:
-                    // this avoids the 0.01-share sliver between seam animation end
-                    // (~170ms), fade end (~250ms), and unmount (~200ms).
-                    let collapsed_closing = matches!(intro, Some(SplitMotion::Closing(_)))
+                    // Avoid drawing a nearly collapsed slot in the fallback tree.
+                    let collapsed_closing = matches!(intro, Some(SplitMotion::Closing))
                         && child_span.is_some_and(|s| s <= 6.0);
                     let content = if collapsed_closing {
                         div().size_full().into_any_element()
                     } else {
-                        let close_axis = if matches!(intro, Some(SplitMotion::Closing(_))) {
-                            match linear.dir {
-                                LinearDir::Horizontal => {
-                                    if ix + 1 < child_count {
-                                        (1.0, 0.0)
-                                    } else {
-                                        (-1.0, 0.0)
-                                    }
-                                }
-                                LinearDir::Vertical => {
-                                    if ix + 1 < child_count {
-                                        (0.0, 1.0)
-                                    } else {
-                                        (0.0, -1.0)
-                                    }
-                                }
-                            }
-                        } else {
-                            (0.0, 0.0)
-                        };
-                        self.render_split_intro(child_id, child, intro, close_axis)
+                        child
                     };
                     row = row.child(pane_div.child(content));
                 }
 
                 let view = cx.entity();
                 Some(
-                    row.on_prepaint(move |bounds, _window, cx| {
+                    row.on_prepaint_child(move |bounds, _window, cx| {
                         crate::perf::count("prepaint.dock_linear");
                         view.update(cx, |this, _cx| {
                             this.dock_linear_bounds.insert(id, bounds);
@@ -936,12 +1109,15 @@ impl App {
     }
 
     fn split_motion_for_tile(&self, id: TileId) -> Option<SplitMotion> {
+        if self.state.settings.disable_animations {
+            return None;
+        }
         match self.state.pane_tree.tiles.get(id)? {
             Tile::Pane(_) => self
                 .pane_closing
                 .get(&id)
                 .copied()
-                .map(SplitMotion::Closing)
+                .map(|_| SplitMotion::Closing)
                 .or_else(|| {
                     self.pane_animation_for(id)
                         .filter(|animation| {
@@ -961,60 +1137,28 @@ impl App {
         }
     }
 
-    fn render_split_intro(
-        &self,
-        id: TileId,
-        child: AnyElement,
-        motion: Option<SplitMotion>,
-        close_axis: (f32, f32),
-    ) -> AnyElement {
-        let is_closing = matches!(motion, Some(SplitMotion::Closing(_)));
-        let inner = div()
-            .size_full()
-            .min_w(px(0.))
-            .min_h(px(0.))
-            .when(!is_closing, |this| this.overflow_hidden())
-            .child(child);
-        let Some(motion) = motion else {
-            return inner.into_any_element();
-        };
-        let SplitMotion::Closing(started) = motion else {
-            // Opening is revealed exclusively by the surrounding panes' FLIP.
-            // Adding a second offset here is the bottom/right pop-in the user saw.
-            return inner.into_any_element();
-        };
-        inner
-            .with_animation(
-                crate::ui::motion::keyed("dock-split-pop", id.0, ("close", started)),
-                crate::ui::motion::linear_anim(crate::app::DockSplitAnimation::DURATION),
-                move |this, t| {
-                    let progress = crate::app::DockSplitAnimation::closing_progress(t);
-                    let slide = 10.0 * progress;
-                    this.paint_offset(gpui::point(
-                        px(close_axis.0 * slide),
-                        px(close_axis.1 * slide),
-                    ))
-                },
-            )
-            .into_any_element()
-    }
-
     fn dock_split_shares(
         &mut self,
         id: TileId,
         final_shares: Vec<f32>,
         window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Vec<f32> {
         let Some(anim) = self.dock_split_animations.get(&id) else {
             return final_shares;
         };
         if anim.to.len() != final_shares.len() {
             self.dock_split_animations.remove(&id);
+            if !self.is_pane_or_dock_animating() {
+                self.flush_pending_column_reflows(cx);
+            }
             return final_shares;
         }
         if anim.done() || self.state.settings.disable_animations {
             self.dock_split_animations.remove(&id);
+            if !self.is_pane_or_dock_animating() {
+                self.flush_pending_column_reflows(cx);
+            }
             return final_shares;
         }
         // FLIP: layout jumps to final shares once. Cached paint moves from the
@@ -1066,7 +1210,7 @@ impl App {
                 "pane.cached_view",
                 gpui::AnyView::from(view).cached(style),
             ))
-            .on_prepaint(move |bounds, _window, cx| {
+            .on_prepaint_child(move |bounds, _window, cx| {
                 let should_update = {
                     let app_ref = app.read(cx);
                     app_ref.state.pane_tree.tiles.get(id).is_some()
@@ -1120,6 +1264,13 @@ impl App {
         // Global state that changes chrome, Alt overlay for alt-drag
         // drag, and active drag state for body drop zones.
         self.state.profiles.active().theme.hash(&mut h);
+        self.state.settings.glass_opacity.to_bits().hash(&mut h);
+        self.state.settings.show_titlebar.hash(&mut h);
+        if self.state.settings.show_titlebar {
+            f32::from(window.viewport_size().width)
+                .to_bits()
+                .hash(&mut h);
+        }
         self.state.settings.disable_animations.hash(&mut h);
         self.state.settings.dim_inactive_panes.hash(&mut h);
         if self.state.settings.dim_inactive_panes {
@@ -1127,6 +1278,7 @@ impl App {
         }
         window.modifiers().alt.hash(&mut h);
         cx.has_active_drag().hash(&mut h);
+        self.drag_hover_maybe_active().hash(&mut h);
         self.state.dragging_pane.map(|p| p.0).hash(&mut h);
         self.state.drag_pending.hash(&mut h);
         self.rename_edit
@@ -1155,19 +1307,12 @@ impl App {
             .filter(|id| children.contains(id))
             .or_else(|| children.first().copied());
         let active_theme = self.state.profiles.active().theme.as_str();
-        let figma_glass = active_theme == "Atlas Figma Glass";
-        let windows_glass = active_theme == "Atlas Windows Glass";
-        let glass_theme = active_theme.ends_with(" Glass") || active_theme == "Atlas Frost";
-        let panel_bg = if figma_glass {
-            glass_fill()
-        } else if windows_glass {
-            cx.theme().secondary
-        } else if is_windows_theme(active_theme) {
-            gpui::hsla(0., 0., 1., 0.20)
-        } else if glass_theme {
-            backdrop_tint(cx.theme().secondary, 0.06)
+        let is_glass = active_theme.ends_with(" Glass");
+        let windows_theme = is_windows_theme(active_theme);
+        let panel_bg = if is_glass || windows_theme {
+            cx.theme().colors.list
         } else {
-            backdrop_tint(cx.theme().secondary, 0.24)
+            cx.theme().background
         };
         let active_id = active.unwrap_or_else(|| *children.first().unwrap());
         let content = active
@@ -1182,18 +1327,33 @@ impl App {
                         .into_any_element()
                 } else {
                     crate::perf::count("render.pane_body_skipped");
-                    div().size_full().bg(panel_bg).into_any_element()
+                    div().size_full().into_any_element()
                 }
             })
-            .unwrap_or_else(|| div().size_full().bg(panel_bg).into_any_element());
+            .unwrap_or_else(|| {
+                div()
+                    .w_full()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .min_w(px(0.))
+                    .into_any_element()
+            });
         let content = if let Some(active) = active {
-            let mut content_flex = v_flex()
-                .size_full()
-                .child(div().flex_1().min_h(px(0.)).min_w(px(0.)).child(content));
-            if self.state.focused_tile == active {
-                content_flex = content_flex.child(self.render_pane_bottom_bar(active, window, cx));
+            let is_focused = self.state.focused_tile == active;
+            let has_filter = self
+                .state
+                .tab_states
+                .get(&active)
+                .is_some_and(|ts| ts.search.active && !ts.search.query.is_empty());
+            let mut pane_box = div().size_full().relative().child(content);
+
+            // Only the active pane renders the full floating menu (view switcher + file/folder toggles).
+            // Inactive splits do not render the floating controls, avoiding lag across multiple splits.
+            if is_focused || has_filter {
+                let (filter_pill, controls_pill) = self.render_pane_pills(active, window, cx);
+                pane_box = pane_box.child(filter_pill).child(controls_pill);
             }
-            self.with_split_drop_zones(active, content_flex.into_any_element(), cx)
+            self.with_split_drop_zones(active, pane_box.into_any_element(), cx)
         } else {
             content
         };
@@ -1211,12 +1371,10 @@ impl App {
             self.state.settings.dim_inactive_panes && self.state.focused_tile != active_id,
             |s| s.opacity(0.65),
         )
-        .when(figma_glass, |s| s.glass_surface(panel_bg))
-        .when(!figma_glass, |s| {
-            s.rounded(cx.theme().radius_lg)
-                .bg(panel_bg)
-                .border_1()
-                .border_color(cx.theme().border.opacity(0.55))
+        .when(is_glass, |s| s.glass_surface(panel_bg))
+        .when(!is_glass, |s| s.rounded(cx.theme().radius_lg).bg(panel_bg))
+        .when(!is_glass && !windows_theme, |s| {
+            s.border_1().border_color(cx.theme().border.opacity(0.55))
         });
 
         let is_mod = window.modifiers().alt;
@@ -1240,7 +1398,7 @@ impl App {
                         .absolute()
                         .inset_0()
                         .cursor_grab()
-                        .on_drag(
+                        .on_drag_alt(tab_drag_source(
                             TabDrag {
                                 pane_id: active_id,
                                 content: self.get_or_make_file_panel(active_id, cx).clone().into(),
@@ -1257,7 +1415,7 @@ impl App {
                                 });
                                 tab_drag_entity(drag.pane_id, drag.content.clone(), drag.size, cx)
                             },
-                        )
+                        ))
                         .on_mouse_down(MouseButton::Left, move |_, _window, cx| {
                             activate_drag_app_down.update(cx, |this, cx| {
                                 if this.state.dragging_pane != Some(active_id) {
@@ -1295,7 +1453,7 @@ impl App {
         timed_layout_region("pane.shell", PANE_SHELL_TIMINGS, panel).into_any_element()
     }
 
-    fn should_render_pane_body(&self, pane_id: TileId) -> bool {
+    fn should_render_pane_body(&self, _pane_id: TileId) -> bool {
         true
     }
 
@@ -1309,32 +1467,22 @@ impl App {
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
         let active_theme = self.state.profiles.active().theme.as_str();
-        let figma_glass = active_theme == "Atlas Figma Glass";
-        let windows_glass = active_theme == "Atlas Windows Glass";
-        let glass_theme = active_theme.ends_with(" Glass") || active_theme == "Atlas Frost";
-        let tab_bar_bg = if figma_glass {
-            glass_fill()
-        } else if windows_glass {
+        let is_glass = active_theme.ends_with(" Glass");
+        let tab_bar_bg = if is_glass {
             cx.theme().tab_bar
-        } else if glass_theme {
-            backdrop_tint(cx.theme().tab_bar, 0.06)
         } else {
             backdrop_tint(cx.theme().tab_bar, 0.16)
         };
-        let active_bg = if figma_glass {
-            glass_chip_fill()
-        } else if windows_glass {
+        let active_bg = if is_glass {
             cx.theme().tab_active
-        } else if glass_theme {
-            backdrop_tint(cx.theme().tab_active, 0.12)
         } else {
             backdrop_tint(cx.theme().tab_active, 0.22)
         };
         let active_fg = cx.theme().tab_active_foreground;
         let tab_fg = cx.theme().tab_foreground;
         let windows_theme = is_windows_theme(active_theme);
-        let hover_bg = if figma_glass {
-            glass_chip_fill().opacity(0.36)
+        let hover_bg = if is_glass {
+            cx.theme().list_hover
         } else {
             border.opacity(0.22)
         };
@@ -1343,16 +1491,21 @@ impl App {
         let tab_min = crate::ui::rem_px(if windows_theme { 118.0 } else { 56.0 });
         let tab_max = crate::ui::rem_px(if windows_theme { 210.0 } else { 220.0 });
         let tab_gap = crate::ui::rem_px(4.0);
+        let strip_height = crate::ui::rem_px(if windows_theme { 46.0 } else { 34.0 });
         let mut strip = h_flex()
-            .h(crate::ui::rem_px(if windows_theme { 46.0 } else { 34.0 }))
+            .id("tab-strip-scroll")
+            .w_full()
+            .h(strip_height)
             .min_w(px(0.))
+            .overflow_x_scroll()
             .items_center()
             .px_2()
             .bg(tab_bar_bg)
             .rounded_tl(px(12.0))
             .rounded_tr(px(12.0))
-            .border_b_1()
-            .border_color(border.opacity(0.42));
+            .when(!is_glass, |s| {
+                s.border_b_1().border_color(border.opacity(0.42))
+            });
 
         for pane_id in children {
             let (label, tag_color) = self
@@ -1396,6 +1549,7 @@ impl App {
                 .flatten();
             let tab = h_flex()
                 .id(SharedString::from(format!("tab-chip-{}", pane_id.0)))
+                .block_mouse_except_scroll()
                 .relative()
                 .min_w(tab_min)
                 .max_w(tab_max)
@@ -1412,6 +1566,7 @@ impl App {
                     cx.theme().transparent
                 })
                 .text_color(if is_active { active_fg } else { tab_fg })
+                .motion_feedback()
                 .hover(move |s| {
                     if is_active {
                         s.bg(active_bg)
@@ -1419,7 +1574,7 @@ impl App {
                         s.bg(hover_bg)
                     }
                 })
-                .on_drag(
+                .on_drag_alt(tab_drag_source(
                     TabDrag {
                         pane_id,
                         content: self.get_or_make_file_panel(pane_id, cx).clone().into(),
@@ -1435,7 +1590,7 @@ impl App {
                         });
                         tab_drag_entity(drag.pane_id, drag.content.clone(), drag.size, cx)
                     },
-                )
+                ))
                 .on_drop::<TabDrag>({
                     let drop_app = app.clone();
                     move |drag, _window, cx| {
@@ -1496,6 +1651,53 @@ impl App {
                             cx.stop_propagation();
                         }),
                 );
+            let is_closing =
+                self.tab_closing.contains_key(&pane_id) || self.pane_closing.contains_key(&pane_id);
+            let tab =
+                if !is_closing {
+                    let tab_drop_cmd = self.tab_drop_command(pane_id);
+                    let tab_hover_cmd = DragHoverCommand::Process(Action::FocusTab(pane_id));
+                    let tab_hover_id = DragHoverId::Tab(pane_id);
+                    match tab_drop_cmd {
+                        Some(drop_cmd) => {
+                            let drop_app_internal = app.clone();
+                            let drop_app_external = app.clone();
+                            tab.on_prepaint_child(drag_hover_recorder_with_drop(
+                                tab_hover_id,
+                                DragHoverKind::Nav,
+                                tab_hover_cmd,
+                                drop_cmd,
+                                &app,
+                            ))
+                            .on_drop::<crate::ui::root::DraggedFiles>(move |d, _window, cx| {
+                                let paths = d.paths.clone();
+                                drop_app_internal.update(cx, |this, cx| {
+                                    if let Some(command) = this.tab_drop_command(pane_id) {
+                                        this.execute_drag_hover_drop_command(command, paths, true);
+                                    }
+                                    cx.notify();
+                                });
+                            })
+                            .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
+                                let paths = paths.paths().to_vec();
+                                drop_app_external.update(cx, |this, cx| {
+                                    if let Some(command) = this.tab_drop_command(pane_id) {
+                                        this.execute_drag_hover_drop_command(command, paths, false);
+                                    }
+                                    cx.notify();
+                                });
+                            })
+                        }
+                        None => tab.on_prepaint_child(drag_hover_recorder(
+                            tab_hover_id,
+                            DragHoverKind::Nav,
+                            tab_hover_cmd,
+                            &app,
+                        )),
+                    }
+                } else {
+                    tab
+                };
             let slot = h_flex()
                 .min_w(tab_min)
                 .max_w(tab_max)
@@ -1529,6 +1731,7 @@ impl App {
                 "pane.tabs_actions",
                 div()
                     .id(SharedString::from(format!("tab-new-{}", anchor.0)))
+                    .block_mouse_except_scroll()
                     .size(crate::ui::rem_px(if windows_theme { 32.0 } else { 24.0 }))
                     .rounded(px(6.))
                     .flex()
@@ -1550,6 +1753,19 @@ impl App {
                     }),
             ));
         }
+        let strip = strip.into_any_element();
+        let strip = if self.state.settings.show_titlebar {
+            let height = strip_height.to_pixels(_window.rem_size());
+            let controls_top = crate::ui::window_chrome::controls_top(
+                height,
+                px(if is_glass { 6.0 } else { 3.0 }),
+                f32::from(_window.rem_size()) / crate::ui::BASE_PX,
+            );
+            crate::ui::window_chrome::CornerTabStrip::new(strip, height, controls_top)
+                .into_any_element()
+        } else {
+            strip
+        };
         timed_layout_region("pane.tabs_bar", PANE_TABS_BAR_TIMINGS, strip).into_any_element()
     }
 
@@ -1560,7 +1776,10 @@ impl App {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut el = div()
-            .size_full()
+            .w_full()
+            .flex_1()
+            .min_h(px(0.))
+            .min_w(px(0.))
             .relative()
             .group("tab-split-zone")
             .child(content);
@@ -1712,7 +1931,7 @@ mod tests {
     }
 
     #[test]
-    fn stable_flip_uses_final_layout_and_current_visual_offset() {
+    fn shrinking_pane_retains_content_extent_until_settlement() {
         let current = FlatRect {
             x: 120.0,
             y: 20.0,
@@ -1726,16 +1945,26 @@ mod tests {
             h: 400.0,
         };
 
-        let (layout, offset) = pane_visual_layout(current, final_rect, false, true);
+        let (layout, offset) = pane_visual_layout(
+            current,
+            final_rect,
+            false,
+            false,
+            true,
+            Some(FlatRect {
+                w: 440.0,
+                ..current
+            }),
+        );
         assert_eq!(
             (layout.x, layout.y, layout.w, layout.h),
-            (80.0, 20.0, 220.0, 400.0)
+            (80.0, 20.0, 440.0, 400.0)
         );
         assert_eq!(offset, (40.0, 0.0));
     }
 
     #[test]
-    fn closing_pane_keeps_interpolated_layout() {
+    fn closing_pane_retains_original_content_extent() {
         let current = FlatRect {
             x: 10.0,
             y: 20.0,
@@ -1749,11 +1978,93 @@ mod tests {
             h: 400.0,
         };
 
-        let (layout, offset) = pane_visual_layout(current, final_rect, true, true);
+        let (layout, offset) = pane_visual_layout(
+            current,
+            final_rect,
+            true,
+            false,
+            true,
+            Some(FlatRect {
+                w: 220.0,
+                ..current
+            }),
+        );
         assert_eq!(
             (layout.x, layout.y, layout.w, layout.h),
-            (10.0, 20.0, 90.0, 400.0)
+            (10.0, 20.0, 220.0, 400.0)
         );
+        assert_eq!(offset, (0.0, 0.0));
+    }
+
+    #[test]
+    fn opening_pane_retains_target_layout_behind_the_moving_clip() {
+        let current = FlatRect {
+            x: 10.0,
+            y: 20.0,
+            w: 10.0,
+            h: 400.0,
+        };
+        let final_rect = FlatRect {
+            x: 80.0,
+            y: 20.0,
+            w: 220.0,
+            h: 400.0,
+        };
+
+        let (layout, offset) = pane_visual_layout(current, final_rect, false, true, true, None);
+        assert_eq!(
+            (layout.x, layout.y, layout.w, layout.h),
+            (80.0, 20.0, 220.0, 400.0)
+        );
+        assert_eq!(offset, (-70.0, 0.0));
+    }
+
+    #[test]
+    fn trailing_close_keeps_prepaint_inside_the_dock() {
+        let previous = FlatRect { x: 400.0, y: 0.0, w: 400.0, h: 500.0 };
+        let current = FlatRect { x: 700.0, w: 100.0, ..previous };
+        let final_rect = FlatRect { x: 800.0, w: 0.0, ..previous };
+        let (layout, _) = pane_visual_layout(current, final_rect, true, false, true, Some(previous));
+        assert_eq!(layout.x, previous.x);
+        assert_eq!(layout.w, previous.w);
+        let offset = pane_exit_paint_offset(current, layout, (-1.0, 0.0));
+        assert_eq!(offset.0, 300.0, "content must leave with the seam, not stay pinned");
+    }
+
+    #[test]
+    fn closing_content_moves_outward_on_both_axes_with_stable_layout() {
+        let retained = FlatRect { x: 100.0, y: 200.0, w: 400.0, h: 300.0 };
+        for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let horizontal_loss = retained.w * fraction;
+            let vertical_loss = retained.h * fraction;
+            let leading_x = FlatRect { w: retained.w - horizontal_loss, ..retained };
+            let trailing_x = FlatRect { x: retained.x + horizontal_loss, ..leading_x };
+            let leading_y = FlatRect { h: retained.h - vertical_loss, ..retained };
+            let trailing_y = FlatRect { y: retained.y + vertical_loss, ..leading_y };
+            assert_eq!(pane_exit_paint_offset(leading_x, retained, (1.0, 0.0)), (-horizontal_loss, 0.0));
+            assert_eq!(pane_exit_paint_offset(trailing_x, retained, (-1.0, 0.0)), (horizontal_loss, 0.0));
+            assert_eq!(pane_exit_paint_offset(leading_y, retained, (0.0, 1.0)), (0.0, -vertical_loss));
+            assert_eq!(pane_exit_paint_offset(trailing_y, retained, (0.0, -1.0)), (0.0, vertical_loss));
+        }
+    }
+
+    #[test]
+    fn expanding_survivor_uses_a_stable_target_extent() {
+        let previous = FlatRect { x: 0.0, y: 0.0, w: 200.0, h: 300.0 };
+        let final_rect = FlatRect { w: 400.0, h: 600.0, ..previous };
+        for fraction in [0.0, 0.2, 0.5, 0.9] {
+            let current = FlatRect { w: 200.0 + 200.0 * fraction, h: 300.0 + 300.0 * fraction, ..previous };
+            let (layout, _) = pane_visual_layout(current, final_rect, false, false, true, Some(previous));
+            assert_eq!((layout.w, layout.h), (400.0, 600.0));
+        }
+    }
+
+    #[test]
+    fn without_retention_uses_the_current_geometry() {
+        let current = FlatRect { x: 10.0, y: 20.0, w: 90.0, h: 400.0 };
+        let final_rect = FlatRect { w: 220.0, ..current };
+        let (layout, offset) = pane_visual_layout(current, final_rect, false, true, false, None);
+        assert_eq!((layout.x, layout.y, layout.w, layout.h), (10.0, 20.0, 90.0, 400.0));
         assert_eq!(offset, (0.0, 0.0));
     }
 }
@@ -1826,6 +2137,8 @@ impl gpui::Element for FastPaneShell {
 
         let mut style = gpui::Style::default();
         style.refine(&self.style);
+        style.display = gpui::Display::Flex;
+        style.flex_direction = gpui::FlexDirection::Column;
 
         let layout_id = window.request_layout(style, vec![tab_layout, content_layout], cx);
 
@@ -1860,14 +2173,20 @@ impl gpui::Element for FastPaneShell {
             }
             - content_bounds.origin;
 
-        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-            window.with_element_offset(tab_offset, |window| {
-                self.tab_strip.prepaint(window, cx);
-            });
-            window.with_element_offset(content_offset, |window| {
-                self.content.prepaint(window, cx);
-            });
-        });
+        window.with_content_mask(
+            Some(gpui::ContentMask {
+                bounds,
+                ..Default::default()
+            }),
+            |window| {
+                window.with_element_offset(tab_offset, |window| {
+                    self.tab_strip.prepaint(window, cx);
+                });
+                window.with_element_offset(content_offset, |window| {
+                    self.content.prepaint(window, cx);
+                });
+            },
+        );
     }
 
     fn paint(
@@ -1875,29 +2194,37 @@ impl gpui::Element for FastPaneShell {
         _id: Option<&gpui::GlobalElementId>,
         _inspector_id: Option<&gpui::InspectorElementId>,
         bounds: gpui::Bounds<gpui::Pixels>,
-        request_layout: &mut Self::RequestLayoutState,
+        _request_layout: &mut Self::RequestLayoutState,
         _prepaint: &mut Self::PrepaintState,
         window: &mut gpui::Window,
         cx: &mut gpui::App,
     ) {
         crate::perf::count("pane.shell.paint");
-
-        let tab_bounds = window.layout_bounds(request_layout.tab_layout);
-        let content_bounds = window.layout_bounds(request_layout.content_layout);
-
-        let tab_offset = bounds.origin - tab_bounds.origin;
-        let content_offset = bounds.origin
-            + gpui::Point {
-                x: gpui::px(0.0),
-                y: tab_bounds.size.height,
-            }
-            - content_bounds.origin;
-
-        window.with_element_offset(tab_offset, |window| {
+        let mut style = gpui::Style::default();
+        style.refine(&self.style);
+        // Each child's Drawable retains the bounds set during prepaint.
+        // CE restricts layout queries and element offsets to the layout phases.
+        style.paint(bounds, window, cx, |window, cx| {
             self.tab_strip.paint(window, cx);
-        });
-        window.with_element_offset(content_offset, |window| {
             self.content.paint(window, cx);
         });
+    }
+}
+
+fn tab_drag_source<V: gpui::Render + 'static>(
+    payload: TabDrag,
+    build: impl Fn(&TabDrag, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> gpui::Entity<V>
+        + 'static,
+) -> impl Fn(
+    gpui::Point<gpui::Pixels>,
+    Option<gpui::CursorStyle>,
+    &mut Window,
+    &mut gpui::App,
+) -> gpui::AnyDrag {
+    move |offset, cursor, window, cx| {
+        let view = build(&payload, offset, window, cx);
+        gpui::AnyDrag::new(payload.clone(), view)
+            .offset(offset)
+            .cursor_style(cursor)
     }
 }

@@ -524,7 +524,7 @@ impl Render for SearchPanel {
                                     .w_full()
                                     .shadow_none(),
                             )
-                            .on_prepaint({
+                            .on_prepaint_child({
                                 let view = cx.entity();
                                 move |bounds, _, cx| {
                                     view.update(cx, |r, _| r.input_width = bounds.size.width)
