@@ -42,3 +42,17 @@ docs/transfer-benchmarks.md
 
 # Unrelated local checkouts / generated side projects
 website/
+
+# Upstream GPUI project automation and development files stay local.
+/vendor/gpui-ce/.github/
+/vendor/gpui-ce/docs/
+/vendor/gpui-ce/scripts/
+/vendor/gpui-ce/CONTRIBUTING.md
+/vendor/gpui-ce/SETUP.md
+/vendor/gpui-ce/flake.lock
+/vendor/gpui-ce/flake.nix
+/vendor/gpui-ce/audit.toml
+/vendor/gpui-ce/deny.toml
+/vendor/gpui-ce/justfile
+/vendor/gpui-ce/rheo.toml
+/vendor/gpui-ce/typos.toml
