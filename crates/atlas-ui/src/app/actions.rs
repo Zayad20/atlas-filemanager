@@ -807,53 +807,7 @@ impl App {
                     }
                 }
                 Action::OpenTerminal { dir } => {
-                    #[cfg(target_os = "linux")]
-                    {
-                        let _ = std::process::Command::new("xdg-terminal")
-                            .current_dir(&dir)
-                            .spawn()
-                            .or_else(|_| {
-                                std::process::Command::new("gnome-terminal")
-                                    .arg("--working-directory")
-                                    .arg(&dir)
-                                    .spawn()
-                            })
-                            .or_else(|_| {
-                                std::process::Command::new("alacritty")
-                                    .arg("--working-directory")
-                                    .arg(&dir)
-                                    .spawn()
-                            })
-                            .or_else(|_| {
-                                std::process::Command::new("kitty")
-                                    .arg("--directory")
-                                    .arg(&dir)
-                                    .spawn()
-                            })
-                            .or_else(|_| {
-                                std::process::Command::new("konsole")
-                                    .arg("--workdir")
-                                    .arg(&dir)
-                                    .spawn()
-                            });
-                    }
-                    #[cfg(target_os = "windows")]
-                    {
-                        let _ = std::process::Command::new("cmd")
-                            .arg("/c")
-                            .arg("start")
-                            .arg("cmd")
-                            .current_dir(&dir)
-                            .spawn();
-                    }
-                    #[cfg(target_os = "macos")]
-                    {
-                        let _ = std::process::Command::new("open")
-                            .arg("-a")
-                            .arg("Terminal")
-                            .arg(&dir)
-                            .spawn();
-                    }
+                    self.spawn_terminal(&dir);
                 }
                 Action::Paste { dest } => {
                     #[cfg(feature = "provider-host")]
@@ -1437,5 +1391,106 @@ impl App {
         if let Some(entries) = ts.search.original_entries.take() {
             ts.set_entries(entries);
         }
+    }
+
+    pub(crate) fn spawn_terminal(&self, dir: &std::path::Path) {
+        spawn_terminal(dir);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn is_in_path(name: &str) -> bool {
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn launch_emulator(bin: &str, dir: &std::path::Path) -> std::io::Result<std::process::Child> {
+    let bin_name = std::path::Path::new(bin)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(bin);
+
+    let mut cmd = std::process::Command::new(bin);
+    cmd.current_dir(dir);
+
+    match bin_name {
+        "kitty" => {
+            cmd.arg("--directory").arg(dir);
+        }
+        "alacritty" | "foot" | "ghostty" | "gnome-terminal" | "xfce4-terminal" => {
+            cmd.arg("--working-directory").arg(dir);
+        }
+        "wezterm" => {
+            cmd.arg("start").arg("--cwd").arg(dir);
+        }
+        "konsole" => {
+            cmd.arg("--workdir").arg(dir);
+        }
+        _ => {}
+    }
+    cmd.spawn()
+}
+
+pub(crate) fn spawn_terminal(dir: &std::path::Path) {
+    #[cfg(target_os = "linux")]
+    {
+        // 1. Evalúa primero la variable de entorno $TERMINAL
+        if let Ok(term) = std::env::var("TERMINAL") {
+            let term = term.trim();
+            if !term.is_empty() && launch_emulator(term, dir).is_ok() {
+                return;
+            }
+        }
+
+        // 2. Si no existe, intenta x-terminal-emulator
+        if is_in_path("x-terminal-emulator") && launch_emulator("x-terminal-emulator", dir).is_ok() {
+            return;
+        }
+
+        // 3. Si no existe, busca en $PATH terminales comunes:
+        // kitty, alacritty, foot, ghostty, wezterm, gnome-terminal, konsole, xfce4-terminal, xterm
+        const COMMON_TERMINALS: &[&str] = &[
+            "kitty",
+            "alacritty",
+            "foot",
+            "ghostty",
+            "wezterm",
+            "gnome-terminal",
+            "konsole",
+            "xfce4-terminal",
+            "xterm",
+        ];
+        for &term in COMMON_TERMINALS {
+            if is_in_path(term) && launch_emulator(term, dir).is_ok() {
+                return;
+            }
+        }
+
+        let _ = launch_emulator("x-terminal-emulator", dir).or_else(|_| launch_emulator("xterm", dir));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("cmd")
+            .arg("/c")
+            .arg("start")
+            .arg("cmd")
+            .current_dir(dir)
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg("-a")
+            .arg("Terminal")
+            .arg(dir)
+            .spawn();
     }
 }

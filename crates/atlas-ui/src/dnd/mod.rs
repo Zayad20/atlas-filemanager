@@ -19,6 +19,255 @@ use std::path::PathBuf;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+pub mod linux {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    pub const MIME_TEXT_URI_LIST: &str = super::MIME_TEXT_URI_LIST;
+
+    /// Resolved drop payload for Linux drop operations.
+    #[derive(Debug, Clone)]
+    pub struct LinuxDropPayload {
+        pub paths: Vec<PathBuf>,
+        pub from_self: bool,
+        pub ctrl: bool,
+        pub shift: bool,
+        pub x: f32,
+        pub y: f32,
+    }
+
+    /// Events emitted by Linux drop targets (XDND / Wayland).
+    #[derive(Debug, Clone)]
+    pub enum LinuxDndEvent {
+        DragEnter {
+            x: f32,
+            y: f32,
+            mime_types: Vec<String>,
+        },
+        DragOver {
+            x: f32,
+            y: f32,
+        },
+        DragLeave,
+        Drop(LinuxDropPayload),
+        Error(String),
+    }
+
+    /// Shared queue type between Linux drop hooks and the UI drain loop.
+    pub type LinuxDndQueue = Arc<Mutex<Vec<LinuxDndEvent>>>;
+
+    /// Drag-and-drop state on Linux.
+    #[derive(Clone, Default)]
+    pub struct LinuxDndState {
+        pub zones: Arc<Mutex<DropZones>>,
+        pub action_queue: LinuxDndQueue,
+    }
+
+    impl LinuxDndState {
+        pub fn new() -> Self {
+            Self {
+                zones: Arc::new(Mutex::new(DropZones::default())),
+                action_queue: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        /// Safely processes raw drop bytes with MIME type `text/uri-list`.
+        /// Never panics on empty or malformed input.
+        pub fn handle_drop_uri_list(
+            &self,
+            data: &[u8],
+            x: f32,
+            y: f32,
+            ctrl: bool,
+            shift: bool,
+        ) -> Vec<PathBuf> {
+            let paths = parse_uri_list_bytes(data);
+            if !paths.is_empty() {
+                if let Ok(mut q) = self.action_queue.lock() {
+                    q.push(LinuxDndEvent::Drop(LinuxDropPayload {
+                        paths: paths.clone(),
+                        from_self: false,
+                        ctrl,
+                        shift,
+                        x,
+                        y,
+                    }));
+                }
+            }
+            paths
+        }
+
+        /// Checks whether any of the supplied MIME types is compatible with `text/uri-list`.
+        pub fn accepts_mime_types(&self, mimes: &[String]) -> bool {
+            mimes
+                .iter()
+                .any(|m| m == MIME_TEXT_URI_LIST || m == "text/plain")
+        }
+    }
+
+    /// Safe placeholder for initializing Linux drag-and-drop.
+    /// Currently returns `None`.
+    pub fn init(_handle: isize, _scale_factor: f32) -> Option<LinuxDndState> {
+        None
+    }
+}
+
+/// Initialize the drag-and-drop subsystem for the current platform.
+#[cfg(target_os = "windows")]
+pub fn init(hwnd_raw: isize, scale_factor: f32) -> Option<windows::DndState> {
+    windows::setup_dnd(hwnd_raw, scale_factor)
+}
+
+/// Initialize the drag-and-drop subsystem on non-Windows platforms.
+/// Returns `None` placeholder.
+#[cfg(not(target_os = "windows"))]
+pub fn init(handle: isize, scale_factor: f32) -> Option<linux::LinuxDndState> {
+    linux::init(handle, scale_factor)
+}
+
+// ─── FreeDesktop text/uri-list formatting and parsing ───────────────────────
+
+/// Standard MIME type for FreeDesktop file transfers (both DnD and clipboard).
+pub const MIME_TEXT_URI_LIST: &str = "text/uri-list";
+
+/// Percent-decodes a URI string (e.g. `%20` -> `' '`, `%C3%A9` -> `'é'`).
+pub fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let h1 = bytes[i + 1];
+            let h2 = bytes[i + 2];
+            let val1 = match h1 {
+                b'0'..=b'9' => Some(h1 - b'0'),
+                b'a'..=b'f' => Some(h1 - b'a' + 10),
+                b'A'..=b'F' => Some(h1 - b'A' + 10),
+                _ => None,
+            };
+            let val2 = match h2 {
+                b'0'..=b'9' => Some(h2 - b'0'),
+                b'a'..=b'f' => Some(h2 - b'a' + 10),
+                b'A'..=b'F' => Some(h2 - b'A' + 10),
+                _ => None,
+            };
+            if let (Some(v1), Some(v2)) = (val1, val2) {
+                decoded.push((v1 << 4) | v2);
+                i += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+/// Encodes a local filesystem path as a `file://` URI with percent-encoding for spaces and special characters.
+pub fn path_to_file_uri(path: &std::path::Path) -> String {
+    let s = path.to_string_lossy();
+    let mut out = String::from("file://");
+    if !s.starts_with('/') {
+        out.push('/');
+    }
+    for &b in s.as_bytes() {
+        match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'/' | b'~' => {
+                out.push(b as char);
+            }
+            b' ' => {
+                out.push_str("%20");
+            }
+            _ => {
+                use std::fmt::Write;
+                let _ = write!(out, "%{b:02X}");
+            }
+        }
+    }
+    out
+}
+
+/// Formats a list of paths as a FreeDesktop `text/uri-list` string (`\r\n` delimited).
+pub fn format_uri_list(paths: &[PathBuf]) -> String {
+    let mut out = String::new();
+    for path in paths {
+        out.push_str(&path_to_file_uri(path));
+        out.push_str("\r\n");
+    }
+    out
+}
+
+/// Parses a `text/uri-list` or multi-line text into a list of valid local `PathBuf`s and a cut flag.
+/// Safely ignores comment lines (`#`), empty lines, and non-file schemes.
+/// Decodes percent-encoded characters like `%20`.
+pub fn parse_uri_list_with_cut(text: &str) -> (Vec<PathBuf>, bool) {
+    let mut paths = Vec::new();
+    let mut is_cut = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.eq_ignore_ascii_case("cut") {
+            is_cut = true;
+            continue;
+        }
+        if trimmed.eq_ignore_ascii_case("copy") {
+            continue;
+        }
+
+        let uri_path = if let Some(rest) = trimmed.strip_prefix("file://localhost/") {
+            Some(format!("/{rest}"))
+        } else if let Some(rest) = trimmed.strip_prefix("file:///") {
+            Some(format!("/{rest}"))
+        } else if let Some(rest) = trimmed.strip_prefix("file://") {
+            Some(if rest.starts_with('/') {
+                rest.to_string()
+            } else {
+                format!("/{rest}")
+            })
+        } else if let Some(rest) = trimmed.strip_prefix("file:/") {
+            Some(if rest.starts_with('/') {
+                rest.to_string()
+            } else {
+                format!("/{rest}")
+            })
+        } else {
+            None
+        };
+
+        if let Some(raw_path) = uri_path {
+            let clean_path = if raw_path.len() >= 3
+                && raw_path.starts_with('/')
+                && raw_path.as_bytes()[2] == b':'
+            {
+                &raw_path[1..]
+            } else {
+                &raw_path
+            };
+            let decoded_str = percent_decode(clean_path);
+            let path = PathBuf::from(decoded_str);
+            if !path.as_os_str().is_empty() {
+                paths.push(path);
+            }
+        }
+    }
+
+    (paths, is_cut)
+}
+
+/// Parses a `text/uri-list` string into local `PathBuf`s.
+pub fn parse_file_uris(text: &str) -> Vec<PathBuf> {
+    parse_uri_list_with_cut(text).0
+}
+
+/// Parses raw bytes conforming to `text/uri-list` into local `PathBuf`s.
+pub fn parse_uri_list_bytes(data: &[u8]) -> Vec<PathBuf> {
+    let text = String::from_utf8_lossy(data);
+    parse_file_uris(&text)
+}
+
 // ─── Core types ─────────────────────────────────────────────────────────────
 
 /// Default outcome of a drop, decided by volume rules (same drive = move).
@@ -166,5 +415,54 @@ mod tests {
             ),
             DropEffect::Copy
         );
+    }
+
+    #[test]
+    fn format_and_parse_uri_list_roundtrip() {
+        let paths = vec![
+            PathBuf::from("/home/usuario/documento.txt"),
+            PathBuf::from("/home/usuario/foto.png"),
+            PathBuf::from("/home/usuario/espacio en nombre.txt"),
+            PathBuf::from("/home/usuario/música.mp3"),
+        ];
+        let uri_list = format_uri_list(&paths);
+        assert!(uri_list.contains("file:///home/usuario/documento.txt\r\n"));
+        assert!(uri_list.contains("file:///home/usuario/foto.png\r\n"));
+        assert!(uri_list.contains("espacio%20en%20nombre.txt"));
+
+        let parsed = parse_file_uris(&uri_list);
+        assert_eq!(parsed, paths);
+    }
+
+    #[test]
+    fn parse_uri_list_with_cut_and_comments() {
+        let text = "# GNOME clipboard\r\ncut\r\nfile:///home/usuario/cut_file.txt\r\nfile://localhost/home/usuario/second.txt\r\n";
+        let (paths, is_cut) = parse_uri_list_with_cut(text);
+        assert!(is_cut);
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/home/usuario/cut_file.txt"),
+                PathBuf::from("/home/usuario/second.txt")
+            ]
+        );
+    }
+
+    #[test]
+    fn linux_dnd_state_handles_drop_uri_list() {
+        let state = linux::LinuxDndState::new();
+        let data = b"file:///tmp/dropped%20file.txt\r\n";
+        let paths = state.handle_drop_uri_list(data, 100.0, 200.0, false, false);
+        assert_eq!(paths, vec![PathBuf::from("/tmp/dropped file.txt")]);
+
+        let queue = state.action_queue.lock().unwrap();
+        assert_eq!(queue.len(), 1);
+        if let linux::LinuxDndEvent::Drop(payload) = &queue[0] {
+            assert_eq!(payload.paths, paths);
+            assert_eq!(payload.x, 100.0);
+            assert_eq!(payload.y, 200.0);
+        } else {
+            panic!("expected Drop event");
+        }
     }
 }

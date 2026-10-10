@@ -200,7 +200,7 @@ pub fn find_search_service_exe() -> Option<std::path::PathBuf> {
     None
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 

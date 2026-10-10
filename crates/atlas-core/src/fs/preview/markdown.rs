@@ -9,13 +9,45 @@ pub(super) fn is_markdown_ext(ext: &str) -> bool {
 }
 
 pub(super) async fn preview_markdown(path: &Path) -> PreviewResult {
-    let bytes = match tokio::fs::read(path).await {
-        Ok(b) => b,
+    let meta = match tokio::fs::metadata(path).await {
+        Ok(m) => m,
         Err(e) => return PreviewResult::Error(e.to_string()),
     };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        let ft = meta.file_type();
+        if ft.is_fifo() || ft.is_socket() || ft.is_char_device() || ft.is_block_device() {
+            return PreviewResult::Error(
+                "Archivos especiales (FIFO, socket, dispositivo) no están soportados para previsualización"
+                    .to_string(),
+            );
+        }
+    }
+
+    if !meta.is_file() {
+        return PreviewResult::Error("Not a regular file".to_string());
+    }
+
+    let file = match tokio::fs::File::open(path).await {
+        Ok(f) => f,
+        Err(e) => return PreviewResult::Error(e.to_string()),
+    };
+
+    let mut bytes = Vec::new();
+    use tokio::io::AsyncReadExt;
+    if let Err(e) = file
+        .take(super::MAX_TEXT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .await
+    {
+        return PreviewResult::Error(e.to_string());
+    }
+
     if bytes.len() > super::MAX_TEXT_BYTES {
         return PreviewResult::Binary {
-            size: bytes.len() as u64,
+            size: meta.len(),
         };
     }
     match String::from_utf8(bytes) {
@@ -32,7 +64,7 @@ pub(super) async fn preview_markdown(path: &Path) -> PreviewResult {
             }
         }
         Err(_) => PreviewResult::Binary {
-            size: path.metadata().map_or(0, |m| m.len()),
+            size: meta.len(),
         },
     }
 }
@@ -192,3 +224,56 @@ pub(crate) fn parse_markdown(source: &str) -> Vec<MarkdownBlock> {
     }
     blocks
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_preview_markdown_regular_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("readme.md");
+        tokio::fs::write(&path, b"# Hello World\n\nThis is markdown.")
+            .await
+            .unwrap();
+
+        let res = preview_markdown(&path).await;
+        match res {
+            PreviewResult::Markdown { source, blocks, .. } => {
+                assert!(source.contains("Hello World"));
+                assert!(!blocks.is_empty());
+            }
+            other => panic!("Expected markdown preview, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_preview_markdown_fifo_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fifo_path = tmp.path().join("test_fifo.md");
+
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status();
+        if let Ok(st) = status {
+            if st.success() {
+                let preview_result = tokio::time::timeout(
+                    std::time::Duration::from_millis(500),
+                    preview_markdown(&fifo_path),
+                )
+                .await;
+
+                assert!(
+                    preview_result.is_ok(),
+                    "preview_markdown se bloqueó indefinidamente al leer un FIFO"
+                );
+                assert!(
+                    matches!(preview_result.unwrap(), PreviewResult::Error(_)),
+                    "preview_markdown no debe aceptar FIFOs"
+                );
+            }
+        }
+    }
+}
+

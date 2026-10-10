@@ -189,6 +189,15 @@ fn sidebar_fingerprint(app: &AtlasApp) -> u64 {
         .has_sidebar_section("cloud")
         .hash(&mut hasher);
 
+    #[cfg(target_os = "linux")]
+    {
+        for dev in atlas_core::fs::udisks::list_removable() {
+            dev.dev.hash(&mut hasher);
+            dev.label.hash(&mut hasher);
+            dev.mount_point.hash(&mut hasher);
+        }
+    }
+
     hasher.finish()
 }
 
@@ -2105,13 +2114,31 @@ fn render_collapsed_sections(
             }
             SectionKind::Drives => {
                 let drives = atlas_core::fs::mounts::list_drives();
-                if !drives.is_empty() && before {
+                #[cfg(target_os = "linux")]
+                let removable = atlas_core::fs::udisks::list_removable();
+                #[cfg(not(target_os = "linux"))]
+                let removable: Vec<atlas_core::fs::udisks::RemovableDevice> = Vec::new();
+
+                let drives: Vec<_> = drives
+                    .into_iter()
+                    .filter(|d| !removable.iter().any(|r| r.mount_point.as_ref() == Some(&d.mount_point)))
+                    .collect();
+
+                let has_items = !drives.is_empty() || !removable.is_empty();
+                if has_items && before {
                     col = col.child(collapsed_divider());
                 }
                 for drive in drives {
                     let active = current.is_some_and(|c| c == drive.mount_point.as_path());
                     let shell_tex = sidebar_shell_tex(app, &drive.mount_point, windows_theme, cx);
                     col = col.child(collapsed_drive_row(drive, shell_tex, app, style, active));
+                    section_has_items = true;
+                }
+                for device in removable {
+                    let active = current.is_some_and(|c| {
+                        device.mount_point.as_ref().map_or(false, |mp| c == mp.as_path())
+                    });
+                    col = col.child(collapsed_removable_device_row(device, app, style, active));
                     section_has_items = true;
                 }
             }
@@ -2513,6 +2540,69 @@ fn collapsed_drive_row(
     )
 }
 
+fn collapsed_removable_device_row(
+    device: atlas_core::fs::udisks::RemovableDevice,
+    app: &Entity<AtlasApp>,
+    style: SidebarStyle,
+    active: bool,
+) -> impl IntoElement {
+    let SidebarStyle {
+        hover,
+        active_bg,
+        fg,
+        ..
+    } = style;
+    let app = app.clone();
+    let is_mounted = device.mount_point.is_some();
+    let mount_path = device.mount_point.clone();
+    let dev = device.dev.clone();
+    let icon_color = hsla(
+        (fg.hue.into_positive_degrees() / 360.0),
+        fg.saturation,
+        fg.lightness,
+        if is_mounted { 0.85 } else { 0.5 },
+    );
+
+    let tooltip = if is_mounted {
+        format!("{} ({})", device.label, device.size)
+    } else {
+        format!("{} [{}]", device.label, rust_i18n::t!("cloud_ctx_mount"))
+    };
+
+    let click_app = app.clone();
+    let click_mount_path = mount_path.clone();
+    let click_dev = dev.clone();
+
+    div()
+        .id(SharedString::from(format!("rail-removable-{}", device.dev)))
+        .block_mouse_except_scroll()
+        .w_full()
+        .h(crate::ui::rem_px(32.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(7.))
+        .cursor_pointer()
+        .when(active, |s| s.bg(active_bg))
+        .when(!active, |s| s.hover(|h| h.bg(hover)))
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .child(icon(AtlasIcon::HardDrives, 16.0, icon_color))
+        .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
+            if let Some(target) = click_mount_path.clone() {
+                click_app.update(cx, |this, cx| {
+                    let pane = this.state.focused_tile;
+                    this.navigate(pane, target);
+                    cx.notify();
+                });
+            } else {
+                let dev = click_dev.clone();
+                click_app.update(cx, |this, _cx| {
+                    this.mount_device(dev);
+                });
+            }
+        })
+}
+
 #[cfg(feature = "provider-host")]
 fn collapsed_cloud_remote_row(
     remote: atlas_model::cloud_model::CloudRemote,
@@ -2737,7 +2827,17 @@ fn render_section_body(
         }
         SectionKind::Drives => {
             let drives = atlas_core::fs::mounts::list_drives();
-            if drives.is_empty() {
+            #[cfg(target_os = "linux")]
+            let removable = atlas_core::fs::udisks::list_removable();
+            #[cfg(not(target_os = "linux"))]
+            let removable: Vec<atlas_core::fs::udisks::RemovableDevice> = Vec::new();
+
+            let drives: Vec<_> = drives
+                .into_iter()
+                .filter(|d| !removable.iter().any(|r| r.mount_point.as_ref() == Some(&d.mount_point)))
+                .collect();
+
+            if drives.is_empty() && removable.is_empty() {
                 col = col.child(empty_row(
                     rust_i18n::t!("sidebar_no_drives").to_string(),
                     muted,
@@ -2747,6 +2847,12 @@ fn render_section_body(
                     let active = current.is_some_and(|c| c == drive.mount_point.as_path());
                     let shell_tex = sidebar_shell_tex(app, &drive.mount_point, windows_theme, cx);
                     col = col.child(drive_row(drive, shell_tex, app, style, active));
+                }
+                for device in removable {
+                    let active = current.is_some_and(|c| {
+                        device.mount_point.as_ref().map_or(false, |mp| c == mp.as_path())
+                    });
+                    col = col.child(removable_device_row(device, app, style, active));
                 }
             }
         }
@@ -3132,6 +3238,137 @@ fn drive_row(
     {
         row.into_any_element()
     }
+}
+
+fn removable_device_row(
+    device: atlas_core::fs::udisks::RemovableDevice,
+    app: &Entity<AtlasApp>,
+    style: SidebarStyle,
+    active: bool,
+) -> gpui::AnyElement {
+    let SidebarStyle {
+        hover,
+        active_bg,
+        fg,
+        muted,
+        windows_theme,
+        ..
+    } = style;
+    let app = app.clone();
+    let is_mounted = device.mount_point.is_some();
+    let mount_path = device.mount_point.clone();
+    let dev = device.dev.clone();
+    let id = SharedString::from(format!("removable-{}", device.dev));
+    let icon_color = hsla(
+        (fg.hue.into_positive_degrees() / 360.0),
+        fg.saturation,
+        fg.lightness,
+        if is_mounted { 0.85 } else { 0.5 },
+    );
+
+    let mount_app = app.clone();
+    let dev_action = dev.clone();
+    let action_tooltip = if is_mounted {
+        rust_i18n::t!("cloud_ctx_unmount").to_string()
+    } else {
+        rust_i18n::t!("cloud_ctx_mount").to_string()
+    };
+
+    let click_app = app.clone();
+    let click_mount_path = mount_path.clone();
+    let click_dev = dev.clone();
+
+    let subtitle = if is_mounted {
+        device.size.clone()
+    } else if device.size.is_empty() {
+        rust_i18n::t!("cloud_ctx_mount").to_string()
+    } else {
+        format!("{} · {}", device.size, rust_i18n::t!("cloud_ctx_mount"))
+    };
+
+    let row = h_flex()
+        .id(id)
+        .block_mouse_except_scroll()
+        .w_full()
+        .px_2()
+        .py(crate::ui::rem_px(if windows_theme { 6.0 } else { 4.0 }))
+        .gap(crate::ui::rem_px(if windows_theme { 10.0 } else { 8.0 }))
+        .items_center()
+        .rounded(px(7.))
+        .cursor_pointer()
+        .text_color(fg)
+        .when(active, |s| s.bg(active_bg))
+        .when(!active, |s| s.hover(|h| h.bg(hover)))
+        .child(
+            theme_icon(
+                AtlasIcon::HardDrives,
+                if windows_theme { 18.0 } else { 16.0 },
+                icon_color,
+                windows_theme,
+            ),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .truncate()
+                        .child(SharedString::from(device.label.clone())),
+                )
+                .when(!subtitle.is_empty(), |v| {
+                    v.child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .truncate()
+                            .child(SharedString::from(subtitle)),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .id(SharedString::from(format!("eject-btn-{}", dev)))
+                .size(crate::ui::rem_px(20.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(5.))
+                .hover(|h| h.bg(control_hover(fg)))
+                .tooltip(move |window, cx| Tooltip::new(action_tooltip.clone()).build(window, cx))
+                .child(icon(
+                    if is_mounted { AtlasIcon::Minus } else { AtlasIcon::Plus },
+                    12.0,
+                    if is_mounted { muted } else { fg },
+                ))
+                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                    cx.stop_propagation();
+                    let dev = dev_action.clone();
+                    mount_app.update(cx, |this, _cx| {
+                        if is_mounted {
+                            this.unmount_device(dev);
+                        } else {
+                            this.mount_device(dev);
+                        }
+                    });
+                }),
+        )
+        .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
+            if let Some(target) = click_mount_path.clone() {
+                click_app.update(cx, |this, cx| {
+                    let pane = this.state.focused_tile;
+                    this.navigate(pane, target);
+                    cx.notify();
+                });
+            } else {
+                let dev = click_dev.clone();
+                click_app.update(cx, |this, _cx| {
+                    this.mount_device(dev);
+                });
+            }
+        });
+
+    row.into_any_element()
 }
 
 fn section_header(

@@ -219,7 +219,12 @@ fn split_query_base(query: &str) -> Option<(PathBuf, String)> {
     }
     let pos = q.rfind(['/', '\\'])?;
     let (base, rest) = q.split_at(pos + 1);
-    Some((PathBuf::from(base), rest.to_string()))
+    let base_trimmed = if base.len() > 1 && (base.ends_with('/') || base.ends_with('\\')) && !base.ends_with("://") && base != "/" {
+        base.trim_end_matches(['/', '\\'])
+    } else {
+        base
+    };
+    Some((PathBuf::from(base_trimmed), rest.to_string()))
 }
 
 fn expand_home_query(query: &str, home: &std::path::Path) -> Option<String> {
@@ -227,6 +232,11 @@ fn expand_home_query(query: &str, home: &std::path::Path) -> Option<String> {
         ""
     } else {
         query.strip_prefix("~/").or_else(|| query.strip_prefix("~\\"))?
+    };
+    let rest = if !cfg!(windows) && rest.contains('\\') {
+        rest.replace('\\', "/")
+    } else {
+        rest.to_string()
     };
     Some(format!("{}{}{}", home.display(), std::path::MAIN_SEPARATOR, rest))
 }
@@ -249,6 +259,22 @@ fn merge_goto_entries(
 }
 
 fn goto_location_label(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
+    let path_str = path.to_string_lossy();
+    if !cfg!(windows) && path_str.contains('\\') && !path_str.contains('/') {
+        if let Some(pos) = path_str.rfind('\\') {
+            let parent_str = &path_str[..pos];
+            if let Some(home_str) = home.map(|h| h.to_string_lossy()) {
+                if parent_str.starts_with(home_str.as_ref()) {
+                    let rel = &parent_str[home_str.len()..].trim_start_matches('\\');
+                    if rel.is_empty() {
+                        return "~".to_owned();
+                    }
+                    return format!("~\\{rel}");
+                }
+            }
+            return parent_str.to_string();
+        }
+    }
     let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(path);
     if let Some(relative) = home.and_then(|home| parent.strip_prefix(home).ok()) {
         if relative.as_os_str().is_empty() {

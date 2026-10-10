@@ -6,71 +6,145 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub async fn list_recycle_bin(sort_col: SortColumn, sort_dir: SortDir) -> Vec<FileEntry> {
-    tokio::task::spawn_blocking(move || list_sync(&sort_col, &sort_dir))
+    tokio::task::spawn_blocking(move || read_recycle_bin(&sort_col, &sort_dir))
         .await
         .unwrap_or_default()
+}
+
+pub fn read_recycle_bin(sort_col: &SortColumn, sort_dir: &SortDir) -> Vec<FileEntry> {
+    list_sync(sort_col, sort_dir)
 }
 
 fn list_sync(sort_col: &SortColumn, sort_dir: &SortDir) -> Vec<FileEntry> {
     let mut entries = Vec::new();
     for rb_dir in accessible_bin_dirs() {
-        let Ok(rd) = std::fs::read_dir(&rb_dir) else {
-            continue;
-        };
-        for entry in rd.flatten() {
-            let i_path = entry.path();
-            let fname = i_path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if !fname.starts_with("$I") {
+        #[cfg(windows)]
+        {
+            let Ok(rd) = std::fs::read_dir(&rb_dir) else {
                 continue;
+            };
+            for entry in rd.flatten() {
+                let i_path = entry.path();
+                let fname = i_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if !fname.starts_with("$I") {
+                    continue;
+                }
+                let r_path = rb_dir.join(format!("$R{}", &fname[2..]));
+                if !r_path.exists() {
+                    continue;
+                }
+                let Ok(bytes) = std::fs::read(&i_path) else {
+                    continue;
+                };
+                let Some(meta) = parse_i_file(&bytes) else {
+                    continue;
+                };
+                let original_name = meta
+                    .original_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| fname.clone());
+                let kind = if r_path.is_dir() {
+                    FileKind::Dir
+                } else {
+                    FileKind::File
+                };
+                let extension = meta
+                    .original_path
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase());
+                let name_lower = original_name.to_lowercase();
+                entries.push(FileEntry {
+                    name: original_name,
+                    name_lower,
+                    path: r_path,
+                    kind,
+                    size: Some(meta.original_size),
+                    modified: Some(meta.deleted_at),
+                    extension,
+                    display_size: String::new().into(),
+                    display_date: String::new().into(),
+                    display_type: String::new().into(),
+                    _is_hidden: false,
+                    _is_symlink: false,
+                    archive_root: None,
+                    recycle_info: Some(RecycleBinInfo {
+                        original_path: meta.original_path,
+                        deleted_at: meta.deleted_at,
+                        i_file: i_path,
+                    }),
+                });
             }
-            let r_path = rb_dir.join(format!("$R{}", &fname[2..]));
-            if !r_path.exists() {
+        }
+        #[cfg(not(windows))]
+        {
+            let info_dir = rb_dir.join("info");
+            let files_dir = rb_dir.join("files");
+            let Ok(rd) = std::fs::read_dir(&info_dir) else {
                 continue;
+            };
+            for entry in rd.flatten() {
+                let i_path = entry.path();
+                let fname = i_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if !fname.ends_with(".trashinfo") {
+                    continue;
+                }
+                let base_name = &fname[..fname.len() - ".trashinfo".len()];
+                let r_path = files_dir.join(base_name);
+                if !r_path.exists() {
+                    continue;
+                }
+                let Ok(content) = std::fs::read_to_string(&i_path) else {
+                    continue;
+                };
+                let Some(mut meta) = parse_trashinfo(&content) else {
+                    continue;
+                };
+                let kind = if r_path.is_dir() {
+                    FileKind::Dir
+                } else {
+                    FileKind::File
+                };
+                if let Ok(fs_meta) = std::fs::metadata(&r_path) {
+                    meta.original_size = fs_meta.len();
+                }
+                let original_name = meta
+                    .original_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| base_name.to_string());
+                let extension = meta
+                    .original_path
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase());
+                let name_lower = original_name.to_lowercase();
+                entries.push(FileEntry {
+                    name: original_name,
+                    name_lower,
+                    path: r_path,
+                    kind,
+                    size: Some(meta.original_size),
+                    modified: Some(meta.deleted_at),
+                    extension,
+                    display_size: String::new().into(),
+                    display_date: String::new().into(),
+                    display_type: String::new().into(),
+                    _is_hidden: false,
+                    _is_symlink: false,
+                    archive_root: None,
+                    recycle_info: Some(RecycleBinInfo {
+                        original_path: meta.original_path,
+                        deleted_at: meta.deleted_at,
+                        i_file: i_path,
+                    }),
+                });
             }
-            let Ok(bytes) = std::fs::read(&i_path) else {
-                continue;
-            };
-            let Some(meta) = parse_i_file(&bytes) else {
-                continue;
-            };
-            let original_name = meta
-                .original_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| fname.clone());
-            let kind = if r_path.is_dir() {
-                FileKind::Dir
-            } else {
-                FileKind::File
-            };
-            let extension = meta
-                .original_path
-                .extension()
-                .map(|e| e.to_string_lossy().to_lowercase());
-            let name_lower = original_name.to_lowercase();
-            entries.push(FileEntry {
-                name: original_name,
-                name_lower,
-                path: r_path,
-                kind,
-                size: Some(meta.original_size),
-                modified: Some(meta.deleted_at),
-                extension,
-                display_size: String::new().into(),
-                display_date: String::new().into(),
-                display_type: String::new().into(),
-                _is_hidden: false,
-                _is_symlink: false,
-                archive_root: None,
-                recycle_info: Some(RecycleBinInfo {
-                    original_path: meta.original_path,
-                    deleted_at: meta.deleted_at,
-                    i_file: i_path,
-                }),
-            });
         }
     }
     crate::fs::list::sort_entries(&mut entries, sort_col, sort_dir, true);
@@ -83,9 +157,113 @@ struct Meta {
     deleted_at: SystemTime,
 }
 
+/// Decode percent-encoded characters in a string according to RFC 2396.
+fn percent_decode(s: &str) -> String {
+    let mut bytes = Vec::with_capacity(s.len());
+    let mut chars = s.as_bytes().iter();
+    while let Some(&b) = chars.next() {
+        if b == b'%' {
+            if let (Some(&h1), Some(&h2)) = (chars.next(), chars.next()) {
+                if let (Some(d1), Some(d2)) = (from_hex_digit(h1), from_hex_digit(h2)) {
+                    bytes.push((d1 << 4) | d2);
+                    continue;
+                }
+                bytes.push(b'%');
+                bytes.push(h1);
+                bytes.push(h2);
+                continue;
+            }
+        }
+        bytes.push(b);
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+const fn from_hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Parse ISO-8601 deletion date formatted as `YYYY-MM-DDThh:mm:ss`.
+fn parse_deletion_date(s: &str) -> Option<SystemTime> {
+    let s = s.trim();
+    if s.len() < 19 {
+        return None;
+    }
+    let b = s.as_bytes();
+    if b[4] != b'-' || b[7] != b'-' || (b[10] != b'T' && b[10] != b't') || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let year: i64 = s[0..4].parse().ok()?;
+    let month: u32 = s[5..7].parse().ok()?;
+    let day: u32 = s[8..10].parse().ok()?;
+    let hour: u64 = s[11..13].parse().ok()?;
+    let min: u64 = s[14..16].parse().ok()?;
+    let sec: u64 = s[17..19].parse().ok()?;
+
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour >= 24 || min >= 60 || sec >= 60 {
+        return None;
+    }
+
+    let is_leap_year = |y: i64| (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+    let mut total_days: i64 = 0;
+    if year >= 1970 {
+        for y in 1970..year {
+            total_days += if is_leap_year(y) { 366 } else { 365 };
+        }
+    } else {
+        for y in year..1970 {
+            total_days -= if is_leap_year(y) { 366 } else { 365 };
+        }
+    }
+    let days_in_months = [
+        31,
+        if is_leap_year(year) { 29 } else { 28 },
+        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    ];
+    for m in 0..(month as usize - 1) {
+        total_days += days_in_months[m];
+    }
+    total_days += (day as i64) - 1;
+
+    let total_secs = total_days * 86_400 + (hour as i64) * 3600 + (min as i64) * 60 + (sec as i64);
+    if total_secs >= 0 {
+        Some(UNIX_EPOCH + Duration::from_secs(total_secs as u64))
+    } else {
+        Some(UNIX_EPOCH - Duration::from_secs((-total_secs) as u64))
+    }
+}
+
+/// Parse FreeDesktop.org `.trashinfo` metadata file.
+fn parse_trashinfo(data: &str) -> Option<Meta> {
+    let mut path = None;
+    let mut deleted_at = None;
+    for line in data.lines() {
+        let line = line.trim();
+        if let Some(val) = line.strip_prefix("Path=") {
+            let decoded = percent_decode(val);
+            path = Some(PathBuf::from(decoded));
+        } else if let Some(val) = line.strip_prefix("DeletionDate=") {
+            deleted_at = parse_deletion_date(val);
+        }
+    }
+    let original_path = path?;
+    let deleted_at = deleted_at.unwrap_or_else(SystemTime::now);
+    Some(Meta {
+        original_path,
+        original_size: 0,
+        deleted_at,
+    })
+}
+
 /// Parse a Windows `$I` recycle bin metadata file.
 /// Layout (Vista+, version 1): [8B version][8B original size][8B FILETIME][UTF-16LE path, NUL-term]
 /// Version 2 adds a 4-byte path-length prefix before the path (path starts at offset 28).
+#[cfg(windows)]
 fn parse_i_file(data: &[u8]) -> Option<Meta> {
     if data.len() < 24 {
         return None;
@@ -116,6 +294,7 @@ fn parse_i_file(data: &[u8]) -> Option<Meta> {
     })
 }
 
+#[cfg(windows)]
 fn filetime_to_system_time(ft: u64) -> SystemTime {
     if ft == 0 {
         return SystemTime::now();
@@ -126,7 +305,7 @@ fn filetime_to_system_time(ft: u64) -> SystemTime {
 }
 
 /// Restore a file from the recycle bin to its original location.
-/// Moves the `$R` file back to `original_path` and deletes the `$I` metadata file.
+/// Moves the recycled file back to `original_path` and deletes the metadata file.
 pub async fn restore(
     r_path: PathBuf,
     i_path: PathBuf,
@@ -136,14 +315,21 @@ pub async fn restore(
         if let Some(parent) = original_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::rename(&r_path, &original_path)?;
+        if let Err(e) = std::fs::rename(&r_path, &original_path) {
+            if r_path.is_file() {
+                std::fs::copy(&r_path, &original_path)?;
+                std::fs::remove_file(&r_path)?;
+            } else {
+                return Err(e.into());
+            }
+        }
         let _ = std::fs::remove_file(&i_path);
         Ok(())
     })
     .await?
 }
 
-/// Restore a batch of recycled items (`$R` file, `$I` metadata, original path)
+/// Restore a batch of recycled items (`$R` / payload file, metadata, original path)
 /// back to their original locations, reporting per-item failures via `OpComplete`.
 pub async fn restore_items(
     items: Vec<(PathBuf, PathBuf, PathBuf)>,
@@ -183,8 +369,8 @@ pub async fn restore_items(
     });
 }
 
-/// Permanently delete a batch of recycled items (both the `$R` payload and the
-/// `$I` metadata file). Reports per-item failures via `OpComplete`.
+/// Permanently delete a batch of recycled items (both the payload and the
+/// metadata file). Reports per-item failures via `OpComplete`.
 pub async fn purge_items(
     items: Vec<(PathBuf, PathBuf)>,
     op_id: u64,
@@ -219,29 +405,65 @@ pub async fn purge_items(
     });
 }
 
-/// Empty every accessible recycle bin: delete all `$R` payloads and their `$I`
+/// Empty every accessible recycle bin: delete all payloads and their
 /// metadata. Reports per-item failures via `OpComplete`.
 pub async fn empty_bins(op_id: u64, tx: flume::Sender<BgResult>, affected_tabs: Vec<TabId>) {
+    empty_recycle_bin(op_id, tx, affected_tabs).await;
+}
+
+/// Empty every accessible recycle bin: removes contents of `files/` and `info/`
+/// on Linux FreeDesktop trash, or `$R*`/`$I*` payloads on Windows.
+pub async fn empty_recycle_bin(op_id: u64, tx: flume::Sender<BgResult>, affected_tabs: Vec<TabId>) {
     let errors = tokio::task::spawn_blocking(|| {
         let mut errors: Vec<OpError> = Vec::new();
         for rb_dir in accessible_bin_dirs() {
-            let Ok(rd) = std::fs::read_dir(&rb_dir) else {
-                continue;
-            };
-            for entry in rd.flatten() {
-                let path = entry.path();
-                let fname = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                if !(fname.starts_with("$R") || fname.starts_with("$I")) {
+            #[cfg(windows)]
+            {
+                let Ok(rd) = std::fs::read_dir(&rb_dir) else {
                     continue;
+                };
+                for entry in rd.flatten() {
+                    let path = entry.path();
+                    let fname = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    if !(fname.starts_with("$R") || fname.starts_with("$I")) {
+                        continue;
+                    }
+                    if let Err(e) = remove_r_file(&path) {
+                        errors.push(OpError {
+                            path,
+                            kind: super::transfer::io_error_kind(&e),
+                        });
+                    }
                 }
-                if let Err(e) = remove_r_file(&path) {
-                    errors.push(OpError {
-                        path,
-                        kind: super::transfer::io_error_kind(&e),
-                    });
+            }
+            #[cfg(not(windows))]
+            {
+                let files_dir = rb_dir.join("files");
+                if let Ok(rd) = std::fs::read_dir(&files_dir) {
+                    for entry in rd.flatten() {
+                        let path = entry.path();
+                        if let Err(e) = remove_r_file(&path) {
+                            errors.push(OpError {
+                                path,
+                                kind: super::transfer::io_error_kind(&e),
+                            });
+                        }
+                    }
+                }
+                let info_dir = rb_dir.join("info");
+                if let Ok(rd) = std::fs::read_dir(&info_dir) {
+                    for entry in rd.flatten() {
+                        let path = entry.path();
+                        if let Err(e) = remove_r_file(&path) {
+                            errors.push(OpError {
+                                path,
+                                kind: super::transfer::io_error_kind(&e),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -269,9 +491,9 @@ fn remove_r_file(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Enumerate all `$Recycle.Bin\<SID>` subdirectories that the current process
-/// can read. Works by trying all drive letters rather than resolving the SID
-/// via Win32 API, which avoids pulling in extra Windows crate features.
+/// Enumerate all accessible recycle bin directories.
+/// On Windows, enumerates `$Recycle.Bin\<SID>` per drive letter.
+/// On Linux, returns the FreeDesktop user trash directory (`$XDG_DATA_HOME/Trash` or `~/.local/share/Trash`).
 fn accessible_bin_dirs() -> Vec<PathBuf> {
     let mut result = Vec::new();
     #[cfg(windows)]
@@ -289,5 +511,40 @@ fn accessible_bin_dirs() -> Vec<PathBuf> {
             }
         }
     }
+    #[cfg(not(windows))]
+    {
+        if let Some(trash) = dirs::data_dir().map(|d| d.join("Trash")).or_else(|| {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share/Trash"))
+        }) {
+            result.push(trash);
+        }
+    }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_percent_decode() {
+        assert_eq!(percent_decode("hello%20world"), "hello world");
+        assert_eq!(percent_decode("/home/user/my%20file.txt"), "/home/user/my file.txt");
+        assert_eq!(percent_decode("/plain/path.txt"), "/plain/path.txt");
+        assert_eq!(percent_decode("foo%2Fbar"), "foo/bar");
+    }
+
+    #[test]
+    fn test_parse_deletion_date() {
+        let date = parse_deletion_date("2026-10-10T12:00:00").unwrap();
+        let dur = date.duration_since(UNIX_EPOCH).unwrap();
+        assert!(dur.as_secs() > 1_700_000_000);
+    }
+
+    #[test]
+    fn test_parse_trashinfo() {
+        let content = "[Trash Info]\nPath=/home/user/test%20doc.txt\nDeletionDate=2026-10-10T12:00:00\n";
+        let meta = parse_trashinfo(content).unwrap();
+        assert_eq!(meta.original_path, PathBuf::from("/home/user/test doc.txt"));
+    }
 }

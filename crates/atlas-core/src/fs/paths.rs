@@ -225,6 +225,48 @@ pub fn volume_root(path: &Path) -> Option<String> {
     }
 }
 
+#[cfg(unix)]
+fn path_device(path: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    let mut current = Some(path);
+    while let Some(p) = current {
+        let candidate = if p.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            p
+        };
+        if let Ok(meta) = std::fs::metadata(candidate) {
+            return Some(meta.dev());
+        }
+        current = p.parent();
+    }
+    None
+}
+
+#[cfg(unix)]
+pub fn same_volume(a: &Path, b: &Path) -> bool {
+    if let (Some(da), Some(db)) = (wsl_distro_name(a), wsl_distro_name(b)) {
+        return da.eq_ignore_ascii_case(&db);
+    }
+    if wsl_distro_name(a).is_some() || wsl_distro_name(b).is_some() {
+        return false;
+    }
+    let s_a = a.to_string_lossy();
+    let s_b = b.to_string_lossy();
+    let da = s_a.get(..2).filter(|s| s.as_bytes()[0].is_ascii_alphabetic() && s.as_bytes()[1] == b':').map(|s| s.to_ascii_uppercase());
+    let db = s_b.get(..2).filter(|s| s.as_bytes()[0].is_ascii_alphabetic() && s.as_bytes()[1] == b':').map(|s| s.to_ascii_uppercase());
+    if let (Some(da), Some(db)) = (da, db) {
+        if da != db {
+            return false;
+        }
+    }
+    match (path_device(a), path_device(b)) {
+        (Some(dev_a), Some(dev_b)) => dev_a == dev_b,
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
 pub fn same_volume(a: &Path, b: &Path) -> bool {
     match (volume_root(a), volume_root(b)) {
         (Some(va), Some(vb)) => va == vb,
@@ -236,11 +278,9 @@ pub fn same_volume(a: &Path, b: &Path) -> bool {
 /// Used to reject transfer *destinations* that would drop payloads next to the
 /// `$R`/`$I` pairs and corrupt the bin's bookkeeping.
 pub fn is_recycle_bin_path(path: &Path) -> bool {
-    path.components().any(|c| {
-        c.as_os_str()
-            .to_string_lossy()
-            .eq_ignore_ascii_case("$recycle.bin")
-    })
+    let s = path.to_string_lossy();
+    s.split(['/', '\\'])
+        .any(|part| part.eq_ignore_ascii_case("$recycle.bin"))
 }
 
 #[cfg(test)]
@@ -333,5 +373,14 @@ mod tests {
         assert!(is_user_wsl_distro("Arch"));
         assert!(!is_user_wsl_distro("docker-desktop"));
         assert!(!is_user_wsl_distro("docker-desktop-data"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_same_volume_checks() {
+        let tmp_a = std::env::temp_dir().join("atlas_test_nonexistent_a");
+        let tmp_b = std::env::temp_dir().join("atlas_test_nonexistent_b");
+        assert!(same_volume(&tmp_a, &tmp_b));
+        assert!(!same_volume(Path::new("/tmp"), Path::new("/dev")));
     }
 }

@@ -1,9 +1,18 @@
-#![windows_subsystem = "windows"]
-#![cfg(windows)]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("atlas-search-service is currently Windows-only.");
+}
+
+#[cfg(windows)]
 mod mapped_index;
 
-use anyhow::Context as _;
+#[cfg(windows)]
+mod windows_impl {
+    use super::mapped_index;
+
+    use anyhow::Context as _;
 use atlas_core::search::service::{ServiceRequest, ServiceResponse, PIPE_PATH, PROTOCOL_VERSION};
 use atlas_core::search::volume_index::{ChangeRecord, FileRecord, VolumeIndex};
 use atlas_core::search::{
@@ -75,7 +84,7 @@ impl Default for State {
     }
 }
 
-fn main() -> anyhow::Result<()> {
+pub fn main() -> anyhow::Result<()> {
     let arguments: Vec<String> = std::env::args().collect();
     if let Some(position) = arguments.iter().position(|argument| argument == "--probe") {
         let query = arguments
@@ -1263,4 +1272,10 @@ mod tests {
         )
         .is_some());
     }
+}
+}
+
+#[cfg(windows)]
+fn main() -> anyhow::Result<()> {
+    windows_impl::main()
 }

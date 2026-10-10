@@ -86,6 +86,7 @@ fn ext_path(p: &Path) -> PathBuf {
 /// Map an `io::Error` to a typed cause the UI can translate.
 pub fn io_error_kind(io: &std::io::Error) -> OpErrorKind {
     if let Some(code) = io.raw_os_error() {
+        #[cfg(windows)]
         match code {
             5 => return OpErrorKind::PermissionDenied,
             // ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION
@@ -99,10 +100,30 @@ pub fn io_error_kind(io: &std::io::Error) -> OpErrorKind {
             53 | 59 | 64 | 67 | 1231 => return OpErrorKind::NetworkUnreachable,
             _ => {}
         }
+
+        #[cfg(unix)]
+        match code {
+            // EIO: I/O error (not permission denied)
+            5 => return OpErrorKind::Msg(io.to_string()),
+            // EACCES: Permission denied
+            13 => return OpErrorKind::PermissionDenied,
+            // EEXIST: File exists
+            17 => return OpErrorKind::AlreadyExists,
+            // ENOSPC: No space left on device
+            28 => return OpErrorKind::DiskFull,
+            // EBUSY / ETXTBSY: In use / busy
+            16 | 26 => return OpErrorKind::InUse,
+            // ENAMETOOLONG: File name too long
+            36 => return OpErrorKind::PathTooLong,
+            // Network errors: ENETUNREACH / ENETDOWN / EHOSTUNREACH
+            101 | 100 | 113 => return OpErrorKind::NetworkUnreachable,
+            _ => {}
+        }
     }
     match io.kind() {
         std::io::ErrorKind::PermissionDenied => OpErrorKind::PermissionDenied,
         std::io::ErrorKind::NotFound => OpErrorKind::Gone,
+        std::io::ErrorKind::AlreadyExists => OpErrorKind::AlreadyExists,
         _ => OpErrorKind::Msg(io.to_string()),
     }
 }
@@ -128,6 +149,7 @@ pub enum FilenameError {
 }
 
 /// Validate a bare file/folder name for Windows.
+#[cfg(windows)]
 pub fn validate_filename(name: &str) -> Result<(), FilenameError> {
     const RESERVED: [&str; 22] = [
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
@@ -147,6 +169,18 @@ pub fn validate_filename(name: &str) -> Result<(), FilenameError> {
     let base = name.split('.').next().unwrap_or("").to_ascii_uppercase();
     if RESERVED.contains(&base.as_str()) {
         return Err(FilenameError::Reserved(base));
+    }
+    Ok(())
+}
+
+/// Validate a bare file/folder name for Unix/Linux: only `/` and `\0` are invalid.
+#[cfg(not(windows))]
+pub fn validate_filename(name: &str) -> Result<(), FilenameError> {
+    if name.is_empty() {
+        return Err(FilenameError::Empty);
+    }
+    if let Some(bad) = name.chars().find(|&c| c == '/' || c == '\0') {
+        return Err(FilenameError::InvalidChar(bad));
     }
     Ok(())
 }
@@ -581,7 +615,10 @@ async fn copy_file_chunked(
     ctx: &mut TransferCtx,
 ) -> std::io::Result<FileOutcome> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let source_len = tokio::fs::metadata(ext_path(src)).await?.len();
+    let meta = tokio::fs::metadata(ext_path(src)).await?;
+    let source_len = meta.len();
+    #[cfg(unix)]
+    let permissions = meta.permissions();
     if source_len <= NATIVE_SMALL_FILE_MAX {
         if ctx.cancelled() {
             return Ok(FileOutcome::Cancelled);
@@ -593,6 +630,8 @@ async fn copy_file_chunked(
             .map_err(std::io::Error::other)?;
         match result {
             Ok(copied) => {
+                #[cfg(unix)]
+                let _ = tokio::fs::set_permissions(dst, permissions.clone()).await;
                 ctx.bytes_done += copied;
                 ctx.send_progress(false);
                 return Ok(FileOutcome::Done);
@@ -676,6 +715,8 @@ async fn copy_file_chunked(
         ctx.send_progress(false);
     }
     writer.flush().await?;
+    #[cfg(unix)]
+    let _ = tokio::fs::set_permissions(dst, permissions).await;
     Ok(FileOutcome::Done)
 }
 
@@ -1437,6 +1478,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn filename_validation() {
         assert!(validate_filename("normal.txt").is_ok());
         assert!(validate_filename("").is_err());
@@ -1449,5 +1491,67 @@ mod tests {
         assert!(validate_filename("dot.").is_err());
         assert!(validate_filename("space ").is_err());
         assert!(validate_filename("ok (1).txt").is_ok());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn filename_validation_unix() {
+        assert!(validate_filename("normal.txt").is_ok());
+        assert!(validate_filename("").is_err());
+        assert!(validate_filename("a:b.txt").is_ok());
+        assert!(validate_filename("que?.txt").is_ok());
+        assert!(validate_filename("*star*").is_ok());
+        assert!(validate_filename("CON").is_ok());
+        assert!(validate_filename("con.txt").is_ok());
+        assert!(validate_filename("lpt3.log").is_ok());
+        assert!(validate_filename("dot.").is_ok());
+        assert!(validate_filename("space ").is_ok());
+        assert!(validate_filename("ok (1).txt").is_ok());
+        assert!(validate_filename("bad/name").is_err());
+        assert!(validate_filename("bad\0name").is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn unix_io_error_kind_errno_mappings() {
+        assert_eq!(
+            io_error_kind(&std::io::Error::from_raw_os_error(5)),
+            OpErrorKind::Msg(std::io::Error::from_raw_os_error(5).to_string())
+        );
+        assert_eq!(
+            io_error_kind(&std::io::Error::from_raw_os_error(13)),
+            OpErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            io_error_kind(&std::io::Error::from_raw_os_error(17)),
+            OpErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            io_error_kind(&std::io::Error::from_raw_os_error(28)),
+            OpErrorKind::DiskFull
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn copy_preserves_executable_permissions_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("script.sh");
+        let dst = tmp.path().join("script_copy.sh");
+        write(&src, "#!/bin/sh\necho hello\n");
+        let perms = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(&src, perms).unwrap();
+
+        let pairs = vec![TransferPair {
+            src: src.clone(),
+            dst: dst.clone(),
+            on_conflict: Resolution::Rename,
+        }];
+        let report = run(pairs, TransferKind::Copy, not_cancelled()).await;
+        assert!(report.errors.is_empty(), "copy had errors: {:?}", report.errors);
+        assert!(dst.exists());
+        let dst_mode = std::fs::metadata(&dst).unwrap().permissions().mode();
+        assert_eq!(dst_mode & 0o111, 0o111, "execute bits preserved: {dst_mode:o}");
     }
 }

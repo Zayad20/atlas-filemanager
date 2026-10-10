@@ -135,40 +135,103 @@ impl ArchiveProvider for RarProvider {
     }
 }
 
+#[cfg(unix)]
+fn resolve_unrar_binary() -> anyhow::Result<PathBuf> {
+    // 1. Check if unrar next to atlas executable exists
+    if let Some(bundled) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("unrar")))
+        .filter(|path| path.is_file())
+    {
+        return Ok(bundled);
+    }
+
+    // 2. Check if which unrar returns a valid binary
+    if let Ok(output) = Command::new("which").arg("unrar").output() {
+        if output.status.success() {
+            let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path_str.is_empty() {
+                let path = PathBuf::from(path_str);
+                if path.is_file() {
+                    return Ok(path);
+                }
+            }
+        }
+    }
+
+    // 3. Search in system PATH
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join("unrar");
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+
+    // 4. Test executing `unrar` directly
+    if Command::new("unrar").arg("-?").output().is_ok() {
+        return Ok(PathBuf::from("unrar"));
+    }
+
+    anyhow::bail!(
+        "El binario del sistema 'unrar' no está disponible. Se requiere instalar 'unrar' en el sistema (ej. 'sudo apt install unrar' o 'sudo pacman -S unrar') para abrir archivos RAR."
+    )
+}
+
+#[cfg(windows)]
 const UNRAR_EXE: &[u8] = include_bytes!("../../../vendor/unrar-bin/UnRAR.exe");
 
-/// Resolve the path to the `UnRAR.exe` CLI binary.
-///
-/// Unpacks the natively bundled UnRAR.exe to the temporary directory,
-/// guaranteeing zero dependencies for the client.
-fn unrar_exe_path() -> PathBuf {
+#[cfg(windows)]
+fn resolve_unrar_binary() -> anyhow::Result<PathBuf> {
+    use sha2::{Digest, Sha256};
+
+    // 1. Check if bundled next to atlas.exe
     if let Some(bundled) = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join("UnRAR.exe")))
         .filter(|path| path.is_file())
     {
-        return bundled;
+        return Ok(bundled);
     }
 
-    let mut temp = std::env::temp_dir();
-    temp.push("atlas_unrar_bundled.exe");
+    // 2. WinRAR default install
+    let default_winrar = PathBuf::from(r"C:\Program Files\WinRAR\UnRAR.exe");
+    if default_winrar.is_file() {
+        return Ok(default_winrar);
+    }
 
-    let should_write = match std::fs::metadata(&temp) {
-        Ok(meta) => meta.len() != UNRAR_EXE.len() as u64,
+    // 3. User private data_dir/bin (SEC-02)
+    let bin_dir = crate::util::config::data_dir().join("bin");
+    std::fs::create_dir_all(&bin_dir)?;
+    let target = bin_dir.join("UnRAR.exe");
+
+    let expected_hash = Sha256::digest(UNRAR_EXE);
+
+    let needs_write = match std::fs::read(&target) {
+        Ok(existing) => Sha256::digest(&existing) != expected_hash,
         Err(_) => true,
     };
 
-    if should_write {
-        // We ignore errors; if another instance is writing or locking it,
-        // it likely has the correct contents already.
-        let _ = std::fs::write(&temp, UNRAR_EXE);
+    if needs_write {
+        let tmp = bin_dir.join(format!("unrar-{}.tmp", uuid::Uuid::new_v4().simple()));
+        std::fs::write(&tmp, UNRAR_EXE)?;
+        if target.exists() {
+            let _ = std::fs::remove_file(&target);
+        }
+        std::fs::rename(&tmp, &target).or_else(|_| std::fs::write(&target, UNRAR_EXE))?;
     }
 
-    temp
+    Ok(target)
+}
+
+#[allow(dead_code)]
+fn unrar_exe_path() -> anyhow::Result<PathBuf> {
+    resolve_unrar_binary()
 }
 
 fn run_unrar(args: &[&str]) -> anyhow::Result<std::process::Output> {
-    let unrar = unrar_exe_path();
+    let unrar = resolve_unrar_binary()?;
     let mut cmd = Command::new(&unrar);
     cmd.args(args);
     #[cfg(windows)]

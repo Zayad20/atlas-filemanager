@@ -5,11 +5,53 @@
 //! [`super::extensions_dir`] containing an `extension.toml`. Installing accepts a
 //! `.zip` bundle or a folder; uninstalling removes the directory.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context};
 
 use super::manifest::Manifest;
+pub use super::manifest::{is_valid_extension_id, validate_extension_id};
+
+/// Resolve and validate the target directory for an extension ID (SEC-01).
+///
+/// Ensures the ID is well-formed ([a-z0-9_-]+), contains no traversal components,
+/// and that `extensions_dir().join(id)` resides strictly inside `extensions_dir()`.
+pub fn resolve_extension_dir(id: &str) -> anyhow::Result<PathBuf> {
+    validate_extension_id(id)?;
+    let base = super::extensions_dir();
+    let dest = base.join(id);
+
+    // Lexical containment checks
+    if !dest.starts_with(&base) || dest == base {
+        anyhow::bail!(
+            "Extension path {:?} does not reside inside extensions directory {:?}",
+            dest,
+            base
+        );
+    }
+    let rel = dest.strip_prefix(&base)?;
+    let comps: Vec<_> = rel.components().collect();
+    if comps.len() != 1 || !matches!(comps[0], std::path::Component::Normal(_)) {
+        anyhow::bail!("Extension ID {:?} produces invalid path components", id);
+    }
+
+    // Canonical check if base directory already exists
+    if let Ok(canon_base) = base.canonicalize() {
+        if dest.exists() {
+            if let Ok(canon_dest) = dest.canonicalize() {
+                if !canon_dest.starts_with(&canon_base) || canon_dest == canon_base {
+                    anyhow::bail!(
+                        "Canonical extension path {:?} escapes extensions directory {:?}",
+                        canon_dest,
+                        canon_base
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(dest)
+}
 
 /// Validate `extension.toml` in `dir` and return its parsed manifest.
 fn read_manifest(dir: &Path) -> anyhow::Result<Manifest> {
@@ -21,7 +63,7 @@ fn read_manifest(dir: &Path) -> anyhow::Result<Manifest> {
 /// Install from a folder by copying it to `<extensions>/<id>`.
 pub fn install_folder(src: &Path) -> anyhow::Result<String> {
     let manifest = read_manifest(src)?;
-    let dest = super::extensions_dir().join(&manifest.id);
+    let dest = resolve_extension_dir(&manifest.id)?;
     copy_dir(src, &dest)?;
     Ok(manifest.id)
 }
@@ -48,7 +90,7 @@ pub fn install_zip(zip_path: &Path) -> anyhow::Result<String> {
     };
 
     let manifest = read_manifest(&root)?;
-    let dest = super::extensions_dir().join(&manifest.id);
+    let dest = resolve_extension_dir(&manifest.id)?;
     if dest.exists() {
         std::fs::remove_dir_all(&dest).ok();
     }
@@ -59,7 +101,7 @@ pub fn install_zip(zip_path: &Path) -> anyhow::Result<String> {
 
 /// Remove an installed extension by id. Builtins (no on-disk dir) are a no-op.
 pub fn uninstall(id: &str) -> anyhow::Result<()> {
-    let dir = super::extensions_dir().join(id);
+    let dir = resolve_extension_dir(id)?;
     if dir.is_dir() {
         std::fs::remove_dir_all(&dir).context("remove extension dir")?;
     }
@@ -68,7 +110,7 @@ pub fn uninstall(id: &str) -> anyhow::Result<()> {
 
 /// Write/update a manifest-only bundled extension on disk.
 pub fn ensure_bundled(id: &str, manifest_toml: &str) -> anyhow::Result<()> {
-    let dir = super::extensions_dir().join(id);
+    let dir = resolve_extension_dir(id)?;
     let manifest_path = dir.join("extension.toml");
     std::fs::create_dir_all(&dir)?;
     let current = std::fs::read_to_string(&manifest_path).unwrap_or_default();
@@ -80,7 +122,8 @@ pub fn ensure_bundled(id: &str, manifest_toml: &str) -> anyhow::Result<()> {
 
 /// Seed or update one official bundled asset when its packaged bytes change.
 pub fn ensure_asset(id: &str, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
-    let path = super::extensions_dir().join(id).join(name);
+    let dir = resolve_extension_dir(id)?;
+    let path = dir.join(name);
     let current = std::fs::read(&path).unwrap_or_default();
     if current != bytes {
         if let Some(parent) = path.parent() {
@@ -94,8 +137,9 @@ pub fn ensure_asset(id: &str, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
 /// Seed a bundled extension and copy any bundled assets that are not already present.
 pub fn ensure_bundled_with_assets(id: &str, manifest_toml: &str, src: &Path) -> anyhow::Result<()> {
     ensure_bundled(id, manifest_toml)?;
+    let dir = resolve_extension_dir(id)?;
     if src.is_dir() {
-        copy_dir_missing(src, &super::extensions_dir().join(id))?;
+        copy_dir_missing(src, &dir)?;
     }
     Ok(())
 }
@@ -130,3 +174,47 @@ fn copy_dir_missing(src: &Path, dest: &Path) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_extension_dir_rejects_path_traversal() {
+        let dangerous_ids = [
+            "../../../.ssh",
+            "../etc/passwd",
+            "/absolute/path",
+            "nested/../../secret",
+            "extension:name",
+            "ext;rm -rf",
+            "..",
+            ".",
+            "sub/dir",
+            "sub\\dir",
+        ];
+
+        for id in &dangerous_ids {
+            assert!(
+                resolve_extension_dir(id).is_err(),
+                "Extension ID '{id}' must be rejected for path traversal or invalid characters"
+            );
+            assert!(
+                uninstall(id).is_err(),
+                "Uninstalling with ID '{id}' must be rejected"
+            );
+        }
+
+        let valid_ids = ["simple-ext", "my_extension_123", "theme-dark"];
+        for id in &valid_ids {
+            let res = resolve_extension_dir(id);
+            assert!(res.is_ok(), "Valid ID '{id}' must be accepted");
+            let path = res.unwrap();
+            assert!(
+                path.starts_with(crate::ext::extensions_dir()),
+                "Path must reside within extensions_dir"
+            );
+        }
+    }
+}
+

@@ -202,11 +202,42 @@ pub struct ToolSpec {
     pub sha256: String,
 }
 
+/// Validate an extension identifier (SEC-01).
+///
+/// Extension IDs must strictly contain only ASCII lowercase alphanumeric characters,
+/// hyphens, or underscores (`[a-z0-9_-]+`). Any ID containing `..`, `/`, `\`, or control
+/// characters is immediately rejected to prevent path traversal attacks.
+pub fn validate_extension_id(id: &str) -> anyhow::Result<()> {
+    if id.is_empty() {
+        anyhow::bail!("Extension ID cannot be empty");
+    }
+    if id.contains("..") || id.contains('/') || id.contains('\\') || id.chars().any(|c| c.is_control()) {
+        anyhow::bail!("Extension ID contains invalid or traversal characters: {id:?}");
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    {
+        anyhow::bail!(
+            "Extension ID must only contain [a-z0-9_-]+: {id:?}"
+        );
+    }
+    Ok(())
+}
+
+/// Convenience check returning true if `id` is a valid extension ID.
+pub fn is_valid_extension_id(id: &str) -> bool {
+    validate_extension_id(id).is_ok()
+}
+
 impl Manifest {
     pub fn parse(toml_str: &str) -> anyhow::Result<Self> {
-        Ok(toml::from_str(toml_str)?)
+        let manifest: Self = toml::from_str(toml_str)?;
+        validate_extension_id(&manifest.id)?;
+        Ok(manifest)
     }
 }
+
 
 // ── Marketplace / remote registry ────────────────────────────────────────────
 
@@ -248,3 +279,26 @@ pub struct CommandRef {
     pub command: ExtCommand,
     pub tools: HashMap<String, PathBuf>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_extension_id() {
+        assert!(validate_extension_id("my-extension_1").is_ok());
+        assert!(validate_extension_id("valid-ext").is_ok());
+        assert!(validate_extension_id("a").is_ok());
+
+        assert!(validate_extension_id("").is_err());
+        assert!(validate_extension_id("../traversal").is_err());
+        assert!(validate_extension_id("nested/path").is_err());
+        assert!(validate_extension_id("nested\\path").is_err());
+        assert!(validate_extension_id("ext:name").is_err());
+        assert!(validate_extension_id("ext;rm").is_err());
+        assert!(validate_extension_id("UPPERCASE").is_err());
+        assert!(validate_extension_id("ext with spaces").is_err());
+        assert!(validate_extension_id("control\x00char").is_err());
+    }
+}
+

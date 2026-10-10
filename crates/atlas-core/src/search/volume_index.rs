@@ -117,11 +117,23 @@ impl VolumeIndex {
             components.push(record.name.as_str());
             current = record.parent;
         }
-        let mut path = root.to_path_buf();
-        for component in components.into_iter().rev() {
-            path.push(component);
+        let root_str = root.to_string_lossy();
+        if !cfg!(windows) && root_str.contains('\\') {
+            let mut s = root_str.into_owned();
+            for component in components.into_iter().rev() {
+                if !s.ends_with('\\') {
+                    s.push('\\');
+                }
+                s.push_str(component);
+            }
+            Some(PathBuf::from(s))
+        } else {
+            let mut path = root.to_path_buf();
+            for component in components.into_iter().rev() {
+                path.push(component);
+            }
+            Some(path)
         }
-        Some(path)
     }
 
     pub fn records_len(&self) -> usize {

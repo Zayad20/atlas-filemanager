@@ -632,9 +632,18 @@ fn extract_entry_recursive(
                 if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
-                let child_name = sanitize_inner_path(std::path::Path::new(&child.name))
+                let child_name = match sanitize_inner_path(std::path::Path::new(&child.name))
                     .and_then(|p| p.file_name().map(|n| n.to_os_string()))
-                    .unwrap_or_else(|| child.name.clone().into());
+                {
+                    Some(name) => name,
+                    None => {
+                        errors.push(format!(
+                            "Ruta de archivo no segura descartada en extracción: '{}'",
+                            child.name
+                        ));
+                        continue;
+                    }
+                };
                 let child_dest = dest_path.join(&child_name);
                 total +=
                     extract_entry_recursive(provider, &child.path, &child_dest, cancel, errors);

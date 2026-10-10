@@ -282,7 +282,7 @@ impl App {
         is_cut: bool,
         remote_id: Option<String>,
     ) {
-        // Only put local paths on the system clipboard (CF_HDROP); remote paths
+        // Only put local paths on the system clipboard (CF_HDROP / text/uri-list); remote paths
         // are virtual and have no meaning outside Atlas.
         if remote_id.is_none() {
             #[cfg(windows)]
@@ -292,6 +292,14 @@ impl App {
                 self.tx.clone(),
             ) {
                 self.toast_error(rust_i18n::t!("err_clipboard", e = e).to_string());
+            }
+
+            #[cfg(unix)]
+            {
+                let uri_list = crate::dnd::format_uri_list(&paths);
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let _ = cb.set_text(uri_list);
+                }
             }
         }
         self.state.ops.clipboard = Some(atlas_model::ops::ClipboardState {
@@ -332,14 +340,82 @@ impl App {
             }
         };
         #[cfg(not(windows))]
-        let source = self.state.ops.clipboard.as_ref().map(|c| {
-            (
-                c.paths.clone(),
-                c.target_names.clone(),
-                c.is_cut,
-                TransferOrigin::Paste,
-            )
-        });
+        let source = {
+            let sys_text = arboard::Clipboard::new()
+                .ok()
+                .and_then(|mut cb| cb.get_text().ok());
+
+            let mut sys_files = sys_text.as_deref().and_then(|text| {
+                let (paths, ext_cut) = crate::dnd::parse_uri_list_with_cut(text);
+                if paths.is_empty() {
+                    None
+                } else {
+                    Some((paths, ext_cut))
+                }
+            });
+
+            // Also check arboard file_list in case the external app only exposed atoms.URI_LIST
+            if sys_files.is_none() {
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    if let Ok(paths) = cb.get().file_list() {
+                        if !paths.is_empty() {
+                            sys_files = Some((paths, false));
+                        }
+                    }
+                }
+            }
+
+            match sys_files {
+                Some((sys_paths, ext_cut)) => {
+                    if let Some(internal) = &self.state.ops.clipboard {
+                        if internal.paths == sys_paths {
+                            Some((
+                                internal.paths.clone(),
+                                internal.target_names.clone(),
+                                internal.is_cut,
+                                TransferOrigin::Paste,
+                            ))
+                        } else {
+                            let origin = if ext_cut {
+                                TransferOrigin::PasteExternalCut
+                            } else {
+                                TransferOrigin::Paste
+                            };
+                            Some((sys_paths, None, ext_cut, origin))
+                        }
+                    } else {
+                        let origin = if ext_cut {
+                            TransferOrigin::PasteExternalCut
+                        } else {
+                            TransferOrigin::Paste
+                        };
+                        Some((sys_paths, None, ext_cut, origin))
+                    }
+                }
+                None => {
+                    let is_remote = self
+                        .state
+                        .ops
+                        .clipboard
+                        .as_ref()
+                        .and_then(|c| c.remote_id.as_ref())
+                        .is_some();
+                    if let Some(text) = &sys_text {
+                        if !text.trim().is_empty() && !is_remote {
+                            self.state.ops.clipboard = None;
+                        }
+                    }
+                    self.state.ops.clipboard.as_ref().map(|c| {
+                        (
+                            c.paths.clone(),
+                            c.target_names.clone(),
+                            c.is_cut,
+                            TransferOrigin::Paste,
+                        )
+                    })
+                }
+            }
+        };
 
         let Some((paths, target_names, is_cut, origin)) = source else {
             return;
