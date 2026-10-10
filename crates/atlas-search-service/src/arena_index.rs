@@ -19,9 +19,10 @@ use std::path::{Path, PathBuf};
 pub fn ascii_mask(bytes: &[u8]) -> u64 {
     let mut mask = 0_u64;
     for &b in bytes {
-        let bit = match b.to_ascii_lowercase() {
-            b'0'..=b'9' => b - b'0',
-            b'a'..=b'z' => 10 + (b - b'a'),
+        let lower = b.to_ascii_lowercase();
+        let bit = match lower {
+            b'0'..=b'9' => lower - b'0',
+            b'a'..=b'z' => 10 + (lower - b'a'),
             b'_' => 36,
             b'-' => 37,
             b'.' => 38,
@@ -413,9 +414,12 @@ mod tests {
 
     #[test]
     fn test_ascii_mask_filtering() {
-        let mask_file = ascii_mask(b"report_2026.pdf");
+        let mask_file = ascii_mask(b"Report_2026.PDF");
         let mask_query = ascii_mask(b"report");
         assert_eq!((mask_file & mask_query), mask_query);
+
+        let mask_file_lower = ascii_mask(b"report_2026.pdf");
+        assert_eq!(mask_file, mask_file_lower);
 
         let mask_nomatch = ascii_mask(b"zebra");
         assert_ne!((mask_file & mask_nomatch), mask_nomatch);
