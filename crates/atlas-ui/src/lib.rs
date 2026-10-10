@@ -201,24 +201,26 @@ pub fn run(
                 eprintln!("[atlas] FAILED to load bundled themes: {err:#}");
             }
         }
-        // CRITICAL: `watch_dir` kicks off an async `reload()` that `themes.clear()`s and
-        // rebuilds the registry from default themes + files in `themes_dir` only — which
-        // wipes the in-memory themes we just registered with `load_themes_from_str`
-        // (they're not files). So persist the bundle to `themes_dir` first; then the
-        // reload re-reads it and our Atlas themes survive (and show in the picker).
+        // CRITICAL: Load bundled themes immediately in-memory so the active profile
+        // theme is available on the first frame. Filesystem sync and directory watching
+        // for custom user themes are deferred to the background so they do not block startup.
         let themes_dir = atlas_core::util::config::themes_dir();
-        if let Err(err) = std::fs::create_dir_all(&themes_dir)
-            .and_then(|()| std::fs::write(themes_dir.join("atlas-themes.json"), json))
-        {
-            tracing::error!(?err, "failed to persist bundled themes to themes_dir");
-        }
-        if let Err(err) = ThemeRegistry::watch_dir(themes_dir, cx, |cx| {
-            // New/edited theme files appear in the selector immediately; applying an
-            // edited active theme just needs a re-select.
-            cx.refresh_windows();
-        }) {
-            tracing::error!(?err, "failed to watch themes dir");
-        }
+        cx.spawn(async move |cx| {
+            if let Err(err) = std::fs::create_dir_all(&themes_dir)
+                .and_then(|()| std::fs::write(themes_dir.join("atlas-themes.json"), json))
+            {
+                tracing::error!(?err, "failed to persist bundled themes to themes_dir");
+            }
+            _ = cx.update(|cx| {
+                if let Err(err) = ThemeRegistry::watch_dir(themes_dir, cx, |cx| {
+                    cx.refresh_windows();
+                }) {
+                    tracing::error!(?err, "failed to watch themes dir");
+                }
+            });
+        })
+        .detach();
+
         tracing::info!(
             total_ms = app_started.elapsed().as_millis(),
             phase_ms = themes_started.elapsed().as_millis(),
@@ -273,40 +275,37 @@ pub fn run(
         };
 
         let app_settings = settings.clone();
-        cx.spawn(async move |cx| {
-            let window_started = Instant::now();
-            if let Err(err) = cx.open_window(window_options, move |window, cx| {
-                tracing::info!(
-                    total_ms = app_started.elapsed().as_millis(),
-                    phase_ms = window_started.elapsed().as_millis(),
-                    "startup: window callback"
-                );
-                window.set_window_title("Atlas");
-                let initial_paths = initial_paths.clone();
-                let view = cx.new(|cx| {
-                    app::App::new(handle, app_settings, app_started, initial_paths, window, cx)
-                });
-                // Autosave: persist settings/session/profiles when the app is
-                // about to quit, gated by the user's autosave-session setting.
-                let weak_app = view.downgrade();
-                cx.on_app_quit(move |cx| {
-                    weak_app.update(cx, |app, _cx| app.save_on_quit()).ok();
-                    std::future::ready(())
-                })
-                .detach();
-                // The top-level window view must be `Root` (mount point for
-                // gpui-component overlays, modals and notifications).
-                cx.new(|cx| Root::new(view, window, cx))
-            }) {
-                tracing::error!(?err, "failed to open window");
-            }
+        let window_started = Instant::now();
+        if let Err(err) = cx.open_window(window_options, move |window, cx| {
             tracing::info!(
                 total_ms = app_started.elapsed().as_millis(),
                 phase_ms = window_started.elapsed().as_millis(),
-                "startup: open window"
+                "startup: window callback"
             );
-        })
-        .detach();
+            window.set_window_title("Atlas");
+            let initial_paths = initial_paths.clone();
+            let view = cx.new(|cx| {
+                app::App::new(handle, app_settings, app_started, initial_paths, window, cx)
+            });
+            // Autosave: persist settings/session/profiles when the app is
+            // about to quit, gated by the user's autosave-session setting.
+            let weak_app = view.downgrade();
+            cx.on_app_quit(move |cx| {
+                weak_app.update(cx, |app, _cx| app.save_on_quit()).ok();
+                std::future::ready(())
+            })
+            .detach();
+            // The top-level window view must be `Root` (mount point for
+            // gpui-component overlays, modals and notifications).
+            cx.new(|cx| Root::new(view, window, cx))
+        }) {
+            tracing::error!(?err, "failed to open window");
+        }
+        tracing::info!(
+            total_ms = app_started.elapsed().as_millis(),
+            phase_ms = window_started.elapsed().as_millis(),
+            "startup: open window"
+        );
 
         if let Some(on_quit) = on_quit {
             let mut on_quit_opt = Some(on_quit);

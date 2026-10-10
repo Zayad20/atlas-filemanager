@@ -16,13 +16,7 @@ pub fn bundled_fonts() -> Vec<Cow<'static, [u8]>> {
     vec![
         Cow::Borrowed(include_bytes!("../assets/fonts/geist/Geist-Variable.ttf")),
         Cow::Borrowed(include_bytes!(
-            "../assets/fonts/geist/Geist-Italic-wght.ttf"
-        )),
-        Cow::Borrowed(include_bytes!(
             "../assets/fonts/geist/GeistMono-Variable.ttf"
-        )),
-        Cow::Borrowed(include_bytes!(
-            "../assets/fonts/geist/GeistMono-Italic-wght.ttf"
         )),
     ]
 }
