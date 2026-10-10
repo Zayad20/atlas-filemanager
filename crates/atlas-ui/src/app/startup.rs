@@ -430,11 +430,8 @@ impl App {
             })
             .collect();
 
-        // Ensure background search service is active (instant multi-drive NTFS search)
-        #[cfg(windows)]
-        {
-            rt.spawn_blocking(atlas_core::search::ensure_service_started);
-        }
+        // Ensure background search service is active (instant search daemon)
+        rt.spawn_blocking(atlas_core::search::ensure_service_started);
 
         // transfer_journal resume is WIP and not wired into atlas-core yet.
 
