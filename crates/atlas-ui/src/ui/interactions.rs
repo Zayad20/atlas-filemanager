@@ -288,9 +288,6 @@ impl App {
             return;
         }
 
-        if !selected {
-            self.begin_rubber(pane, pos, shift || ctrl);
-        }
         self.process_actions(vec![Action::Select {
             tile: pane,
             idx: entry_idx,
@@ -1791,6 +1788,16 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                                         .get(&pane)
                                         .and_then(|model| model.hit_entry(pos))
                                         .is_some()
+                                        || this
+                                            .grid_hit
+                                            .get(&pane)
+                                            .and_then(|model| model.hit_entry(pos))
+                                            .is_some()
+                                        || this
+                                            .list_hit
+                                            .get(&pane)
+                                            .and_then(|model| model.hit_entry(pos))
+                                            .is_some()
                                         || this.row_rects.borrow().get(&pane).is_some_and(
                                             |rects| {
                                                 rects.iter().any(|(_, b)| {
