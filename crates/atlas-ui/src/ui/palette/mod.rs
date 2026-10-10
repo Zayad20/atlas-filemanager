@@ -14,6 +14,8 @@
 mod render;
 mod specs;
 
+pub(crate) use specs::GotoSnapshot;
+
 use crate::app::App;
 use crate::input::action::Action;
 use crate::ui::file_icons::FileIconRef;

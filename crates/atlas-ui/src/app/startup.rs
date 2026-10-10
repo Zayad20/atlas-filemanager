@@ -397,11 +397,12 @@ impl App {
             let alive = this
                 .update(cx, |app, cx| {
                     let mut dirty = app.drain_bg_results(cx);
-                    // Publishing local search matches must repaint the finder
-                    // even when no new keystroke or service reply arrives.
+                    // Drive matching only until this query's snapshot is ready;
+                    // streamed items must not repaint an already published list.
                     if app.state.overlay.show_goto_bar
                         && !app.state.profiles.active().search_in_content
                         && !app.state.overlay.goto_state.query.trim().is_empty()
+                        && app.goto_snapshot.is_pending()
                     {
                         dirty |= app.nucleo.tick();
                     }
@@ -478,6 +479,7 @@ impl App {
             nucleo,
             goto_warm_nucleo,
             goto_index_root: Some((goto_root, false)),
+            goto_snapshot: Default::default(),
             goto_service_cache: None,
             goto_service_inflight: None,
             goto_service_failed: None,
@@ -539,7 +541,7 @@ impl App {
 
             details_hover: None,
             miller_column_bounds: HashMap::new(),
-            dropzone_selected: HashSet::new(),
+            dropzone_selection: Default::default(),
             dropzone_rects: Vec::new(),
             dropzone_bounds: None,
             dropzone_drag_paths: HashSet::new(),

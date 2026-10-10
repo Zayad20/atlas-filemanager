@@ -10,6 +10,7 @@ use gpui::prelude::*;
 use gpui::AnimationExt;
 use gpui::{div, px, AnyElement, Context, Entity, MouseButton, SharedString, Window};
 use gpui_component::scroll::ScrollableElement;
+use gpui_component::StyledExt as _;
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
 impl App {
@@ -18,10 +19,9 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (popover, fg, muted, border, accent, surface, accent_fg) = {
+        let (fg, muted, border, accent, surface, accent_fg) = {
             let t = cx.theme();
             (
-                t.popover,
                 t.popover_foreground,
                 t.muted_foreground,
                 t.border,
@@ -1264,12 +1264,8 @@ impl App {
                 .id("settings-panel")
                 .w(px(720.))
                 .h(px(panel_h))
-                .bg(popover)
+                .popover_style(cx)
                 .text_color(fg)
-                .border_1()
-                .border_color(border)
-                .rounded_lg()
-                .shadow_lg()
                 .overflow_hidden()
                 .occlude()
                 .relative()

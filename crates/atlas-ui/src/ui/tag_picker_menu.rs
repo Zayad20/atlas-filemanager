@@ -23,6 +23,7 @@ use gpui::{
     div, px, AnyElement, Context, KeyDownEvent, MouseButton, Pixels, Point, SharedString, Window,
 };
 use gpui_component::scroll::ScrollableElement;
+use gpui_component::StyledExt as _;
 use gpui_component::{v_flex, ActiveTheme, Sizable as _};
 
 const SCROLLBAR_GUTTER: f32 = 16.0;
@@ -103,10 +104,9 @@ impl App {
         let anchor = state.anchor;
         let paths = state.paths.clone();
 
-        let (popover, fg, muted, border, accent, accent_fg) = {
+        let (fg, muted, border, accent, accent_fg) = {
             let t = cx.theme();
             (
-                t.popover,
                 t.popover_foreground,
                 t.muted_foreground,
                 t.border,
@@ -251,11 +251,7 @@ impl App {
                     .top(px(top))
                     .w(px(W))
                     .h(px(panel_h))
-                    .bg(popover)
-                    .border_1()
-                    .border_color(border)
-                    .rounded(px(crate::ui::RADIUS))
-                    .shadow_lg()
+                    .popover_style(cx)
                     .py_1()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();

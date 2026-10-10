@@ -94,12 +94,14 @@ pub(crate) fn miller_rect_recorder(
     let view = view.clone();
     move |bounds, _window, cx| {
         crate::perf::count("prepaint.miller_row_rect");
-        view.read(cx)
-            .miller_row_rects
-            .borrow_mut()
-            .entry((pane, column))
-            .or_default()
-            .push((idx, bounds));
+        let app = view.read(cx);
+        let mut rects = app.miller_row_rects.borrow_mut();
+        let rows = rects.entry((pane, column)).or_default();
+        if let Some((_, old)) = rows.iter_mut().find(|(row, _)| *row == idx) {
+            *old = bounds;
+        } else {
+            rows.push((idx, bounds));
+        }
     }
 }
 
@@ -297,8 +299,6 @@ impl Render for App {
         // no geometry until the pane decides to repaint.
         if self.rubber.is_none() && !self.drag_hover_maybe_active() {
             self.row_rects.borrow_mut().clear();
-            self.miller_row_rects.borrow_mut().clear();
-            self.miller_column_bounds.clear();
             self.pane_view_bounds.clear();
             // The sidebar is retained independently. Its geometry stays valid
             // until SidebarPanel actually rebuilds; clearing it here lets targets

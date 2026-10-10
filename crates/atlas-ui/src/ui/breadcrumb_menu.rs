@@ -18,6 +18,7 @@ use gpui::{
     Pixels, Point, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use gpui_component::scroll::ScrollableElement;
+use gpui_component::StyledExt as _;
 use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt};
 use std::path::PathBuf;
 
@@ -138,14 +139,9 @@ impl App {
             self.breadcrumb_menu.as_mut().unwrap().scroll_to_selected = false;
         }
 
-        let (popover, fg, muted, border) = {
+        let (fg, muted, border) = {
             let t = cx.theme();
-            (
-                t.popover,
-                t.popover_foreground,
-                t.muted_foreground,
-                t.border,
-            )
+            (t.popover_foreground, t.muted_foreground, t.border)
         };
         let win = window.bounds().size;
         let input_h = 40.0;
@@ -283,12 +279,8 @@ impl App {
                         .top(px(top))
                         .w(px(W))
                         .h(px(panel_h))
-                        .bg(popover)
+                        .popover_style(cx)
                         .text_color(fg)
-                        .border_1()
-                        .border_color(border)
-                        .rounded_lg()
-                        .shadow_lg()
                         .occlude()
                         .overflow_hidden()
                         .children(input_row)

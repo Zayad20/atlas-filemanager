@@ -78,7 +78,7 @@ fn apply_frosted_material(colors: &mut ThemeColor, mode: ThemeMode, opacity: f32
     colors.list_hover = material_color(colors.foreground, 0.07);
     colors.table_hover = colors.list_hover;
     // Menus/dialogs need a dense surface even when the workspace is very airy.
-    colors.popover = material_color(colors.popover, 0.90 + opacity * 0.08);
+    colors.popover = material_color(colors.popover, 0.90 + opacity * 0.04);
     // Functional separators remain; outer chrome has no decorative rim.
     colors.border = material_color(colors.foreground, 0.10);
     colors.input = material_color(colors.foreground, 0.16);

@@ -25,6 +25,7 @@ const fn config() -> Config {
 pub struct NucleoPool {
     pub nucleo: Nucleo<IndexEntry>,
     query: Option<String>,
+    complete: bool,
 }
 
 impl NucleoPool {
@@ -32,6 +33,7 @@ impl NucleoPool {
         Self {
             nucleo: Nucleo::new(config(), Arc::new(|| {}), Some(NUCLEO_THREADS), 1),
             query: None,
+            complete: false,
         }
     }
 
@@ -44,14 +46,19 @@ impl NucleoPool {
             return;
         }
         self.query = Some(query.to_owned());
+        self.complete = false;
         self.nucleo
             .pattern
             .reparse(0, query, CaseMatching::Smart, Normalization::Smart, false);
     }
 
-    /// Returns whether the matcher published a new snapshot that needs repainting.
+    /// Returns whether the snapshot or index completion needs repainting.
     pub fn tick(&mut self) -> bool {
-        self.nucleo.tick(10).changed
+        let status = self.nucleo.tick(10);
+        let complete = !status.running && !self.is_pending() && self.nucleo.active_injectors() == 0;
+        let changed = status.changed || complete != self.complete;
+        self.complete = complete;
+        changed
     }
 
     pub fn results(&self, limit: usize) -> Vec<IndexEntry> {
@@ -73,9 +80,16 @@ impl NucleoPool {
             != self.nucleo.pattern.column_pattern(0).atoms
     }
 
+    /// Both the directory producers and the matcher have finished. In
+    /// particular, an empty snapshot while a walker is active is not final.
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
+
     pub fn reset(&mut self) {
         self.nucleo = Nucleo::new(config(), Arc::new(|| {}), Some(NUCLEO_THREADS), 1);
         self.query = None;
+        self.complete = false;
     }
 }
 
@@ -83,6 +97,24 @@ impl NucleoPool {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn empty_scopes_finish_only_after_the_directory_producer_exits() {
+        let mut pool = NucleoPool::new();
+        let injector = pool.injector();
+        pool.set_pattern("");
+        pool.tick();
+        assert!(!pool.is_complete(), "a cold scoped index must not freeze an empty page");
+        drop(injector);
+        assert!(pool.tick(), "finishing an empty directory must repaint the loading state");
+        assert!(pool.is_complete());
+        assert!(pool.results(10).is_empty());
+        assert!(!pool.tick(), "a completed empty scope must stay idle");
+        pool.set_pattern("downloads");
+        assert!(!pool.is_complete());
+        pool.reset();
+        assert!(!pool.is_complete());
+    }
 
     #[test]
     fn streamed_matches_report_a_change_without_another_keystroke() {

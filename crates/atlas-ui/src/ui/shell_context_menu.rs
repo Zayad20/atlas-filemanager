@@ -19,6 +19,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use gpui_component::scroll::ScrollableElement;
+use gpui_component::StyledExt as _;
 use gpui_component::{h_flex, kbd::Kbd, v_flex, ActiveTheme};
 
 use crate::app::App;
@@ -508,10 +509,9 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (popover, fg, muted, border, accent, accent_fg) = {
+        let (fg, muted, border, accent, accent_fg) = {
             let t = cx.theme();
             (
-                t.popover,
                 t.popover_foreground,
                 t.muted_foreground,
                 t.border,
@@ -796,12 +796,8 @@ impl App {
             .top(px(top))
             .w(px(W))
             .h(px(est_h))
-            .bg(popover)
+            .popover_style(cx)
             .text_color(fg)
-            .border_1()
-            .border_color(border)
-            .rounded_lg()
-            .shadow_lg()
             .occlude()
             .overflow_hidden()
             .children(input_row)

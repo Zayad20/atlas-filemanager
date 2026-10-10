@@ -42,6 +42,7 @@ use gpui_component::menu::{ContextMenuExt, PopupMenu};
 use gpui_component::popover::{Popover, PopoverState};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::tooltip::Tooltip;
+use gpui_component::StyledExt as _;
 use gpui_component::{h_flex, kbd::Kbd, v_flex, ActiveTheme, ElementExt, Selectable};
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
@@ -77,6 +78,7 @@ pub struct SidebarPanel {
     app: WeakEntity<AtlasApp>,
     focus_handle: FocusHandle,
     scroll: gpui::ScrollHandle,
+    dropzone_scroll: gpui::ScrollHandle,
     /// App is intentionally observed broadly so state changes made by actions,
     /// background drains, and filesystem notifications remain visible. This
     /// fingerprint gates the expensive retained-element rebuild: split/hover
@@ -112,6 +114,7 @@ impl SidebarPanel {
             app: app.downgrade(),
             focus_handle: cx.focus_handle(),
             scroll: gpui::ScrollHandle::new(),
+            dropzone_scroll: gpui::ScrollHandle::new(),
             // `new` is called while App is leased by its root render, so the
             // initial value is filled by the first observer callback.
             sidebar_fingerprint: 0,
@@ -169,7 +172,7 @@ fn sidebar_fingerprint(app: &AtlasApp) -> u64 {
     }
     // HashSet iteration order is not stable; sort before hashing so a
     // selection update changes the fingerprint without causing false rebuilds.
-    let mut selected: Vec<_> = app.dropzone_selected.iter().collect();
+    let mut selected: Vec<_> = app.dropzone_selection.selected.iter().collect();
     selected.sort_unstable();
     selected.len().hash(&mut hasher);
     for path in selected {
@@ -227,7 +230,6 @@ fn profile_menu_panel(
         )
     };
 
-    let popover_bg = cx.theme().popover.opacity(1.0);
     let fg = cx.theme().popover_foreground;
     let muted = cx.theme().muted_foreground;
     let border = cx.theme().border;
@@ -243,16 +245,9 @@ fn profile_menu_panel(
         .flex_none()
         .p(crate::ui::rem_px(4.))
         .gap(crate::ui::rem_px(2.))
-        .bg(popover_bg)
         .text_sm()
         .text_color(fg)
-        .when(framed, |s| {
-            s.border_1()
-                .border_color(border)
-                .rounded(px(8.))
-                .rounded_l_none()
-                .shadow_lg()
-        })
+        .when(framed, |s| s.popover_style(cx))
         .when(!framed, |s| s.rounded(px(7.)))
         .occlude();
     if keep_profiles_open_on_hover {
@@ -538,10 +533,8 @@ fn atlas_launcher_content(
             app.atlas_launcher_profiles_anchor,
         )
     };
-    let popover_bg = cx.theme().popover.opacity(1.0);
     let fg = cx.theme().popover_foreground;
     let muted = cx.theme().muted_foreground;
-    let border = cx.theme().border;
     let accent = cx.theme().accent;
     let accent_fg = cx.theme().accent_foreground;
     let hover = control_hover(fg);
@@ -560,11 +553,7 @@ fn atlas_launcher_content(
         .id("atlas-launcher-menu")
         .w(crate::ui::rem_px(ATLAS_LAUNCHER_MENU_WIDTH))
         .p(crate::ui::rem_px(4.))
-        .bg(popover_bg)
-        .border_1()
-        .border_color(border)
-        .rounded(px(10.))
-        .shadow_lg()
+        .popover_style(cx)
         .text_sm()
         .text_color(fg)
         .occlude()
@@ -575,7 +564,7 @@ fn atlas_launcher_content(
                 if let Some(app) = anchor_app.upgrade() {
                     app.update(cx, |this, _cx| {
                         this.atlas_launcher_profiles_anchor =
-                            point(bounds.size.width - px(1.), px(0.));
+                            point(bounds.size.width + px(6.), px(0.));
                     });
                 }
             }
@@ -1394,7 +1383,7 @@ impl Render for SidebarPanel {
             .collect::<HashSet<_>>();
         let selected = app
             .read(cx)
-            .dropzone_selected
+            .dropzone_selection.selected
             .iter()
             .filter(|path| staged_set.contains(*path))
             .cloned()
@@ -1404,6 +1393,7 @@ impl Render for SidebarPanel {
             .child(scroll)
             .child(sidebar_drop_zone(
                 &app,
+                &self.dropzone_scroll,
                 staged,
                 selected,
                 current_path.clone(),
@@ -1429,6 +1419,7 @@ fn dropzone_drag_over(app: &AtlasApp) -> bool {
 
 fn sidebar_drop_zone(
     app: &Entity<AtlasApp>,
+    scroll: &gpui::ScrollHandle,
     staged: Vec<atlas_model::app_state::StagedDrop>,
     selected: HashSet<PathBuf>,
     current_path: Option<PathBuf>,
@@ -1456,6 +1447,7 @@ fn sidebar_drop_zone(
 
     let mut grid = h_flex()
         .w(auto())
+        .flex_none()
         .gap(crate::ui::rem_px(if windows_theme { 14.0 } else { 12.0 }))
         .items_center();
     for (index, item) in staged.iter().enumerate() {
@@ -1509,7 +1501,18 @@ fn sidebar_drop_zone(
         .on_drag_over::<DraggedFiles>(move |s, _, _, _| s.bg(accent.opacity(0.12)))
         .on_drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(accent.opacity(0.12)))
         .occlude()
-        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+        .on_scroll_wheel(cx.listener(|this, ev: &gpui::ScrollWheelEvent, window, cx| {
+            let delta = ev.delta.pixel_delta(window.line_height());
+            // The shelf maps the vertical wheel to its horizontal axis. Keep
+            // native horizontal input on the scroll area's standard path.
+            if delta.x == px(0.) && delta.y != px(0.) {
+                let mut offset = this.dropzone_scroll.offset();
+                offset.x -= delta.y;
+                this.dropzone_scroll.set_offset(offset);
+                cx.notify();
+            }
+            cx.stop_propagation();
+        }))
         .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, window, cx| {
             cx.stop_propagation();
             let additive = ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift;
@@ -1595,7 +1598,7 @@ fn sidebar_drop_zone(
                                     cx.stop_propagation();
                                     app_clear_all.update(cx, |this, cx| {
                                         this.state.sidebar_drop_zone.clear();
-                                        this.dropzone_selected.clear();
+                                        this.dropzone_selection.clear();
                                         this.dropzone_rects.clear();
                                         this.dropzone_pending_tags.clear();
                                         this.cancel_dropzone_file_drag();
@@ -1634,8 +1637,17 @@ fn sidebar_drop_zone(
                             .w_full()
                             .flex_1()
                             .relative()
-                            .overflow_x_scrollbar()
-                            .child(grid),
+                            .child(
+                                div()
+                                    .id("sidebar-drop-zone-items")
+                                    .size_full()
+                                    .flex()
+                                    .overflow_x_scroll()
+                                    .restrict_scroll_to_axis()
+                                    .track_scroll(scroll)
+                                    .child(grid),
+                            )
+                            .horizontal_scrollbar(scroll),
                     )
                 }),
         )
@@ -1777,25 +1789,23 @@ fn drop_zone_item(
                 .truncate()
                 .child(SharedString::from(name)),
         )
-        .on_click(move |ev, _window, cx| {
-            let ctrl = ev.modifiers().control || ev.modifiers().platform;
+        .on_mouse_down(MouseButton::Left, move |ev, _window, cx| {
+            cx.stop_propagation();
             select_app.update(cx, |this, cx| {
-                let staged = this
+                let idx = this
                     .state
                     .sidebar_drop_zone
                     .iter()
-                    .map(|item| item.path.clone())
-                    .collect::<HashSet<_>>();
-                this.dropzone_selected.retain(|path| staged.contains(path));
-                if ctrl {
-                    if !this.dropzone_selected.remove(&select_path) {
-                        this.dropzone_selected.insert(select_path.clone());
-                    }
-                } else {
-                    this.dropzone_selected.clear();
-                    this.dropzone_selected.insert(select_path.clone());
-                }
-                cx.notify();
+                    .position(|item| item.path == select_path);
+                this.selection_left_mouse_down(
+                    crate::app::RubberTarget::Dropzone,
+                    idx,
+                    ev.position,
+                    ev.modifiers.shift,
+                    ev.modifiers.control || ev.modifiers.platform,
+                    ev.click_count,
+                    cx,
+                );
             });
         })
         .child(
@@ -1823,7 +1833,7 @@ fn drop_zone_item(
                             .position(|item| item.path == remove_path)
                         {
                             this.state.sidebar_drop_zone.remove(pos);
-                            this.dropzone_selected.remove(&remove_path);
+                            this.dropzone_selection.selected.remove(&remove_path);
                             this.dropzone_pending_tags.remove(&remove_path);
                             this.dropzone_rects.retain(|(path, _)| path != &remove_path);
                         }
@@ -1831,14 +1841,21 @@ fn drop_zone_item(
                     });
                 }),
         )
-        .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
-            cx.stop_propagation();
-        })
         .on_drag_alt({
             let app = app.clone();
             let drag_path = drag_path.clone();
             move |_cursor_offset, cursor_style, _window, cx| {
-                let paths = sidebar_drop_drag_paths(&app.read(&*cx), &drag_path);
+                if app.read(&*cx).rubber.is_some() {
+                    return crate::ui::drag::empty_any_drag(cx);
+                }
+                let paths = {
+                    let app = app.read(&*cx);
+                    sidebar_drop_drag_paths(
+                        &app.state.sidebar_drop_zone,
+                        &app.dropzone_selection.selected,
+                        &drag_path,
+                    )
+                };
                 app.update(cx, |app, cx| {
                     app.begin_dropzone_file_drag(&paths);
                     app.begin_drag_hover();
@@ -1917,12 +1934,14 @@ fn drop_zone_preview(
 }
 
 
-fn sidebar_drop_drag_paths(app: &AtlasApp, path: &std::path::Path) -> Vec<PathBuf> {
-    if app.dropzone_selected.contains(path) {
-        let selected = &app.dropzone_selected;
-        let paths = app
-            .state
-            .sidebar_drop_zone
+
+fn sidebar_drop_drag_paths(
+    staged: &[atlas_model::app_state::StagedDrop],
+    selected: &HashSet<PathBuf>,
+    path: &std::path::Path,
+) -> Vec<PathBuf> {
+    if selected.contains(path) {
+        let paths = staged
             .iter()
             .filter(|item| selected.contains(&item.path))
             .map(|item| item.path.clone())
@@ -1932,6 +1951,47 @@ fn sidebar_drop_drag_paths(app: &AtlasApp, path: &std::path::Path) -> Vec<PathBu
         }
     }
     vec![path.to_path_buf()]
+}
+
+#[cfg(test)]
+mod dropzone_selection_tests {
+    use super::sidebar_drop_drag_paths;
+    use atlas_model::app_state::StagedDrop;
+    use atlas_model::tab::SelectionState;
+    use std::path::PathBuf;
+
+    #[test]
+    fn dropzone_drag_preserves_the_complete_group_in_shelf_order() {
+        let staged: Vec<_> = ["c.txt", "a.txt", "b.txt"]
+            .map(|name| StagedDrop {
+                path: PathBuf::from(name),
+                from_self: true,
+            })
+            .into();
+        let visible: Vec<_> = staged.iter().map(|item| item.path.clone()).collect();
+        let mut selection = SelectionState::default();
+        selection.select(visible[0].clone(), &visible, false, false);
+        selection.select(visible[2].clone(), &visible, true, false);
+        assert_eq!(
+            sidebar_drop_drag_paths(&staged, &selection.selected, &visible[1]),
+            visible
+        );
+    }
+
+    #[test]
+    fn dropzone_drag_ignores_removed_paths_and_unselected_groups() {
+        let staged = [StagedDrop {
+            path: PathBuf::from("a.txt"),
+            from_self: true,
+        }];
+        let selected = [PathBuf::from("removed.txt"), PathBuf::from("a.txt")].into();
+        assert_eq!(
+            sidebar_drop_drag_paths(&staged, &selected, &staged[0].path),
+            [PathBuf::from("a.txt")]
+        );
+        let other = PathBuf::from("other.txt");
+        assert_eq!(sidebar_drop_drag_paths(&staged, &selected, &other), [other]);
+    }
 }
 
 fn place_sidebar_drop_zone(app: &mut AtlasApp, dest: PathBuf) {

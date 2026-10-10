@@ -603,6 +603,47 @@ mod tests {
     use crate::settings::Settings;
     use std::path::PathBuf;
 
+    #[test]
+    fn grid_and_miller_multi_selection_produce_complete_drag_paths() {
+        use crate::layout_tree::Tile;
+        use crate::location::Location;
+        use crate::settings::ViewMode;
+        use crate::tab::MillerColumn;
+
+        for mode in [ViewMode::Grid, ViewMode::Miller] {
+            let (mut state, tile) = AppState::new(Settings::default());
+            if let Some(Tile::Pane(pane)) = state.pane_tree.tiles.get_mut(tile) {
+                pane.view_mode = mode.clone();
+            }
+            let tab = state.tab_states.get_mut(&tile).unwrap();
+            let entries = vec![
+                entry("a.txt"),
+                entry("b.txt"),
+                entry("c.txt"),
+                entry("d.txt"),
+            ];
+            let selection = if mode == ViewMode::Miller {
+                // A different flat selection must not leak into the column drag.
+                tab.set_entries(vec![entry("other.txt")].into());
+                tab.selection.selected.insert(0);
+                let mut column = MillerColumn::new(Location::Directory(PathBuf::from("files")));
+                column.entries = entries.into();
+                tab.miller.columns.push(column);
+                &mut tab.miller.columns[0].selection
+            } else {
+                tab.set_entries(entries.into());
+                &mut tab.selection
+            };
+            selection.select(0, &[0, 1, 2, 3], false, false);
+            selection.select(2, &[0, 1, 2, 3], true, false);
+            selection.select(3, &[0, 1, 2, 3], false, true);
+            assert_eq!(
+                state.selected_paths(),
+                ["a.txt", "b.txt", "c.txt", "d.txt"].map(PathBuf::from)
+            );
+        }
+    }
+
     fn entry(name: &str) -> FileEntry {
         let path = PathBuf::from(name);
         FileEntry {

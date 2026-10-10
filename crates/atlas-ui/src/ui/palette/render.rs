@@ -29,6 +29,7 @@ use gpui_component::input::{
     InputState,
 };
 use gpui_component::scroll::ScrollableElement;
+use gpui_component::StyledExt as _;
 use gpui_component::{h_flex, kbd::Kbd, tooltip::Tooltip, v_flex, ActiveTheme};
 use std::rc::Rc;
 
@@ -38,6 +39,7 @@ const PANEL_TOP_VIEWPORT_RATIO: f32 = 0.20;
 const PANEL_MIN_VISIBLE_ROWS: f32 = 2.0;
 const PANEL_HEADER_HEIGHT: f32 = 26.0;
 const PANEL_ITEM_HEIGHT: f32 = 34.0;
+const PANEL_COMPACT_ITEM_HEIGHT: f32 = 26.0;
 const PANEL_ITEM_WITH_DESC_HEIGHT: f32 = 52.0;
 const PANEL_LIST_PADDING: f32 = 8.0;
 const PANEL_SEARCH_HEIGHT: f32 = 45.0;
@@ -64,7 +66,6 @@ enum KeyRow {
 
 #[derive(Clone, Copy)]
 pub(crate) struct PaletteColors {
-    pub popover: Hsla,
     pub fg: Hsla,
     pub muted: Hsla,
     pub muted_bg: Hsla,
@@ -325,7 +326,6 @@ impl App {
         let colors = {
             let t = cx.theme();
             PaletteColors {
-                popover: t.popover,
                 fg: t.popover_foreground,
                 muted: t.muted_foreground,
                 muted_bg: t.muted,
@@ -335,7 +335,6 @@ impl App {
             }
         };
         let PaletteColors {
-            popover,
             fg,
             muted,
             muted_bg: _,
@@ -417,8 +416,10 @@ impl App {
             for item in &section.items {
                 let shows_description = !item.inline_description
                     && item.description.is_some()
-                    && (matches!(kind, PaletteKind::Goto) || expanded || row_i == selected_idx);
-                rows_h += if shows_description {
+                    && (expanded || row_i == selected_idx);
+                rows_h += if kind == PaletteKind::Goto && item.inline_description {
+                    PANEL_COMPACT_ITEM_HEIGHT
+                } else if shows_description {
                     PANEL_ITEM_WITH_DESC_HEIGHT
                 } else {
                     PANEL_ITEM_HEIGHT
@@ -528,16 +529,8 @@ impl App {
         } else {
             rows_h
         };
-        let panel_h = if kind == PaletteKind::Goto
-            && !self.state.overlay.goto_state.query.trim().is_empty()
-        {
-            // Reserve the same viewport throughout typing and source updates;
-            // changing result counts should scroll, not resize the whole panel.
-            (chrome_h + PANEL_LIST_PADDING + 2.0 * PANEL_HEADER_HEIGHT + 10.0 * PANEL_ITEM_HEIGHT)
-                .clamp(min_panel_h, max_panel_h)
-        } else {
-            (chrome_h + rows_h).clamp(min_panel_h, max_panel_h)
-        };
+        let panel_h = (chrome_h + rows_h).clamp(min_panel_h.min(max_panel_h), max_panel_h);
+        let panel_width = PANEL_WIDTH.min((f32::from(window.bounds().size.width) - 24.0).max(1.0));
 
         // Capture phase: intercept navigation/confirm/dismiss/expand before the
         // focused `TextInput` consumes them. Everything else falls through to
@@ -550,14 +543,10 @@ impl App {
         let rows_for_keys = key_rows.clone();
         let input_for_tab = input.clone();
         let panel = v_flex()
-            .w(px(PANEL_WIDTH))
+            .w(px(panel_width))
             .h(px(panel_h))
-            .bg(popover)
+            .popover_style(cx)
             .text_color(fg)
-            .border_1()
-            .border_color(border)
-            .rounded_lg()
-            .shadow_lg()
             .overflow_hidden()
             .occlude()
             .capture_action(cx.listener(move |this, _: &IndentInline, window, cx| {
@@ -641,7 +630,7 @@ impl App {
                 move |this, delta| {
                     // `p` = openness (1 = fully open). Reversed while closing.
                     let p = if closing { 1.0 - delta } else { delta };
-                    motion::panel_pop(this, p, PANEL_WIDTH)
+                    motion::panel_pop(this, p, panel_width)
                 },
             )
             .into_any_element();
@@ -770,7 +759,13 @@ impl App {
                 .flex_1()
                 .gap_1()
                 .items_center()
-                .child(div().flex_shrink_0().child(title_el));
+                .child(
+                    div()
+                        .max_w(relative(0.60))
+                        .flex_shrink_0()
+                        .truncate()
+                        .child(title_el),
+                );
             if let Some(desc) = props.item.description.clone() {
                 row = row
                     .child(icon(AtlasIcon::CaretRight, 11.0, desc_color))
@@ -786,8 +781,7 @@ impl App {
             }
             row.into_any_element()
         } else {
-            let show_desc = props.item.description.is_some()
-                && (matches!(kind, PaletteKind::Goto) || props.selected || props.expanded);
+            let show_desc = props.item.description.is_some() && (props.selected || props.expanded);
             v_flex()
                 .min_w(px(0.))
                 .flex_1()
@@ -886,8 +880,13 @@ impl App {
             .when(!props.indent, |s| s.pl_2())
             .pr_2()
             .py_1()
-            .when(matches!(kind, PaletteKind::Goto), |row| {
-                row.h(px(PANEL_ITEM_WITH_DESC_HEIGHT)).flex().items_center()
+            .when(kind == PaletteKind::Goto, |row| {
+                row.h(px(PANEL_COMPACT_ITEM_HEIGHT))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .text_xs()
+                    .py_0()
             })
             .rounded_sm()
             .cursor_pointer()

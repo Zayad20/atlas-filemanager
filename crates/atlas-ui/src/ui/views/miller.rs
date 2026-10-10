@@ -36,6 +36,12 @@ impl App {
     ) -> AnyElement {
         crate::perf::count("render.view.miller");
         let _perf = crate::perf::span_detail("miller.render", || format!("pane={}", pane_id.0));
+        // This retained view owns its geometry; root-only repaints keep it alive.
+        self.miller_row_rects
+            .borrow_mut()
+            .retain(|(pane, _), _| *pane != pane_id);
+        self.miller_column_bounds
+            .retain(|(pane, _), _| *pane != pane_id);
         // Seed (or re-seed) the cascade from the pane location. Comparing the
         // first column against the live location catches external navigation
         // (sidebar/breadcrumb/back) — otherwise the columns would show the old
@@ -131,6 +137,7 @@ impl App {
                                 format!("pane={} col={ci} range={start}..{end}", pane_id.0)
                             });
                             list_view.update(cx, |app, cx| {
+                                app.miller_row_rects.borrow_mut().remove(&(pane_id, ci));
                                 let rows_data = {
                                     let Some(col) = app
                                         .state
@@ -228,7 +235,6 @@ impl App {
                     .border_r_1()
                     .border_color(header_bg)
                     .when(column_flashing, |s| s.border_color(accent))
-                    .on_prepaint_child(miller_column_bounds_recorder(pane_id, ci, &bounds_view))
                     .on_mouse_down(MouseButton::Left, move |ev, _window, cx| {
                         let (pos, additive) = (
                             ev.position,
@@ -254,12 +260,24 @@ impl App {
                             .truncate()
                             .child(title),
                     )
-                    .child(body);
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .w_full()
+                            .on_prepaint_child(miller_column_bounds_recorder(
+                                pane_id,
+                                ci,
+                                &bounds_view,
+                            ))
+                            .child(body),
+                    );
 
                 if let Some(col_path) = col_loc {
                     let mv = view.clone();
                     let cpv = view.clone();
-                    let bounds_v = view.clone();
                     let dest_internal = col_path.clone();
                     let dest_external = col_path.clone();
                     let hover_id =
@@ -279,9 +297,6 @@ impl App {
                             s.bg(crate::ui::glass::glass_fill().opacity(0.1))
                         })
                         .on_prepaint_child(move |bounds, window, cx| {
-                            bounds_v.update(cx, |this, _| {
-                                this.miller_column_bounds.insert((pane_id, ci), bounds);
-                            });
                             hover_record(bounds, window, cx);
                         })
                         .on_drop::<crate::ui::root::DraggedFiles>(move |d, _window, cx| {
@@ -471,8 +486,22 @@ fn render_miller_row(props: MillerRowProps, cx: &gpui::App) -> AnyElement {
                 .into_any_element(),
         })
         .child(trailing)
-        .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
-            cx.stop_propagation();
+        .on_mouse_down(MouseButton::Left, {
+            let v = view.clone();
+            move |ev, _window, cx| {
+                v.update(cx, |this, cx| {
+                    this.selection_left_mouse_down(
+                        crate::app::RubberTarget::MillerColumn(pane_id, column),
+                        Some(idx),
+                        ev.position,
+                        ev.modifiers.shift,
+                        ev.modifiers.control || ev.modifiers.platform,
+                        ev.click_count,
+                        cx,
+                    );
+                });
+                cx.stop_propagation();
+            }
         })
         .on_mouse_down(MouseButton::Right, {
             let v = view.clone();
@@ -515,26 +544,26 @@ fn render_miller_row(props: MillerRowProps, cx: &gpui::App) -> AnyElement {
             }
         })
         .on_click(move |ev, _window, cx| {
-            let activate = ev.click_count() >= 2;
             let m = ev.modifiers();
-            let (shift, ctrl) = (m.shift, m.control || m.platform);
+            if ev.click_count() >= 2 || m.shift || m.control || m.platform {
+                return;
+            }
             v.update(cx, |this, cx| {
-                if this.rename_edit.is_some() {
-                    this.commit_rename(cx);
-                }
-                if activate {
-                    this.process_actions(vec![Action::MillerActivate {
-                        tile: pane_id,
-                        column,
-                        idx,
-                    }]);
-                } else {
+                // Folder navigation commits only on a click, never on a marquee.
+                let marquee = this.rubber.as_ref().is_some_and(|r| r.started);
+                let single = this
+                    .state
+                    .tab_states
+                    .get(&pane_id)
+                    .and_then(|ts| ts.miller.columns.get(column))
+                    .is_some_and(|col| col.selection.selected.len() == 1);
+                if !marquee && single {
                     this.process_actions(vec![Action::MillerSelect {
                         tile: pane_id,
                         column,
                         idx,
-                        shift,
-                        ctrl,
+                        shift: false,
+                        ctrl: false,
                     }]);
                 }
                 cx.notify();
@@ -545,6 +574,9 @@ fn render_miller_row(props: MillerRowProps, cx: &gpui::App) -> AnyElement {
         let anchor = dest.clone();
         let in_archive = entry.archive_root.is_some();
         row = row.on_drag_alt(move |_cursor_offset, cursor_style, _window, cx| {
+            if drag_view.read(&*cx).rubber.is_some() {
+                return crate::ui::drag::empty_any_drag(cx);
+            }
             drag_view.update(cx, |this, cx| {
                 let selected = this
                     .state

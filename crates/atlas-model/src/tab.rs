@@ -96,15 +96,62 @@ pub enum LoadState {
 }
 
 #[derive(Clone, Default)]
-pub struct SelectionState {
-    pub selected: HashSet<usize>,
-    pub last_clicked_index: Option<usize>,
-    pub keyboard_cursor: Option<usize>,
-    pub selection_anchor: Option<usize>,
+pub struct SelectionState<T = usize> {
+    pub selected: HashSet<T>,
+    pub last_clicked_index: Option<T>,
+    pub keyboard_cursor: Option<T>,
+    pub selection_anchor: Option<T>,
     pub scroll_to_selected: bool,
 }
 
-impl SelectionState {
+impl<T: Clone + Eq + std::hash::Hash> SelectionState<T> {
+    /// Apply pointer selection in display order, shared by panes, Miller and the shelf.
+    pub fn select(&mut self, item: T, visible: &[T], shift: bool, ctrl: bool) {
+        self.retain_visible(visible);
+        if shift {
+            let anchor = self.selection_anchor.as_ref().unwrap_or(&item);
+            if let (Some(a), Some(b)) = (
+                visible.iter().position(|value| value == anchor),
+                visible.iter().position(|value| value == &item),
+            ) {
+                if !ctrl {
+                    self.selected.clear();
+                }
+                self.selected
+                    .extend(visible[a.min(b)..=a.max(b)].iter().cloned());
+            }
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(item.clone());
+            }
+        } else {
+            if ctrl {
+                if !self.selected.remove(&item) {
+                    self.selected.insert(item.clone());
+                }
+            } else {
+                self.selected.clear();
+                self.selected.insert(item.clone());
+            }
+            self.selection_anchor = Some(item.clone());
+        }
+        self.last_clicked_index = Some(item.clone());
+        self.keyboard_cursor = Some(item);
+    }
+
+    pub fn retain_visible(&mut self, visible: &[T]) {
+        let visible: HashSet<_> = visible.iter().collect();
+        self.selected.retain(|item| visible.contains(item));
+        for cursor in [
+            &mut self.last_clicked_index,
+            &mut self.keyboard_cursor,
+            &mut self.selection_anchor,
+        ] {
+            if cursor.as_ref().is_some_and(|item| !visible.contains(item)) {
+                *cursor = None;
+            }
+        }
+    }
+
     pub fn clear(&mut self) {
         self.selected.clear();
         self.last_clicked_index = None;
@@ -540,6 +587,57 @@ pub fn filter_visible_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn selection_shift_keeps_anchor_and_follows_display_order() {
+        let visible = [8, 2, 5, 1, 7];
+        let mut selection = SelectionState::default();
+        selection.select(2, &visible, false, false);
+        selection.select(7, &visible, true, false);
+        assert_eq!(selection.selected, HashSet::from([2, 5, 1, 7]));
+        selection.select(5, &visible, true, false);
+        assert_eq!(selection.selected, HashSet::from([2, 5]));
+        assert_eq!(selection.selection_anchor, Some(2));
+    }
+
+    #[test]
+    fn selection_ctrl_shift_adds_range_and_ctrl_toggles() {
+        let visible = [0, 1, 2, 3, 4];
+        let mut selection = SelectionState::default();
+        selection.select(0, &visible, false, false);
+        selection.select(2, &visible, false, true);
+        selection.select(4, &visible, true, true);
+        assert_eq!(selection.selected, HashSet::from([0, 2, 3, 4]));
+        selection.select(3, &visible, false, true);
+        assert_eq!(selection.selected, HashSet::from([0, 2, 4]));
+    }
+
+    #[test]
+    fn selection_dropzone_paths_use_the_same_range_rules() {
+        let visible: Vec<_> = ["z.txt", "a.txt", "m.txt", "b.txt"]
+            .map(PathBuf::from)
+            .into();
+        let mut selection = SelectionState::default();
+        selection.select(visible[0].clone(), &visible, false, false);
+        selection.select(visible[3].clone(), &visible, true, false);
+        assert_eq!(selection.selected.len(), 4);
+        selection.select(visible[1].clone(), &visible, true, false);
+        assert_eq!(selection.selected, visible[..2].iter().cloned().collect());
+        selection.select(visible[0].clone(), &visible, false, true);
+        assert_eq!(selection.selected, HashSet::from([visible[1].clone()]));
+    }
+
+    #[test]
+    fn selection_removed_anchor_does_not_leave_a_broken_shift_range() {
+        let mut selection = SelectionState::default();
+        selection.select(0, &[0, 1, 2], false, false);
+        selection.select(2, &[1, 2], true, false);
+        assert_eq!(selection.selected, HashSet::from([2]));
+        selection.clear();
+        assert!(selection.selection_anchor.is_none());
+        assert!(selection.keyboard_cursor.is_none());
+    }
 
     fn entry(name: &str, kind: FileKind) -> FileEntry {
         FileEntry {

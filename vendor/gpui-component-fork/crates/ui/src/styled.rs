@@ -171,12 +171,24 @@ pub trait StyledExt: Styled + Sized {
     /// Set as Popover style
     #[inline]
     fn popover_style(self, cx: &App) -> Self {
-        self.bg(cx.theme().popover)
-            .text_color(cx.theme().popover_foreground)
+        let theme = cx.theme();
+        let surface = self
+            .bg(theme.popover)
+            .text_color(theme.popover_foreground)
             .border_1()
-            .border_color(cx.theme().border)
+            .border_color(theme.border)
             .shadow_lg()
-            .rounded(cx.theme().radius)
+            .rounded(theme.radius);
+        // Translucent themes need local frosting: the OS backdrop only blurs
+        // what is behind the window, not the rows underneath a floating menu.
+        if theme.popover.alpha < 1.0 {
+            surface
+                .backdrop_blur(px(16.))
+                .rounded(px(10.))
+                .rounded_smoothing_ios()
+        } else {
+            surface
+        }
     }
 
     /// Set corner radii for the element.

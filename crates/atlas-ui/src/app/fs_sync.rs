@@ -291,24 +291,12 @@ impl App {
             }
             ts.miller.focused = column;
             let col = &mut ts.miller.columns[column];
-            if ctrl {
-                if col.selection.selected.contains(&idx) {
-                    col.selection.selected.remove(&idx);
-                } else {
-                    col.selection.selected.insert(idx);
-                }
-            } else if shift {
-                let anchor = col.selection.last_clicked_index.unwrap_or(idx);
-                col.selection.selected.clear();
-                let (lo, hi) = (anchor.min(idx), anchor.max(idx));
-                col.selection.selected.extend(lo..=hi);
-            } else {
-                col.selection.selected.clear();
-                col.selection.selected.insert(idx);
+            let visible: Vec<_> = (0..col.entries.len()).collect();
+            col.selection.select(idx, &visible, shift, ctrl);
+            // Modifier selection must not navigate or discard deeper columns.
+            if shift || ctrl {
+                return;
             }
-            col.selection.last_clicked_index = Some(idx);
-            col.selection.keyboard_cursor = Some(idx);
-            col.selection.selection_anchor = Some(idx);
             ts.miller.columns.truncate(column + 1);
             ts.selection.scroll_to_selected = true;
             if kind == atlas_model::file_entry::FileKind::Dir {

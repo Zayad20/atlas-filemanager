@@ -20,6 +20,7 @@ use gpui::{
     div, px, AnimationExt, AnyElement, Context, MouseButton, Pixels, Point, SharedString, Window,
 };
 use gpui_component::scroll::ScrollableElement;
+use gpui_component::StyledExt as _;
 use gpui_component::{h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable as _};
 use std::collections::HashMap;
 
@@ -135,10 +136,9 @@ impl App {
         let items = state.items.clone();
         let anchor = state.anchor;
 
-        let (popover, fg, muted, border, accent, accent_fg) = {
+        let (fg, muted, border, accent, accent_fg) = {
             let t = cx.theme();
             (
-                t.popover,
                 t.popover_foreground,
                 t.muted_foreground,
                 t.border,
@@ -274,12 +274,8 @@ impl App {
             .top(px(top))
             .w(px(W))
             .h(px(panel_h))
-            .bg(popover)
+            .popover_style(cx)
             .text_color(fg)
-            .border_1()
-            .border_color(border)
-            .rounded_lg()
-            .shadow_lg()
             .occlude()
             .overflow_hidden()
             .children(input_row)

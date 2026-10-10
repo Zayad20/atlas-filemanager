@@ -1006,9 +1006,9 @@ impl App {
                             .map(|(path, is_dir)| atlas_core::search::nucleo_pool::IndexEntry { path, is_dir })
                             .collect();
                         self.goto_service_cache = Some((query, std::sync::Arc::new(entries), complete));
-                        if complete {
-                            self.goto_service_inflight = None;
-                        }
+                        // Interactive Goto consumes one page per keystroke, even
+                        // when the service index is still loading.
+                        self.goto_service_inflight = None;
                         info.changed = true;
                     }
                 }

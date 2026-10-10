@@ -1055,9 +1055,11 @@ impl PopupMenu {
         let bounds = self.bounds;
         let max_width = self.max_width();
         let (anchor, left) = if max_width + bounds.origin.x > window.bounds().size.width {
-            (Anchor::TopRight, -px(16.))
+            (Anchor::TopRight, -px(10.))
         } else {
-            (Anchor::TopLeft, bounds.size.width - px(8.))
+            // The item is inset by 4px from these bounds. Leave a small gap
+            // between surfaces instead of overlapping their frosted edges.
+            (Anchor::TopLeft, bounds.size.width + px(4.))
         };
 
         let is_bottom_pos = bounds.origin.y + bounds.size.height > window.bounds().size.height;

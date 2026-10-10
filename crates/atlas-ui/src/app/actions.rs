@@ -21,8 +21,8 @@ impl App {
     }
 
     fn clear_focused_selection(&mut self) -> bool {
-        let mut cleared = !self.dropzone_selected.is_empty();
-        self.dropzone_selected.clear();
+        let mut cleared = !self.dropzone_selection.selected.is_empty();
+        self.dropzone_selection.clear();
 
         let tile = self.state.focused_tile;
         let is_miller = self
@@ -288,6 +288,7 @@ impl App {
                     self.goto_service_generation
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     self.goto_service_cache = None;
+                    self.goto_snapshot = Default::default();
                     self.goto_service_inflight = None;
                     self.goto_service_failed = None;
                     // Cancel any in-flight exit fade and start fresh.
@@ -494,34 +495,7 @@ impl App {
                 } => {
                     if let Some(ts) = self.state.tab_states.get_mut(&tile) {
                         let visible: Vec<usize> = ts.visible_indices().to_vec();
-                        if ctrl {
-                            if ts.selection.selected.contains(&idx) {
-                                ts.selection.selected.remove(&idx);
-                            } else {
-                                ts.selection.selected.insert(idx);
-                            }
-                        } else if shift {
-                            let anchor = ts.selection.last_clicked_index.unwrap_or(idx);
-                            ts.selection.selected.clear();
-                            if let (Some(anchor_pos), Some(idx_pos)) = (
-                                visible
-                                    .iter()
-                                    .position(|visible_idx| *visible_idx == anchor),
-                                visible.iter().position(|visible_idx| *visible_idx == idx),
-                            ) {
-                                let lo = anchor_pos.min(idx_pos);
-                                let hi = anchor_pos.max(idx_pos);
-                                ts.selection
-                                    .selected
-                                    .extend(visible[lo..=hi].iter().copied());
-                            }
-                        } else {
-                            ts.selection.selected.clear();
-                            ts.selection.selected.insert(idx);
-                        }
-                        ts.selection.last_clicked_index = Some(idx);
-                        ts.selection.keyboard_cursor = Some(idx);
-                        ts.selection.selection_anchor = Some(idx);
+                        ts.selection.select(idx, &visible, shift, ctrl);
                     }
                     self.state.focused_tile = tile;
                 }

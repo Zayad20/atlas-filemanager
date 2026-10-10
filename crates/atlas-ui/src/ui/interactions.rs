@@ -263,38 +263,114 @@ impl App {
         click_count: usize,
         cx: &mut Context<Self>,
     ) {
+        self.selection_left_mouse_down(
+            RubberTarget::Pane(pane),
+            entry_idx,
+            pos,
+            shift,
+            ctrl,
+            click_count,
+            cx,
+        );
+    }
+
+    /// One pointer policy for all selectable surfaces: unselected/background
+    /// starts a marquee; selected items preserve the group for a file drag.
+    pub(crate) fn selection_left_mouse_down(
+        &mut self,
+        target: RubberTarget,
+        entry_idx: Option<usize>,
+        pos: gpui::Point<gpui::Pixels>,
+        shift: bool,
+        ctrl: bool,
+        click_count: usize,
+        cx: &mut Context<Self>,
+    ) {
         if self.rename_edit.is_some() {
             self.commit_rename(cx);
         }
-
-        let Some(entry_idx) = entry_idx else {
-            self.begin_rubber(pane, pos, shift || ctrl);
-            cx.notify();
-            return;
-        };
-
-        if click_count >= 2 {
-            self.process_actions(vec![Action::Activate {
-                tile: pane,
-                idx: entry_idx,
-            }]);
-            cx.notify();
+        if self.ctx_menu.is_some() {
             return;
         }
-
-        let selected = self.details_row_selected(pane, entry_idx);
-        if selected && !shift && !ctrl {
-            self.activate_tab(pane);
-            cx.notify();
-            return;
+        let selected = entry_idx.is_some_and(|idx| match target {
+            RubberTarget::Pane(pane) => self.details_row_selected(pane, idx),
+            RubberTarget::MillerColumn(pane, column) => self
+                .state
+                .tab_states
+                .get(&pane)
+                .and_then(|ts| ts.miller.columns.get(column))
+                .is_some_and(|col| col.selection.selected.contains(&idx)),
+            RubberTarget::Dropzone => self
+                .state
+                .sidebar_drop_zone
+                .get(idx)
+                .is_some_and(|item| self.dropzone_selection.selected.contains(&item.path)),
+        });
+        if click_count < 2 && !selected {
+            match target {
+                RubberTarget::Pane(pane) => self.begin_rubber(pane, pos, shift || ctrl),
+                RubberTarget::MillerColumn(pane, column) => {
+                    self.begin_miller_rubber(pane, column, pos, shift || ctrl);
+                }
+                RubberTarget::Dropzone => self.begin_dropzone_rubber(pos, shift || ctrl),
+            }
         }
-
-        self.process_actions(vec![Action::Select {
-            tile: pane,
-            idx: entry_idx,
-            shift,
-            ctrl,
-        }]);
+        match target {
+            RubberTarget::Pane(pane) => {
+                self.activate_tab(pane);
+                if let Some(idx) = entry_idx {
+                    if click_count >= 2 {
+                        self.process_actions(vec![Action::Activate { tile: pane, idx }]);
+                    } else if !selected || shift || ctrl {
+                        self.process_actions(vec![Action::Select {
+                            tile: pane,
+                            idx,
+                            shift,
+                            ctrl,
+                        }]);
+                    }
+                }
+                self.notify_pane(pane, cx);
+            }
+            RubberTarget::MillerColumn(pane, column) => {
+                self.activate_tab(pane);
+                if let Some(ts) = self.state.tab_states.get_mut(&pane) {
+                    ts.miller.focused = column;
+                    if let (Some(col), Some(idx)) = (ts.miller.columns.get_mut(column), entry_idx) {
+                        if !selected || shift || ctrl {
+                            let visible: Vec<_> = (0..col.entries.len()).collect();
+                            col.selection.select(idx, &visible, shift, ctrl);
+                        }
+                    }
+                }
+                if click_count >= 2 {
+                    if let Some(idx) = entry_idx {
+                        self.process_actions(vec![Action::MillerActivate {
+                            tile: pane,
+                            column,
+                            idx,
+                        }]);
+                    }
+                }
+                self.notify_pane(pane, cx);
+            }
+            RubberTarget::Dropzone => {
+                if let Some(idx) = entry_idx {
+                    let visible: Vec<_> = self
+                        .state
+                        .sidebar_drop_zone
+                        .iter()
+                        .map(|item| item.path.clone())
+                        .collect();
+                    if let Some(path) = visible.get(idx) {
+                        if !selected || shift || ctrl {
+                            self.dropzone_selection
+                                .select(path.clone(), &visible, shift, ctrl);
+                        }
+                    }
+                }
+            }
+        }
         cx.notify();
     }
 
@@ -450,7 +526,7 @@ impl App {
                     return;
                 };
                 let mut sel: std::collections::HashSet<usize> = if r.additive {
-                    r.base.clone()
+                    r.base.selected.clone()
                 } else {
                     std::collections::HashSet::new()
                 };
@@ -464,7 +540,7 @@ impl App {
                     return;
                 };
                 let mut sel: std::collections::HashSet<usize> = if r.additive {
-                    r.base.clone()
+                    r.base.selected.clone()
                 } else {
                     std::collections::HashSet::new()
                 };
@@ -492,12 +568,12 @@ impl App {
                     return;
                 };
                 let mut sel: std::collections::HashSet<std::path::PathBuf> = if r.additive {
-                    r.dropzone_base.clone()
+                    r.dropzone_base.selected.clone()
                 } else {
                     std::collections::HashSet::new()
                 };
                 sel.extend(hits);
-                self.dropzone_selected = sel;
+                self.dropzone_selection.selected = sel;
             }
         }
     }
@@ -618,7 +694,14 @@ impl App {
         rb: f32,
     ) -> std::collections::HashSet<usize> {
         let mut hits = std::collections::HashSet::new();
-        let row_h = 24.0 * self.state.settings.global_zoom;
+        let row_h = self
+            .miller_row_rects
+            .borrow()
+            .get(&(pane, column))
+            .and_then(|rects| rects.first())
+            .map_or(24.0 * self.state.settings.global_zoom, |(_, bounds)| {
+                f32::from(bounds.size.height)
+            });
         let Some(col) = self
             .state
             .tab_states
@@ -1200,7 +1283,7 @@ impl App {
             match r.target {
                 RubberTarget::Pane(pane) => {
                     if let Some(ts) = self.state.tab_states.get_mut(&pane) {
-                        ts.selection.selected = r.base;
+                        ts.selection = r.base;
                     }
                 }
                 RubberTarget::MillerColumn(pane, column) => {
@@ -1210,11 +1293,11 @@ impl App {
                         .get_mut(&pane)
                         .and_then(|ts| ts.miller.columns.get_mut(column))
                     {
-                        col.selection.selected = r.base;
+                        col.selection = r.base;
                     }
                 }
                 RubberTarget::Dropzone => {
-                    self.dropzone_selected = r.dropzone_base;
+                    self.dropzone_selection = r.dropzone_base;
                 }
             }
         }
@@ -1251,31 +1334,7 @@ impl App {
         {
             self.close_search_in_place(pane);
         }
-        let base = self
-            .state
-            .tab_states
-            .get(&pane)
-            .map(|ts| ts.selection.selected.clone())
-            .unwrap_or_default();
-        let target = RubberTarget::Pane(pane);
-        let Some(target_bounds) = self.rubber_target_bounds(target) else {
-            return;
-        };
-        let origin = Self::clamp_point_to_bounds(target_bounds, pos);
-        self.rubber = Some(crate::app::RubberDrag {
-            target,
-            target_bounds,
-            origin,
-            current: origin,
-            content_origin: self.rubber_content_point(target, origin),
-            base,
-            dropzone_base: Default::default(),
-            additive,
-            started: false,
-            edge_intent: None,
-            edge_intent_origin_y: None,
-            last_scroll_frame: None,
-        });
+        self.begin_selection_rubber(RubberTarget::Pane(pane), pos, additive);
     }
 
     pub(crate) fn begin_miller_rubber(
@@ -1289,35 +1348,10 @@ impl App {
             return;
         }
         self.activate_tab(pane);
-        let base = self
-            .state
-            .tab_states
-            .get_mut(&pane)
-            .and_then(|ts| {
-                ts.miller.focused = column;
-                ts.miller.columns.get(column)
-            })
-            .map(|col| col.selection.selected.clone())
-            .unwrap_or_default();
-        let target = RubberTarget::MillerColumn(pane, column);
-        let Some(target_bounds) = self.rubber_target_bounds(target) else {
-            return;
-        };
-        let origin = Self::clamp_point_to_bounds(target_bounds, pos);
-        self.rubber = Some(crate::app::RubberDrag {
-            target,
-            target_bounds,
-            origin,
-            current: origin,
-            content_origin: self.rubber_content_point(target, origin),
-            base,
-            dropzone_base: Default::default(),
-            additive,
-            started: false,
-            edge_intent: None,
-            edge_intent_origin_y: None,
-            last_scroll_frame: None,
-        });
+        if let Some(ts) = self.state.tab_states.get_mut(&pane) {
+            ts.miller.focused = column;
+        }
+        self.begin_selection_rubber(RubberTarget::MillerColumn(pane, column), pos, additive);
     }
 
     pub(crate) fn begin_dropzone_rubber(&mut self, pos: gpui::Point<gpui::Pixels>, additive: bool) {
@@ -1329,24 +1363,45 @@ impl App {
             .sidebar_drop_zone
             .iter()
             .map(|item| item.path.clone())
-            .collect::<std::collections::HashSet<_>>();
-        self.dropzone_selected.retain(|path| staged.contains(path));
-        let dropzone_base = self.dropzone_selected.clone();
-        if !additive {
-            self.dropzone_selected.clear();
-        }
-        let target = RubberTarget::Dropzone;
+            .collect::<Vec<_>>();
+        self.dropzone_selection.retain_visible(&staged);
+        self.begin_selection_rubber(RubberTarget::Dropzone, pos, additive);
+    }
+
+    fn begin_selection_rubber(
+        &mut self,
+        target: RubberTarget,
+        pos: gpui::Point<gpui::Pixels>,
+        additive: bool,
+    ) {
         let Some(target_bounds) = self.rubber_target_bounds(target) else {
             return;
         };
+        let base = match target {
+            RubberTarget::Pane(pane) => self
+                .state
+                .tab_states
+                .get(&pane)
+                .map(|ts| ts.selection.clone())
+                .unwrap_or_default(),
+            RubberTarget::MillerColumn(pane, column) => self
+                .state
+                .tab_states
+                .get(&pane)
+                .and_then(|ts| ts.miller.columns.get(column))
+                .map(|col| col.selection.clone())
+                .unwrap_or_default(),
+            RubberTarget::Dropzone => Default::default(),
+        };
+        let dropzone_base = self.dropzone_selection.clone();
         let origin = Self::clamp_point_to_bounds(target_bounds, pos);
         self.rubber = Some(crate::app::RubberDrag {
             target,
             target_bounds,
             origin,
             current: origin,
-            content_origin: origin,
-            base: Default::default(),
+            content_origin: self.rubber_content_point(target, origin),
+            base,
             dropzone_base,
             additive,
             started: false,
@@ -1562,8 +1617,8 @@ mod tests {
 
     #[test]
     fn slider_values_order_list_details_grid() {
-        use atlas_model::settings::ViewMode;
         use crate::app::App;
+        use atlas_model::settings::ViewMode;
 
         assert_eq!(App::slider_value_for_view(&ViewMode::List, 64.0), 0.0);
         assert_eq!(App::slider_value_for_view(&ViewMode::Details, 64.0), 1.0);
@@ -1844,6 +1899,31 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
             // ── Global up ────────────────────────────────────────────────────
             let vu = v.clone();
             window.on_mouse_event::<MouseUpEvent>(move |ev, phase, _win, cx| {
+                if ev.button != gpui::MouseButton::Left {
+                    return;
+                }
+                // Commit a marquee before item click/drop listeners can interpret
+                // the release as navigation or a file drop.
+                if phase == DispatchPhase::Capture {
+                    if vu.read(cx).rubber.as_ref().is_some_and(|r| r.started) {
+                        vu.update(cx, |this, cx| {
+                            if let Some(r) = this.rubber.as_mut() {
+                                r.current = ev.position;
+                            }
+                            this.apply_rubber();
+                            if let Some(r) = this.rubber.take() {
+                                if let RubberTarget::Pane(pane)
+                                | RubberTarget::MillerColumn(pane, _) = r.target
+                                {
+                                    this.notify_pane(pane, cx);
+                                }
+                            }
+                            cx.notify();
+                        });
+                        cx.stop_propagation();
+                    }
+                    return;
+                }
                 if phase != DispatchPhase::Bubble {
                     return;
                 }
@@ -1951,10 +2031,15 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                                             && pos.y <= b.bottom()
                                     });
                                     if !hit {
-                                        this.dropzone_selected.clear();
+                                        this.dropzone_selection.clear();
                                     }
                                 }
                             }
+                        }
+                        if let RubberTarget::Pane(pane) | RubberTarget::MillerColumn(pane, _) =
+                            r.target
+                        {
+                            this.notify_pane(pane, cx);
                         }
                         cx.notify();
                     }

@@ -160,7 +160,7 @@ fn build_file_drag_handler(
     move |_d, _pos, window, cx| build_file_drag_start(&view, item, anchor.clone(), window, cx)
 }
 
-fn empty_drag_view(cx: &mut gpui::App) -> Entity<DragView> {
+pub(crate) fn empty_drag_view(cx: &mut gpui::App) -> Entity<DragView> {
     #[cfg(windows)]
     {
         cx.new(|_| DragNoop)

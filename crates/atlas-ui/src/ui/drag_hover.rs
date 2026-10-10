@@ -636,7 +636,7 @@ impl App {
             return;
         }
         consume_staged_paths(&mut self.state.sidebar_drop_zone, &committed);
-        self.dropzone_selected
+        self.dropzone_selection.selected
             .retain(|path| !committed.contains(path));
         self.dropzone_rects
             .retain(|(path, _)| !committed.contains(path));

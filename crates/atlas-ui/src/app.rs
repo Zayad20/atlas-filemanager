@@ -55,6 +55,8 @@ pub struct App {
     /// scoped (drill-in) index; a path-prefixed query re-scopes when either
     /// differs.
     pub(crate) goto_index_root: Option<(PathBuf, bool)>,
+    /// One published, ranked list per query; late index updates cannot move rows.
+    pub(crate) goto_snapshot: crate::ui::palette::GotoSnapshot,
     /// Last service-backed Goto query. Avoids repeating named-pipe work on every paint frame.
     pub(crate) goto_service_cache: Option<(
         String,
@@ -239,7 +241,7 @@ pub struct App {
     >,
     pub(crate) details_hover: Option<(TileId, usize)>,
     pub(crate) miller_column_bounds: HashMap<(TileId, usize), gpui::Bounds<gpui::Pixels>>,
-    pub(crate) dropzone_selected: HashSet<PathBuf>,
+    pub(crate) dropzone_selection: atlas_model::tab::SelectionState<PathBuf>,
     pub(crate) dropzone_rects: Vec<(PathBuf, gpui::Bounds<gpui::Pixels>)>,
     pub(crate) dropzone_bounds: Option<gpui::Bounds<gpui::Pixels>>,
     pub(crate) dropzone_drag_paths: HashSet<PathBuf>,
@@ -1093,8 +1095,8 @@ pub struct RubberDrag {
     pub(crate) current: gpui::Point<gpui::Pixels>,
     pub(crate) content_origin: gpui::Point<gpui::Pixels>,
     /// Selection before the drag began (kept when Ctrl/Cmd makes the drag additive).
-    pub(crate) base: HashSet<usize>,
-    pub(crate) dropzone_base: HashSet<PathBuf>,
+    pub(crate) base: atlas_model::tab::SelectionState,
+    pub(crate) dropzone_base: atlas_model::tab::SelectionState<PathBuf>,
     pub(crate) additive: bool,
     /// True once the cursor has moved at least 4 px from origin. Prevents a plain
     /// click from drawing a marquee or clearing the selection prematurely.

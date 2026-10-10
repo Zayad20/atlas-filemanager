@@ -6,6 +6,7 @@ use atlas_model::file_entry::{FileEntry, FileKind};
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, Context, MouseButton, Pixels, Point, SharedString, Window};
+use gpui_component::StyledExt as _;
 use gpui_component::{v_flex, ActiveTheme, Sizable as _};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -96,10 +97,9 @@ impl App {
         let pane = state.pane;
         let anchor = state.anchor;
 
-        let (popover, fg, muted, border, accent, accent_fg) = {
+        let (fg, muted, border, accent, accent_fg) = {
             let t = cx.theme();
             (
-                t.popover,
                 t.popover_foreground,
                 t.muted_foreground,
                 t.border,
@@ -196,11 +196,7 @@ impl App {
                     .top(px(top))
                     .w(px(W))
                     .h(px(panel_h))
-                    .bg(popover)
-                    .border_1()
-                    .border_color(border)
-                    .rounded(px(crate::ui::RADIUS))
-                    .shadow_lg()
+                    .popover_style(cx)
                     .py_1()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
