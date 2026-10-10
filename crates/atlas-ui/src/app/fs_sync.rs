@@ -606,7 +606,7 @@ impl App {
 /// Recursively extract `inner` from `provider` into `dest_path`.
 /// If `inner` is a directory, creates `dest_path/` and extracts all children.
 /// Returns total bytes written.
-fn extract_entry_recursive(
+pub(crate) fn extract_entry_recursive(
     provider: &dyn atlas_core::fs::archive::ArchiveProvider,
     inner: &std::path::Path,
     dest_path: &std::path::Path,

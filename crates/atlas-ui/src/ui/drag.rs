@@ -4,10 +4,10 @@
 //! Windows OLE path) was copy-pasted into all four view renderers. It lives here
 //! once; each view calls [`file_drag_handler`].
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::prelude::*;
-use gpui::{Entity, Window};
+use gpui::{Entity, ExternalDragPayload, FileDragPaths, Window};
 
 use crate::app::App;
 #[cfg(windows)]
@@ -15,6 +15,14 @@ use crate::ui::root::DragNoop;
 #[cfg(not(windows))]
 use crate::ui::root::DraggedFiles;
 use atlas_model::pane::TabId;
+
+/// Active outgoing drag session state used to resolve external (OS) payloads
+/// when an Atlas drag leaves the window.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ActiveExternalDrag {
+    pub(crate) paths: Vec<PathBuf>,
+    pub(crate) archive_items: Option<Vec<(PathBuf, PathBuf)>>,
+}
 
 /// The view entity gpui renders as the drag ghost. On Windows the OLE path owns
 /// the cursor, so we hand gpui an invisible [`DragNoop`]; elsewhere gpui paints
@@ -255,8 +263,231 @@ fn build_file_drag_start(
     }
     #[cfg(not(windows))]
     {
-        let _ = archive_items;
         let _ = _window;
+        view.update(cx, |app, _cx| {
+            app.active_external_drag = Some(ActiveExternalDrag {
+                paths: paths.clone(),
+                archive_items,
+            });
+        });
         cx.new(|_| DraggedFiles { paths })
+    }
+}
+
+/// Staging directory for extracting virtual archive items for external OS DnD:
+/// `$XDG_CACHE_HOME/atlas/dnd_staging` (falling back to `~/.cache/atlas/dnd_staging` or `$TMP/atlas/dnd_staging`).
+pub(crate) fn dnd_staging_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| dirs::cache_dir().unwrap_or_else(std::env::temp_dir));
+    base.join("atlas").join("dnd_staging")
+}
+
+/// Extracts virtual archive entries into a local temporary staging directory
+/// so that external applications can read the real files on disk.
+/// Returns a list of `(dest_path, is_dir)`.
+pub(crate) fn extract_archive_items_to_staging(
+    items: &[(PathBuf, PathBuf)],
+) -> Vec<(PathBuf, bool)> {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let session_dir = dnd_staging_dir().join(format!("drag_{}_{}", std::process::id(), timestamp));
+    #[allow(clippy::disallowed_methods)]
+    if let Err(e) = std::fs::create_dir_all(&session_dir) {
+        tracing::warn!("Failed to create dnd staging dir {}: {e}", session_dir.display());
+        return Vec::new();
+    }
+
+    let mut by_archive: std::collections::HashMap<&Path, Vec<&Path>> =
+        std::collections::HashMap::new();
+    for (archive, inner) in items {
+        by_archive
+            .entry(archive.as_path())
+            .or_default()
+            .push(inner.as_path());
+    }
+
+    let mut extracted = Vec::new();
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut errors = Vec::new();
+
+    for (archive_path, inners) in by_archive {
+        let Some(provider) = atlas_core::fs::archive::open(archive_path) else {
+            tracing::warn!(archive = %archive_path.display(), "Failed to open archive for external drag extraction");
+            continue;
+        };
+        for inner in inners {
+            let name = inner
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("extracted"));
+            let dest = session_dir.join(name);
+            crate::app::fs_sync::extract_entry_recursive(
+                provider.as_ref(),
+                inner,
+                &dest,
+                &cancel,
+                &mut errors,
+            );
+            if dest.exists() {
+                let is_dir = dest.is_dir();
+                extracted.push((dest, is_dir));
+            }
+        }
+    }
+    if !errors.is_empty() {
+        tracing::warn!(?errors, "Errors extracting archive items for external drag");
+    }
+    extracted
+}
+
+/// Resolves the [`ExternalDragPayload`] to hand to the platform (Wayland / macOS)
+/// when an Atlas drag leaves the window.
+pub(crate) fn resolve_external_drag_payload(
+    view: &Entity<App>,
+    drag_view: &DragView,
+    cx: &mut gpui::App,
+) -> Option<ExternalDragPayload> {
+    #[cfg(windows)]
+    {
+        let _ = (view, drag_view, cx);
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        let (paths, archive_items) = {
+            let app = view.read(&*cx);
+            if let Some(active) = app.active_external_drag.as_ref() {
+                (active.paths.clone(), active.archive_items.clone())
+            } else if !drag_view.paths.is_empty() {
+                (drag_view.paths.clone(), app.state.selected_archive_items())
+            } else {
+                (
+                    app.state.selected_paths(),
+                    app.state.selected_archive_items(),
+                )
+            }
+        };
+
+        let mut entries = Vec::new();
+
+        for p in paths {
+            let p = if p.is_absolute() {
+                p
+            } else if let Ok(abs) = p.canonicalize() {
+                abs
+            } else {
+                p
+            };
+            if p.exists() {
+                let is_dir = p.is_dir();
+                entries.push((p, is_dir));
+            }
+        }
+
+        if let Some(items) = archive_items {
+            if !items.is_empty() {
+                let extracted = extract_archive_items_to_staging(&items);
+                entries.extend(extracted);
+            }
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        entries.retain(|(p, _)| seen.insert(p.clone()));
+
+        if entries.is_empty() {
+            tracing::debug!("dnd external drag payload empty: no valid paths or archive items");
+            return None;
+        }
+
+        tracing::info!(count = entries.len(), "dnd external drag payload resolved for OS drag");
+        Some(ExternalDragPayload::Files(FileDragPaths::new(entries)))
+    }
+}
+
+/// Constructs the external drag payload resolver callback for [`gpui::InteractiveElement::external_drag_payload`].
+pub(crate) fn file_external_drag_payload(
+    view: Entity<App>,
+) -> impl Fn(&DragView, &mut Window, &mut gpui::App) -> Option<ExternalDragPayload> + 'static {
+    move |drag_view, _window, cx| resolve_external_drag_payload(&view, drag_view, cx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dnd_staging_dir_resolution() {
+        let staging = dnd_staging_dir();
+        assert!(staging.ends_with(Path::new("atlas").join("dnd_staging")));
+    }
+
+    #[test]
+    fn test_extract_archive_items_empty() {
+        let extracted = extract_archive_items_to_staging(&[]);
+        assert!(extracted.is_empty());
+    }
+
+    #[test]
+    fn test_extract_archive_items_nonexistent_archive() {
+        let items = vec![(
+            PathBuf::from("/nonexistent/atlas_dummy_archive.zip"),
+            PathBuf::from("test.txt"),
+        )];
+        let extracted = extract_archive_items_to_staging(&items);
+        assert!(extracted.is_empty());
+    }
+
+    #[test]
+    fn test_file_drag_paths_entries() {
+        let entries = vec![
+            (PathBuf::from("/tmp/atlas_test_file.txt"), false),
+            (PathBuf::from("/tmp/atlas_test_dir"), true),
+        ];
+        let file_drag_paths = FileDragPaths::new(entries.clone());
+        assert_eq!(file_drag_paths.entries(), &entries[..]);
+    }
+
+    #[test]
+    fn test_staging_with_real_files_and_filtering() {
+        let tmp = std::env::temp_dir().join(format!("atlas_dnd_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&tmp);
+        let file_path = tmp.join("test_file.txt");
+        let dir_path = tmp.join("test_dir");
+        let nonexistent = tmp.join("nonexistent.txt");
+
+        std::fs::write(&file_path, b"test").unwrap();
+        let _ = std::fs::create_dir_all(&dir_path);
+
+        let input_paths = vec![
+            file_path.clone(),
+            nonexistent,
+            dir_path.clone(),
+            file_path.clone(), // duplicate
+        ];
+
+        let mut entries = Vec::new();
+        for p in input_paths {
+            if p.exists() {
+                let is_dir = p.is_dir();
+                entries.push((p, is_dir));
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        entries.retain(|(p, _)| seen.insert(p.clone()));
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0], (file_path.clone(), false));
+        assert_eq!(entries[1], (dir_path.clone(), true));
+
+        let payload = ExternalDragPayload::Files(FileDragPaths::new(entries));
+        let ExternalDragPayload::Files(paths) = payload;
+        assert_eq!(paths.entries().len(), 2);
+        assert_eq!(paths.entries()[0], (file_path, false));
+        assert_eq!(paths.entries()[1], (dir_path, true));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

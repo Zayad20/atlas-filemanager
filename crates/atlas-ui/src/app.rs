@@ -383,6 +383,8 @@ pub struct App {
     pub(crate) drag_hover: crate::ui::drag_hover::DragHoverState,
     /// Buffer of targets registered by renderers each frame; consumed by `tick_drag_hover`.
     pub(crate) pending_drag_hover_targets: Vec<crate::ui::drag_hover::DragHoverTarget>,
+    /// Outgoing OS DnD payload tracking (Wayland / X11 / macOS).
+    pub(crate) active_external_drag: Option<crate::ui::drag::ActiveExternalDrag>,
     /// Window-space bounds of each pane view, used for edge-scroll + tag-drop detection.
     pub(crate) pane_view_bounds: HashMap<TileId, gpui::Bounds<gpui::Pixels>>,
     pub(crate) dock_root_bounds: Option<gpui::Bounds<gpui::Pixels>>,

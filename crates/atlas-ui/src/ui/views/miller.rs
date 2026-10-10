@@ -578,12 +578,24 @@ fn render_miller_row(props: MillerRowProps) -> AnyElement {
                 }
                 #[cfg(not(windows))]
                 {
-                    let _ = in_archive;
                     let _ = _window;
+                    let archive_items = if in_archive {
+                        let app = drag_view.read(&*cx);
+                        app.state.selected_archive_items()
+                    } else {
+                        None
+                    };
+                    drag_view.update(cx, |app, _cx| {
+                        app.active_external_drag = Some(crate::ui::drag::ActiveExternalDrag {
+                            paths: paths.clone(),
+                            archive_items,
+                        });
+                    });
                     cx.new(|_| crate::ui::root::DraggedFiles { paths })
                 }
             }
-        });
+        })
+        .external_drag_payload(crate::ui::drag::file_external_drag_payload(view.clone()));
     }
     let entry_size = entry.size;
     let entry_modified = entry.modified;

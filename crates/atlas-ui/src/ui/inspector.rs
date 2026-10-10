@@ -1800,6 +1800,7 @@ impl App {
                         crate::ui::drag::file_drag_value(vec![path.clone()]),
                         crate::ui::drag::file_drag_handler(view.clone(), path.clone()),
                     )
+                    .external_drag_payload(crate::ui::drag::file_external_drag_payload(view.clone()))
                     .when(is_dir, {
                         let dest_move = path.clone();
                         let dest_copy = path.clone();

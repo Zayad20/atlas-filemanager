@@ -397,7 +397,8 @@ impl App {
                 .on_drag(
                     crate::ui::drag::file_drag_value(Vec::new()),
                     crate::ui::drag::file_drag_handler_for_details_content(view.clone(), pane_id),
-                );
+                )
+                .external_drag_payload(crate::ui::drag::file_external_drag_payload(view.clone()));
             let details_tooltip = self
                 .details_hover
                 .and_then(|(hover_pane, entry_idx)| (hover_pane == pane_id).then_some(entry_idx))

@@ -348,6 +348,7 @@ impl App {
                         crate::ui::drag::file_drag_value(Vec::new()),
                         crate::ui::drag::file_drag_handler_for_grid_content(view.clone(), pane_id),
                     )
+                    .external_drag_payload(crate::ui::drag::file_external_drag_payload(view.clone()))
                     .into_any_element()
             });
             let tooltip_data = self
@@ -863,6 +864,7 @@ fn render_cell(props: GridCellProps) -> AnyElement {
                     entry.path.clone(),
                 ),
             )
+            .external_drag_payload(crate::ui::drag::file_external_drag_payload(view.clone()))
         })
         .tooltip({
             let tip_name = entry.name.clone();

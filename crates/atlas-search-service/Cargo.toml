@@ -10,6 +10,10 @@ atlas-core = { path = "../atlas-core" }
 atlas-win-space = { path = "../atlas-win-space" }
 serde_json.workspace = true
 memmap2 = "0.9"
+dirs.workspace = true
+tracing.workspace = true
+tracing-subscriber = "0.3"
+walkdir = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"

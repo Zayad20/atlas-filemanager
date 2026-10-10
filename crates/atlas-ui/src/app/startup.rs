@@ -613,6 +613,7 @@ impl App {
             size_filter_menu: None,
             drag_hover: crate::ui::drag_hover::DragHoverState::default(),
             pending_drag_hover_targets: Vec::new(),
+            active_external_drag: None,
             pane_view_bounds: HashMap::new(),
             dock_linear_bounds: HashMap::new(),
             dock_resize: None,

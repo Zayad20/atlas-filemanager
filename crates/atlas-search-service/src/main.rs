@@ -1,8 +1,17 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 #[cfg(not(windows))]
-fn main() {
-    eprintln!("atlas-search-service is currently Windows-only.");
+pub mod arena_index;
+
+#[cfg(not(windows))]
+pub mod linux_daemon;
+
+#[cfg(not(windows))]
+fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
+    let args: Vec<String> = std::env::args().collect();
+    let foreground = args.iter().any(|a| a == "--console" || a == "-c");
+    linux_daemon::run_daemon(foreground)
 }
 
 #[cfg(windows)]

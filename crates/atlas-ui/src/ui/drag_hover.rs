@@ -250,6 +250,7 @@ impl App {
         // DragLeave without a commit means the drag was abandoned → undo nav.
         self.revert_drag_nav();
         self.drag_hover.clear();
+        self.active_external_drag = None;
     }
 
     pub(crate) fn tick_drag_hover(&mut self, cx: &mut Context<Self>) {
@@ -790,7 +791,10 @@ pub(crate) fn drag_hover_layer(view: Entity<App>) -> impl gpui::IntoElement {
                 // mouse-up afterwards. Clearing here would wipe the nav snapshot before
                 // the queued DragLeave is drained, so the cancel-revert would no-op.
                 #[cfg(not(windows))]
-                vu.update(cx, |this, _| this.drag_hover.clear());
+                vu.update(cx, |this, _| {
+                    this.drag_hover.clear();
+                    this.active_external_drag = None;
+                });
                 #[cfg(windows)]
                 let _ = (&vu, cx);
             });

@@ -41,11 +41,32 @@ impl WindowsServiceBackend {
         serde_json::from_slice(&response).map_err(std::io::Error::other)
     }
 
-    #[cfg(not(windows))]
+    #[cfg(unix)]
+    pub fn request(&self, request: &ServiceRequest) -> std::io::Result<ServiceResponse> {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+
+        let sock_path = linux_socket_path();
+        let mut stream = UnixStream::connect(sock_path)?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+        stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
+
+        let mut payload = serde_json::to_vec(request).map_err(std::io::Error::other)?;
+        payload.push(b'\n');
+        stream.write_all(&payload)?;
+        stream.flush()?;
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        serde_json::from_str(line.trim()).map_err(std::io::Error::other)
+    }
+
+    #[cfg(not(any(windows, unix)))]
     pub fn request(&self, _request: &ServiceRequest) -> std::io::Result<ServiceResponse> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            "Windows service unavailable",
+            "Search service unavailable",
         ))
     }
 }
@@ -96,7 +117,17 @@ impl SearchBackend for WindowsServiceBackend {
     }
 }
 
-/// Check if the Windows search service pipe is currently reachable and responding.
+#[cfg(unix)]
+pub fn linux_socket_path() -> std::path::PathBuf {
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        std::path::PathBuf::from(runtime_dir).join("atlas-search.sock")
+    } else {
+        let user = std::env::var("USER").unwrap_or_else(|_| "default".into());
+        std::path::PathBuf::from(format!("/tmp/atlas-search-{user}.sock"))
+    }
+}
+
+/// Check if the search service is currently reachable and responding.
 pub fn is_service_available() -> bool {
     #[cfg(windows)]
     {
@@ -110,14 +141,42 @@ pub fn is_service_available() -> bool {
             Err(_) => false,
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
+    {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+
+        let sock_path = linux_socket_path();
+        if !sock_path.exists() {
+            return false;
+        }
+        if let Ok(mut stream) = UnixStream::connect(sock_path) {
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(300)));
+            let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(300)));
+            let mut payload = match serde_json::to_vec(&ServiceRequest::Status) {
+                Ok(p) => p,
+                Err(_) => return false,
+            };
+            payload.push(b'\n');
+            if stream.write_all(&payload).is_err() || stream.flush().is_err() {
+                return false;
+            }
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_ok() {
+                return serde_json::from_str::<ServiceResponse>(line.trim()).is_ok();
+            }
+        }
+        false
+    }
+    #[cfg(not(any(windows, unix)))]
     false
 }
 
 /// Ensure the search service is running:
 /// 1. If already responding, returns `true`.
-/// 2. Attempts to start the installed Windows service (`sc.exe start AtlasSearchService`).
-/// 3. If still not responding, locates `atlas-search-service.exe` and spawns it with `--console` (hidden background process).
+/// 2. Windows: starts Windows Service or spawns `atlas-search-service.exe --console`.
+/// 3. Linux: spawns `atlas-search-service --console` in background.
 pub fn ensure_service_started() -> bool {
     #[cfg(windows)]
     {
@@ -158,25 +217,52 @@ pub fn ensure_service_started() -> bool {
 
         is_service_available()
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
+    {
+        if is_service_available() {
+            return true;
+        }
+
+        if let Some(exe_path) = find_search_service_exe() {
+            let _ = std::process::Command::new(exe_path)
+                .arg("--console")
+                .spawn();
+
+            for _ in 0..10 {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                if is_service_available() {
+                    return true;
+                }
+            }
+        }
+
+        is_service_available()
+    }
+    #[cfg(not(any(windows, unix)))]
     false
 }
 
-/// Locate the `atlas-search-service.exe` binary.
+/// Locate the `atlas-search-service` binary.
 pub fn find_search_service_exe() -> Option<std::path::PathBuf> {
+    let bin_name = if cfg!(windows) {
+        "atlas-search-service.exe"
+    } else {
+        "atlas-search-service"
+    };
+
     if let Ok(current) = std::env::current_exe() {
         let mut cur = current.parent();
         for _ in 0..4 {
             if let Some(dir) = cur {
-                let direct = dir.join("atlas-search-service.exe");
+                let direct = dir.join(bin_name);
                 if direct.exists() {
                     return Some(direct);
                 }
-                let in_release = dir.join("release").join("atlas-search-service.exe");
+                let in_release = dir.join("release").join(bin_name);
                 if in_release.exists() {
                     return Some(in_release);
                 }
-                let in_debug = dir.join("debug").join("atlas-search-service.exe");
+                let in_debug = dir.join("debug").join(bin_name);
                 if in_debug.exists() {
                     return Some(in_debug);
                 }
@@ -187,11 +273,11 @@ pub fn find_search_service_exe() -> Option<std::path::PathBuf> {
         }
     }
     let candidates = [
-        "atlas-search-service.exe",
-        "target/release/atlas-search-service.exe",
-        "target/debug/atlas-search-service.exe",
+        bin_name.to_string(),
+        format!("target/release/{bin_name}"),
+        format!("target/debug/{bin_name}"),
     ];
-    for candidate in candidates {
+    for candidate in &candidates {
         let path = std::path::Path::new(candidate);
         if path.exists() {
             return Some(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));

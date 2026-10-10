@@ -1802,6 +1802,7 @@ fn drop_zone_item(
             file_drag_value(vec![drag_path.clone()]),
             staged_drop_drag_handler(app.clone(), drag_path),
         )
+        .external_drag_payload(crate::ui::drag::file_external_drag_payload(app.clone()))
 }
 
 fn drop_zone_preview(
@@ -1862,6 +1863,12 @@ fn staged_drop_drag_handler(
         }
         #[cfg(not(windows))]
         {
+            app.update(cx, |app, _cx| {
+                app.active_external_drag = Some(crate::ui::drag::ActiveExternalDrag {
+                    paths: paths.clone(),
+                    archive_items: None,
+                });
+            });
             cx.new(|_| DraggedFiles { paths })
         }
     }

@@ -231,6 +231,7 @@ impl App {
             }
             self.mark_drag_committed();
             self.drag_hover.clear();
+            self.active_external_drag = None;
             if self.dropzone_bounds.is_some_and(|bounds| {
                 p.x >= f32::from(bounds.left())
                     && p.x <= f32::from(bounds.right())
