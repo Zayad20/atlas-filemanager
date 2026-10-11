@@ -42,6 +42,7 @@ if [[ $format == archlinux ]]; then
   diff -u <(sed 's/^[[:space:]]*//' /tmp/atlas-aur/atlas-bin/.SRCINFO | sort) \
     <(sed 's/^[[:space:]]*//' /tmp/atlas-srcinfo | sort)
 fi
-chmod 777 /logs
+chmod -R 777 /logs
 runuser -u atlas-test -- env ATLAS_VERSION="$ATLAS_VERSION" ATLAS_SMOKE_LOG_DIR=/logs \
   dbus-run-session -- xvfb-run -a -s '-screen 0 1280x900x24' bash /scripts/linux-smoke.sh /usr/bin/atlas
+chmod -R a+rwX /logs

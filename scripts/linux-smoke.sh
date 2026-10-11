@@ -16,7 +16,7 @@ else
   command -v convert >/dev/null
   image_convert=(convert)
 fi
-export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-$log_dir/runtime}
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/atlas-runtime-$UID}
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 export LIBGL_ALWAYS_SOFTWARE=1

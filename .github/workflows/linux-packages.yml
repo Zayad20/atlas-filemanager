@@ -124,6 +124,7 @@ jobs:
             -e ATLAS_VERSION -v "$PWD/artifacts:/artifacts:ro" \
             -v "$PWD/scripts:/scripts:ro" -v "$PWD/logs:/logs" \
             "$TEST_IMAGE" bash /scripts/linux-container-test.sh "$TEST_FORMAT"
+          sudo chmod -R a+rwX logs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
