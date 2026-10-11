@@ -4,6 +4,7 @@ pub mod mounts;
 pub mod paths;
 pub mod tag_db;
 pub mod udisks;
+pub mod desktop_apps;
 
 pub mod compress;
 pub mod ops;

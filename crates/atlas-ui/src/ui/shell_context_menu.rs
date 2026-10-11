@@ -67,6 +67,8 @@ pub(crate) struct CtxMenuState {
     pub background: bool,
     /// Extension commands that apply to the current selection (prefix `ext.`).
     pub ext_cmds: Vec<CommandRef>,
+    /// Associated system desktop applications for "Open with..."
+    pub desktop_apps: Vec<atlas_core::fs::desktop_apps::DesktopApp>,
 }
 
 /// Atlas's own commands. Each maps to a label, icon and a boxed gpui action that
@@ -200,13 +202,19 @@ enum CtxRow {
         disabled: bool,
         is_default: bool,
     },
+    DesktopApp {
+        app: atlas_core::fs::desktop_apps::DesktopApp,
+    },
 }
 
 impl CtxRow {
     fn selectable(&self) -> bool {
         matches!(
             self,
-            CtxRow::Atlas { .. } | CtxRow::Ext { .. } | CtxRow::Native { .. }
+            CtxRow::Atlas { .. }
+                | CtxRow::Ext { .. }
+                | CtxRow::Native { .. }
+                | CtxRow::DesktopApp { .. }
         )
     }
 }
@@ -302,6 +310,14 @@ impl App {
             })
             .collect();
         let ext_cmds = self.ext_registry.commands_for(&selection);
+        let desktop_apps = if paths.is_empty() || is_recycle_bin {
+            Vec::new()
+        } else {
+            paths
+                .first()
+                .map(|p| atlas_core::fs::desktop_apps::apps_for_file(p))
+                .unwrap_or_default()
+        };
 
         self.ctx_menu = Some(CtxMenuState {
             menu_id,
@@ -315,6 +331,7 @@ impl App {
             expanded: HashSet::new(),
             background: false,
             ext_cmds,
+            desktop_apps,
         });
         cx.notify();
     }
@@ -422,6 +439,11 @@ impl App {
             let mut rows = Vec::new();
             for (cmd, sep_after) in atlas_items {
                 rows.push(CtxRow::Atlas { cmd: *cmd });
+                if *cmd == AtlasCmd::Open && !state.desktop_apps.is_empty() {
+                    for app in state.desktop_apps.iter().take(4) {
+                        rows.push(CtxRow::DesktopApp { app: app.clone() });
+                    }
+                }
                 if *sep_after {
                     rows.push(CtxRow::Separator);
                 }
@@ -445,7 +467,7 @@ impl App {
             }
             rows
         } else {
-            // Search mode: flatten every leaf (Atlas + native + ext), rank, emit flat.
+            // Search mode: flatten every leaf (Atlas + native + ext + apps), rank, emit flat.
             let _ = scorer_query;
             let mut cand_titles: Vec<String> = Vec::new();
             let mut cands: Vec<CtxRow> = Vec::new();
@@ -453,6 +475,10 @@ impl App {
             for (cmd, _) in atlas_items {
                 cand_titles.push(cmd.label().to_string());
                 cands.push(CtxRow::Atlas { cmd: *cmd });
+            }
+            for app in &state.desktop_apps {
+                cand_titles.push(format!("{} {}", rust_i18n::t!("open_with"), app.name));
+                cands.push(CtxRow::DesktopApp { app: app.clone() });
             }
             for cmd in &state.ext_cmds {
                 cand_titles.push(cmd.command.title.clone());
@@ -695,6 +721,45 @@ impl App {
                     }
                     children.push(r.into_any_element());
                 }
+                CtxRow::DesktopApp { app } => {
+                    let this_idx = sel_idx;
+                    sel_idx += 1;
+                    let is_sel = this_idx == selected;
+                    if is_sel {
+                        selected_child_idx = Some(children.len());
+                    }
+                    let app = app.clone();
+                    let v = view.clone();
+                    let title = format!("{} {}", rust_i18n::t!("open_with"), app.name);
+                    let icon_el = Some(crate::ui::icons::icon(
+                        AtlasIcon::Eye,
+                        16.,
+                        if is_sel { accent_fg } else { fg },
+                    ));
+                    children.push(
+                        menu_row(
+                            SharedString::from(format!("ctx-app-{this_idx}")),
+                            icon_el,
+                            title,
+                            None,
+                            false,
+                            false,
+                            false,
+                            is_sel,
+                            accent,
+                            accent_fg,
+                            fg,
+                            muted,
+                        )
+                        .on_mouse_move(ctx_hover_handler(&view, this_idx))
+                        .on_mouse_down(MouseButton::Left, move |_e, _window, cx| {
+                            v.update(cx, |this, cx| {
+                                this.run_ctx_desktop_app(&app, cx);
+                            });
+                        })
+                        .into_any_element(),
+                    );
+                }
             }
         }
 
@@ -906,8 +971,25 @@ impl App {
             CtxRow::Native { id, submenu, .. } => {
                 self.activate_ctx_native(*id, *submenu, window, cx)
             }
+            CtxRow::DesktopApp { app } => {
+                let app = app.clone();
+                self.run_ctx_desktop_app(&app, cx);
+            }
             _ => {}
         }
+    }
+
+    pub(crate) fn run_ctx_desktop_app(
+        &mut self,
+        app: &atlas_core::fs::desktop_apps::DesktopApp,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(state) = self.ctx_menu.take() {
+            let _ = atlas_core::fs::desktop_apps::launch_desktop_app(app, &state.paths);
+        }
+        self.ctx_menu_input = None;
+        self.ctx_menu_sub = None;
+        cx.notify();
     }
 
     fn run_ctx_ext(&mut self, ext_id: &str, cmd_id: &str, cx: &mut Context<Self>) {
@@ -1107,6 +1189,7 @@ impl App {
             expanded: HashSet::new(),
             background: true,
             ext_cmds: vec![],
+            desktop_apps: Vec::new(),
         });
         cx.notify();
     }
@@ -1193,7 +1276,11 @@ fn sanitize_separators(rows: Vec<CtxRow>) -> Vec<CtxRow> {
 fn ctx_row_height(row: &CtxRow) -> f32 {
     match row {
         CtxRow::Separator => 9.0,
-        CtxRow::Loading | CtxRow::Atlas { .. } | CtxRow::Ext { .. } | CtxRow::Native { .. } => 30.0,
+        CtxRow::Loading
+        | CtxRow::Atlas { .. }
+        | CtxRow::Ext { .. }
+        | CtxRow::Native { .. }
+        | CtxRow::DesktopApp { .. } => 30.0,
     }
 }
 

@@ -296,9 +296,14 @@ impl App {
 
             #[cfg(unix)]
             {
-                let uri_list = crate::dnd::format_uri_list(&paths);
+                let uri_list = crate::dnd::format_uri_list_with_cut(&paths, is_cut);
                 if let Ok(mut cb) = arboard::Clipboard::new() {
-                    let _ = cb.set_text(uri_list);
+                    let _ = cb.set_text(uri_list.clone());
+                    #[cfg(target_os = "linux")]
+                    {
+                        use arboard::{LinuxClipboardKind, SetExtLinux};
+                        let _ = cb.set().clipboard(LinuxClipboardKind::Primary).text(uri_list);
+                    }
                 }
             }
         }

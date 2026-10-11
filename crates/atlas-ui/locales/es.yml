@@ -671,3 +671,4 @@ cmd_recycle_empty_desc: "Eliminar definitivamente todo el contenido de la papele
 op_compressing: "Comprimiendo"
 cmd_files_compress_title: "Comprimir a zip"
 cmd_files_compress_desc: "Crear un archivo zip con los elementos seleccionados"
+open_with: "Abrir con"

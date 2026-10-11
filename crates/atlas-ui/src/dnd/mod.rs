@@ -197,6 +197,22 @@ pub fn format_uri_list(paths: &[PathBuf]) -> String {
     out
 }
 
+/// Formats a list of paths as a FreeDesktop file clipboard string with cut/copy header.
+/// Supported by GNOME/Nautilus, KDE/Dolphin, Thunar, PCManFM.
+pub fn format_uri_list_with_cut(paths: &[PathBuf], is_cut: bool) -> String {
+    let mut out = String::new();
+    if is_cut {
+        out.push_str("cut\r\n");
+    } else {
+        out.push_str("copy\r\n");
+    }
+    for path in paths {
+        out.push_str(&path_to_file_uri(path));
+        out.push_str("\r\n");
+    }
+    out
+}
+
 /// Parses a `text/uri-list` or multi-line text into a list of valid local `PathBuf`s and a cut flag.
 /// Safely ignores comment lines (`#`), empty lines, and non-file schemes.
 /// Decodes percent-encoded characters like `%20`.

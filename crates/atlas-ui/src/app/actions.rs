@@ -627,8 +627,14 @@ impl App {
                     self.spawn_open_files(paths);
                 }
                 Action::CopyPathToClipboard(path) => {
+                    let text = path.to_string_lossy().to_string();
                     if let Ok(mut cb) = arboard::Clipboard::new() {
-                        let _ = cb.set_text(path.to_string_lossy().to_string());
+                        let _ = cb.set_text(text.clone());
+                        #[cfg(target_os = "linux")]
+                        {
+                            use arboard::{LinuxClipboardKind, SetExtLinux};
+                            let _ = cb.set().clipboard(LinuxClipboardKind::Primary).text(text);
+                        }
                     }
                 }
                 Action::Copy(paths) => {
