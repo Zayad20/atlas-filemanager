@@ -135,10 +135,24 @@ pub(crate) fn confined_program(extension_dir: &Path, command: &str) -> Result<Pa
     let root = extension_dir
         .canonicalize()
         .context("canonicalize extension directory")?;
-    let program = root
-        .join(command)
-        .canonicalize()
-        .context("resolve sidecar")?;
+    let candidates = if cfg!(windows) {
+        if command.ends_with(".exe") {
+            vec![command.to_string()]
+        } else {
+            vec![format!("{command}.exe"), command.to_string()]
+        }
+    } else if command.ends_with(".exe") {
+        vec![
+            command.trim_end_matches(".exe").to_string(),
+            command.to_string(),
+        ]
+    } else {
+        vec![command.to_string()]
+    };
+    let program = candidates
+        .into_iter()
+        .find_map(|cmd| root.join(cmd).canonicalize().ok())
+        .ok_or_else(|| anyhow::anyhow!("resolve sidecar in {:?}", root))?;
     if !program.starts_with(&root) || !program.is_file() {
         bail!("provider sidecar must be a file inside its extension directory");
     }

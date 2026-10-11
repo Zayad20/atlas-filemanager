@@ -41,8 +41,25 @@ pub struct PropertyRow {
     pub size: Option<u64>,
     pub created: Option<SystemTime>,
     pub modified: Option<SystemTime>,
+    pub accessed: Option<SystemTime>,
+    pub link_target: Option<PathBuf>,
+    pub error: Option<String>,
+    #[cfg(unix)]
+    pub permissions: Option<UnixPermissions>,
     pub readonly: bool,
     pub is_symlink: bool,
+}
+
+/// Original inode identity and mode, plus the pending rwx edit.
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub struct UnixPermissions {
+    pub uid: u32,
+    pub gid: u32,
+    pub device: u64,
+    pub inode: u64,
+    pub mode: u32,
+    pub edited_mode: u32,
 }
 
 /// Cross-platform "Properties" overlay state (F3 #15) — the non-Windows
@@ -51,6 +68,7 @@ pub struct PropertyRow {
 #[derive(Debug, Clone, Default)]
 pub struct PropertiesState {
     pub rows: Vec<PropertyRow>,
+    pub saving: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

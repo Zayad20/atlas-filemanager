@@ -10,24 +10,28 @@ command = "atlas-icon-extension.exe"
 
 [[commands]]
 id = "icon-manager.download-material"
+context_menu = false
 title = "Install Material Icon Theme"
 per_file = false
 accepts = { any = true }
 
 [[commands]]
 id = "icon-manager.download-catppuccin"
+context_menu = false
 title = "Install Catppuccin Icons"
 per_file = false
 accepts = { any = true }
 
 [[commands]]
 id = "icon-manager.download-flow"
+context_menu = false
 title = "Install Flow Icons"
 per_file = false
 accepts = { any = true }
 
 [[commands]]
 id = "icon-manager.download-theme"
+context_menu = false
 title = "Download custom icon theme from Open VSX…"
 per_file = false
 accepts = { any = true }
@@ -39,12 +43,14 @@ default = "PKief/material-icon-theme"
 
 [[commands]]
 id = "icon-manager.select-theme"
+context_menu = false
 title = "Select icon theme variant…"
 per_file = false
 accepts = { any = true }
 
 [[commands]]
 id = "icon-manager.reset-default"
+context_menu = false
 title = "Reset to default icons (Liquid Glass)"
 per_file = false
 accepts = { any = true }

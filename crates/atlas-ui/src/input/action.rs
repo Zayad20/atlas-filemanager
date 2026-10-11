@@ -95,8 +95,17 @@ pub enum Action {
     CreateFileFocused,
     RenameFocused,
     OpenSelectedInNewWindow,
+    OpenPathInNewWindow(PathBuf),
     OpenSelectedDirInRightSplit,
     OpenSelectedDirInBottomSplit,
+    OpenDirInRightSplit {
+        pane: TabId,
+        path: PathBuf,
+    },
+    OpenDirInBottomSplit {
+        pane: TabId,
+        path: PathBuf,
+    },
     OpenTerminal {
         dir: PathBuf,
     },
@@ -148,6 +157,7 @@ pub enum Action {
         idx: usize,
     },
     ToggleHidden,
+    ToggleVimMode,
     SetViewMode(ViewMode),
     /// Switch the active profile's theme by registered theme name.
     SetTheme(String),
@@ -172,9 +182,12 @@ pub enum Action {
     ToggleFoldersFirst(TabId),
     ToggleShowFiles(TabId),
     ToggleShowFolders(TabId),
+    ToggleBranchView(TabId),
+    ToggleTreeExpand(PathBuf),
     ToggleFoldersFirstFocused,
     ToggleShowFilesFocused,
     ToggleShowFoldersFocused,
+    ToggleBranchViewFocused,
     CloseOverlays,
     ToggleInspector,
     ToggleSidebar,

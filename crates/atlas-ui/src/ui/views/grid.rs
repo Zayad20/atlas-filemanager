@@ -110,6 +110,10 @@ impl App {
         let base_scroll = scroll.0.borrow().base_handle.clone();
 
         let animate_grid_reflow = !self.state.settings.disable_animations
+            && !self
+                .rename_edit
+                .as_ref()
+                .is_some_and(|edit| edit.pane == pane_id)
             && !self.suppress_window_resize_animations()
             && self.dock_split_animations.is_empty()
             && self.pane_layout_animations.is_empty()
@@ -247,10 +251,7 @@ impl App {
                                 == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
                         let rename_input =
                             crate::ui::views::rename::active_input(app, pane_id, entry_idx);
-                        let selected = ts.selection.selected.contains(&entry_idx)
-                            && !crate::ui::views::rename::suppress_row_chrome(
-                                app, pane_id, entry_idx,
-                            );
+                        let selected = ts.selection.selected.contains(&entry_idx);
                         render_cell(GridCellProps {
                             entry,
                             entry_idx,
@@ -273,7 +274,7 @@ impl App {
                                 app, pane_id, entry_idx,
                             ),
                             window,
-                        })
+                        }, cx)
                     },
                 )
                 .into_any_element()
@@ -285,54 +286,41 @@ impl App {
                         let Some(&entry_idx) = ts.visible.get(visible_pos) else {
                             continue;
                         };
-                        let Some(entry) = ts.entries.get(entry_idx) else {
-                            continue;
-                        };
                         let Some(rename_input) =
                             crate::ui::views::rename::active_input(self, pane_id, entry_idx)
                         else {
                             continue;
                         };
-                        let selected = ts.selection.selected.contains(&entry_idx)
-                            && !crate::ui::views::rename::suppress_row_chrome(
-                                self, pane_id, entry_idx,
-                            );
-                        let file_icon = self.file_icon_for_entry(
-                            &entry.path,
-                            &entry.kind,
-                            entry.extension.as_deref(),
-                        );
-                        let cell = render_cell(GridCellProps {
-                            entry,
-                            entry_idx,
-                            selected,
-                            show_checkbox: ts.selection.selected.len() > 1,
-                            pane_id,
-                            view: &view,
-                            thumb,
-                            cell_w: thumb,
-                            file_icon,
-                            accent,
-                            accent_fg,
-                            hover,
-                            border,
-                            flashing: false,
-                            record_rects: false,
-                            rename_input: Some(rename_input),
-                            is_animating: false,
-                            dimmed: false,
-                            window,
-                        });
                         let col = visible_pos % cols;
                         let row = visible_pos / cols;
+                        let label = crate::ui::views::grid_surface_element::grid_label_bounds(
+                            gpui::Bounds {
+                                origin: gpui::point(
+                                    px(grid_pad_px + col as f32 * (thumb_px + grid_gap_px)),
+                                    px(grid_pad_px + row as f32 * pitch),
+                                ),
+                                size: gpui::size(px(thumb_px), px(cell_h_px)),
+                            },
+                            thumb_px * GRID_ICON_AREA,
+                            zoom_scale,
+                        );
                         rename_overlay = Some(
                             div()
                                 .absolute()
-                                .left(px(grid_pad_px + col as f32 * (thumb_px + grid_gap_px)))
-                                .top(px(grid_pad_px + row as f32 * pitch))
-                                .w(px(thumb_px))
-                                .h(px(cell_h_px))
-                                .child(cell)
+                                .left(label.origin.x)
+                                .top(label.origin.y)
+                                .w(label.size.width)
+                                .h(label.size.height)
+                                .text_color(accent_fg)
+                                .child(crate::ui::views::rename::centered_input_element(
+                                    &rename_input,
+                                    &view,
+                                    label.size.height,
+                                    font_size,
+                                    label.size.width,
+                                    window,
+                                    cx,
+                                ))
                                 .into_any_element(),
                         );
                         break;
@@ -704,7 +692,7 @@ struct GridCellProps<'a> {
 /// One grid cell: thumbnail (or a scaled glyph fallback while it loads / for
 /// non-images) + truncated name, fixed to the thumbnail size. The texture is a
 /// cached, downscaled `RenderImage` (see `ui::thumbs`) — never a full-res decode.
-fn render_cell(props: GridCellProps) -> AnyElement {
+fn render_cell(props: GridCellProps, cx: &gpui::App) -> AnyElement {
     let GridCellProps {
         entry,
         entry_idx,
@@ -741,9 +729,7 @@ fn render_cell(props: GridCellProps) -> AnyElement {
         .rounded_md()
         .when(dimmed, |s| s.opacity(0.45))
         .cursor_pointer()
-        .when(selected && rename_input.is_none(), |s| {
-            s.bg(accent).text_color(accent_fg)
-        })
+        .when(selected, |s| s.bg(accent).text_color(accent_fg))
         .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
         .when(!selected && rename_input.is_none() && !is_animating, |s| {
             s.hover(|h| h.bg(hover))
@@ -833,7 +819,7 @@ fn render_cell(props: GridCellProps) -> AnyElement {
                             window,
                         )))
                         .child(crate::ui::views::rename::input_element(
-                            input, view, line_h, font_size, window,
+                            input, view, line_h, font_size, window, cx,
                         ))
                         .into_any_element(),
                     None => div()

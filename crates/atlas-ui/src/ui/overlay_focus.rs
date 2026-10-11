@@ -278,6 +278,9 @@ impl App {
                 Some(crate::ui::text_input::single_line(window, cx, "", rep0));
         }
         let mode = self.state.batch_rename.as_ref().map(|b| b.mode.clone());
+        if matches!(mode, Some(RenameMode::MultiCursor)) {
+            return self.overlay_focus(cx);
+        }
         let use_replacement = matches!(mode, Some(RenameMode::Number))
             || (matches!(mode, Some(RenameMode::Find))
                 && self.batch_rename_field == BatchRenameField::Replacement);

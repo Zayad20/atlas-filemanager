@@ -33,6 +33,11 @@ pub enum BgResult {
         op_id: u64,
         entries: Vec<FileEntry>,
     },
+    TreeListed {
+        tab: TabId,
+        path: PathBuf,
+        entries: Vec<FileEntry>,
+    },
     PreviewReady {
         tab: TabId,
         path: PathBuf,

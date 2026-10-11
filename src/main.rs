@@ -9,6 +9,18 @@
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
 fn main() {
+    // Package smoke tests must verify the ELF and version without opening a window.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "--version")
+    {
+        println!(
+            "Atlas {}",
+            option_env!("ATLAS_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+        );
+        return;
+    }
+
     #[cfg(feature = "dhat-heap")]
     let _profiler = dhat::Profiler::new_heap();
 

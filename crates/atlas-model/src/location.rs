@@ -85,7 +85,21 @@ impl Location {
             }
             Self::Tag(_) | Self::RecycleBin => None,
             #[cfg(feature = "provider-host")]
-            Self::Remote { .. } => None,
+            Self::Remote { id, path } => {
+                let trimmed = path.trim_matches('/');
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    let parent = match trimmed.rsplit_once('/') {
+                        Some((p, _)) => p.to_string(),
+                        None => String::new(),
+                    };
+                    Some(Self::Remote {
+                        id: id.clone(),
+                        path: parent,
+                    })
+                }
+            }
         }
     }
 }
@@ -93,5 +107,37 @@ impl Location {
 impl Default for Location {
     fn default() -> Self {
         Self::Directory(PathBuf::new())
+    }
+}
+
+#[cfg(all(test, feature = "provider-host"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_remote_ascend() {
+        let nested = Location::Remote {
+            id: "drive".into(),
+            path: "folder/subfolder".into(),
+        };
+        let parent = nested.ascend().unwrap();
+        assert_eq!(
+            parent,
+            Location::Remote {
+                id: "drive".into(),
+                path: "folder".into(),
+            }
+        );
+
+        let root_parent = parent.ascend().unwrap();
+        assert_eq!(
+            root_parent,
+            Location::Remote {
+                id: "drive".into(),
+                path: String::new(),
+            }
+        );
+
+        assert_eq!(root_parent.ascend(), None);
     }
 }

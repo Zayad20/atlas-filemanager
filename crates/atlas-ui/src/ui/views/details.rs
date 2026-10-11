@@ -96,12 +96,14 @@ impl App {
             ViewMode::Grid => "grid",
             ViewMode::List => "list",
             ViewMode::Miller => "miller",
+            ViewMode::Tree => "tree",
             ViewMode::Details => "details",
         };
         match &view_mode {
             ViewMode::Grid => crate::perf::count("render.view.grid_dispatch"),
             ViewMode::List => crate::perf::count("render.view.list_dispatch"),
             ViewMode::Miller => crate::perf::count("render.view.miller_dispatch"),
+            ViewMode::Tree => crate::perf::count("render.view.tree_dispatch"),
             ViewMode::Details => crate::perf::count("render.view.details"),
         }
         let (entries, visible) = self
@@ -119,6 +121,7 @@ impl App {
             ViewMode::Grid => return self.render_grid(pane_id, window, cx),
             ViewMode::List => return self.render_list_compact(pane_id, window, cx),
             ViewMode::Miller => return self.render_miller(pane_id, window, cx),
+            ViewMode::Tree => return self.render_tree_view(pane_id, window, cx),
             ViewMode::Details => {}
         }
         let view = cx.entity();
@@ -322,8 +325,7 @@ impl App {
                 };
 
                 let rename_input = crate::ui::views::rename::active_input(self, pane_id, entry_idx);
-                let selected = ts.selection.selected.contains(&entry_idx)
-                    && !crate::ui::views::rename::suppress_row_chrome(self, pane_id, entry_idx);
+                let selected = ts.selection.selected.contains(&entry_idx);
                 let flashing = matches!(entry.kind, FileKind::Dir)
                     && self.drag_hover.blink_id.as_ref()
                         == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
@@ -348,6 +350,7 @@ impl App {
                         &row_layout,
                         window,
                         font_size,
+                        cx,
                     );
                     overlays.push(
                         div()
@@ -1314,7 +1317,7 @@ fn render_rename_row(
     entry: &FileEntry,
     entry_idx: usize,
     odd: bool,
-    _selected: bool,
+    selected: bool,
     pane_id: TabId,
     view: &Entity<App>,
     colors: &DetailsColors,
@@ -1325,6 +1328,7 @@ fn render_rename_row(
     layout: &DetailsRowLayout,
     window: &mut Window,
     font_size: Pixels,
+    cx: &gpui::App,
 ) -> AnyElement {
     // Same reasoning as `canvas_row`: these are chrome constants, scaled once
     // here; `col.x`/`col.w`/`layout.name_col_w` are already real-px (user column
@@ -1361,7 +1365,7 @@ fn render_rename_row(
             .items_center()
             .pl(px(cell_pad))
             .overflow_hidden()
-            .text_color(colors.muted)
+            .text_color(if selected { colors.accent_fg } else { colors.muted })
             .child(SharedString::from(text))
     });
 
@@ -1376,8 +1380,9 @@ fn render_rename_row(
         .overflow_hidden()
         .rounded_sm()
         .cursor_pointer()
-        .when(flashing, |s| s.bg(colors.accent.opacity(0.38)))
-        .when(!flashing && odd, |s| s.bg(colors.stripe_bg))
+        .when(selected, |s| s.bg(colors.accent).text_color(colors.accent_fg))
+        .when(!selected && flashing, |s| s.bg(colors.accent.opacity(0.38)))
+        .when(!selected && !flashing && odd, |s| s.bg(colors.stripe_bg))
         .child(
             div()
                 .absolute()
@@ -1411,6 +1416,7 @@ fn render_rename_row(
                     px(row_h),
                     font_size,
                     window,
+                    cx,
                 )),
         )
         .children(meta_cells)

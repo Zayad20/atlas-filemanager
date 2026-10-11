@@ -56,16 +56,18 @@ impl App {
         let pat_val = pat_input.read(cx).value().to_string();
         let rep_val = rep_input.read(cx).value().to_string();
         if let Some(batch) = self.state.batch_rename.as_mut() {
-            let pat_changed = batch.pattern != pat_val;
-            let rep_changed = batch.replacement != rep_val;
-            if pat_changed {
-                batch.pattern = pat_val;
-            }
-            if rep_changed {
-                batch.replacement = rep_val;
-            }
-            if pat_changed || rep_changed {
-                batch.update_previews();
+            if batch.mode != RenameMode::MultiCursor {
+                let pat_changed = batch.pattern != pat_val;
+                let rep_changed = batch.replacement != rep_val;
+                if pat_changed {
+                    batch.pattern = pat_val;
+                }
+                if rep_changed {
+                    batch.replacement = rep_val;
+                }
+                if pat_changed || rep_changed {
+                    batch.update_previews();
+                }
             }
         }
 
@@ -105,14 +107,15 @@ impl App {
                     .when(selected, |s| s.bg(accent).text_color(accent_fg))
                     .when(!selected, |s| s.hover(|h| h.bg(border)))
                     .child(label.to_string())
-                    .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
+                    .on_mouse_down(MouseButton::Left, move |_ev, window, cx| {
                         let m = button_mode.clone();
                         view.update(cx, |this, cx| {
                             if let Some(batch) = this.state.batch_rename.as_mut() {
-                                batch.mode = m;
-                                batch.update_previews();
+                                batch.set_mode(m);
                             }
                             this.batch_rename_field = BatchRenameField::Pattern;
+                            let handle = this.batch_focus_handle(window, cx);
+                            window.focus(&handle, cx);
                             cx.notify();
                         });
                     })
@@ -128,6 +131,30 @@ impl App {
                 .child(div().text_xs().text_color(muted).child(label.to_string()))
                 .child(crate::ui::text_input::bordered(input))
         };
+
+        let helper_button =
+            |id: &'static str,
+             label: String,
+             btn_view: Entity<Self>,
+             on_click: Box<dyn Fn(&mut App, &mut Window, &mut Context<App>)>| {
+                div()
+                    .id(id)
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(border)
+                    .text_xs()
+                    .cursor_pointer()
+                    .hover(|h| h.bg(border))
+                    .child(label)
+                    .on_mouse_down(MouseButton::Left, move |_ev, window, cx| {
+                        btn_view.update(cx, |this, cx| {
+                            on_click(this, window, cx);
+                            cx.notify();
+                        });
+                    })
+            };
 
         let rows: Vec<AnyElement> = previews
             .iter()
@@ -172,23 +199,74 @@ impl App {
                     }
                     RenameIssue::Ok => String::new(),
                 };
-                h_flex()
-                    .id(SharedString::from(format!("batch-row-{i}")))
-                    .gap_2()
-                    .items_center()
-                    .text_xs()
-                    .py_1()
-                    .child(div().flex_1().min_w(px(0.)).truncate().child(old_name))
-                    .child(div().text_color(muted).child("→"))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .truncate()
-                            .text_color(name_color)
-                            .child(format!("{new_name}{marker}")),
-                    )
-                    .into_any_element()
+
+                if mode == RenameMode::MultiCursor {
+                    let line_str = batch
+                        .multi_lines
+                        .get(i)
+                        .cloned()
+                        .unwrap_or_else(|| new_name.clone());
+                    let chars: Vec<char> = line_str.chars().collect();
+                    let pos = batch.cursor_pos.min(chars.len());
+                    let before: String = chars[..pos].iter().collect();
+                    let after: String = chars[pos..].iter().collect();
+
+                    h_flex()
+                        .id(SharedString::from(format!("batch-row-{i}")))
+                        .gap_2()
+                        .items_center()
+                        .text_xs()
+                        .py_1()
+                        .child(
+                            div()
+                                .w(px(24.))
+                                .text_color(muted)
+                                .child(format!("{:02}", i + 1)),
+                        )
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .items_center()
+                                .overflow_x_hidden()
+                                .child(div().child(before))
+                                .child(
+                                    div()
+                                        .text_color(accent)
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .child("|"),
+                                )
+                                .child(div().child(after)),
+                        )
+                        .child(div().text_color(muted).child("→"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .truncate()
+                                .text_color(name_color)
+                                .child(format!("{new_name}{marker}")),
+                        )
+                        .into_any_element()
+                } else {
+                    h_flex()
+                        .id(SharedString::from(format!("batch-row-{i}")))
+                        .gap_2()
+                        .items_center()
+                        .text_xs()
+                        .py_1()
+                        .child(div().flex_1().min_w(px(0.)).truncate().child(old_name))
+                        .child(div().text_color(muted).child("→"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .truncate()
+                                .text_color(name_color)
+                                .child(format!("{new_name}{marker}")),
+                        )
+                        .into_any_element()
+                }
             })
             .collect();
         let hidden = previews.len().saturating_sub(200);
@@ -237,6 +315,12 @@ impl App {
                     .gap_2()
                     .text_xs()
                     .child(mode_button(
+                        &rust_i18n::t!("batch_mode_multicursor"),
+                        RenameMode::MultiCursor,
+                        mode == RenameMode::MultiCursor,
+                        view.clone(),
+                    ))
+                    .child(mode_button(
                         &rust_i18n::t!("batch_mode_find"),
                         RenameMode::Find,
                         mode == RenameMode::Find,
@@ -262,6 +346,57 @@ impl App {
                     )),
             )
             .child(match mode {
+                RenameMode::MultiCursor => v_flex()
+                    .gap_2()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(helper_button(
+                                "batch-btn-stem-end",
+                                rust_i18n::t!("batch_cursor_stem_end").to_string(),
+                                view.clone(),
+                                Box::new(|this, window, cx| {
+                                    if let Some(batch) = this.state.batch_rename.as_mut() {
+                                        batch.align_cursor_to_stem_end();
+                                    }
+                                    let handle = this.batch_focus_handle(window, cx);
+                                    window.focus(&handle, cx);
+                                }),
+                            ))
+                            .child(helper_button(
+                                "batch-btn-start",
+                                rust_i18n::t!("batch_cursor_start").to_string(),
+                                view.clone(),
+                                Box::new(|this, window, cx| {
+                                    if let Some(batch) = this.state.batch_rename.as_mut() {
+                                        batch.align_cursor_to_start();
+                                    }
+                                    let handle = this.batch_focus_handle(window, cx);
+                                    window.focus(&handle, cx);
+                                }),
+                            ))
+                            .child(helper_button(
+                                "batch-btn-number",
+                                rust_i18n::t!("batch_insert_number").to_string(),
+                                view.clone(),
+                                Box::new(|this, window, cx| {
+                                    if let Some(batch) = this.state.batch_rename.as_mut() {
+                                        let pad = if batch.files.len() >= 100 { 3 } else { 2 };
+                                        batch.insert_counter(pad);
+                                    }
+                                    let handle = this.batch_focus_handle(window, cx);
+                                    window.focus(&handle, cx);
+                                }),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(rust_i18n::t!("batch_multicursor_hint").to_string()),
+                    )
+                    .into_any_element(),
                 RenameMode::Find => h_flex()
                     .gap_2()
                     .child(field(&rust_i18n::t!("batch_find"), &pat_input))
@@ -344,43 +479,166 @@ impl App {
                     ),
             )
             .track_focus(&focus)
-            // Capture phase: Enter applies, Esc cancels, Tab switches the active field;
-            // everything else is real text editing handled by the focused inputs.
             .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
-                match ev.keystroke.key.as_str() {
-                    "escape" => {
-                        this.close_batch_rename();
-                        cx.stop_propagation();
-                        cx.notify();
-                    }
-                    "enter" => {
-                        // Refuse to apply while any row is invalid or collides.
-                        let safe = this
-                            .state
-                            .batch_rename
-                            .as_ref()
-                            .is_some_and(|b| !b.has_blocking_issues());
-                        if safe {
-                            let actions = this.batch_rename_actions();
-                            if !actions.is_empty() {
-                                this.process_actions(actions);
+                let is_multicursor = this
+                    .state
+                    .batch_rename
+                    .as_ref()
+                    .is_some_and(|b| b.mode == RenameMode::MultiCursor);
+
+                if is_multicursor {
+                    if (ev.keystroke.modifiers.control || ev.keystroke.modifiers.platform)
+                        && ev.keystroke.key == "v"
+                    {
+                        if let Some(item) = cx.read_from_clipboard() {
+                            if let Some(text) = item.text() {
+                                if let Some(batch) = this.state.batch_rename.as_mut() {
+                                    batch.insert_str(&text);
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                    return;
+                                }
                             }
-                            this.close_batch_rename();
                         }
-                        cx.stop_propagation();
-                        cx.notify();
                     }
-                    "tab" => {
-                        this.batch_rename_field = match this.batch_rename_field {
-                            BatchRenameField::Pattern => BatchRenameField::Replacement,
-                            BatchRenameField::Replacement => BatchRenameField::Pattern,
-                        };
-                        let handle = this.batch_focus_handle(window, cx);
-                        window.focus(&handle, cx);
-                        cx.stop_propagation();
-                        cx.notify();
+
+                    match ev.keystroke.key.as_str() {
+                        "escape" => {
+                            this.close_batch_rename();
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                        "enter" => {
+                            let safe = this
+                                .state
+                                .batch_rename
+                                .as_ref()
+                                .is_some_and(|b| !b.has_blocking_issues());
+                            if safe {
+                                let actions = this.batch_rename_actions();
+                                if !actions.is_empty() {
+                                    this.process_actions(actions);
+                                }
+                                this.close_batch_rename();
+                            }
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                        "backspace" => {
+                            if let Some(batch) = this.state.batch_rename.as_mut() {
+                                batch.backspace();
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }
+                        "delete" => {
+                            if let Some(batch) = this.state.batch_rename.as_mut() {
+                                batch.delete_forward();
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }
+                        "left" => {
+                            if let Some(batch) = this.state.batch_rename.as_mut() {
+                                if ev.keystroke.modifiers.control
+                                    || ev.keystroke.modifiers.platform
+                                {
+                                    batch.move_cursor_word_left();
+                                } else {
+                                    batch.move_cursor_left();
+                                }
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }
+                        "right" => {
+                            if let Some(batch) = this.state.batch_rename.as_mut() {
+                                if ev.keystroke.modifiers.control
+                                    || ev.keystroke.modifiers.platform
+                                {
+                                    batch.move_cursor_word_right();
+                                } else {
+                                    batch.move_cursor_right();
+                                }
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }
+                        "home" => {
+                            if let Some(batch) = this.state.batch_rename.as_mut() {
+                                batch.move_cursor_home();
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }
+                        "end" => {
+                            if let Some(batch) = this.state.batch_rename.as_mut() {
+                                batch.move_cursor_end();
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }
+                        "tab" => {
+                            if let Some(batch) = this.state.batch_rename.as_mut() {
+                                batch.set_mode(RenameMode::Find);
+                                this.batch_rename_field = BatchRenameField::Pattern;
+                                let handle = this.batch_focus_handle(window, cx);
+                                window.focus(&handle, cx);
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }
+                        _ => {
+                            if let Some(c) = get_typed_char(ev) {
+                                if let Some(batch) = this.state.batch_rename.as_mut() {
+                                    if c == '#' {
+                                        let pad = if batch.files.len() >= 100 { 3 } else { 2 };
+                                        batch.insert_counter(pad);
+                                    } else {
+                                        batch.insert_char(c);
+                                    }
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }
+                            }
+                        }
                     }
-                    _ => {}
+                } else {
+                    match ev.keystroke.key.as_str() {
+                        "escape" => {
+                            this.close_batch_rename();
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                        "enter" => {
+                            // Refuse to apply while any row is invalid or collides.
+                            let safe = this
+                                .state
+                                .batch_rename
+                                .as_ref()
+                                .is_some_and(|b| !b.has_blocking_issues());
+                            if safe {
+                                let actions = this.batch_rename_actions();
+                                if !actions.is_empty() {
+                                    this.process_actions(actions);
+                                }
+                                this.close_batch_rename();
+                            }
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                        "tab" => {
+                            this.batch_rename_field = match this.batch_rename_field {
+                                BatchRenameField::Pattern => BatchRenameField::Replacement,
+                                BatchRenameField::Replacement => BatchRenameField::Pattern,
+                            };
+                            let handle = this.batch_focus_handle(window, cx);
+                            window.focus(&handle, cx);
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                        _ => {}
+                    }
                 }
             }));
 
@@ -420,3 +678,32 @@ impl App {
 
     // ── scrim helpers ──────────────────────────────────────────────────────────
 }
+
+fn get_typed_char(ev: &KeyDownEvent) -> Option<char> {
+    if ev.keystroke.modifiers.control
+        || ev.keystroke.modifiers.platform
+        || ev.keystroke.modifiers.alt
+    {
+        return None;
+    }
+    if ev.keystroke.key == "space" {
+        return Some(' ');
+    }
+    if let Some(ref kc) = ev.keystroke.key_char {
+        let mut chars = kc.chars();
+        if let Some(c) = chars.next() {
+            if chars.next().is_none() && !c.is_control() {
+                return Some(c);
+            }
+        }
+    }
+    let key = ev.keystroke.key.as_str();
+    let mut chars = key.chars();
+    if let Some(c) = chars.next() {
+        if chars.next().is_none() && !c.is_control() {
+            return Some(c);
+        }
+    }
+    None
+}
+

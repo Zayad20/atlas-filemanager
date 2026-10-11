@@ -130,7 +130,7 @@ impl App {
                             let _perf = crate::perf::span_detail("miller.rows.build", || {
                                 format!("pane={} col={ci} range={start}..{end}", pane_id.0)
                             });
-                            list_view.update(cx, |app, _cx| {
+                            list_view.update(cx, |app, cx| {
                                 let rows_data = {
                                     let Some(col) = app
                                         .state
@@ -201,7 +201,7 @@ impl App {
                                                 &entry.path,
                                             ),
                                             window,
-                                        })
+                                        }, cx)
                                         .into_any_element()
                                     })
                                     .collect::<Vec<_>>()
@@ -370,7 +370,7 @@ struct MillerRowProps<'a> {
 
 /// One row in a Miller column. Single click selects (cascading the next column);
 /// double click on a file opens it. Routed through the `Miller*` actions.
-fn render_miller_row(props: MillerRowProps) -> AnyElement {
+fn render_miller_row(props: MillerRowProps, cx: &gpui::App) -> AnyElement {
     let MillerRowProps {
         entry,
         column,
@@ -425,7 +425,7 @@ fn render_miller_row(props: MillerRowProps) -> AnyElement {
         })
         .when(dimmed, |s| s.opacity(0.45))
         .cursor_pointer()
-        .when(selected && rename_input.is_none(), |s| {
+        .when(selected, |s| {
             s.bg(accent).text_color(accent_fg)
         })
         .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
@@ -459,7 +459,7 @@ fn render_miller_row(props: MillerRowProps) -> AnyElement {
                     .items_center()
                     .flex_none()
                     .child(crate::ui::views::rename::input_element(
-                        input, view, line_h, font_size, window,
+                        input, view, line_h, font_size, window, cx,
                     ))
                     .into_any_element()
             }

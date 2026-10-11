@@ -27,6 +27,33 @@ impl MillerColumn {
         }
     }
 
+    /// Preserve the selected paths when a watcher/rename refresh reorders a column.
+    pub fn set_entries(&mut self, entries: Arc<[FileEntry]>) {
+        let selected: HashSet<_> = self
+            .selection
+            .selected
+            .iter()
+            .filter_map(|&idx| self.entries.get(idx).map(|entry| entry.path.clone()))
+            .collect();
+        let cursor = self
+            .selection
+            .keyboard_cursor
+            .and_then(|idx| self.entries.get(idx))
+            .map(|entry| entry.path.clone());
+        self.entries = entries;
+        self.selection.selected = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| selected.contains(&entry.path))
+            .map(|(idx, _)| idx)
+            .collect();
+        self.selection.keyboard_cursor =
+            cursor.and_then(|path| self.entries.iter().position(|entry| entry.path == path));
+        self.selection.selection_anchor = self.selection.keyboard_cursor;
+        self.selection.last_clicked_index = self.selection.keyboard_cursor;
+    }
+
     /// The primary selected index (first selected item), used for column-open logic.
     pub fn primary_selected(&self) -> Option<usize> {
         self.selection
@@ -40,6 +67,24 @@ impl MillerColumn {
 pub struct MillerState {
     pub columns: Vec<MillerColumn>,
     pub focused: usize,
+}
+
+#[derive(Clone, Default)]
+pub struct TreeState {
+    pub expanded: std::collections::HashSet<std::path::PathBuf>,
+    pub children: std::collections::HashMap<std::path::PathBuf, std::sync::Arc<[FileEntry]>>,
+}
+
+impl TreeState {
+    pub fn toggle_expand(&mut self, path: &std::path::PathBuf) {
+        if !self.expanded.remove(path) {
+            self.expanded.insert(path.clone());
+        }
+    }
+
+    pub fn is_expanded(&self, path: &std::path::PathBuf) -> bool {
+        self.expanded.contains(path)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +182,7 @@ pub struct TabState {
     pub path_edit: PathEditState,
     pub search: SearchInPlaceState,
     pub miller: MillerState,
+    pub tree: TreeState,
     /// Width of the pane as of the last rendered frame, used to detect active
     /// resize and suppress layout thrashing in the grid view.
     pub last_pane_width: f32,
@@ -167,6 +213,7 @@ pub struct TabState {
     /// Set by create/navigate paths; consumed on the next completed load to bump
     /// `appear_seq`. Keeps watch refreshes from re-triggering the appear animation.
     pub pending_appear: bool,
+    pub is_branch_view: bool,
 }
 
 impl Default for TabState {
@@ -183,6 +230,7 @@ impl Default for TabState {
             path_edit: PathEditState::default(),
             search: SearchInPlaceState::default(),
             miller: MillerState::default(),
+            tree: TreeState::default(),
             last_pane_width: 0.0,
             last_pane_height: 0.0,
             entries_version: 0,
@@ -197,6 +245,7 @@ impl Default for TabState {
             type_labels_version: u64::MAX, // force rebuild on first call
             appear_seq: 0,
             pending_appear: false,
+            is_branch_view: false,
         }
     }
 }
@@ -241,6 +290,7 @@ impl TabState {
         self.path_edit.error = None;
         // The Miller view lazily re-initialises its first column from the pane path.
         self.miller = MillerState::default();
+        self.tree = TreeState::default();
     }
 
     /// Flip the per-kind visibility toggles, invalidating the cached visible set.
@@ -353,6 +403,83 @@ impl TabState {
         self.counts = counts;
         self.visible_valid = true;
     }
+
+    /// Flattened list of visible nodes `(entry: &FileEntry, depth: usize, is_expanded: bool, has_children: bool)`
+    /// respecting expanded folders and search filters, ideal for `uniform_list`.
+    pub fn visible_tree_rows(&mut self) -> Vec<(&FileEntry, usize, bool, bool)> {
+        self.visible_indices();
+        let visible_idxs = self.visible.clone();
+        let mut rows = Vec::new();
+        let mut visited = HashSet::new();
+
+        for &idx in visible_idxs.iter() {
+            let entry = &self.entries[idx];
+            let is_dir = matches!(entry.kind, FileKind::Dir);
+            let is_expanded = is_dir && self.tree.is_expanded(&entry.path);
+            let has_children = if is_dir {
+                match self.tree.children.get(&entry.path) {
+                    Some(children) => !children.is_empty(),
+                    None => true,
+                }
+            } else {
+                false
+            };
+            rows.push((entry, 0, is_expanded, has_children));
+
+            if is_expanded && visited.insert(entry.path.clone()) {
+                self.push_visible_tree_children(&entry.path, 1, &mut visited, &mut rows);
+                visited.remove(&entry.path);
+            }
+        }
+
+        rows
+    }
+
+    fn push_visible_tree_children<'a>(
+        &'a self,
+        parent_path: &std::path::Path,
+        depth: usize,
+        visited: &mut HashSet<std::path::PathBuf>,
+        rows: &mut Vec<(&'a FileEntry, usize, bool, bool)>,
+    ) {
+        let Some(children) = self.tree.children.get(parent_path) else {
+            return;
+        };
+        let needle = self.filter.to_lowercase();
+        let (show_files, show_folders) = (self.show_files, self.show_folders);
+        let kind_visible = |entry: &FileEntry| {
+            if matches!(entry.kind, FileKind::Dir) {
+                show_folders
+            } else {
+                show_files
+            }
+        };
+
+        for child in children.iter() {
+            if !kind_visible(child) {
+                continue;
+            }
+            if !needle.is_empty() && fuzzy_score(&needle, &child.name_lower).is_none() {
+                continue;
+            }
+            let is_dir = matches!(child.kind, FileKind::Dir);
+            let is_expanded = is_dir && self.tree.is_expanded(&child.path);
+            let has_children = if is_dir {
+                match self.tree.children.get(&child.path) {
+                    Some(c) => !c.is_empty(),
+                    None => true,
+                }
+            } else {
+                false
+            };
+            rows.push((child, depth, is_expanded, has_children));
+
+            if is_expanded && visited.insert(child.path.clone()) {
+                self.push_visible_tree_children(&child.path, depth + 1, visited, rows);
+                visited.remove(&child.path);
+            }
+        }
+    }
 }
 
 /// CPU-only folder filtering used by the UI worker. Keeping it in the model
@@ -434,6 +561,28 @@ mod tests {
     }
 
     #[test]
+    fn miller_refresh_preserves_selected_paths_and_drops_removed_entries() {
+        let mut col = MillerColumn::new(Location::Directory(std::path::PathBuf::from(".")));
+        col.set_entries(vec![entry("a", FileKind::File), entry("b", FileKind::File)].into());
+        col.selection.selected.extend([0, 1]);
+        col.selection.keyboard_cursor = Some(1);
+        col.set_entries(
+            vec![
+                entry("0", FileKind::File),
+                entry("b", FileKind::File),
+                entry("a", FileKind::File),
+            ]
+            .into(),
+        );
+        assert_eq!(col.selection.selected, HashSet::from([1, 2]));
+        assert_eq!(col.selection.keyboard_cursor, Some(1));
+        col.set_entries(vec![entry("a", FileKind::File)].into());
+        assert_eq!(col.selection.selected, HashSet::from([0]));
+        assert_eq!(col.selection.keyboard_cursor, None);
+        assert_eq!(col.selection.selection_anchor, None);
+    }
+
+    #[test]
     fn visibility_toggles_filter_by_kind_and_feed_counts() {
         let mut ts = TabState::default();
         ts.set_entries(
@@ -492,6 +641,90 @@ mod tests {
 
         ts.set_entries(vec![entry("docs", FileKind::Dir), entry("a.txt", FileKind::File)].into());
         assert_eq!(ts.visible_indices(), &[0, 1]);
+    }
+
+    #[test]
+    fn tree_state_expand_toggle() {
+        let mut tree = TreeState::default();
+        let path = std::path::PathBuf::from("/home/user/docs");
+        assert!(!tree.is_expanded(&path));
+        tree.toggle_expand(&path);
+        assert!(tree.is_expanded(&path));
+        tree.toggle_expand(&path);
+        assert!(!tree.is_expanded(&path));
+    }
+
+    #[test]
+    fn visible_tree_rows_flattens_hierarchy() {
+        let mut ts = TabState::default();
+        let docs = entry("docs", FileKind::Dir);
+        let file1 = entry("file1.txt", FileKind::File);
+        let docs_path = docs.path.clone();
+
+        let child1 = FileEntry {
+            name: "subfolder".to_string(),
+            name_lower: "subfolder".to_string(),
+            path: docs_path.join("subfolder"),
+            kind: FileKind::Dir,
+            size: None,
+            modified: None,
+            extension: None,
+            display_size: "".into(),
+            display_date: "".into(),
+            display_type: "".into(),
+            _is_hidden: false,
+            _is_symlink: false,
+            archive_root: None,
+            recycle_info: None,
+        };
+        let child2 = FileEntry {
+            name: "inner.md".to_string(),
+            name_lower: "inner.md".to_string(),
+            path: docs_path.join("inner.md"),
+            kind: FileKind::File,
+            size: Some(10),
+            modified: None,
+            extension: Some("md".into()),
+            display_size: "10 B".into(),
+            display_date: "".into(),
+            display_type: "".into(),
+            _is_hidden: false,
+            _is_symlink: false,
+            archive_root: None,
+            recycle_info: None,
+        };
+
+        ts.set_entries(vec![docs.clone(), file1.clone()].into());
+        ts.tree
+            .children
+            .insert(docs_path.clone(), vec![child1.clone(), child2.clone()].into());
+
+        // Collapsed docs folder:
+        let rows = ts.visible_tree_rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0.name, "docs");
+        assert_eq!(rows[0].1, 0); // depth
+        assert_eq!(rows[0].2, false); // is_expanded
+        assert_eq!(rows[0].3, true); // has_children
+        assert_eq!(rows[1].0.name, "file1.txt");
+        assert_eq!(rows[1].1, 0);
+        assert_eq!(rows[1].2, false);
+        assert_eq!(rows[1].3, false);
+
+        // Expand docs folder:
+        ts.tree.toggle_expand(&docs_path);
+        let rows = ts.visible_tree_rows();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].0.name, "docs");
+        assert_eq!(rows[0].1, 0);
+        assert_eq!(rows[0].2, true);
+        assert_eq!(rows[1].0.name, "subfolder");
+        assert_eq!(rows[1].1, 1); // depth 1
+        assert_eq!(rows[1].2, false);
+        assert_eq!(rows[2].0.name, "inner.md");
+        assert_eq!(rows[2].1, 1);
+        assert_eq!(rows[3].0.name, "file1.txt");
+        assert_eq!(rows[3].1, 0);
     }
 }
 

@@ -190,6 +190,18 @@ impl DetailsRowRing {
         self.slots[ix].as_ref().filter(|s| s.row == row)
     }
 
+    /// Stop painting a row replaced by an interactive rename overlay. Skipping
+    /// sync alone leaves the previous frame's slot available to collect_rows.
+    pub fn remove_row(&mut self, row: usize) {
+        if self.slots.is_empty() {
+            return;
+        }
+        let ix = self.index(row);
+        if self.slots[ix].as_ref().is_some_and(|slot| slot.row == row) {
+            self.slots[ix] = None;
+        }
+    }
+
     /// Collect a dense, contiguous paint snapshot. Heavy payloads remain shared;
     /// each clone copies only scalars and Arc handles.
     pub fn collect_rows(&self, start: usize, end: usize) -> Vec<DetailsRowSlot> {
@@ -276,6 +288,29 @@ mod tests {
         let _ = ring.sync_row(4, 2, || slot(4, 2)); // same index as 0
         assert!(ring.get(0).is_none());
         assert_eq!(ring.get(4).map(|s| s.row), Some(4));
+    }
+
+    #[test]
+    fn rename_overlay_excludes_cached_row_and_restores_it_after_editing() {
+        let mut ring = DetailsRowRing::default();
+        ring.ensure_capacity(4);
+        for row in 0..3 {
+            ring.sync_row(row, row as u64, || slot(row, row as u64));
+        }
+        ring.remove_row(1);
+        assert_eq!(
+            ring.collect_rows(0, 3)
+                .iter()
+                .map(|s| s.row)
+                .collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+        ring.sync_row(1, 1, || slot(1, 1));
+        assert_eq!(ring.collect_rows(0, 3).len(), 3);
+
+        ring.sync_row(5, 5, || slot(5, 5));
+        ring.remove_row(1);
+        assert!(ring.get(5).is_some());
     }
 
     #[test]

@@ -27,6 +27,7 @@ pub mod miller;
 mod rename;
 pub mod space_lens;
 pub mod tabs_bar_element;
+pub mod tree;
 pub mod virtual_grid;
 
 /// Shared entry click handler: double-click activates, single click selects

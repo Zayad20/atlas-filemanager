@@ -1,4 +1,5 @@
 use atlas_model::file_entry::{FileEntry, FileKind, SortColumn, SortDir};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 pub async fn list_dir(
@@ -9,6 +10,92 @@ pub async fn list_dir(
     folders_first: bool,
 ) -> anyhow::Result<Vec<FileEntry>> {
     list_dir_with_preview(path, show_hidden, sort_col, sort_dir, folders_first, |_| {}).await
+}
+
+pub async fn list_branch_dir_with_preview(
+    path: &Path,
+    show_hidden: bool,
+    sort_col: SortColumn,
+    sort_dir: SortDir,
+    preview: impl Fn(Vec<FileEntry>) + Send + 'static,
+) -> anyhow::Result<Vec<FileEntry>> {
+    let dir = crate::fs::paths::normalize_wsl_unc_path(path.to_path_buf());
+    let entries = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<FileEntry>> {
+        crate::fs::paths::ensure_wsl_ready(&dir)?;
+        let mut entries = Vec::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(dir);
+
+        while let Some(current_dir) = queue.pop_front() {
+            let read_dir = match std::fs::read_dir(&current_dir) {
+                Ok(rd) => rd,
+                Err(_) => continue,
+            };
+
+            for raw in read_dir {
+                let Ok(de) = raw else { continue };
+                let path = de.path();
+                if !show_hidden && crate::util::display::is_hidden(&path) {
+                    continue;
+                }
+                let Ok(ft) = de.file_type() else { continue };
+                if ft.is_dir() {
+                    if ft.is_symlink() {
+                        continue;
+                    }
+                    queue.push_back(path);
+                    continue;
+                }
+                if ft.is_symlink() && path.is_dir() {
+                    continue;
+                }
+                let is_symlink = ft.is_symlink();
+                let kind = if is_symlink {
+                    FileKind::Symlink
+                } else {
+                    FileKind::File
+                };
+                let meta = de.metadata().ok();
+                let size = ft
+                    .is_file()
+                    .then(|| meta.as_ref().map(|m| m.len()))
+                    .flatten();
+                let modified = meta.as_ref().and_then(|m| m.modified().ok());
+                let name = path.file_name().map_or_else(
+                    || path.to_string_lossy().to_string(),
+                    |n| n.to_string_lossy().to_string(),
+                );
+                let name_lower = name.to_lowercase();
+                let extension = path.extension().map(|e| e.to_string_lossy().to_lowercase());
+                let is_hidden = crate::util::display::is_hidden(&path);
+                entries.push(FileEntry {
+                    name,
+                    name_lower,
+                    path,
+                    kind,
+                    size,
+                    modified,
+                    extension,
+                    display_size: String::new().into(),
+                    display_date: String::new().into(),
+                    display_type: String::new().into(),
+                    _is_hidden: is_hidden,
+                    _is_symlink: is_symlink,
+                    archive_root: None,
+                    recycle_info: None,
+                });
+                if entries.len() % 256 == 0 {
+                    let mut snapshot = entries.clone();
+                    sort_entries(&mut snapshot, &sort_col, &sort_dir, false);
+                    preview(snapshot);
+                }
+            }
+        }
+        sort_entries(&mut entries, &sort_col, &sort_dir, false);
+        Ok(entries)
+    })
+    .await??;
+    Ok(entries)
 }
 
 pub async fn list_dir_with_preview(
@@ -289,5 +376,61 @@ mod tests {
 
         assert_eq!(rx.recv().unwrap(), 256);
         assert_eq!(entries.len(), 300);
+    }
+
+    #[tokio::test]
+    async fn branch_view_flattens_tree_and_ignores_dir_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("sub1/sub2")).unwrap();
+        std::fs::File::create(root.join("root_file.txt")).unwrap();
+        std::fs::File::create(root.join("sub1/file_b.txt")).unwrap();
+        std::fs::File::create(root.join("sub1/sub2/file_c.txt")).unwrap();
+
+        #[cfg(unix)]
+        {
+            let _ = std::os::unix::fs::symlink(root, root.join("sub1/loop_link"));
+        }
+
+        let entries = list_branch_dir_with_preview(
+            root,
+            true,
+            SortColumn::Name,
+            SortDir::Asc,
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["file_b.txt", "file_c.txt", "root_file.txt"]);
+        assert!(entries.iter().all(|e| !matches!(e.kind, FileKind::Dir)));
+    }
+
+    #[tokio::test]
+    async fn branch_view_streams_previews_every_256() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        for i in 0..300 {
+            std::fs::File::create(root.join("sub").join(format!("item_{i:03}.txt"))).unwrap();
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let entries = list_branch_dir_with_preview(
+            root,
+            true,
+            SortColumn::Name,
+            SortDir::Asc,
+            move |preview| {
+                let _ = tx.send(preview.len());
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(entries.len(), 300);
+        let preview_len = rx.recv().unwrap();
+        assert_eq!(preview_len, 256);
     }
 }

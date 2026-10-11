@@ -22,6 +22,10 @@ libsqlite dependency on any platform.
 
 ## Linux
 
+The automated Linux build, installation tests, signed repositories, store preparation,
+and release procedure are documented in [docs/linux-distribution.md](../docs/linux-distribution.md).
+Run **Linux packages** in GitHub Actions to build and test without publishing.
+
 ```sh
 # Bundle (.deb) with cargo-bundle, or just install the binary + desktop entry manually:
 install -Dm755 target/release/atlas           ~/.local/bin/atlas

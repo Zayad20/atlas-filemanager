@@ -300,35 +300,48 @@ fn fit_into(w: f32, h: f32, box_w: f32, box_h: f32) -> (f32, f32) {
 }
 
 fn preview_language_for_path(path: &Path) -> &'static str {
-    match path
+    let ext = path
         .extension()
         .and_then(|ext| ext.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_else(|| {
+            path.file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+        });
+    match ext.as_str() {
         "rs" => "rust",
-        "js" | "jsx" => "javascript",
-        "ts" | "tsx" => "typescript",
-        "py" => "python",
+        "js" | "jsx" | "mjs" | "cjs" => "javascript",
+        "ts" | "tsx" | "mts" | "cts" => "typescript",
+        "py" | "pyw" => "python",
         "go" => "go",
         "java" => "java",
         "c" | "h" => "c",
         "cc" | "cpp" | "cxx" | "hpp" => "cpp",
-        "cs" => "c_sharp",
-        "rb" => "ruby",
+        "cs" | "csx" => "c_sharp",
+        "rb" | "rake" => "ruby",
         "php" => "php",
         "swift" => "swift",
         "kt" | "kts" => "kotlin",
-        "sh" | "bash" => "bash",
+        "sh" | "bash" | "zsh" => "bash",
         "ps1" => "powershell",
-        "html" | "htm" => "html",
-        "css" => "css",
-        "json" => "json",
+        "html" | "htm" | "xhtml" => "html",
+        "css" | "scss" | "sass" | "less" => "css",
+        "json" | "jsonc" | "json5" => "json",
         "toml" => "toml",
         "yaml" | "yml" => "yaml",
-        "xml" => "xml",
-        "md" | "markdown" => "markdown",
+        "xml" | "svg" => "xml",
+        "md" | "markdown" | "mdx" => "markdown",
+        "sql" => "sql",
+        "zig" => "zig",
+        "lua" => "lua",
+        "dart" => "dart",
+        "vue" => "vue",
+        "svelte" => "svelte",
+        "astro" => "astro",
+        "dockerfile" | "containerfile" => "dockerfile",
+        "makefile" => "makefile",
         _ => "text",
     }
 }
@@ -369,8 +382,13 @@ impl App {
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_string();
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                path.file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or("")
+                    .to_string()
+            });
         let show_ln = self
             .state
             .profiles

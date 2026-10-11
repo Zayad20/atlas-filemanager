@@ -504,7 +504,9 @@ impl App {
                     entries,
                 } => {
                     if let Some(ts) = self.state.tab_states.get_mut(&tab) {
-                        if op_id == ts.last_nav_op_id && ts.entries.is_empty() {
+                        if op_id == ts.last_nav_op_id
+                            && (ts.load_state == LoadState::Loading || ts.entries.is_empty())
+                        {
                             ts.set_entries(entries.into());
                             info.notify_panes.push(tab);
                         }
@@ -513,8 +515,11 @@ impl App {
                 BgResult::DirListed {
                     tab,
                     op_id,
-                    entries,
+                    mut entries,
                 } => {
+                    if entries.first().is_some_and(|e| e.display_date.is_empty()) {
+                        crate::ui::views::details::format_entries(&mut entries);
+                    }
                     crate::perf::count_by("bg.entries", entries.len() as u64);
                     // display_* fields are pre-formatted by the producing task
                     // (see `details::format_entries`); keep the drain allocation-free.
@@ -527,6 +532,9 @@ impl App {
                         vec![]
                     };
                     let mut armed_appear = false;
+                    let is_miller = self.tab_data_for(tab).is_some_and(|pane| {
+                        pane.view_mode == atlas_model::settings::ViewMode::Miller
+                    });
                     if let Some(ts) = self.state.tab_states.get_mut(&tab) {
                         // Ignore stale results from a superseded navigation
                         if op_id == ts.last_nav_op_id {
@@ -565,10 +573,11 @@ impl App {
                                 .and_then(|p| ts.entries.iter().position(|e| e.path == p));
                             ts.selection.selection_anchor = ts.selection.keyboard_cursor;
                             ts.selection.last_clicked_index = ts.selection.keyboard_cursor;
-                            if self
-                                .pending_select
-                                .as_ref()
-                                .is_some_and(|(pending_tab, _)| *pending_tab == tab)
+                            if !is_miller
+                                && self
+                                    .pending_select
+                                    .as_ref()
+                                    .is_some_and(|(pending_tab, _)| *pending_tab == tab)
                             {
                                 if let Some((_, pending_path)) = self.pending_select.as_ref() {
                                     if let Some(idx) =
@@ -625,11 +634,39 @@ impl App {
                             .miller
                             .columns
                             .iter_mut()
-                            .find(|c| c.location == location && c.op_id == op_id)
+                            .enumerate()
+                            .find(|(_, c)| c.location == location && c.op_id == op_id)
                         {
-                            c.entries = entries.into();
+                            let (column, c) = c;
+                            c.set_entries(entries.into());
                             c.load_state = LoadState::Loaded;
+                            if let Some(idx) = self
+                                .pending_select
+                                .as_ref()
+                                .filter(|(pane, _)| *pane == tab)
+                                .and_then(|(_, path)| {
+                                    c.entries.iter().position(|entry| &entry.path == path)
+                                })
+                            {
+                                c.selection.clear();
+                                c.selection.selected.insert(idx);
+                                c.selection.keyboard_cursor = Some(idx);
+                                c.selection.selection_anchor = Some(idx);
+                                c.selection.last_clicked_index = Some(idx);
+                                self.pending_select = None;
+                                if let Some(scroll) = self.miller_scroll_handles.get(&(tab, column))
+                                {
+                                    scroll.scroll_to_item(idx, gpui::ScrollStrategy::Nearest);
+                                }
+                            }
                         }
+                    }
+                    info.notify_panes.push(tab);
+                }
+                BgResult::TreeListed { tab, path, entries } => {
+                    self.tree_loading.remove(&(tab, path.clone()));
+                    if let Some(ts) = self.state.tab_states.get_mut(&tab) {
+                        ts.tree.children.insert(path, entries.into());
                     }
                     info.notify_panes.push(tab);
                 }
@@ -1076,6 +1113,28 @@ impl App {
                 }
                 #[cfg(feature = "provider-host")]
                 other => self.handle_cloud_bg(other),
+            }
+        }
+        // Directory refreshes can reorder or remove the edited entry. Rendering
+        // follows its path; release focus if that path no longer exists here.
+        if let Some(edit) = self.rename_edit.as_ref() {
+            let present = self.state.tab_states.get(&edit.pane).is_some_and(|ts| {
+                if self
+                    .tab_data_for(edit.pane)
+                    .is_some_and(|tab| tab.view_mode == atlas_model::settings::ViewMode::Miller)
+                {
+                    ts.miller
+                        .columns
+                        .iter()
+                        .any(|col| col.entries.iter().any(|entry| entry.path == edit.path))
+                } else {
+                    ts.entries.iter().any(|entry| entry.path == edit.path)
+                }
+            });
+            if !present {
+                info.notify_panes.push(edit.pane);
+                self.rename_edit = None;
+                info.notify_all = true;
             }
         }
         info

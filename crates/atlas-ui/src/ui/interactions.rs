@@ -29,6 +29,7 @@ impl App {
             ViewMode::Details => 1.0,
             ViewMode::Grid => 2.0 + ((thumbnail_size - 64.0) / 16.0).round().clamp(0.0, 20.0),
             ViewMode::Miller => 1.0,
+            ViewMode::Tree => 1.0,
         }
     }
 
@@ -335,6 +336,10 @@ impl App {
         match &td.view_mode {
             atlas_model::settings::ViewMode::Details => (1, count),
             atlas_model::settings::ViewMode::Grid => {
+                if let Some(model) = self.grid_hit.get(&pane) {
+                    let cols = model.cols.max(1);
+                    return (cols, count.div_ceil(cols));
+                }
                 let thumb = td.thumbnail_size;
                 let gap = self.state.settings.grid_spacing.clamp(4.0, 48.0);
                 let pad = (gap * 0.75).round().max(4.0);
@@ -344,6 +349,10 @@ impl App {
                 (cols, count.div_ceil(cols))
             }
             atlas_model::settings::ViewMode::List => {
+                if let Some(model) = self.list_hit.get(&pane) {
+                    let cols = model.cols.max(1);
+                    return (cols, count.div_ceil(cols));
+                }
                 const CELL_W: f32 = 220.0;
                 let stride = CELL_W + 6.0;
                 let avail = ts.last_pane_width.max(stride);
@@ -351,6 +360,7 @@ impl App {
                 (cols, count.div_ceil(cols))
             }
             atlas_model::settings::ViewMode::Miller => (1, 0),
+            atlas_model::settings::ViewMode::Tree => (1, count),
         }
     }
 
@@ -595,6 +605,7 @@ impl App {
                 }
             }
             ViewMode::Miller => {}
+            ViewMode::Tree => {}
         }
         hits
     }
@@ -788,11 +799,17 @@ impl App {
             return false;
         };
 
-        let gap = self.state.settings.grid_spacing.clamp(4.0, 48.0);
-        let pad = (gap * 0.75).round().max(4.0);
-        let row_pitch = pane_data.thumbnail_size * crate::ui::views::grid::GRID_ICON_AREA
-            + crate::ui::views::grid::GRID_LABEL_H
-            + gap;
+        let fallback_gap = self.state.settings.grid_spacing.clamp(4.0, 48.0);
+        let fallback_pad = (fallback_gap * 0.75).round().max(4.0);
+        let fallback_h = pane_data.thumbnail_size * crate::ui::views::grid::GRID_ICON_AREA
+            + crate::ui::views::grid::GRID_LABEL_H;
+        // Hit geometry is measured in the same zoom-scaled pixels as the
+        // viewport. Recomputing unscaled dimensions can scroll a visible edit away.
+        let (pad, row_pitch, row_h) = self.grid_hit.get(&pane).map_or(
+            (fallback_pad, fallback_h + fallback_gap, fallback_h),
+            |model| (model.pad_y, model.pitch_y, model.cell_h),
+        );
+        let gap = (row_pitch - row_h).max(0.0);
         let (_, row_count) = self.rubber_scroll_dims(pane);
         if row_count == 0 {
             return true;
@@ -805,14 +822,14 @@ impl App {
         }
 
         let row_top = pad + row as f32 * row_pitch;
-        let row_bottom = row_top + row_pitch;
+        let row_bottom = row_top + row_h;
         let content_h = pad * 2.0 + row_count as f32 * row_pitch - gap;
         let max_scroll = (content_h - viewport_h).max(0.0);
         let offset = base.offset();
         let current_top = (-f32::from(offset.y)).max(0.0);
         let target = match strategy {
             gpui::ScrollStrategy::Top => row_top,
-            gpui::ScrollStrategy::Center => row_top - (viewport_h - row_pitch) * 0.5,
+            gpui::ScrollStrategy::Center => row_top - (viewport_h - row_h) * 0.5,
             gpui::ScrollStrategy::Bottom => row_bottom - viewport_h,
             gpui::ScrollStrategy::Nearest => {
                 if row_top < current_top {
@@ -846,7 +863,12 @@ impl App {
             return false;
         };
 
-        let row_pitch = crate::ui::views::details::DETAILS_ROW_H;
+        let row_pitch = self
+            .details_hit
+            .get(&pane)
+            .map_or(crate::ui::views::details::DETAILS_ROW_H, |model| {
+                model.row_h
+            });
         let row_count = self
             .state
             .tab_states
@@ -923,6 +945,14 @@ impl App {
             }
             ViewMode::Details => self.scroll_details_row_to(pane, visible_pos, strategy),
             ViewMode::Miller => false,
+            ViewMode::Tree => {
+                if let Some(handle) = self.scroll_handles.get(&pane) {
+                    handle.scroll_to_item(visible_pos, strategy);
+                    true
+                } else {
+                    false
+                }
+            }
         }
     }
 
@@ -934,7 +964,7 @@ impl App {
             .tab_data_for(pane)
             .map(|tab| tab.view_mode.clone())
             .unwrap_or_default();
-        let Some((idx, visible_pos, path, name, initial_select_chars)) = (|| {
+        let Some((entry_idx, visible_pos, path, name, initial_select_chars)) = (|| {
             let ts = self.state.tab_states.get_mut(&pane)?;
             if matches!(view_mode, ViewMode::Miller) {
                 let col = ts.miller.columns.get(ts.miller.focused)?;
@@ -943,7 +973,10 @@ impl App {
                     .keyboard_cursor
                     .or_else(|| col.selection.selected.iter().copied().next())?;
                 let entry = col.entries.get(idx)?;
-                let stem_chars = rename_select_chars(&entry.name);
+                if entry.archive_root.is_some() {
+                    return None;
+                }
+                let stem_chars = Some(rename_selection_chars(&entry.name, &entry.kind));
                 return Some((idx, idx, entry.path.clone(), entry.name.clone(), stem_chars));
             }
             let idx = ts
@@ -955,7 +988,10 @@ impl App {
                 .iter()
                 .position(|&visible| visible == idx)?;
             let entry = ts.entries.get(idx)?;
-            let stem_chars = rename_select_chars(&entry.name);
+            if entry.archive_root.is_some() {
+                return None;
+            }
+            let stem_chars = Some(rename_selection_chars(&entry.name, &entry.kind));
             Some((
                 idx,
                 visible_pos,
@@ -968,7 +1004,7 @@ impl App {
         };
 
         self.close_batch_rename();
-        self.rename_visual_suppress = None;
+        self.select_rename_target(pane, entry_idx);
         match view_mode {
             ViewMode::Grid => {
                 let (cols, _) = self.rubber_scroll_dims(pane);
@@ -988,17 +1024,23 @@ impl App {
                 }
             }
             ViewMode::Miller => {}
+            ViewMode::Tree => {
+                if let Some(handle) = self.scroll_handles.get(&pane) {
+                    handle.scroll_to_item(visible_pos, gpui::ScrollStrategy::Nearest);
+                }
+            }
         }
 
         let input = crate::ui::text_input::single_line(window, cx, "", name);
         input.update(cx, |state, cx| state.focus(window, cx));
         self.rename_edit = Some(crate::app::RenameEdit {
             pane,
-            idx,
             path,
             input,
             initial_select_chars,
         });
+        self.notify_pane(pane, cx);
+        cx.notify();
     }
 
     /// Confirm the inline rename: validate the new name (cross-platform: reject path
@@ -1007,31 +1049,46 @@ impl App {
         self.commit_rename_inner(true, cx);
     }
 
-    fn commit_rename_inner(&mut self, select_target: bool, cx: &mut Context<Self>) {
-        let Some(edit) = self.rename_edit.take() else {
-            return;
+    fn commit_rename_inner(&mut self, select_target: bool, cx: &mut Context<Self>) -> bool {
+        let Some(edit) = self.rename_edit.as_ref() else {
+            return false;
         };
-        self.rename_visual_suppress = Some((edit.pane, edit.idx, 2));
         let new_name = edit.input.read(cx).value().to_string();
-        let new_name = new_name.trim();
-        if !atlas_model::batch_rename::name_is_valid(new_name) {
-            return;
+        let Some(parent) = edit.path.parent() else {
+            return false;
+        };
+        let to = parent.join(&new_name);
+        // Keep the editor and its text on validation errors, including Tab.
+        if let Err(error) = atlas_core::fs::transfer::validate_filename(&new_name) {
+            self.toast_error(crate::app::ops::filename_error_text(&error));
+            cx.notify();
+            return false;
         }
-        if let Some(parent) = edit.path.parent() {
-            let to = parent.join(new_name);
-            if to != edit.path {
-                if select_target {
-                    self.pending_select = Some((edit.pane, to.clone()));
-                }
-                self.state.focused_tile = edit.pane;
-                self.process_actions(vec![Action::Rename {
-                    from: edit.path,
-                    to,
-                }]);
-            } else {
-                self.state.focused_tile = edit.pane;
+        #[cfg(feature = "provider-host")]
+        let remote = self.focused_remote_tab().is_some();
+        #[cfg(not(feature = "provider-host"))]
+        let remote = false;
+        if !remote {
+            if let Some(error) = crate::app::ops::rename_target_error(&edit.path, &to) {
+                self.toast_error(error);
+                cx.notify();
+                return false;
             }
         }
+        let edit = self.rename_edit.take().expect("rename validated above");
+        self.notify_pane(edit.pane, cx);
+        cx.notify();
+        self.state.focused_tile = edit.pane;
+        if to != edit.path {
+            if select_target {
+                self.pending_select = Some((edit.pane, to.clone()));
+            }
+            self.process_actions(vec![Action::Rename {
+                from: edit.path,
+                to,
+            }]);
+        }
+        true
     }
 
     pub(crate) fn commit_rename_and_move(
@@ -1040,11 +1097,17 @@ impl App {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((pane, idx)) = self.rename_edit.as_ref().map(|edit| (edit.pane, edit.idx)) else {
+        let Some((pane, path)) = self
+            .rename_edit
+            .as_ref()
+            .map(|edit| (edit.pane, edit.path.clone()))
+        else {
             return;
         };
-        let next = self.rename_neighbor(pane, idx, forward);
-        self.commit_rename_inner(false, cx);
+        let next = self.rename_neighbor(pane, &path, forward);
+        if !self.commit_rename_inner(false, cx) {
+            return;
+        }
         let Some((next_idx, next_path)) = next else {
             cx.notify();
             return;
@@ -1077,19 +1140,21 @@ impl App {
     fn rename_neighbor(
         &mut self,
         pane: TabId,
-        idx: usize,
+        path: &std::path::Path,
         forward: bool,
     ) -> Option<(usize, std::path::PathBuf)> {
         let view_mode = self.tab_data_for(pane)?.view_mode.clone();
         let ts = self.state.tab_states.get_mut(&pane)?;
         if matches!(view_mode, ViewMode::Miller) {
             let col = ts.miller.columns.get(ts.miller.focused)?;
+            let idx = col.entries.iter().position(|entry| entry.path == path)?;
             let next_idx = neighbor_index(idx, col.entries.len(), forward)?;
             let path = col.entries.get(next_idx)?.path.clone();
             return Some((next_idx, path));
         }
 
         let visible = ts.visible_indices().to_vec();
+        let idx = ts.entries.iter().position(|entry| entry.path == path)?;
         let pos = visible.iter().position(|&visible_idx| visible_idx == idx)?;
         let next_pos = neighbor_index(pos, visible.len(), forward)?;
         let next_idx = visible[next_pos];
@@ -1122,9 +1187,10 @@ impl App {
     }
 
     /// Cancel the inline rename without touching the filesystem.
-    pub(crate) fn cancel_rename(&mut self) {
+    pub(crate) fn cancel_rename(&mut self, cx: &mut Context<Self>) {
         if let Some(edit) = self.rename_edit.take() {
-            self.rename_visual_suppress = Some((edit.pane, edit.idx, 2));
+            self.notify_pane(edit.pane, cx);
+            cx.notify();
         }
     }
 
@@ -1317,6 +1383,22 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let pane_id = self.state.focused_tile;
+        let active = self
+            .state
+            .tab_states
+            .get(&pane_id)
+            .is_some_and(|ts| ts.search.active);
+        if self.state.settings.vim_mode
+            && !active
+            && crate::input::shortcuts::is_vim_navigation_key(
+                ev.keystroke.key.as_str(),
+                ev.keystroke.modifiers.shift,
+            )
+        {
+            return;
+        }
+
         let Some(seed) = search_seed_from_key(ev) else {
             return;
         };
@@ -1413,6 +1495,15 @@ impl App {
     }
 }
 
+fn rename_selection_chars(name: &str, kind: &atlas_model::file_entry::FileKind) -> u32 {
+    let all = name.chars().count() as u32;
+    if matches!(kind, atlas_model::file_entry::FileKind::Dir) {
+        all
+    } else {
+        rename_select_chars(name).unwrap_or(all)
+    }
+}
+
 fn rename_select_chars(name: &str) -> Option<u32> {
     let lower = name.to_ascii_lowercase();
     let compound_exts = [
@@ -1445,7 +1536,17 @@ fn rename_select_chars(name: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::rename_select_chars;
+    use super::{rename_select_chars, rename_selection_chars};
+
+    #[test]
+    fn rename_selects_full_directory_or_extensionless_name_and_unicode_file_stem() {
+        use atlas_model::file_entry::FileKind;
+        assert_eq!(rename_selection_chars("folder.name", &FileKind::Dir), 11);
+        assert_eq!(rename_selection_chars("README", &FileKind::File), 6);
+        assert_eq!(rename_selection_chars(".gitignore", &FileKind::File), 10);
+        assert_eq!(rename_selection_chars("caf\u{e9}.txt", &FileKind::File), 4);
+        assert_eq!(rename_selection_chars("archive.tar.gz", &FileKind::File), 7);
+    }
 
     #[test]
     fn rename_selects_name_before_extension() {

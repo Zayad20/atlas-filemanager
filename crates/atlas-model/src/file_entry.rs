@@ -77,10 +77,15 @@ pub fn file_category(kind: &FileKind, ext: Option<&str>) -> String {
                 "mp4" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "m4v" | "flv" => {
                     rust_i18n::t!("file_kind_video").into_owned()
                 }
-                "rs" | "js" | "jsx" | "ts" | "tsx" | "py" | "go" | "java" | "c" | "cc" | "cpp"
-                | "cxx" | "h" | "hpp" | "cs" | "php" | "rb" | "swift" | "kt" | "kts" | "sh"
-                | "ps1" | "bat" | "lua" | "dart" | "zig" | "nim" | "r" | "scala" | "ex" | "exs"
-                | "clj" | "hs" | "ml" => rust_i18n::t!("file_kind_code").into_owned(),
+                "rs" | "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "mts" | "cts" | "py" | "pyw"
+                | "go" | "java" | "c" | "cc" | "cpp" | "cxx" | "h" | "hpp" | "cs" | "csx" | "php"
+                | "rb" | "swift" | "kt" | "kts" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat"
+                | "cmd" | "lua" | "dart" | "zig" | "nim" | "r" | "scala" | "ex" | "exs" | "clj"
+                | "hs" | "ml" | "html" | "htm" | "xhtml" | "xml" | "vue" | "svelte"
+                | "astro" | "css" | "scss" | "sass" | "less" | "json" | "jsonc" | "json5"
+                | "yaml" | "yml" | "toml" | "sql" | "graphql" | "gql" | "dockerfile" | "makefile" => {
+                    rust_i18n::t!("file_kind_code").into_owned()
+                }
                 "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "tgz" | "zst" => {
                     rust_i18n::t!("file_kind_archive").into_owned()
                 }

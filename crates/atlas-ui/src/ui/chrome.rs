@@ -120,6 +120,7 @@ impl App {
         let active_theme = self.state.profiles.active().theme.as_str();
         let windows_theme = is_windows_theme(active_theme);
         let is_glass = active_theme.ends_with(" Glass");
+        let is_branch_view = self.tab_data_for(pane_id).is_some_and(|t| t.is_branch_view);
         let button_hover = control_hover(fg);
         let crumbs: Option<AnyElement> = if let Some((archive, inner)) = pane_archive_inner.as_ref()
         {
@@ -139,10 +140,31 @@ impl App {
         } else {
             pane_location.as_ref().map(|location| match location {
                 Location::Directory(p) => {
-                    breadcrumb(view, pane_id, p, fg, muted, button_hover, windows_theme)
+                    breadcrumb(view, pane_id, p, fg, muted, button_hover, windows_theme, is_branch_view)
                         .into_any_element()
                 }
-                // Virtual locations (tag results, recycle bin, remotes) have no
+                #[cfg(feature = "provider-host")]
+                Location::Remote { id, path } => {
+                    let remote_label = self
+                        .state
+                        .cloud
+                        .remote(id)
+                        .map(|r| r.name.clone())
+                        .unwrap_or_else(|| id.clone());
+                    remote_breadcrumb(
+                        view,
+                        pane_id,
+                        id,
+                        &remote_label,
+                        path,
+                        fg,
+                        muted,
+                        button_hover,
+                        windows_theme,
+                    )
+                    .into_any_element()
+                }
+                // Virtual locations (tag results, recycle bin) have no
                 // filesystem ancestors to climb — show a static labelled crumb
                 // instead of a clickable path that would navigate nowhere.
                 other => h_flex()
@@ -330,12 +352,13 @@ impl App {
     ) -> (AnyElement, AnyElement) {
         // Mirror the per-tab toggles into the TabState so its cached filtering
         // (and the counts below) pick them up.
-        let (folders_first, show_files, show_folders) = self
+        let (folders_first, show_files, show_folders, is_branch_view) = self
             .tab_data_for(pane_id)
-            .map(|td| (td.folders_first, td.show_files, td.show_folders))
-            .unwrap_or((true, true, true));
+            .map(|td| (td.folders_first, td.show_files, td.show_folders, td.is_branch_view))
+            .unwrap_or((true, true, true, false));
         if let Some(ts) = self.state.tab_states.get_mut(&pane_id) {
             ts.set_visibility(show_files, show_folders);
+            ts.is_branch_view = is_branch_view;
         }
 
         let initial = self
@@ -573,6 +596,36 @@ impl App {
                             });
                         }),
                 )
+                .child({
+                    let branch_view_action = view.clone();
+                    div()
+                        .id(SharedString::from(format!("filter-branch-{}", pane_id.0)))
+                        .p(crate::ui::rem_px(3.))
+                        .rounded_md()
+                        .cursor_pointer()
+                        .bg(controls.hover.opacity(0.0))
+                        .when(is_branch_view, |s| s.bg(accent))
+                        .motion_feedback()
+                        .when(!is_branch_view, |s| s.hover(move |s| s.bg(controls.hover)))
+                        .child(theme_icon(
+                            AtlasIcon::TreeStructure,
+                            14.0,
+                            if is_branch_view { accent_fg } else { muted },
+                            windows_theme,
+                        ))
+                        .tooltip(|window, cx| {
+                            gpui_component::tooltip::Tooltip::new(
+                                rust_i18n::t!("cmd_view_branch_view_title").into_owned(),
+                            )
+                            .build(window, cx)
+                        })
+                        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                            branch_view_action.update(cx, |this, cx| {
+                                this.process_actions(vec![Action::ToggleBranchView(pane_id)]);
+                                cx.notify();
+                            });
+                        })
+                })
                 .children(status_text.map(|t| {
                     let tip = error.clone();
                     div()
@@ -607,42 +660,90 @@ impl App {
                 .into_any_element()
         } else {
             let open_view = view.clone();
-            div()
+            let branch_toggle_view = view.clone();
+            h_flex()
                 .id(SharedString::from(format!("filter-pill-{}", pane_id.0)))
                 .absolute()
                 .bottom_2()
                 .left_2()
-                .p(crate::ui::rem_px(6.))
+                .px_1()
+                .py(crate::ui::rem_px(2.))
+                .gap(crate::ui::rem_px(2.))
+                .items_center()
                 .rounded_full()
                 .border_1()
                 .border_color(controls.border)
                 .bg(pill_surface)
                 .when(is_glass, |s| s.backdrop_blur(px(12.0)))
                 .raised_surface()
-                .cursor_pointer()
-                .motion_feedback()
-                .hover(move |s| s.bg(pill_surface.blend(&controls.hover)))
-                .active(move |s| s.bg(pill_surface.blend(&controls.pressed)))
-                .child(theme_icon(
-                    AtlasIcon::Search,
-                    14.0,
-                    controls.foreground,
-                    windows_theme,
-                ))
-                .tooltip(|window, cx| {
-                    gpui_component::tooltip::Tooltip::new(
-                        rust_i18n::t!("tooltip_filter_files").into_owned(),
-                    )
-                    .build(window, cx)
-                })
-                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                    cx.stop_propagation();
-                    open_view.update(cx, |this, cx| {
-                        this.activate_tab(pane_id);
-                        this.process_actions(vec![Action::OpenSearchInPlace]);
-                        cx.notify();
-                    });
-                })
+                // 1. Search button
+                .child(
+                    div()
+                        .id(SharedString::from(format!("filter-btn-search-{}", pane_id.0)))
+                        .p(crate::ui::rem_px(4.))
+                        .rounded_full()
+                        .cursor_pointer()
+                        .motion_feedback()
+                        .hover(move |s| s.bg(controls.hover))
+                        .active(move |s| s.bg(controls.pressed))
+                        .child(theme_icon(
+                            AtlasIcon::Search,
+                            14.0,
+                            controls.foreground,
+                            windows_theme,
+                        ))
+                        .tooltip(|window, cx| {
+                            gpui_component::tooltip::Tooltip::new(
+                                rust_i18n::t!("tooltip_filter_files").into_owned(),
+                            )
+                            .build(window, cx)
+                        })
+                        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                            cx.stop_propagation();
+                            open_view.update(cx, |this, cx| {
+                                this.activate_tab(pane_id);
+                                this.process_actions(vec![Action::OpenSearchInPlace]);
+                                cx.notify();
+                            });
+                        }),
+                )
+                // 2. Subtle vertical separator
+                .child(
+                    div()
+                        .w(px(1.))
+                        .h(crate::ui::rem_px(14.))
+                        .bg(border.opacity(0.35)),
+                )
+                // 3. Branch View button
+                .child(
+                    div()
+                        .id(SharedString::from(format!("filter-btn-branch-{}", pane_id.0)))
+                        .p(crate::ui::rem_px(4.))
+                        .rounded_full()
+                        .cursor_pointer()
+                        .motion_feedback()
+                        .when(is_branch_view, |s| s.bg(accent))
+                        .when(!is_branch_view, |s| s.hover(move |s| s.bg(controls.hover)))
+                        .active(move |s| s.bg(controls.pressed))
+                        .child(theme_icon(
+                            AtlasIcon::TreeStructure,
+                            14.0,
+                            if is_branch_view { accent_fg } else { controls.foreground },
+                            windows_theme,
+                        ))
+                        .tooltip(|window, cx| {
+                            gpui_component::tooltip::Tooltip::new("Branch View (Ctrl+B)".to_string())
+                                .build(window, cx)
+                        })
+                        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                            cx.stop_propagation();
+                            branch_toggle_view.update(cx, |this, cx| {
+                                this.activate_tab(pane_id);
+                                this.process_actions(vec![Action::ToggleBranchView(pane_id)]);
+                                cx.notify();
+                            });
+                        }),
+                )
                 .into_any_element()
         };
 
@@ -689,12 +790,14 @@ impl App {
             ViewMode::Grid => AtlasIcon::Grid,
             ViewMode::List => AtlasIcon::List,
             ViewMode::Miller => AtlasIcon::Columns,
+            ViewMode::Tree => AtlasIcon::TreeStructure,
         };
         let view_label = match view_mode {
             ViewMode::Details => rust_i18n::t!("view_details").into_owned(),
             ViewMode::Grid => rust_i18n::t!("view_grid").into_owned(),
             ViewMode::List => rust_i18n::t!("view_list").into_owned(),
             ViewMode::Miller => rust_i18n::t!("view_columns").into_owned(),
+            ViewMode::Tree => rust_i18n::t!("view_tree").into_owned(),
         };
         let view_slider_value = self.pane_view_slider_value(pane_id);
         let zoom_slider = if let Some(slider) = self.pane_zoom_sliders.get(&pane_id) {
@@ -839,6 +942,14 @@ impl App {
                                         slider.clone(),
                                     ))
                                     .child(row(
+                                        AtlasIcon::TreeStructure,
+                                        rust_i18n::t!("view_tree").into_owned(),
+                                        ViewMode::Tree,
+                                        active_mode == ViewMode::Tree,
+                                        view.clone(),
+                                        slider.clone(),
+                                    ))
+                                    .child(row(
                                         AtlasIcon::Grid,
                                         rust_i18n::t!("view_grid").into_owned(),
                                         ViewMode::Grid,
@@ -848,10 +959,10 @@ impl App {
                                     )),
                             )
                             .child(
-                                div().w(px(22.0)).h(px(96.0)).items_center().child(
+                                div().w(px(22.0)).h(px(120.0)).items_center().child(
                                     Slider::new(&slider)
                                         .vertical()
-                                        .h(px(88.0))
+                                        .h(px(112.0))
                                         .bg(accent.opacity(0.55))
                                         .text_color(accent),
                                 ),
@@ -1216,6 +1327,7 @@ fn breadcrumb(
     muted: Hsla,
     layer_base: Hsla,
     windows_theme: bool,
+    is_branch_view: bool,
 ) -> impl IntoElement {
     let mut row = h_flex()
         .flex_1()
@@ -1255,6 +1367,47 @@ fn breadcrumb(
             layer_base,
             windows_theme,
         }));
+    }
+    if is_branch_view {
+        row = row.child(breadcrumb_chevron(
+            view,
+            tile,
+            cumulative,
+            muted,
+            layer_base,
+            windows_theme,
+        ));
+        let badge_view = view.clone();
+        row = row.child(
+            h_flex()
+                .id(SharedString::from(format!("crumb-branch-badge-{}", tile.0)))
+                .items_center()
+                .gap(crate::ui::rem_px(4.0))
+                .px(crate::ui::rem_px(6.0))
+                .py(crate::ui::rem_px(2.0))
+                .rounded(crate::ui::rem_px(4.0))
+                .bg(fg.opacity(0.12))
+                .hover(|s| s.bg(fg.opacity(0.20)))
+                .cursor_pointer()
+                .text_color(fg)
+                .text_xs()
+                .tooltip(move |window, cx| {
+                    shortcut_tooltip(
+                        rust_i18n::t!("cmd_view_branch_view_title"),
+                        rust_i18n::t!("cmd_view_branch_view_desc"),
+                        &["ctrl-b"],
+                        window,
+                        cx,
+                    )
+                })
+                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                    badge_view.update(cx, |this, _| {
+                        this.process_actions([Action::ToggleBranchView(tile)]);
+                    });
+                })
+                .child(crate::ui::icons::icon(AtlasIcon::TreeStructure, 12.0, fg))
+                .child(rust_i18n::t!("branch_view_badge").to_string()),
+        );
     }
     row
 }
@@ -1509,6 +1662,73 @@ fn archive_breadcrumb(
             layer_base,
             windows_theme,
         }));
+    }
+
+    row
+}
+
+#[cfg(feature = "provider-host")]
+#[allow(clippy::too_many_arguments)]
+fn remote_breadcrumb(
+    view: &Entity<App>,
+    tile: TabId,
+    id: &str,
+    remote_label: &str,
+    path: &str,
+    fg: Hsla,
+    muted: Hsla,
+    layer_base: Hsla,
+    windows_theme: bool,
+) -> impl IntoElement {
+    let mut row = h_flex()
+        .flex_1()
+        .min_w(px(0.))
+        .gap(crate::ui::rem_px(if windows_theme { 7.0 } else { 5.0 }))
+        .items_center()
+        .overflow_hidden();
+
+    row = row.child(crate::ui::icons::icon(AtlasIcon::Cloud, 13.0, muted));
+
+    // Root crumb for the remote itself
+    row = row.child(breadcrumb_segment(BreadcrumbSegmentProps {
+        view: view.clone(),
+        tile,
+        id: SharedString::from(format!("crumb-remote-root-{}", tile.0)),
+        label: remote_label.to_string(),
+        location: Location::Remote {
+            id: id.to_string(),
+            path: String::new(),
+        },
+        drop_dest: None,
+        fg,
+        layer_base,
+        windows_theme,
+    }));
+
+    let trimmed = path.trim_matches('/');
+    if !trimmed.is_empty() {
+        let mut path_so_far = String::new();
+        for (idx, comp) in trimmed.split('/').enumerate() {
+            if !path_so_far.is_empty() {
+                path_so_far.push('/');
+            }
+            path_so_far.push_str(comp);
+            row = row.child(div().text_color(muted).child("›"));
+            row = row.child(breadcrumb_segment(BreadcrumbSegmentProps {
+                view: view.clone(),
+                tile,
+                id: SharedString::from(format!("crumb-remote-sub-{}-{}", tile.0, idx)),
+                label: comp.to_string(),
+                location: Location::Remote {
+                    id: id.to_string(),
+                    path: path_so_far.clone(),
+                },
+                drop_dest: None,
+                fg,
+                layer_base,
+                windows_theme,
+            }));
+        }
     }
 
     row

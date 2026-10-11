@@ -365,12 +365,6 @@ impl Render for App {
                 dock.update(cx, |_, cx| cx.notify());
             }
         }
-        if let Some((_, _, frames)) = &mut self.rename_visual_suppress {
-            *frames = frames.saturating_sub(1);
-            if *frames == 0 {
-                self.rename_visual_suppress = None;
-            }
-        }
         if let Some((pane, path, select_all)) = self.pending_rename.clone() {
             let needs_scroll = self
                 .state
@@ -845,6 +839,20 @@ impl Render for App {
                     cx.notify();
                     return;
                 }
+                let pane_filter_active = this
+                    .state
+                    .tab_states
+                    .get(&this.state.focused_tile)
+                    .is_some_and(|ts| ts.search.active);
+                if this.state.settings.vim_mode
+                    && !pane_filter_active
+                    && crate::input::shortcuts::is_vim_navigation_key(
+                        ev.keystroke.key.as_str(),
+                        ev.keystroke.modifiers.shift,
+                    )
+                {
+                    return;
+                }
                 this.handle_global_type_to_filter(ev, window, cx);
             }))
             .on_action(
@@ -980,66 +988,18 @@ impl Render for App {
             }))
             .on_action(
                 cx.listener(|this, _: &gpui_component::input::Copy, _w, cx| {
-                    if this
-                        .state
-                        .active_tab_data()
-                        .map_or(false, |t| t.location.is_archive())
-                    {
-                        this.toast_error(rust_i18n::t!("root_copy_archive_error").into());
-                        cx.notify();
-                        return;
-                    }
-                    let paths = this.selected_paths();
-                    if !paths.is_empty() {
-                        this.process_actions(vec![Action::Copy(paths)]);
-                    }
+                    this.copy_focused();
                     cx.notify();
                 }),
             )
             .on_action(cx.listener(|this, _: &gpui_component::input::Cut, _w, cx| {
-                if this
-                    .state
-                    .active_tab_data()
-                    .map_or(false, |t| t.location.is_archive())
-                {
-                    this.toast_error(rust_i18n::t!("root_cut_archive_error").into());
-                    cx.notify();
-                    return;
-                }
-                let paths = this.selected_paths();
-                if !paths.is_empty() {
-                    this.process_actions(vec![Action::Cut(paths)]);
-                }
+                this.cut_focused();
                 cx.notify();
             }))
             .on_action(
                 cx.listener(|this, _: &gpui_component::input::Paste, _w, cx| {
-                    if this
-                        .state
-                        .active_tab_data()
-                        .map_or(false, |t| t.location.is_archive())
-                    {
-                        this.toast_error(rust_i18n::t!("root_paste_archive_error").into());
-                        cx.notify();
-                        return;
-                    }
-                    let dest = this.state.active_tab_data().and_then(|t| {
-                        // Local tab: use the real filesystem dir.
-                        if let Some(p) = t.location.fs_dir() {
-                            return Some(p.to_path_buf());
-                        }
-                        // Remote tab: use an empty sentinel; the action handler
-                        // detects Location::Remote and routes to the cloud worker.
-                        #[cfg(feature = "provider-host")]
-                        if matches!(t.location, atlas_model::location::Location::Remote { .. }) {
-                            return Some(PathBuf::new());
-                        }
-                        None
-                    });
-                    if let Some(dest) = dest {
-                        this.process_actions(vec![Action::Paste { dest }]);
-                        cx.notify();
-                    }
+                    this.paste_focused();
+                    cx.notify();
                 }),
             )
             // Behind the workspace: foreground controls block caption hit testing,

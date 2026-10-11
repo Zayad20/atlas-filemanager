@@ -301,11 +301,14 @@ impl Element for DetailsBodyElement {
                         continue;
                     };
                     if crate::ui::views::rename::active_input(app, pane_id, entry_idx).is_some() {
+                        app.details_row_rings
+                            .entry(pane_id)
+                            .or_default()
+                            .remove_row(i);
                         continue;
                     }
 
-                    let selected = tab_state.selection.selected.contains(&entry_idx)
-                        && !crate::ui::views::rename::suppress_row_chrome(app, pane_id, entry_idx);
+                    let selected = tab_state.selection.selected.contains(&entry_idx);
                     let cursor = tab_state.selection.keyboard_cursor == Some(entry_idx);
                     let dimmed = crate::ui::views::rename::dim_other_entry(app, pane_id, entry_idx);
                     let flashing = matches!(entry.kind, FileKind::Dir)
@@ -538,155 +541,155 @@ impl Element for DetailsBodyElement {
                     size: size(bounds.size.width, px(row_h)),
                 };
 
-                window.paint_layer(row_bounds, |window| {
-                    // 1. Background
-                    let bg = if row.selected {
-                        Some(accent)
-                    } else if row.flashing {
-                        Some(accent.opacity(0.38))
-                    } else if row.hovered {
-                        Some(hover)
-                    } else if row.odd {
-                        Some(stripe_bg)
-                    } else {
-                        None
-                    };
-                    if let Some(mut color) = bg {
-                        if row.dimmed {
-                            color = color.opacity(color.alpha * 0.45);
-                        }
-                        window.paint_quad(gpui::fill(row_bounds, color));
-                    }
-                    if row.cursor {
-                        let outline_color = accent.opacity(if row.selected { 0.95 } else { 0.65 });
-                        window.paint_quad(gpui::outline(row_bounds, outline_color, Default::default()));
-                    }
-
-                    // 2. Icons
-                    if row.selected && prepaint.show_checkboxes {
-                        let icon_center_x = f32::from(origin_x) + row_pad_x + row_icon_size * 0.5;
-                        let icon_center_y = f32::from(y) + row_h * 0.5;
-                        selection_checkbox::paint_animated(
-                            window,
-                            cx,
-                            point(px(icon_center_x), px(icon_center_y)),
-                            15.0 * zoom_scale,
-                            row.selected_at,
-                        );
-                    } else if let Some(tex) = &row.icon_tex {
-                        let _ = window.paint_image(
-                            Bounds {
-                                origin: point(
-                                    origin_x + px(row_pad_x),
-                                    y + px((row_h - row_icon_size) * 0.5),
-                                ),
-                                size: size(px(row_icon_size), px(row_icon_size)),
-                            },
-                            Bounds {
-                                origin: point(
-                                    origin_x + px(row_pad_x),
-                                    y + px((row_h - row_icon_size) * 0.5),
-                                ),
-                                size: size(px(row_icon_size), px(row_icon_size)),
-                            },
-                            Corners::default(),
-                            tex.clone(),
-                            0,
-                            false,
-                        );
-                    } else if let Some(path) = row.fallback_icon_path {
-                        let _ = window.paint_svg(
-                            Bounds {
-                                origin: point(
-                                    origin_x + px(row_pad_x),
-                                    y + px((row_h - row_icon_size) * 0.5),
-                                ),
-                                size: size(px(row_icon_size), px(row_icon_size)),
-                            },
-                            SharedString::from(path),
-                            None,
-                            Default::default(),
-                            muted,
-                            cx,
-                        );
-                    }
-
-                    // 3. Name text
-                    if paint_names {
-                        let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
-                        let name_x = origin_x + px(prepaint.layout.name_x);
-                        let mut name_color = if row.selected { accent_fg } else { fg };
-                        if row.dimmed {
-                            name_color = name_color.opacity(0.45);
-                        }
-                        if row.text.name_s.width() > px(name_width) {
-                            truncated_names += 1;
-                        }
-                        let _ = row.text.name_s.paint_mono_truncated(
-                            point(name_x, text_y),
-                            px(row_h),
-                            px(name_width),
-                            &prepaint.ellipsis,
-                            name_color,
-                            window,
-                            cx,
-                        );
-                    }
-
-                    // 4. Meta text
-                    if prepaint.content_lod.paints_metadata() {
-                        let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
-                        let base_meta_color = if row.selected { accent_fg } else { muted };
-                        let base_meta_color = if row.dimmed {
-                            base_meta_color.opacity(base_meta_color.alpha * 0.45)
-                        } else {
-                            base_meta_color
-                        };
-
-                        for meta in &row.text.meta_cols {
-                            let Some(layout_col) = prepaint
-                                .layout
-                                .columns
-                                .iter()
-                                .find(|col| col.column == meta.column)
-                            else {
-                                continue;
+                window.with_element_opacity(
+                    row.dimmed.then_some(crate::ui::views::rename::DIM_OPACITY),
+                    |window| {
+                        window.paint_layer(row_bounds, |window| {
+                            // 1. Background
+                            let bg = if row.selected {
+                                Some(accent)
+                            } else if row.flashing {
+                                Some(accent.opacity(0.38))
+                            } else if row.hovered {
+                                Some(hover)
+                            } else if row.odd {
+                                Some(stripe_bg)
+                            } else {
+                                None
                             };
-                            if layout_col.x >= f32::from(bounds.size.width) {
-                                continue;
+                            if let Some(color) = bg {
+                                window.paint_quad(gpui::fill(row_bounds, color));
                             }
-                            let col_x = origin_x + px(layout_col.x);
-                            let mut col_w = layout_col.w;
-                            let remaining_w =
-                                (f32::from(bounds.size.width) - layout_col.x).max(0.0);
-                            col_w = col_w.min(remaining_w);
-                            let padding = cell_pad.min(col_w);
-                            let available_width = (col_w - padding).max(0.0);
-                            let text_x = col_x + px(padding);
-                            if meta.line.width() > px(available_width) {
-                                truncated_meta += 1;
+                            if row.cursor {
+                                let outline_color =
+                                    accent.opacity(if row.selected { 0.95 } else { 0.65 });
+                                window.paint_quad(gpui::outline(
+                                    row_bounds,
+                                    outline_color,
+                                    Default::default(),
+                                ));
                             }
-                            if available_width > 15.0 * zoom_scale {
-                                painted_meta_cells += 1;
-                                let is_dragging = self.dragging == Some(meta.column);
-                                let meta_color = if is_dragging {
-                                    base_meta_color.opacity(base_meta_color.alpha * 0.35)
-                                } else {
-                                    base_meta_color
-                                };
-                                let _ = meta.line.paint_mono_truncated(
-                                    point(text_x, text_y),
+
+                            // 2. Icons
+                            if row.selected && prepaint.show_checkboxes {
+                                let icon_center_x =
+                                    f32::from(origin_x) + row_pad_x + row_icon_size * 0.5;
+                                let icon_center_y = f32::from(y) + row_h * 0.5;
+                                selection_checkbox::paint_animated(
+                                    window,
+                                    cx,
+                                    point(px(icon_center_x), px(icon_center_y)),
+                                    15.0 * zoom_scale,
+                                    row.selected_at,
+                                );
+                            } else if let Some(tex) = &row.icon_tex {
+                                let _ = window.paint_image(
+                                    Bounds {
+                                        origin: point(
+                                            origin_x + px(row_pad_x),
+                                            y + px((row_h - row_icon_size) * 0.5),
+                                        ),
+                                        size: size(px(row_icon_size), px(row_icon_size)),
+                                    },
+                                    Bounds {
+                                        origin: point(
+                                            origin_x + px(row_pad_x),
+                                            y + px((row_h - row_icon_size) * 0.5),
+                                        ),
+                                        size: size(px(row_icon_size), px(row_icon_size)),
+                                    },
+                                    Corners::default(),
+                                    tex.clone(),
+                                    0,
+                                    false,
+                                );
+                            } else if let Some(path) = row.fallback_icon_path {
+                                let _ = window.paint_svg(
+                                    Bounds {
+                                        origin: point(
+                                            origin_x + px(row_pad_x),
+                                            y + px((row_h - row_icon_size) * 0.5),
+                                        ),
+                                        size: size(px(row_icon_size), px(row_icon_size)),
+                                    },
+                                    SharedString::from(path),
+                                    None,
+                                    Default::default(),
+                                    muted,
+                                    cx,
+                                );
+                            }
+
+                            // 3. Name text
+                            if paint_names {
+                                let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
+                                let name_x = origin_x + px(prepaint.layout.name_x);
+                                let name_color = if row.selected { accent_fg } else { fg };
+                                if row.text.name_s.width() > px(name_width) {
+                                    truncated_names += 1;
+                                }
+                                let _ = row.text.name_s.paint_mono_truncated(
+                                    point(name_x, text_y),
                                     px(row_h),
-                                    px(available_width),
+                                    px(name_width),
                                     &prepaint.ellipsis,
-                                    meta_color,
+                                    name_color,
                                     window,
                                     cx,
                                 );
                             }
-                        }
-                    }
-                });
+
+                            // 4. Meta text
+                            if prepaint.content_lod.paints_metadata() {
+                                let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
+                                let base_meta_color = if row.selected { accent_fg } else { muted };
+
+                                for meta in &row.text.meta_cols {
+                                    let Some(layout_col) = prepaint
+                                        .layout
+                                        .columns
+                                        .iter()
+                                        .find(|col| col.column == meta.column)
+                                    else {
+                                        continue;
+                                    };
+                                    if layout_col.x >= f32::from(bounds.size.width) {
+                                        continue;
+                                    }
+                                    let col_x = origin_x + px(layout_col.x);
+                                    let mut col_w = layout_col.w;
+                                    let remaining_w =
+                                        (f32::from(bounds.size.width) - layout_col.x).max(0.0);
+                                    col_w = col_w.min(remaining_w);
+                                    let padding = cell_pad.min(col_w);
+                                    let available_width = (col_w - padding).max(0.0);
+                                    let text_x = col_x + px(padding);
+                                    if meta.line.width() > px(available_width) {
+                                        truncated_meta += 1;
+                                    }
+                                    if available_width > 15.0 * zoom_scale {
+                                        painted_meta_cells += 1;
+                                        let is_dragging = self.dragging == Some(meta.column);
+                                        let meta_color = if is_dragging {
+                                            base_meta_color.opacity(base_meta_color.alpha * 0.35)
+                                        } else {
+                                            base_meta_color
+                                        };
+                                        let _ = meta.line.paint_mono_truncated(
+                                            point(text_x, text_y),
+                                            px(row_h),
+                                            px(available_width),
+                                            &prepaint.ellipsis,
+                                            meta_color,
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                }
+                            }
+                        });
+                    },
+                );
             }
             crate::perf::count_by("details.paint.meta_cells", painted_meta_cells);
             crate::perf::time_us(

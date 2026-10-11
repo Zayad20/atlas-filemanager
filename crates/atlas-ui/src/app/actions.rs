@@ -145,6 +145,13 @@ impl App {
                         tab.preview_enabled = !tab.preview_enabled;
                     }
                 }
+                Action::ToggleVimMode => {
+                    self.state.settings.vim_mode = !self.state.settings.vim_mode;
+                    self.state.profiles.active_mut().workspace.vim_mode =
+                        self.state.settings.vim_mode;
+                    atlas_core::util::config::save_profiles(&self.state.profiles);
+                    atlas_core::util::config::save_settings(&self.state.settings);
+                }
                 Action::ToggleSidebar => {
                     self.state.settings.show_sidebar = !self.state.settings.show_sidebar;
                     atlas_core::util::config::save_settings(&self.state.settings);
@@ -421,6 +428,47 @@ impl App {
                 Action::ToggleShowFoldersFocused => {
                     let tile = self.state.focused_tile;
                     self.process_actions([Action::ToggleShowFolders(tile)]);
+                }
+                Action::ToggleBranchView(tile) => {
+                    let mut switched_mode = false;
+                    let toggled = match self.state.pane_tree.tiles.get_mut(tile) {
+                        Some(Tile::Pane(p)) => {
+                            p.is_branch_view = !p.is_branch_view;
+                            if p.is_branch_view && p.view_mode == ViewMode::Grid {
+                                switched_mode = true;
+                            }
+                            Some(p.is_branch_view)
+                        }
+                        _ => None,
+                    };
+                    if switched_mode {
+                        self.set_pane_view_mode(tile, ViewMode::Details);
+                    }
+                    if let Some(is_branch) = toggled {
+                        if let Some(ts) = self.state.tab_states.get_mut(&tile) {
+                            ts.is_branch_view = is_branch;
+                            ts.entries = std::sync::Arc::new([]);
+                            ts.entries_version = ts.entries_version.wrapping_add(1);
+                            ts.visible_valid = false;
+                        }
+                        self.process_actions([Action::Refresh(tile)]);
+                    }
+                }
+                Action::ToggleBranchViewFocused => {
+                    let tile = self.state.focused_tile;
+                    self.process_actions([Action::ToggleBranchView(tile)]);
+                }
+                Action::ToggleTreeExpand(path) => {
+                    let tile = self.state.focused_tile;
+                    let needs_fetch = if let Some(ts) = self.state.tab_states.get_mut(&tile) {
+                        ts.tree.toggle_expand(&path);
+                        !ts.tree.children.contains_key(&path) && ts.tree.is_expanded(&path)
+                    } else {
+                        false
+                    };
+                    if needs_fetch {
+                        self.spawn_list_tree(tile, path);
+                    }
                 }
                 Action::ClosePalette => {
                     self.restore_theme_preview();
@@ -756,11 +804,49 @@ impl App {
                     self.create_dir(path);
                 }
                 Action::CreateFolderFocused => {
-                    if let Some(dir) = self
+                    #[cfg(feature = "provider-host")]
+                    if let Some((_remote_id, current_path)) = self.focused_remote_tab() {
+                        let tile = self.state.focused_tile;
+                        let base_name = rust_i18n::t!("root_new_folder");
+                        let existing_names: std::collections::HashSet<String> = self
+                            .state
+                            .tab_states
+                            .get(&tile)
+                            .map(|ts| ts.entries.iter().map(|e| e.name.clone()).collect())
+                            .unwrap_or_default();
+                        let name = if !existing_names.contains(&*base_name) {
+                            base_name.to_string()
+                        } else {
+                            let mut i = 1;
+                            loop {
+                                let candidate = format!("{base_name} ({i})");
+                                if !existing_names.contains(&candidate) {
+                                    break candidate;
+                                }
+                                i += 1;
+                            }
+                        };
+                        let parent_str = current_path.replace('\\', "/");
+                        let folder_path = if parent_str.is_empty() {
+                            name.clone()
+                        } else {
+                            format!("{}/{}", parent_str.trim_end_matches('/'), name)
+                        };
+                        let path = PathBuf::from(folder_path);
+                        self.pending_select = Some((tile, path.clone()));
+                        self.pending_rename = Some((tile, path, true));
+                        self.process_actions([Action::CreateFolder {
+                            parent: PathBuf::from(&current_path),
+                            name,
+                        }]);
+                        continue;
+                    }
+                    let target_dir = self
                         .state
                         .active_tab_data()
                         .and_then(|t| t.location.fs_dir().map(PathBuf::from))
-                    {
+                        .or_else(dirs::home_dir);
+                    if let Some(dir) = target_dir {
                         let tile = self.state.focused_tile;
                         let name = unique_child_name(&dir, &rust_i18n::t!("root_new_folder"));
                         let path = dir.join(&name);
@@ -770,15 +856,80 @@ impl App {
                     }
                 }
                 Action::CreateFile { parent, name } => {
+                    #[cfg(feature = "provider-host")]
+                    if let Some((remote_id, current_path)) = self.focused_remote_tab() {
+                        let parent_str = parent.to_string_lossy().replace('\\', "/");
+                        let file_path = if parent_str.is_empty() {
+                            name.clone()
+                        } else {
+                            format!("{}/{}", parent_str.trim_end_matches('/'), name)
+                        };
+                        let tmp = std::env::temp_dir().join(format!(
+                            "atlas_new_{}_{}_{}",
+                            std::process::id(),
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis(),
+                            name
+                        ));
+                        let _ = std::fs::write(&tmp, b"");
+                        let _ = self.cloud_tx.send(atlas_core::cloud::CloudCmd::EnqueueUpload {
+                            id: remote_id,
+                            local_path: tmp,
+                            remote_path: file_path,
+                            label: name,
+                            delete_source: true,
+                        });
+                        continue;
+                    }
                     let path = parent.join(&name);
                     self.create_file(path);
                 }
                 Action::CreateFileFocused => {
-                    if let Some(dir) = self
+                    #[cfg(feature = "provider-host")]
+                    if let Some((_remote_id, current_path)) = self.focused_remote_tab() {
+                        let tile = self.state.focused_tile;
+                        let base_name = rust_i18n::t!("root_new_file");
+                        let existing_names: std::collections::HashSet<String> = self
+                            .state
+                            .tab_states
+                            .get(&tile)
+                            .map(|ts| ts.entries.iter().map(|e| e.name.clone()).collect())
+                            .unwrap_or_default();
+                        let name = if !existing_names.contains(&*base_name) {
+                            base_name.to_string()
+                        } else {
+                            let mut i = 1;
+                            loop {
+                                let candidate = format!("{base_name} ({i})");
+                                if !existing_names.contains(&candidate) {
+                                    break candidate;
+                                }
+                                i += 1;
+                            }
+                        };
+                        let parent_str = current_path.replace('\\', "/");
+                        let file_path = if parent_str.is_empty() {
+                            name.clone()
+                        } else {
+                            format!("{}/{}", parent_str.trim_end_matches('/'), name)
+                        };
+                        let path = PathBuf::from(file_path);
+                        self.pending_select = Some((tile, path.clone()));
+                        self.pending_rename = Some((tile, path, true));
+                        self.process_actions([Action::CreateFile {
+                            parent: PathBuf::from(&current_path),
+                            name,
+                        }]);
+                        continue;
+                    }
+                    let target_dir = self
                         .state
                         .active_tab_data()
                         .and_then(|t| t.location.fs_dir().map(PathBuf::from))
-                    {
+                        .or_else(dirs::home_dir);
+                    if let Some(dir) = target_dir {
                         let tile = self.state.focused_tile;
                         let name = unique_child_name(&dir, &rust_i18n::t!("root_new_file"));
                         let path = dir.join(&name);
@@ -789,31 +940,161 @@ impl App {
                 }
                 Action::RenameFocused => {
                     let tile = self.state.focused_tile;
-                    if let Some(path) = self.selected_paths().into_iter().next() {
+                    let path = self.state.tab_states.get(&tile).and_then(|ts| {
+                        let (selection, entries) = if self.tab_data_for(tile).is_some_and(|tab| {
+                            tab.view_mode == atlas_model::settings::ViewMode::Miller
+                        }) {
+                            let col = ts.miller.columns.get(ts.miller.focused)?;
+                            (&col.selection, &col.entries)
+                        } else {
+                            (&ts.selection, &ts.entries)
+                        };
+                        let idx = selection
+                            .keyboard_cursor
+                            .or_else(|| selection.selected.iter().copied().next())?;
+                        entries.get(idx).map(|entry| entry.path.clone())
+                    });
+                    if let Some(path) = path {
                         self.pending_rename = Some((tile, path, false));
                     }
                 }
+                Action::OpenPathInNewWindow(path) => {
+                    self.spawn_new_window(Some(path));
+                }
                 Action::OpenSelectedInNewWindow => {
-                    let target = self.selected_paths().into_iter().next().or_else(|| {
-                        self.state
-                            .active_tab_data()
-                            .and_then(|tab| tab.location.fs_dir().map(PathBuf::from))
-                    });
-                    if let Some(target) = target {
-                        if let Ok(exe) = std::env::current_exe() {
-                            let _ = std::process::Command::new(exe).arg(target).spawn();
-                        }
-                    }
+                    let focused = self.state.focused_tile;
+                    let target = self
+                        .selected_paths()
+                        .into_iter()
+                        .next()
+                        .or_else(|| {
+                            self.state.tab_states.get_mut(&focused).and_then(|ts| {
+                                if let Some(idx) = ts.selection.keyboard_cursor {
+                                    if let Some(entry) = ts.entries.get(idx) {
+                                        return Some(entry.path.clone());
+                                    }
+                                }
+                                if ts.search.active {
+                                    if let Some(&idx) = ts.visible_indices().first() {
+                                        if let Some(entry) = ts.entries.get(idx) {
+                                            return Some(entry.path.clone());
+                                        }
+                                    }
+                                }
+                                None
+                            })
+                        })
+                        .or_else(|| {
+                            self.state
+                                .active_tab_data()
+                                .and_then(|tab| tab.location.fs_dir().map(PathBuf::from))
+                        });
+                    let target_dir = target
+                        .and_then(|p| {
+                            if p.is_dir() {
+                                Some(p)
+                            } else if p.is_file() {
+                                p.parent().map(std::path::Path::to_path_buf)
+                            } else {
+                                Some(p)
+                            }
+                        })
+                        .or_else(dirs::home_dir);
+                    self.spawn_new_window(target_dir);
+                }
+                Action::OpenDirInRightSplit { pane, path } => {
+                    let dir = if path.is_file() {
+                        path.parent().map(std::path::Path::to_path_buf).unwrap_or(path)
+                    } else {
+                        path
+                    };
+                    let tabs_id = self
+                        .state
+                        .find_tabs_container(pane)
+                        .or_else(|| self.state.find_any_tabs_container())
+                        .unwrap_or(pane);
+                    self.split_pane(tabs_id, false);
+                    let new_pane = self.state.focused_tile;
+                    self.navigate(new_pane, dir);
+                }
+                Action::OpenDirInBottomSplit { pane, path } => {
+                    let dir = if path.is_file() {
+                        path.parent().map(std::path::Path::to_path_buf).unwrap_or(path)
+                    } else {
+                        path
+                    };
+                    let tabs_id = self
+                        .state
+                        .find_tabs_container(pane)
+                        .or_else(|| self.state.find_any_tabs_container())
+                        .unwrap_or(pane);
+                    self.split_pane(tabs_id, true);
+                    let new_pane = self.state.focused_tile;
+                    self.navigate(new_pane, dir);
                 }
                 Action::OpenSelectedDirInRightSplit | Action::OpenSelectedDirInBottomSplit => {
                     let focused = self.state.focused_tile;
-                    let path = self.state.tab_states.get(&focused).and_then(|ts| {
-                        ts.selection.selected.iter().find_map(|&idx| {
-                            ts.entries.get(idx).and_then(|entry| {
-                                matches!(entry.kind, FileKind::Dir).then(|| entry.path.clone())
-                            })
+                    let path = self
+                        .state
+                        .tab_states
+                        .get_mut(&focused)
+                        .and_then(|ts| {
+                            // 1. From selected
+                            let from_selected = ts.selection.selected.iter().find_map(|&idx| {
+                                ts.entries.get(idx).map(|entry| {
+                                    if entry.kind == FileKind::Dir {
+                                        entry.path.clone()
+                                    } else {
+                                        entry
+                                            .path
+                                            .parent()
+                                            .map(std::path::Path::to_path_buf)
+                                            .unwrap_or_else(|| entry.path.clone())
+                                    }
+                                })
+                            });
+                            if from_selected.is_some() {
+                                return from_selected;
+                            }
+                            // 2. From keyboard cursor
+                            if let Some(idx) = ts.selection.keyboard_cursor {
+                                if let Some(entry) = ts.entries.get(idx) {
+                                    return Some(if entry.kind == FileKind::Dir {
+                                        entry.path.clone()
+                                    } else {
+                                        entry
+                                            .path
+                                            .parent()
+                                            .map(std::path::Path::to_path_buf)
+                                            .unwrap_or_else(|| entry.path.clone())
+                                    });
+                                }
+                            }
+                            // 3. From in-place fuzzy filter visible entries
+                            if ts.search.active {
+                                if let Some(&idx) = ts.visible_indices().first() {
+                                    if let Some(entry) = ts.entries.get(idx) {
+                                        return Some(if entry.kind == FileKind::Dir {
+                                            entry.path.clone()
+                                        } else {
+                                            entry
+                                                .path
+                                                .parent()
+                                                .map(std::path::Path::to_path_buf)
+                                                .unwrap_or_else(|| entry.path.clone())
+                                        });
+                                    }
+                                }
+                            }
+                            None
                         })
-                    });
+                        .or_else(|| {
+                            // 4. From active tab's location
+                            self.state
+                                .active_tab_data()
+                                .and_then(|tab| tab.location.fs_dir().map(PathBuf::from))
+                                .or_else(dirs::home_dir)
+                        });
                     if let Some(path) = path {
                         let tabs_id = self
                             .state
@@ -1288,6 +1569,106 @@ fn unique_child_name(dir: &std::path::Path, base: &str) -> String {
 }
 
 impl App {
+    pub(crate) fn copy_focused(&mut self) {
+        if self
+            .state
+            .active_tab_data()
+            .map_or(false, |t| t.location.is_archive())
+        {
+            self.toast_error(rust_i18n::t!("root_copy_archive_error").into());
+            return;
+        }
+        let paths = self.selected_paths();
+        if !paths.is_empty() {
+            self.process_actions(vec![Action::Copy(paths)]);
+        }
+    }
+
+    pub(crate) fn cut_focused(&mut self) {
+        if self
+            .state
+            .active_tab_data()
+            .map_or(false, |t| t.location.is_archive())
+        {
+            self.toast_error(rust_i18n::t!("root_cut_archive_error").into());
+            return;
+        }
+        let paths = self.selected_paths();
+        if !paths.is_empty() {
+            self.process_actions(vec![Action::Cut(paths)]);
+        }
+    }
+
+    pub(crate) fn paste_focused(&mut self) {
+        if self
+            .state
+            .active_tab_data()
+            .map_or(false, |t| t.location.is_archive())
+        {
+            self.toast_error(rust_i18n::t!("root_paste_archive_error").into());
+            return;
+        }
+        let dest = self.state.active_tab_data().and_then(|t| {
+            if let Some(p) = t.location.fs_dir() {
+                return Some(p.to_path_buf());
+            }
+            #[cfg(feature = "provider-host")]
+            if matches!(t.location, atlas_model::location::Location::Remote { .. }) {
+                return Some(PathBuf::new());
+            }
+            None
+        });
+        if let Some(dest) = dest {
+            self.process_actions(vec![Action::Paste { dest }]);
+        }
+    }
+
+    pub(crate) fn spawn_new_window(&mut self, target_dir: Option<PathBuf>) {
+        let target_dir = target_dir
+            .map(|p| {
+                if p.is_file() {
+                    p.parent().map(std::path::Path::to_path_buf).unwrap_or(p)
+                } else {
+                    p
+                }
+            })
+            .or_else(dirs::home_dir);
+        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("atlas"));
+        let mut cmd = std::process::Command::new(&exe);
+        if let Some(ref dir) = target_dir {
+            cmd.arg(dir);
+            cmd.current_dir(dir);
+        }
+
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const DETACHED_PROCESS: u32 = 0x00000008;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+            cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        }
+
+        match cmd.spawn() {
+            Ok(_) => {
+                tracing::info!(exe = ?exe, target = ?target_dir, "spawned new Atlas window");
+            }
+            Err(err) => {
+                tracing::error!(exe = ?exe, target = ?target_dir, ?err, "failed to spawn new Atlas window");
+                self.toast_error(format!("Failed to open new window: {err}"));
+            }
+        }
+    }
+
     pub(crate) fn close_search_in_place(&mut self, tile: atlas_model::layout_tree::TileId) {
         self.restore_search_original_entries(tile);
         if let Some(ts) = self.state.tab_states.get_mut(&tile) {

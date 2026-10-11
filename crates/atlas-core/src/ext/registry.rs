@@ -234,6 +234,14 @@ impl Registry {
         out
     }
 
+    /// File actions only; commands hidden here remain available in the palette.
+    pub fn context_commands_for(&self, selection: &[(Option<String>, bool)]) -> Vec<CommandRef> {
+        self.commands_for(selection)
+            .into_iter()
+            .filter(|cmd| cmd.command.context_menu)
+            .collect()
+    }
+
     pub fn resolve_tool(&self, name: &str) -> Option<PathBuf> {
         self.tools.get(name).cloned().or_else(|| binary_path(name))
     }
@@ -407,6 +415,39 @@ mod tests {
             }],
             tools: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn icon_commands_are_palette_only_and_file_actions_remain_in_context_menu() {
+        let manifest = Manifest::parse(include_str!(
+            "../../../../extensions/icon-manager/extension.toml"
+        ))
+        .unwrap();
+        let registry = registry_with(manifest);
+        let selection = [(Some("txt".into()), false)];
+        assert_eq!(registry.commands_for(&selection).len(), 6);
+        assert!(registry.context_commands_for(&selection).is_empty());
+        assert!(registry
+            .command("icon-manager", "icon-manager.download-material")
+            .is_some());
+
+        let manifest = Manifest::parse(
+            r#"
+id = "file-actions"
+name = "File Actions"
+[[commands]]
+id = "convert"
+title = "Convert"
+accepts = { any = true }
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            registry_with(manifest)
+                .context_commands_for(&selection)
+                .len(),
+            1
+        );
     }
 
     #[test]

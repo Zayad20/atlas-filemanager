@@ -1,5 +1,5 @@
 use crate::app::App;
-use atlas_core::fs::list::{entries_for_paths, list_dir, list_dir_with_preview};
+use atlas_core::fs::list::{entries_for_paths, list_branch_dir_with_preview, list_dir, list_dir_with_preview};
 use atlas_model::app_state::BgResult;
 use atlas_model::layout_tree::{Tile, TileId};
 use atlas_model::location::Location;
@@ -16,6 +16,7 @@ impl App {
         sort_dir: atlas_model::file_entry::SortDir,
     ) {
         let folders_first = self.tab_data_for(tab_id).is_none_or(|td| td.folders_first);
+        let is_branch_view = self.tab_data_for(tab_id).is_some_and(|td| td.is_branch_view);
         let op_id = self.state.next_op_id();
         let ts = self.state.tab_states.entry(tab_id).or_default();
         ts.load_state = LoadState::Loading;
@@ -25,23 +26,41 @@ impl App {
         let show_hidden = self.state.settings.show_hidden;
         self.rt.spawn(async move {
             let preview_tx = tx.clone();
-            match list_dir_with_preview(
-                &path,
-                show_hidden,
-                sort_col,
-                sort_dir,
-                folders_first,
-                move |mut entries| {
-                    crate::ui::views::details::format_entries(&mut entries);
-                    let _ = preview_tx.send(BgResult::DirListPreview {
-                        tab: tab_id,
-                        op_id,
-                        entries,
-                    });
-                },
-            )
-            .await
-            {
+            let res = if is_branch_view {
+                list_branch_dir_with_preview(
+                    &path,
+                    show_hidden,
+                    sort_col,
+                    sort_dir,
+                    move |mut entries| {
+                        crate::ui::views::details::format_entries(&mut entries);
+                        let _ = preview_tx.send(BgResult::DirListPreview {
+                            tab: tab_id,
+                            op_id,
+                            entries,
+                        });
+                    },
+                )
+                .await
+            } else {
+                list_dir_with_preview(
+                    &path,
+                    show_hidden,
+                    sort_col,
+                    sort_dir,
+                    folders_first,
+                    move |mut entries| {
+                        crate::ui::views::details::format_entries(&mut entries);
+                        let _ = preview_tx.send(BgResult::DirListPreview {
+                            tab: tab_id,
+                            op_id,
+                            entries,
+                        });
+                    },
+                )
+                .await
+            };
+            match res {
                 Ok(mut entries) => {
                     crate::ui::views::details::format_entries(&mut entries);
                     let _ = tx.send(BgResult::DirListed {
@@ -209,6 +228,34 @@ impl App {
                 tab: tile,
                 location,
                 op_id,
+                entries,
+            });
+        });
+    }
+
+    pub(crate) fn spawn_list_tree(&mut self, tab_id: TileId, path: PathBuf) {
+        if !self.tree_loading.insert((tab_id, path.clone())) {
+            return;
+        }
+        let show_hidden = self.state.settings.show_hidden;
+        let (col, dir, folders_first) = self
+            .tab_data_for(tab_id)
+            .map(|td| (td.sort_col.clone(), td.sort_dir.clone(), td.folders_first))
+            .unwrap_or((
+                atlas_model::file_entry::SortColumn::Name,
+                atlas_model::file_entry::SortDir::Asc,
+                true,
+            ));
+        let tx = self.tx.clone();
+        let p = path.clone();
+        self.rt.spawn(async move {
+            let mut entries = list_dir(&p, show_hidden, col, dir, folders_first)
+                .await
+                .unwrap_or_default();
+            crate::ui::views::details::format_entries(&mut entries);
+            let _ = tx.send(BgResult::TreeListed {
+                tab: tab_id,
+                path: p,
                 entries,
             });
         });
@@ -460,6 +507,219 @@ impl App {
                 column,
                 idx,
             }]);
+        }
+        true
+    }
+
+    /// Keyboard cursor movement in Tree view. Returns `true` when focused pane is Tree view.
+    pub(crate) fn tree_nav_apply(
+        &mut self,
+        target: &dyn Fn(usize, usize) -> usize,
+        extend: bool,
+        cursor_only: bool,
+    ) -> bool {
+        let tile = self.state.focused_tile;
+        let is_tree = self
+            .tab_data_for(tile)
+            .is_some_and(|td| matches!(td.view_mode, atlas_model::settings::ViewMode::Tree));
+        if !is_tree {
+            return false;
+        }
+        let Some(ts) = self.state.tab_states.get_mut(&tile) else {
+            return true;
+        };
+        let len = ts.visible_tree_rows().len();
+        if len == 0 {
+            return true;
+        }
+        let cur = ts.selection.keyboard_cursor.unwrap_or(0);
+        let np = target(cur, len).min(len - 1);
+        ts.selection.keyboard_cursor = Some(np);
+        ts.selection.last_clicked_index = Some(np);
+        if cursor_only {
+            // Keep selected set intact
+        } else if extend {
+            let anchor = ts.selection.selection_anchor.unwrap_or(cur);
+            let (lo, hi) = (anchor.min(np), anchor.max(np));
+            ts.selection.selected.clear();
+            ts.selection.selected.extend(lo..=hi);
+        } else {
+            ts.selection.selection_anchor = Some(np);
+            ts.selection.selected.clear();
+            ts.selection.selected.insert(np);
+        }
+        if let Some(handle) = self.scroll_handles.get(&tile) {
+            handle.scroll_to_item(np, gpui::ScrollStrategy::Center);
+        }
+        true
+    }
+
+    /// Left in Tree view: collapse folder if expanded; or move to parent folder.
+    pub(crate) fn tree_nav_left(&mut self) -> bool {
+        let tile = self.state.focused_tile;
+        let is_tree = self
+            .tab_data_for(tile)
+            .is_some_and(|td| matches!(td.view_mode, atlas_model::settings::ViewMode::Tree));
+        if !is_tree {
+            return false;
+        }
+        let (path_to_collapse, parent_idx) = {
+            let Some(ts) = self.state.tab_states.get_mut(&tile) else {
+                return true;
+            };
+            let cur = ts.selection.keyboard_cursor.unwrap_or(0);
+            let rows = ts.visible_tree_rows();
+            if let Some((entry, depth, is_expanded, _)) = rows.get(cur).cloned() {
+                if entry.kind == atlas_model::file_entry::FileKind::Dir && is_expanded {
+                    (Some(entry.path.clone()), None)
+                } else if depth > 0 {
+                    let mut p_idx = None;
+                    for i in (0..cur).rev() {
+                        if rows[i].1 == depth - 1 {
+                            p_idx = Some(i);
+                            break;
+                        }
+                    }
+                    (None, p_idx)
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            }
+        };
+
+        let Some(ts) = self.state.tab_states.get_mut(&tile) else {
+            return true;
+        };
+        if let Some(path) = path_to_collapse {
+            ts.tree.toggle_expand(&path);
+        } else if let Some(i) = parent_idx {
+            ts.selection.keyboard_cursor = Some(i);
+            ts.selection.selection_anchor = Some(i);
+            ts.selection.last_clicked_index = Some(i);
+            ts.selection.selected.clear();
+            ts.selection.selected.insert(i);
+            if let Some(handle) = self.scroll_handles.get(&tile) {
+                handle.scroll_to_item(i, gpui::ScrollStrategy::Center);
+            }
+        }
+        true
+    }
+
+    /// Right in Tree view: expand folder if collapsed; or move to first child.
+    pub(crate) fn tree_nav_right(&mut self) -> bool {
+        let tile = self.state.focused_tile;
+        let is_tree = self
+            .tab_data_for(tile)
+            .is_some_and(|td| matches!(td.view_mode, atlas_model::settings::ViewMode::Tree));
+        if !is_tree {
+            return false;
+        }
+        enum NavRight {
+            Expand(std::path::PathBuf),
+            Select(usize),
+            None,
+        }
+        let nav_action = {
+            let Some(ts) = self.state.tab_states.get_mut(&tile) else {
+                return true;
+            };
+            let cur = ts.selection.keyboard_cursor.unwrap_or(0);
+            let rows = ts.visible_tree_rows();
+            if let Some((entry, depth, is_expanded, has_children)) = rows.get(cur).cloned() {
+                if entry.kind == atlas_model::file_entry::FileKind::Dir {
+                    if !is_expanded {
+                        NavRight::Expand(entry.path.clone())
+                    } else if has_children && cur + 1 < rows.len() && rows[cur + 1].1 == depth + 1 {
+                        NavRight::Select(cur + 1)
+                    } else {
+                        NavRight::None
+                    }
+                } else {
+                    NavRight::None
+                }
+            } else {
+                NavRight::None
+            }
+        };
+
+        match nav_action {
+            NavRight::Expand(path) => {
+                let needs_fetch = if let Some(ts) = self.state.tab_states.get_mut(&tile) {
+                    ts.tree.toggle_expand(&path);
+                    !ts.tree.children.contains_key(&path)
+                } else {
+                    false
+                };
+                if needs_fetch {
+                    self.spawn_list_tree(tile, path);
+                }
+            }
+            NavRight::Select(next) => {
+                if let Some(ts) = self.state.tab_states.get_mut(&tile) {
+                    ts.selection.keyboard_cursor = Some(next);
+                    ts.selection.selection_anchor = Some(next);
+                    ts.selection.last_clicked_index = Some(next);
+                    ts.selection.selected.clear();
+                    ts.selection.selected.insert(next);
+                }
+                if let Some(handle) = self.scroll_handles.get(&tile) {
+                    handle.scroll_to_item(next, gpui::ScrollStrategy::Center);
+                }
+            }
+            NavRight::None => {}
+        }
+        true
+    }
+
+    /// Enter in Tree view: open file or toggle folder expand.
+    pub(crate) fn tree_open_cursor(&mut self) -> bool {
+        let tile = self.state.focused_tile;
+        let is_tree = self
+            .tab_data_for(tile)
+            .is_some_and(|td| matches!(td.view_mode, atlas_model::settings::ViewMode::Tree));
+        if !is_tree {
+            return false;
+        }
+        enum OpenCursor {
+            Toggle(std::path::PathBuf),
+            OpenFile(std::path::PathBuf),
+            None,
+        }
+        let action = {
+            let Some(ts) = self.state.tab_states.get_mut(&tile) else {
+                return true;
+            };
+            let cur = ts.selection.keyboard_cursor.unwrap_or(0);
+            let rows = ts.visible_tree_rows();
+            if let Some((entry, _, _, _)) = rows.get(cur) {
+                if entry.kind == atlas_model::file_entry::FileKind::Dir {
+                    OpenCursor::Toggle(entry.path.clone())
+                } else {
+                    OpenCursor::OpenFile(entry.path.clone())
+                }
+            } else {
+                OpenCursor::None
+            }
+        };
+
+        match action {
+            OpenCursor::Toggle(path) => {
+                let needs_fetch = if let Some(ts) = self.state.tab_states.get_mut(&tile) {
+                    ts.tree.toggle_expand(&path);
+                    !ts.tree.children.contains_key(&path) && ts.tree.is_expanded(&path)
+                } else {
+                    false
+                };
+                if needs_fetch {
+                    self.spawn_list_tree(tile, path);
+                }
+            }
+            OpenCursor::OpenFile(path) => {
+                self.spawn_open_files(vec![path]);
+            }
+            OpenCursor::None => {}
         }
         true
     }

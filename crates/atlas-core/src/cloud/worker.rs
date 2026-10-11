@@ -187,6 +187,52 @@ impl Worker {
             return Ok(p.clone());
         }
         let extension_dir = crate::ext::extensions_dir().join("cloud");
+        if !extension_dir.join("extension.toml").is_file() {
+            let workspace_cloud =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions/cloud");
+            if workspace_cloud.join("extension.toml").is_file() {
+                let _ = std::fs::create_dir_all(&extension_dir);
+                let _ = std::fs::copy(
+                    workspace_cloud.join("extension.toml"),
+                    extension_dir.join("extension.toml"),
+                );
+                if workspace_cloud.join("icon.svg").is_file() {
+                    let _ = std::fs::copy(
+                        workspace_cloud.join("icon.svg"),
+                        extension_dir.join("icon.svg"),
+                    );
+                }
+            }
+        }
+        let bin_name = if cfg!(windows) {
+            "atlas-cloud-extension.exe"
+        } else {
+            "atlas-cloud-extension"
+        };
+        if !extension_dir.join(bin_name).is_file() {
+            let candidates = [
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join(format!("../../target/debug/{bin_name}")),
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join(format!("../../target/release/{bin_name}")),
+            ];
+            for candidate in &candidates {
+                if candidate.is_file() {
+                    let _ = std::fs::create_dir_all(&extension_dir);
+                    let target_bin = extension_dir.join(bin_name);
+                    let _ = std::fs::copy(candidate, &target_bin);
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(
+                            &target_bin,
+                            std::fs::Permissions::from_mode(0o755),
+                        );
+                    }
+                    break;
+                }
+            }
+        }
         let manifest_text = std::fs::read_to_string(extension_dir.join("extension.toml"))
             .context("Cloud extension is not installed")?;
         let manifest = atlas_model::ext_model::Manifest::parse(&manifest_text)?;
@@ -355,6 +401,9 @@ impl Worker {
             | RemoteKind::Ftp { host, port, user }
             | RemoteKind::Smb { host, port, user } => json!({
                 "host": host, "port": port.to_string(), "user": user, "pass": secret,
+            }),
+            RemoteKind::WebDav { url, vendor, user } => json!({
+                "url": url, "vendor": vendor, "user": user, "pass": secret,
             }),
             // OAuth backends take no secret; rclone's built-in client id is used.
             RemoteKind::GoogleDrive => json!({ "scope": "drive" }),

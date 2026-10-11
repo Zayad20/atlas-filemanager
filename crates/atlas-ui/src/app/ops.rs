@@ -59,6 +59,17 @@ pub(crate) fn filename_error_text(err: &transfer::FilenameError) -> String {
     }
 }
 
+pub(crate) fn rename_target_error(from: &std::path::Path, to: &std::path::Path) -> Option<String> {
+    let name = to.file_name()?.to_string_lossy();
+    if let Err(error) = transfer::validate_filename(&name) {
+        return Some(filename_error_text(&error));
+    }
+    if to.symlink_metadata().is_ok() && !transfer::paths_equal_ci(from, to) {
+        return Some(rust_i18n::t!("err_collision", name = name).to_string());
+    }
+    None
+}
+
 impl App {
     pub(crate) fn affected_tabs_for_path(&self, path: &PathBuf) -> Vec<TileId> {
         self.state
@@ -626,22 +637,10 @@ impl App {
     }
 
     pub(crate) fn rename_file(&mut self, from: PathBuf, to: PathBuf) {
-        if let Some(name) = to.file_name().map(|n| n.to_string_lossy().into_owned()) {
-            if let Err(e) = transfer::validate_filename(&name) {
-                self.toast_error(filename_error_text(&e));
-                return;
-            }
-        }
         // Renaming onto an existing entry would fail (or worse); only the
         // case-change of the same file is allowed.
-        if to.exists() && !transfer::paths_equal_ci(&from, &to) {
-            self.toast_error(
-                rust_i18n::t!(
-                    "err_collision",
-                    name = to.file_name().unwrap_or_default().to_string_lossy()
-                )
-                .to_string(),
-            );
+        if let Some(error) = rename_target_error(&from, &to) {
+            self.toast_error(error);
             return;
         }
         self.state.ops.undo_stack.push(UndoEntry::Rename {

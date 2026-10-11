@@ -1,5 +1,6 @@
 /target
 /target-verify/
+__pycache__/
 
 build*.txt
 *_out.txt

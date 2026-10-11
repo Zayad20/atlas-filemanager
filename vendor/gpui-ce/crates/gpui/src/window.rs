@@ -3936,7 +3936,9 @@ impl Window {
         result
     }
 
-    pub(crate) fn with_element_opacity<R>(
+    /// Paint a group of primitives with an opacity multiplied by its parent's.
+    /// Custom elements can use this to dim images, SVGs and text consistently.
+    pub fn with_element_opacity<R>(
         &mut self,
         opacity: Option<f32>,
         f: impl FnOnce(&mut Self) -> R,

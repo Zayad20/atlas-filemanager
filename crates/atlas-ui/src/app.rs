@@ -42,6 +42,7 @@ pub struct App {
     /// scroll the cursor into view.
     pub(crate) scroll_handles: HashMap<TileId, UniformListScrollHandle>,
     pub(crate) miller_scroll_handles: HashMap<(TileId, usize), UniformListScrollHandle>,
+    pub(crate) tree_loading: HashSet<(TileId, PathBuf)>,
     /// Runtime filesystem watcher handles keyed by pane tile. Kept out of
     /// `AppState` so model/state does not depend on `fs`.
     pub(crate) watchers: HashMap<TileId, atlas_core::fs::watcher::WatcherHandle>,
@@ -282,7 +283,6 @@ pub struct App {
     pub(crate) rename_remote_input: Option<Entity<InputState>>,
     /// In-flight inline rename (one row at a time). Holds the native input being edited.
     pub(crate) rename_edit: Option<RenameEdit>,
-    pub(crate) rename_visual_suppress: Option<(TileId, usize, u8)>,
     // Goto bar "search in content": matching file paths from the latest grep, the
     // generation that produced them (stale batches are dropped), and the cancel flag
     // shared with the in-flight background search.
@@ -405,6 +405,8 @@ pub struct App {
     // ── Command shortcut capture ──────────────────────────────────────────
     /// Non-None while the user is recording a new keyboard shortcut for a palette command.
     pub(crate) command_shortcut_capture: Option<String>,
+    /// Pending key for multi-key sequences in Vim mode (e.g. 'g' waiting for second 'g').
+    pub(crate) vim_pending_key: Option<char>,
 }
 
 /// Marker entity — one per pane. `PaneContentView` observes this instead of `App`
@@ -1076,7 +1078,6 @@ pub(crate) struct PreviewEditor {
 /// In-flight inline rename of a single row in the focused pane.
 pub struct RenameEdit {
     pub(crate) pane: TileId,
-    pub(crate) idx: usize,
     pub(crate) path: PathBuf,
     pub(crate) input: Entity<InputState>,
     /// When set, the next focus-sync selects this many chars from the start
@@ -1598,6 +1599,9 @@ impl App {
         if self.miller_nav_apply(&target) {
             return;
         }
+        if self.tree_nav_apply(&target, extend, cursor_only) {
+            return;
+        }
         let tile = self.state.focused_tile;
         let next_pos = {
             let Some(ts) = self.state.tab_states.get_mut(&tile) else {
@@ -1671,6 +1675,9 @@ impl App {
         if self.miller_nav_left() {
             return;
         }
+        if self.tree_nav_left() {
+            return;
+        }
         let tile = self.state.focused_tile;
         let is_grid_or_list = self
             .tab_data_for(tile)
@@ -1692,6 +1699,9 @@ impl App {
 
     pub(crate) fn nav_right(&mut self, extend: bool, cursor_only: bool) {
         if self.miller_nav_right() {
+            return;
+        }
+        if self.tree_nav_right() {
             return;
         }
         let tile = self.state.focused_tile;
@@ -1855,6 +1865,9 @@ impl App {
     /// the rest of the selection.
     pub(crate) fn open_cursor(&mut self) {
         if self.miller_open_cursor() {
+            return;
+        }
+        if self.tree_open_cursor() {
             return;
         }
         let tile = self.state.focused_tile;

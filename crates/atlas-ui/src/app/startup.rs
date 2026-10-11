@@ -52,9 +52,15 @@ impl App {
         let (tx, rx) = flume::unbounded();
         let (icon_tx, icon_rx) = flume::unbounded();
 
-        // Restore previous session tree if available, else create fresh state
+        // Restore previous session tree if available, else create fresh state.
+        // If initial_paths were provided (e.g. CLI path or "open in new window"),
+        // start a clean session focused on that location rather than restoring older tabs.
         let session_started = std::time::Instant::now();
-        let restored_tree = load_session();
+        let restored_tree = if initial_paths.is_empty() {
+            load_session()
+        } else {
+            None
+        };
         let (mut state, _initial_tile_id) = if let Some(tree) = restored_tree {
             let (s, id) = AppState::from_tree(tree, settings);
             // Discard a corrupted/empty session and start fresh
@@ -67,6 +73,16 @@ impl App {
             AppState::new(settings)
         };
         if let Some(path) = initial_paths.first().cloned() {
+            let path = std::fs::canonicalize(&path).unwrap_or(path);
+            #[cfg(windows)]
+            let path = {
+                let s = path.to_string_lossy();
+                if let Some(stripped) = s.strip_prefix(r"\\?\") {
+                    std::path::PathBuf::from(stripped)
+                } else {
+                    path
+                }
+            };
             let path = if path.is_dir() {
                 Some(path)
             } else if path.is_file() {
@@ -249,11 +265,11 @@ impl App {
 
         let update_tx = tx.clone();
         rt.spawn(async move {
-            match atlas_core::update::check_for_update(env!("CARGO_PKG_VERSION")).await {
+            match atlas_core::update::check_for_update(atlas_core::update::APP_VERSION).await {
                 Ok(Some(update)) => {
                     let _ = update_tx.send(BgResult::AppUpdateAvailable {
                         version: update.version,
-                        url: update.windows.url,
+                        url: update.url,
                     });
                 }
                 Ok(None) => {}
@@ -329,6 +345,18 @@ impl App {
             "runtime-tools",
             crate::app::ext::RUNTIME_TOOLS_MANIFEST,
             &runtime_tools_src,
+        );
+        let cloud_src =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions/cloud");
+        let _ = atlas_core::ext::install::ensure_bundled_with_assets(
+            "cloud",
+            crate::app::ext::CLOUD_MANIFEST,
+            &cloud_src,
+        );
+        let _ = atlas_core::ext::install::ensure_asset(
+            "cloud",
+            "icon.svg",
+            crate::app::ext::CLOUD_ICON,
         );
         state.ext.enabled = atlas_core::util::config::load_ext_enabled();
         let ext_started = std::time::Instant::now();
@@ -445,6 +473,7 @@ impl App {
             focus_handle,
             scroll_handles: HashMap::new(),
             miller_scroll_handles: HashMap::new(),
+            tree_loading: HashSet::new(),
             watchers,
             nucleo,
             goto_warm_nucleo,
@@ -531,7 +560,6 @@ impl App {
             settings_section: 0,
             settings_font_families: None,
             rename_edit: None,
-            rename_visual_suppress: None,
             content_results: Vec::new(),
             content_gen: 0,
             content_cancel: None,
@@ -618,6 +646,7 @@ impl App {
             inspector_resize: None,
             dirty_all_panes: false,
             command_shortcut_capture: None,
+            vim_pending_key: None,
         }
     }
 }

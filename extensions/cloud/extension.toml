@@ -2,7 +2,7 @@ id = "cloud"
 name = "Cloud Drives"
 version = "0.1.2"
 author = "Atlas Team"
-description = "SFTP, FTP, SMB, Google Drive and OneDrive virtual locations"
+description = "SFTP, FTP, WebDAV, SMB, Google Drive and OneDrive virtual locations"
 kind = "sidecar"
 
 [sidecar]

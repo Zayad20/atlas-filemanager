@@ -47,6 +47,7 @@ pub struct Input {
     focus_bordered: bool,
     tab_index: isize,
     selected: bool,
+    selection_color: Option<Hsla>,
 
     /// An optional context menu builder to allow a custom context menu on the input.
     ///
@@ -91,6 +92,7 @@ impl Input {
             focus_bordered: true,
             tab_index: 0,
             selected: false,
+            selection_color: None,
             context_menu_builder: None,
         }
     }
@@ -120,6 +122,12 @@ impl Input {
     /// Set the appearance of the input field, if false the input field will no border, background.
     pub fn appearance(mut self, appearance: bool) -> Self {
         self.appearance = appearance;
+        self
+    }
+
+    /// Override the selection tint for this input without changing the theme.
+    pub fn selection_color(mut self, color: Hsla) -> Self {
+        self.selection_color = Some(color);
         self
     }
 
@@ -249,6 +257,7 @@ impl RenderOnce for Input {
             state.context_menu_builder = self.context_menu_builder.clone();
             state.disabled = self.disabled;
             state.size = self.size;
+            state.selection_color = self.selection_color;
 
             // Only for single line mode
             if state.mode.is_single_line() {

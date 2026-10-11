@@ -1,8 +1,10 @@
 use crate::app::App;
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
-use gpui::{div, AnyElement, Entity, Hsla, MouseButton, Pixels, SharedString, TextRun, Window};
-use gpui_component::input::InputState;
+use gpui::{
+    div, px, AnyElement, Entity, Hsla, MouseButton, Pixels, SharedString, TextRun, Window,
+};
+use gpui_component::{input::InputState, ActiveTheme, Colorize};
 use std::path::Path;
 
 pub(super) fn active_input(
@@ -12,7 +14,15 @@ pub(super) fn active_input(
 ) -> Option<Entity<InputState>> {
     app.rename_edit
         .as_ref()
-        .filter(|edit| edit.pane == pane_id && edit.idx == entry_idx)
+        .filter(|edit| {
+            edit.pane == pane_id
+                && app
+                    .state
+                    .tab_states
+                    .get(&pane_id)
+                    .and_then(|ts| ts.entries.get(entry_idx))
+                    .is_some_and(|entry| entry.path == edit.path)
+        })
         .map(|edit| edit.input.clone())
 }
 
@@ -27,17 +37,12 @@ pub(super) fn active_input_for_path(
         .map(|edit| edit.input.clone())
 }
 
-pub(super) fn suppress_row_chrome(app: &App, pane_id: TabId, entry_idx: usize) -> bool {
-    active_input(app, pane_id, entry_idx).is_some()
-        || app
-            .rename_visual_suppress
-            .is_some_and(|(pane, idx, _)| pane == pane_id && idx == entry_idx)
-}
+pub(super) const DIM_OPACITY: f32 = 0.45;
 
 pub(super) fn dim_other_entry(app: &App, pane_id: TabId, entry_idx: usize) -> bool {
     app.rename_edit
         .as_ref()
-        .is_some_and(|edit| edit.pane == pane_id && edit.idx != entry_idx)
+        .is_some_and(|edit| edit.pane == pane_id && active_input(app, pane_id, entry_idx).is_none())
 }
 
 pub(super) fn dim_other_path(app: &App, pane_id: TabId, path: &Path) -> bool {
@@ -51,6 +56,15 @@ pub(super) fn dim_other_path(app: &App, pane_id: TabId, path: &Path) -> bool {
 /// Only the fixed lower bound (72px at zoom 1) is scaled internally, since it
 /// has no other source to inherit the scale from.
 pub(super) fn input_width(name: &str, max_px: f32, font_size: Pixels, window: &mut Window) -> f32 {
+    let width = text_width(name, font_size, window);
+    let scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
+    let max_px = max_px.max(0.0);
+    // Include both insets, the caret and fractional glyph rounding. A tight
+    // text-only width can scroll even a fully visible name by a few pixels.
+    (width.ceil() + 6.0 * scale + 4.0).clamp((72.0 * scale).min(max_px), max_px)
+}
+
+fn text_width(name: &str, font_size: Pixels, window: &mut Window) -> f32 {
     let text: SharedString = name.to_string().into();
     let style = window.text_style();
     let run = TextRun {
@@ -62,13 +76,11 @@ pub(super) fn input_width(name: &str, max_px: f32, font_size: Pixels, window: &m
         strikethrough: None,
         letter_spacing: None,
     };
-    let width = window
+    window
         .text_system()
         .shape_line(text, font_size, &[run], None)
         .width()
-        .as_f32();
-    let scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
-    (width + 2.0).clamp(72.0 * scale, max_px)
+        .as_f32()
 }
 
 /// `height` is the exact real-pixel box the plain (non-editing) name text
@@ -82,23 +94,72 @@ pub(super) fn input_element(
     height: Pixels,
     font_size: Pixels,
     window: &mut Window,
+    cx: &gpui::App,
+) -> AnyElement {
+    input_element_aligned(input, view, height, font_size, false, window, cx)
+}
+
+pub(super) fn centered_input_element(
+    input: &Entity<InputState>,
+    view: &Entity<App>,
+    height: Pixels,
+    font_size: Pixels,
+    width: Pixels,
+    window: &mut Window,
+    cx: &gpui::App,
+) -> AnyElement {
+    // Center names that fit, like the static grid label. Overflowing names
+    // start at the left and use normal cursor scrolling instead of hiding
+    // their first letters outside a centered viewport.
+    let value = input.read(cx).value();
+    let scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
+    let centered = text_width(&value, font_size, window) + 6.0 * scale + 4.0 <= width.as_f32();
+    input_element_aligned(input, view, height, font_size, centered, window, cx)
+}
+
+fn input_element_aligned(
+    input: &Entity<InputState>,
+    view: &Entity<App>,
+    height: Pixels,
+    font_size: Pixels,
+    centered: bool,
+    window: &mut Window,
+    cx: &gpui::App,
 ) -> AnyElement {
     let commit_view = view.clone();
+    let theme = cx.theme();
+    let background = theme.background.alpha(1.0);
+    let foreground = theme.foreground;
+    let selection = theme.selection.alpha(0.38);
+    let padding = px(3.0 * f32::from(window.rem_size()) / crate::ui::BASE_PX);
     div()
+        .id(("inline-rename-input", input.entity_id()))
         .w_full()
         .h(height)
+        .bg(background)
+        .text_color(foreground)
+        .rounded_sm()
         .overflow_hidden()
         .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
+            cx.stop_propagation();
+        })
+        .on_mouse_down(MouseButton::Right, |_ev, _window, cx| {
+            cx.stop_propagation();
+        })
+        .on_click(|_ev, _window, cx| {
+            // A cursor/selection click belongs to the editor, not the file row.
             cx.stop_propagation();
         })
         .child(
             crate::ui::text_input::flat(input)
                 .min_h(height)
                 .max_h(height)
-                .px_0()
+                .px(padding)
                 .py_0()
+                .selection_color(selection)
                 .text_size(font_size)
-                .line_height(height),
+                .line_height(height)
+                .when(centered, |input| input.text_center()),
         )
         .capture_action(window.listener_for(view, App::rename_next_action))
         .capture_action(window.listener_for(view, App::rename_previous_action))
@@ -115,7 +176,7 @@ pub(super) fn input_element(
                 cx.stop_propagation();
             }
             "escape" => {
-                commit_view.update(cx, |this, _cx| this.cancel_rename());
+                commit_view.update(cx, App::cancel_rename);
                 cx.stop_propagation();
             }
             _ => {}

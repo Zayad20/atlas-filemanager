@@ -11,7 +11,7 @@ use gpui::{
     Subscription, Task, UTF16Selection, Window, actions, div, point, prelude::FluentBuilder as _,
     px,
 };
-use gpui::{Half, TextAlign};
+use gpui::{Half, Hsla, TextAlign};
 use ropey::{Rope, RopeSlice};
 use serde::Deserialize;
 use std::cell::Cell;
@@ -39,7 +39,7 @@ use crate::input::movement::MoveDirection;
 use crate::input::{
     HoverDefinition, InlineCompletion, Lsp, Position, RopeExt as _, Selection,
     display_map::LineLayout,
-    element::RIGHT_MARGIN,
+    element::horizontal_cursor_margin,
     popovers::{ContextMenu, DiagnosticPopover, HoverPopover, InputContextMenu},
     search::{self, SearchPanel},
 };
@@ -349,6 +349,7 @@ pub struct InputState {
     /// - "Hello 世界💝" = 16
     /// - "💝" = 4
     pub(super) selected_range: Selection,
+    pub(super) selection_color: Option<Hsla>,
     pub(super) search_panel: Option<Entity<SearchPanel>>,
     pub(super) searchable: bool,
     pub(super) replaceable: bool,
@@ -479,6 +480,7 @@ impl InputState {
             blink_cursor,
             history,
             selected_range: Selection::default(),
+            selection_color: None,
             search_panel: None,
             searchable: false,
             replaceable: true,
@@ -1734,11 +1736,8 @@ impl InputState {
 
         // For Right alignment use 0 margin: the cursor indicator is clamped inside bounds
         // in layout_cursor, so shifting the text here would cause a first-click visual jump.
-        let safety_margin = match last_layout.text_align {
-            TextAlign::Left => RIGHT_MARGIN,
-            TextAlign::Right => px(0.),
-            TextAlign::Center => CURSOR_WIDTH,
-        };
+        let safety_margin =
+            horizontal_cursor_margin(self.mode.is_single_line(), last_layout.text_align);
         if let Some(line) = last_layout
             .lines
             .get(row.saturating_sub(last_layout.visible_range.start))
@@ -1792,6 +1791,9 @@ impl InputState {
         let safe_y_min = (-self.scroll_size.height + self.input_bounds.size.height).min(px(0.));
         scroll_offset.x = scroll_offset.x.min(px(0.));
         scroll_offset.y = scroll_offset.y.clamp(safe_y_min, px(0.));
+        if self.mode.is_single_line() {
+            scroll_offset.y = px(0.);
+        }
         self.deferred_scroll_offset = Some(scroll_offset);
         cx.notify();
     }

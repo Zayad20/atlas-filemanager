@@ -56,6 +56,8 @@ impl App {
         let eco_row = show_all || setting_matches(&query_lower, &["eco", "ram", "memory"]);
         let hidden_row =
             show_all || setting_matches(&query_lower, &["show", "hidden", "ocultos", "files"]);
+        let vim_row =
+            show_all || setting_matches(&query_lower, &["vim", "hjkl", "navigation", "keys"]);
         let sidebar_row =
             show_all || setting_matches(&query_lower, &["show", "sidebar", "barra", "lateral"]);
         let inspector_row =
@@ -137,6 +139,9 @@ impl App {
                     "web",
                     "icons",
                     "acerca",
+                    "changelog",
+                    "version",
+                    "novedades",
                 ],
             );
         let show_general = if show_all {
@@ -149,6 +154,7 @@ impl App {
         } else {
             eco_row
                 || hidden_row
+                || vim_row
                 || sidebar_row
                 || inspector_row
                 || animations_row
@@ -233,6 +239,7 @@ impl App {
             ViewMode::Grid => rust_i18n::t!("settings_view_grid"),
             ViewMode::List => rust_i18n::t!("settings_view_list"),
             ViewMode::Miller => rust_i18n::t!("settings_view_miller"),
+            ViewMode::Tree => rust_i18n::t!("settings_view_tree"),
         };
         let inspector_placement = s.inspector_placement.clone();
         let default_view_mode = s.view_mode.clone();
@@ -360,32 +367,30 @@ impl App {
                     .into_any_element()
             })
             .collect();
-        let link_button = move |id: &'static str,
-                                item_icon: AtlasIcon,
-                                label: &'static str,
-                                url: &'static str| {
-            div()
-                .id(id)
-                .px_2()
-                .py_1()
-                .rounded(px(crate::ui::RADIUS))
-                .border_1()
-                .border_color(border)
-                .text_sm()
-                .text_color(fg)
-                .cursor_pointer()
-                .hover(|h| h.bg(border))
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .child(icon(item_icon, 13.0, fg))
-                        .child(label),
-                )
-                .on_mouse_down(MouseButton::Left, move |_ev, _w, _cx| {
-                    let _ = open::that(url);
-                })
-        };
+        let link_button =
+            move |id: &'static str, item_icon: AtlasIcon, label: String, url: &'static str| {
+                div()
+                    .id(id)
+                    .px_2()
+                    .py_1()
+                    .rounded(px(crate::ui::RADIUS))
+                    .border_1()
+                    .border_color(border)
+                    .text_sm()
+                    .text_color(fg)
+                    .cursor_pointer()
+                    .hover(|h| h.bg(border))
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(icon(item_icon, 13.0, fg))
+                            .child(label),
+                    )
+                    .on_mouse_down(MouseButton::Left, move |_ev, _w, _cx| {
+                        let _ = open::that(url);
+                    })
+            };
 
         let sidebar_items: Vec<AnyElement> = [
             ("General", AtlasIcon::Gear, show_general),
@@ -671,6 +676,15 @@ impl App {
                             s.show_hidden,
                             "set-hidden",
                             |app| app.process_actions(vec![Action::ToggleHidden]),
+                            view.clone(),
+                        ))
+                    })
+                    .when(vim_row, |panel| {
+                        panel.child(toggle(
+                            &rust_i18n::t!("settings_vim_mode"),
+                            s.vim_mode,
+                            "set-vim-mode",
+                            |app| app.process_actions(vec![Action::ToggleVimMode]),
                             view.clone(),
                         ))
                     })
@@ -972,6 +986,13 @@ impl App {
                                     default_view_mode == ViewMode::Miller,
                                     |app| app.state.settings.view_mode = ViewMode::Miller,
                                     view.clone(),
+                                ))
+                                .child(segment(
+                                    "set-view-tree",
+                                    &rust_i18n::t!("settings_view_tree_btn"),
+                                    default_view_mode == ViewMode::Tree,
+                                    |app| app.state.settings.view_mode = ViewMode::Tree,
+                                    view.clone(),
                                 )),
                         )
                     })
@@ -1103,6 +1124,13 @@ impl App {
                         panel.child(
                             v_flex()
                                 .gap_2()
+                                .child(format!("Atlas {}", atlas_core::update::APP_VERSION))
+                                .child(link_button(
+                                    "about-changelog-link",
+                                    AtlasIcon::GlobeSimple,
+                                    rust_i18n::t!("settings_changelog").into_owned(),
+                                    atlas_core::update::RELEASES_URL,
+                                ))
                                 .child(
                                     h_flex()
                                         .gap_2()
@@ -1110,19 +1138,19 @@ impl App {
                                         .child(link_button(
                                             "about-community-link",
                                             AtlasIcon::DiscordLogo,
-                                            "Community",
+                                            "Community".to_owned(),
                                             "https://discord.gg/aeAvQ27bgG",
                                         ))
                                         .child(link_button(
                                             "about-support-link",
                                             AtlasIcon::Lifebuoy,
-                                            "Support",
+                                            "Support".to_owned(),
                                             "https://discord.gg/aeAvQ27bgG",
                                         ))
                                         .child(link_button(
                                             "about-web-link",
                                             AtlasIcon::GlobeSimple,
-                                            "Website",
+                                            "Website".to_owned(),
                                             "https://atlasnative.com/",
                                         )),
                                 )
@@ -1136,7 +1164,7 @@ impl App {
                                         .child(link_button(
                                             "about-icons8-link",
                                             AtlasIcon::GlobeSimple,
-                                            "Icons8",
+                                            "Icons8".to_owned(),
                                             "https://icons8.com",
                                         )),
                                 ),

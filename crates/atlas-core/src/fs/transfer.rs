@@ -151,6 +151,9 @@ pub enum FilenameError {
 /// Validate a bare file/folder name for Windows.
 #[cfg(windows)]
 pub fn validate_filename(name: &str) -> Result<(), FilenameError> {
+    if matches!(name, "." | "..") {
+        return Err(FilenameError::Reserved(name.to_string()));
+    }
     const RESERVED: [&str; 22] = [
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
         "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
@@ -176,6 +179,9 @@ pub fn validate_filename(name: &str) -> Result<(), FilenameError> {
 /// Validate a bare file/folder name for Unix/Linux: only `/` and `\0` are invalid.
 #[cfg(not(windows))]
 pub fn validate_filename(name: &str) -> Result<(), FilenameError> {
+    if matches!(name, "." | "..") {
+        return Err(FilenameError::Reserved(name.to_string()));
+    }
     if name.is_empty() {
         return Err(FilenameError::Empty);
     }
@@ -1480,6 +1486,8 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn filename_validation() {
+        assert!(validate_filename(".").is_err());
+        assert!(validate_filename("..").is_err());
         assert!(validate_filename("normal.txt").is_ok());
         assert!(validate_filename("").is_err());
         assert!(validate_filename("   ").is_err());
@@ -1496,6 +1504,9 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn filename_validation_unix() {
+        assert!(validate_filename(".").is_err());
+        assert!(validate_filename("..").is_err());
+        assert!(validate_filename("literal\\name.txt").is_ok());
         assert!(validate_filename("normal.txt").is_ok());
         assert!(validate_filename("").is_err());
         assert!(validate_filename("a:b.txt").is_ok());

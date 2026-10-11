@@ -7,6 +7,7 @@ pub enum ViewMode {
     Grid,
     List,
     Miller,
+    Tree,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -38,6 +39,7 @@ pub struct Workspace {
     pub global_zoom: f32,
     #[serde(default = "default_grid_spacing")]
     pub grid_spacing: f32,
+    pub vim_mode: bool,
 }
 
 impl Default for Workspace {
@@ -56,6 +58,7 @@ impl Default for Workspace {
             thumbnail_size: 128.0,
             global_zoom: 1.0,
             grid_spacing: default_grid_spacing(),
+            vim_mode: false,
         }
     }
 }
@@ -105,6 +108,7 @@ pub struct Settings {
     pub grid_spacing: f32,
     /// True after the first-run setup has been dismissed or completed.
     pub getting_started_seen: bool,
+    pub vim_mode: bool,
 }
 
 pub fn default_glass_opacity() -> f32 {
@@ -132,6 +136,7 @@ impl Settings {
             thumbnail_size: self.thumbnail_size,
             global_zoom: self.global_zoom,
             grid_spacing: self.grid_spacing,
+            vim_mode: self.vim_mode,
         }
     }
 
@@ -151,6 +156,7 @@ impl Settings {
         self.thumbnail_size = ws.thumbnail_size;
         self.global_zoom = ws.global_zoom;
         self.grid_spacing = ws.grid_spacing;
+        self.vim_mode = ws.vim_mode;
     }
 }
 
@@ -180,6 +186,7 @@ impl Default for Settings {
             glass_opacity: default_glass_opacity(),
             grid_spacing: default_grid_spacing(),
             getting_started_seen: false,
+            vim_mode: false,
         }
     }
 }
@@ -214,6 +221,39 @@ mod tests {
         let json = r#"{"grid_spacing": 24.0}"#;
         let s: Settings = serde_json::from_str(json).unwrap();
         assert!((s.grid_spacing - 24.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn settings_defaults_vim_mode_to_false() {
+        let json = r#"{"font_size": 13.0}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert!(!s.vim_mode);
+
+        let ws: Workspace = serde_json::from_str(json).unwrap();
+        assert!(!ws.vim_mode);
+    }
+
+    #[test]
+    fn settings_preserves_vim_mode() {
+        let json = r#"{"vim_mode": true}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert!(s.vim_mode);
+
+        let ws: Workspace = serde_json::from_str(json).unwrap();
+        assert!(ws.vim_mode);
+    }
+
+    #[test]
+    fn workspace_roundtrip_vim_mode() {
+        let mut s = Settings::default();
+        assert!(!s.vim_mode);
+        s.vim_mode = true;
+        let ws = s.workspace();
+        assert!(ws.vim_mode);
+
+        let mut s2 = Settings::default();
+        s2.apply_workspace(&ws);
+        assert!(s2.vim_mode);
     }
 }
 

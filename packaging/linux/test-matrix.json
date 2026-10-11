@@ -1,0 +1,13 @@
+{
+  "include": [
+    {"id": "ubuntu-22", "name": "Ubuntu 22.04", "image": "ubuntu:22.04", "format": "deb"},
+    {"id": "ubuntu-24", "name": "Ubuntu 24.04", "image": "ubuntu:24.04", "format": "deb"},
+    {"id": "ubuntu-26", "name": "Ubuntu 26.04", "image": "ubuntu:26.04", "format": "deb"},
+    {"id": "debian-12", "name": "Debian 12", "image": "debian:12", "format": "deb"},
+    {"id": "debian-13", "name": "Debian 13", "image": "debian:13", "format": "deb"},
+    {"id": "fedora-44", "name": "Fedora 44", "image": "fedora:44", "format": "rpm"},
+    {"id": "fedora-43", "name": "Fedora 43", "image": "fedora:43", "format": "rpm"},
+    {"id": "opensuse", "name": "openSUSE Tumbleweed", "image": "opensuse/tumbleweed:latest", "format": "rpm"},
+    {"id": "arch", "name": "Arch", "image": "archlinux:base", "format": "archlinux"}
+  ]
+}

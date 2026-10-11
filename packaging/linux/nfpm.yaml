@@ -1,0 +1,63 @@
+# Paths and version are supplied by scripts/linux_release.py.
+name: atlas
+arch: amd64
+platform: linux
+version: ${ATLAS_VERSION}
+release: 1
+section: utils
+priority: optional
+maintainer: Atlas contributors <neondeex@users.noreply.github.com>
+description: Modern file manager built with Rust and GPUI.
+homepage: https://atlasnative.com
+license: AGPL-3.0-or-later
+contents:
+  - src: ${ATLAS_BINARY}
+    dst: /usr/bin/atlas
+    file_info:
+      mode: 0755
+  - src: packaging/linux/atlas.desktop
+    dst: /usr/share/applications/atlas.desktop
+  - src: ${ATLAS_PACKAGE_DATA}/atlas.png
+    dst: /usr/share/icons/hicolor/512x512/apps/atlas.png
+  - src: ${ATLAS_PACKAGE_DATA}/io.github.neondeex.atlas-filemanager.metainfo.xml
+    dst: /usr/share/metainfo/io.github.neondeex.atlas-filemanager.metainfo.xml
+  - src: CHANGELOG.md
+    dst: /usr/share/doc/atlas/CHANGELOG.md
+  - src: LICENSE
+    dst: /usr/share/licenses/atlas/LICENSE
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.35)
+      - libgcc-s1
+      - libxkbcommon0
+      - libxkbcommon-x11-0
+      - libxcb1
+      - libfontconfig1
+      - libwayland-client0
+      - libvulkan1
+      - libegl1
+      - fonts-dejavu-core
+  rpm:
+    depends:
+      - libc.so.6(GLIBC_2.35)(64bit)
+      - libgcc_s.so.1()(64bit)
+      - libxkbcommon.so.0()(64bit)
+      - libxkbcommon-x11.so.0()(64bit)
+      - libxcb.so.1()(64bit)
+      - libfontconfig.so.1()(64bit)
+      - libwayland-client.so.0()(64bit)
+      - libvulkan.so.1()(64bit)
+      - libEGL.so.1()(64bit)
+  archlinux:
+    depends:
+      - glibc
+      - gcc-libs
+      - libxkbcommon
+      - libxkbcommon-x11
+      - libxcb
+      - fontconfig
+      - wayland
+      - vulkan-icd-loader
+      - libglvnd
+      - ttf-dejavu

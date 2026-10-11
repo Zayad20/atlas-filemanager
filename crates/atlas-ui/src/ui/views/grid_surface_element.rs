@@ -10,6 +10,7 @@ use crate::ui::drag_hover::{
 };
 use crate::ui::file_icons::FileIcon;
 use crate::ui::icons::AtlasIcon;
+use crate::ui::motion::ease_out_quart;
 use crate::ui::selection_checkbox;
 use crate::ui::surface::paint_rounded;
 use crate::ui::views::grid::{
@@ -19,17 +20,45 @@ use atlas_model::file_entry::FileKind;
 use atlas_model::pane::TabId;
 use gpui::ColorExt as _;
 use gpui::{
-    point, px, size, App as GpuiApp, Bounds, Corners, DispatchPhase, Element,
-    ElementId, Font, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
-    IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Refineable,
-    ShapedLine, SharedString, Style, StyleRefinement, Styled, TextAlign, WeakEntity, Window,
+    point, px, size, App as GpuiApp, Bounds, Corners, DispatchPhase, Element, ElementId, Font,
+    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
+    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Refineable, ShapedLine, SharedString,
+    Style, StyleRefinement, Styled, TextAlign, WeakEntity, Window,
 };
-use crate::ui::motion::ease_out_quart;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const FILE_SURFACE_SHAPE_CAPACITY: usize = 8_192;
+
+/// Shared by retained paint and the editor overlay, in already-scaled pixels.
+pub(crate) fn grid_label_bounds(
+    cell: Bounds<Pixels>,
+    icon_area_h: f32,
+    zoom: f32,
+) -> Bounds<Pixels> {
+    Bounds {
+        origin: point(
+            cell.origin.x + px(4.0 * zoom),
+            cell.origin.y + px(icon_area_h),
+        ),
+        size: size(
+            px((f32::from(cell.size.width) - 8.0 * zoom).max(0.0)),
+            px(GRID_LABEL_H * zoom),
+        ),
+    }
+}
+
+pub(crate) fn list_name_bounds(cell: Bounds<Pixels>, zoom: f32) -> Bounds<Pixels> {
+    let name_x = (24.0 + 16.0 + 4.0) * zoom;
+    Bounds {
+        origin: point(cell.origin.x + px(name_x), cell.origin.y),
+        size: size(
+            px((f32::from(cell.size.width) - name_x - 24.0 * zoom).max(0.0)),
+            cell.size.height,
+        ),
+    }
+}
 
 /// Bounded cross-pane cache for the expensive text shaping done on local ring misses.
 ///
@@ -158,6 +187,7 @@ struct GridSurfaceSlot {
     hovered: bool,
     flashing: bool,
     dimmed: bool,
+    editing: bool,
     name: ShapedLine,
     icon: FileIcon,
 }
@@ -218,6 +248,7 @@ impl GridSurfaceState {
         hovered: bool,
         flashing: bool,
         dimmed: bool,
+        editing: bool,
         icon: FileIcon,
     ) {
         if self.slots.is_empty() {
@@ -234,6 +265,7 @@ impl GridSurfaceState {
                 slot.hovered = hovered;
                 slot.flashing = flashing;
                 slot.dimmed = dimmed;
+                slot.editing = editing;
                 // Thumbnail/icon readiness is asynchronous and intentionally not
                 // part of the text shape key. Always refresh this paint-only value.
                 slot.icon = icon;
@@ -632,11 +664,9 @@ impl Element for GridSurfaceElement {
                 let Some(entry) = tab_state.entries.get(entry_idx) else {
                     continue;
                 };
-                if crate::ui::views::rename::active_input(app, pane_id, entry_idx).is_some() {
-                    continue;
-                }
-                let selected = tab_state.selection.selected.contains(&entry_idx)
-                    && !crate::ui::views::rename::suppress_row_chrome(app, pane_id, entry_idx);
+                let editing =
+                    crate::ui::views::rename::active_input(app, pane_id, entry_idx).is_some();
+                let selected = tab_state.selection.selected.contains(&entry_idx);
                 let cursor = tab_state.selection.keyboard_cursor == Some(entry_idx);
                 let dimmed = crate::ui::views::rename::dim_other_entry(app, pane_id, entry_idx);
                 let hovered = match layout {
@@ -650,11 +680,6 @@ impl Element for GridSurfaceElement {
                     colors.accent_fg
                 } else {
                     colors.fg
-                };
-                let name_color = if dimmed {
-                    name_color.opacity(0.45)
-                } else {
-                    name_color
                 };
                 let max_chars = match layout {
                     GridSurfaceLayout::CompactList => {
@@ -708,6 +733,7 @@ impl Element for GridSurfaceElement {
                             hovered,
                             flashing,
                             dimmed,
+                            editing,
                             name: {
                                 let shape_cache_t0 = Instant::now();
                                 let line = app.file_surface_shapes.get_or_insert_with(key, || {
@@ -735,7 +761,9 @@ impl Element for GridSurfaceElement {
                     layout.ring_hit_metric(),
                     layout.ring_miss_metric(),
                 );
-                state.touch_dynamic(row, key, selected, cursor, hovered, flashing, dimmed, icon);
+                state.touch_dynamic(
+                    row, key, selected, cursor, hovered, flashing, dimmed, editing, icon,
+                );
             }
 
             show_checkboxes
@@ -842,10 +870,8 @@ impl Element for GridSurfaceElement {
                 let pad_x = 24.0 * zoom;
                 let icon_slot_w = 16.0 * zoom;
                 let icon_size = 14.0 * zoom;
-                let text_gap = 4.0 * zoom;
                 for r in prepaint.start_idx..prepaint.end_idx {
-                    let Some(slot) = slots.get(r % slots.len()).and_then(|s| s.as_ref())
-                    else {
+                    let Some(slot) = slots.get(r % slots.len()).and_then(|s| s.as_ref()) else {
                         continue;
                     };
                     if slot.row != r {
@@ -887,138 +913,139 @@ impl Element for GridSurfaceElement {
                         size: size(px(visual_w), px(visual_h)),
                     };
 
-                    let background = if slot.selected {
-                        Some(colors.accent)
-                    } else if slot.flashing {
-                        Some(colors.accent.opacity(0.38))
-                    } else if slot.hovered {
-                        Some(colors.hover)
-                    } else {
-                        None
-                    };
-                    if let Some(mut color) = background {
-                        if slot.dimmed {
-                            color = color.opacity(color.alpha * 0.45);
-                        }
-                        paint_rounded(window, cell, 4.0 * zoom, color);
-                    }
-                    if slot.cursor {
-                        let outline_color = colors.accent.opacity(if slot.selected { 0.95 } else { 0.65 });
-                        window.paint_quad(
-                            gpui::outline(cell, outline_color, Default::default())
-                                .corner_radii(Corners::all(px(4.0 * zoom))),
-                        );
-                    }
+                    window.with_element_opacity(
+                        slot.dimmed.then_some(crate::ui::views::rename::DIM_OPACITY),
+                        |window| {
+                            let background = if slot.selected {
+                                Some(colors.accent)
+                            } else if slot.flashing {
+                                Some(colors.accent.opacity(0.38))
+                            } else if slot.hovered {
+                                Some(colors.hover)
+                            } else {
+                                None
+                            };
+                            if let Some(color) = background {
+                                paint_rounded(window, cell, 4.0 * zoom, color);
+                            }
+                            if slot.cursor {
+                                let outline_color =
+                                    colors
+                                        .accent
+                                        .opacity(if slot.selected { 0.95 } else { 0.65 });
+                                window.paint_quad(
+                                    gpui::outline(cell, outline_color, Default::default())
+                                        .corner_radii(Corners::all(px(4.0 * zoom))),
+                                );
+                            }
 
-                    let icon_center =
-                        point(x + px(pad_x + icon_slot_w * 0.5), y + px(visual_h * 0.5));
-                    if slot.selected && prepaint.show_checkboxes {
-                        selection_checkbox::paint_animated(
-                            window,
-                            cx,
-                            icon_center,
-                            15.0 * zoom,
-                            slot.selected_at,
-                        );
-                    } else {
-                        match &slot.icon {
-                            FileIcon::PreviewTexture(tex) => {
-                                let natural = tex.size(0);
-                                let natural_w = i32::from(natural.width).max(1) as f32;
-                                let natural_h = i32::from(natural.height).max(1) as f32;
-                                let scale =
-                                    (icon_size / natural_w).min(icon_size / natural_h).min(1.0);
-                                let w = (natural_w * scale).round();
-                                let h = (natural_h * scale).round();
-                                let half_w = (w * 0.5).round();
-                                let half_h = (h * 0.5).round();
-                                let cx = f32::from(icon_center.x).round();
-                                let cy = f32::from(icon_center.y).round();
-                                let icon_bounds = Bounds {
-                                    origin: point(px(cx - half_w), px(cy - half_h)),
-                                    size: size(px(w), px(h)),
-                                };
-                                let _ = window.paint_image(
-                                    icon_bounds,
-                                    icon_bounds,
-                                    Corners::default(),
-                                    tex.clone(),
-                                    0,
-                                    false,
+                            let icon_center =
+                                point(x + px(pad_x + icon_slot_w * 0.5), y + px(visual_h * 0.5));
+                            if slot.selected && prepaint.show_checkboxes {
+                                selection_checkbox::paint_animated(
+                                    window,
+                                    cx,
+                                    icon_center,
+                                    15.0 * zoom,
+                                    slot.selected_at,
                                 );
+                            } else {
+                                match &slot.icon {
+                                    FileIcon::PreviewTexture(tex) => {
+                                        let natural = tex.size(0);
+                                        let natural_w = i32::from(natural.width).max(1) as f32;
+                                        let natural_h = i32::from(natural.height).max(1) as f32;
+                                        let scale = (icon_size / natural_w)
+                                            .min(icon_size / natural_h)
+                                            .min(1.0);
+                                        let w = (natural_w * scale).round();
+                                        let h = (natural_h * scale).round();
+                                        let half_w = (w * 0.5).round();
+                                        let half_h = (h * 0.5).round();
+                                        let cx = f32::from(icon_center.x).round();
+                                        let cy = f32::from(icon_center.y).round();
+                                        let icon_bounds = Bounds {
+                                            origin: point(px(cx - half_w), px(cy - half_h)),
+                                            size: size(px(w), px(h)),
+                                        };
+                                        let _ = window.paint_image(
+                                            icon_bounds,
+                                            icon_bounds,
+                                            Corners::default(),
+                                            tex.clone(),
+                                            0,
+                                            false,
+                                        );
+                                    }
+                                    FileIcon::IconTexture(tex) => {
+                                        let resolved = tex.for_size(icon_size);
+                                        let natural = resolved.size(0);
+                                        let natural_w = i32::from(natural.width).max(1) as f32;
+                                        let natural_h = i32::from(natural.height).max(1) as f32;
+                                        let scale = (icon_size / natural_w)
+                                            .min(icon_size / natural_h)
+                                            .min(1.0);
+                                        let w = (natural_w * scale).round();
+                                        let h = (natural_h * scale).round();
+                                        let half_w = (w * 0.5).round();
+                                        let half_h = (h * 0.5).round();
+                                        let cx = f32::from(icon_center.x).round();
+                                        let cy = f32::from(icon_center.y).round();
+                                        let icon_bounds = Bounds {
+                                            origin: point(px(cx - half_w), px(cy - half_h)),
+                                            size: size(px(w), px(h)),
+                                        };
+                                        let _ = window.paint_image(
+                                            icon_bounds,
+                                            icon_bounds,
+                                            Corners::default(),
+                                            resolved,
+                                            0,
+                                            false,
+                                        );
+                                    }
+                                    FileIcon::Builtin { kind, .. } => {
+                                        let icon = if matches!(kind, FileKind::Dir) {
+                                            AtlasIcon::Folder
+                                        } else {
+                                            AtlasIcon::File
+                                        };
+                                        let icon_bounds = Bounds {
+                                            origin: point(
+                                                icon_center.x - px(icon_size * 0.5),
+                                                icon_center.y - px(icon_size * 0.5),
+                                            ),
+                                            size: size(px(icon_size), px(icon_size)),
+                                        };
+                                        let _ = window.paint_svg(
+                                            icon_bounds,
+                                            SharedString::from(icon.path()),
+                                            None,
+                                            Default::default(),
+                                            colors.accent,
+                                            cx,
+                                        );
+                                    }
+                                }
                             }
-                            FileIcon::IconTexture(tex) => {
-                                let resolved = tex.for_size(icon_size);
-                                let natural = resolved.size(0);
-                                let natural_w = i32::from(natural.width).max(1) as f32;
-                                let natural_h = i32::from(natural.height).max(1) as f32;
-                                let scale =
-                                    (icon_size / natural_w).min(icon_size / natural_h).min(1.0);
-                                let w = (natural_w * scale).round();
-                                let h = (natural_h * scale).round();
-                                let half_w = (w * 0.5).round();
-                                let half_h = (h * 0.5).round();
-                                let cx = f32::from(icon_center.x).round();
-                                let cy = f32::from(icon_center.y).round();
-                                let icon_bounds = Bounds {
-                                    origin: point(px(cx - half_w), px(cy - half_h)),
-                                    size: size(px(w), px(h)),
-                                };
-                                let _ = window.paint_image(
-                                    icon_bounds,
-                                    icon_bounds,
-                                    Corners::default(),
-                                    resolved,
-                                    0,
-                                    false,
-                                );
-                            }
-                            FileIcon::Builtin { kind, .. } => {
-                                let icon = if matches!(kind, FileKind::Dir) {
-                                    AtlasIcon::Folder
-                                } else {
-                                    AtlasIcon::File
-                                };
-                                let icon_bounds = Bounds {
-                                    origin: point(
-                                        icon_center.x - px(icon_size * 0.5),
-                                        icon_center.y - px(icon_size * 0.5),
-                                    ),
-                                    size: size(px(icon_size), px(icon_size)),
-                                };
-                                let _ = window.paint_svg(
-                                    icon_bounds,
-                                    SharedString::from(icon.path()),
+
+                            let name_bounds = list_name_bounds(cell, zoom);
+                            if !slot.editing {
+                                let _ = slot.name.paint(
+                                    name_bounds.origin,
+                                    px(visual_h),
+                                    TextAlign::Left,
                                     None,
-                                    Default::default(),
-                                    colors.accent,
+                                    window,
                                     cx,
                                 );
                             }
-                        }
-                    }
-
-                    let name_x = x + px(pad_x + icon_slot_w + text_gap);
-                    let name_bounds = Bounds {
-                        origin: point(name_x, y),
-                        size: size(
-                            px((visual_w - (pad_x + icon_slot_w + text_gap + pad_x)).max(0.0)),
-                            px(visual_h),
-                        ),
-                    };
-                    let _ = slot.name.paint(
-                        name_bounds.origin,
-                        px(visual_h),
-                        TextAlign::Left,
-                        None,
-                        window,
-                        cx,
+                        },
                     );
                 }
             } else {
                 for r in prepaint.start_idx..prepaint.end_idx {
-                    let Some(slot) = slots.get(r % slots.len()).and_then(|s| s.as_ref())
-                    else {
+                    let Some(slot) = slots.get(r % slots.len()).and_then(|s| s.as_ref()) else {
                         continue;
                     };
                     if slot.row != r {
@@ -1060,133 +1087,146 @@ impl Element for GridSurfaceElement {
                         size: size(px(visual_w), px(visual_h)),
                     };
 
-                    let background = if slot.selected {
-                        Some(colors.accent)
-                    } else if slot.flashing {
-                        Some(colors.accent.opacity(0.38))
-                    } else if slot.hovered {
-                        Some(colors.hover)
-                    } else {
-                        None
-                    };
-                    if let Some(mut color) = background {
-                        if slot.dimmed {
-                            color = color.opacity(color.alpha * 0.45);
-                        }
-                        paint_rounded(window, cell, 6.0 * zoom, color);
-                    }
-                    if slot.cursor {
-                        let outline_color = colors.accent.opacity(if slot.selected { 0.95 } else { 0.65 });
-                        window.paint_quad(
-                            gpui::outline(cell, outline_color, Default::default())
-                                .corner_radii(Corners::all(px(6.0 * zoom))),
-                        );
-                    }
+                    window.with_element_opacity(
+                        slot.dimmed.then_some(crate::ui::views::rename::DIM_OPACITY),
+                        |window| {
+                            let background = if slot.selected {
+                                Some(colors.accent)
+                            } else if slot.flashing {
+                                Some(colors.accent.opacity(0.38))
+                            } else if slot.hovered {
+                                Some(colors.hover)
+                            } else {
+                                None
+                            };
+                            if let Some(color) = background {
+                                paint_rounded(window, cell, 6.0 * zoom, color);
+                            }
+                            if slot.cursor {
+                                let outline_color =
+                                    colors
+                                        .accent
+                                        .opacity(if slot.selected { 0.95 } else { 0.65 });
+                                window.paint_quad(
+                                    gpui::outline(cell, outline_color, Default::default())
+                                        .corner_radii(Corners::all(px(6.0 * zoom))),
+                                );
+                            }
 
-                    let scale_h = if cell_h > 1.0 { (visual_h / cell_h).clamp(0.2, 5.0) } else { 1.0 };
-                    let item_icon_area_h = (icon_area_h * scale_h).min(visual_h - label_h).max(0.0);
-                    let icon_center = point(
-                        x + px(visual_w * 0.5),
-                        y + px(item_icon_area_h * 0.5),
-                    );
-                    if slot.selected && prepaint.show_checkboxes {
-                        selection_checkbox::paint_animated(
-                            window,
-                            cx,
-                            icon_center,
-                            16.0 * zoom,
-                            slot.selected_at,
-                        );
-                    } else {
-                        match &slot.icon {
-                            FileIcon::PreviewTexture(tex) => {
-                                let item_thumb = (thumb * scale_h).max(1.0);
-                                let natural = tex.size(0);
-                                let natural_w = i32::from(natural.width).max(1) as f32;
-                                let natural_h = i32::from(natural.height).max(1) as f32;
-                                let max_h = (item_thumb * GRID_PREVIEW_MAX).min(item_icon_area_h);
-                                let scale = (item_thumb / natural_w).min(max_h / natural_h).min(1.0);
-                                let w = (natural_w * scale).round();
-                                let h = (natural_h * scale).round();
-                                let half_w = (w * 0.5).round();
-                                let half_h = (h * 0.5).round();
-                                let cx = f32::from(icon_center.x).round();
-                                let cy = f32::from(icon_center.y).round();
-                                let icon_bounds = Bounds {
-                                    origin: point(px(cx - half_w), px(cy - half_h)),
-                                    size: size(px(w), px(h)),
-                                };
-                                let _ = window.paint_image(
-                                    icon_bounds,
-                                    icon_bounds,
-                                    Corners::default(),
-                                    tex.clone(),
-                                    0,
-                                    false,
+                            let scale_h = if cell_h > 1.0 {
+                                (visual_h / cell_h).clamp(0.2, 5.0)
+                            } else {
+                                1.0
+                            };
+                            let item_icon_area_h =
+                                (icon_area_h * scale_h).min(visual_h - label_h).max(0.0);
+                            let icon_center =
+                                point(x + px(visual_w * 0.5), y + px(item_icon_area_h * 0.5));
+                            if slot.selected && prepaint.show_checkboxes {
+                                selection_checkbox::paint_animated(
+                                    window,
+                                    cx,
+                                    icon_center,
+                                    16.0 * zoom,
+                                    slot.selected_at,
                                 );
+                            } else {
+                                match &slot.icon {
+                                    FileIcon::PreviewTexture(tex) => {
+                                        let item_thumb = (thumb * scale_h).max(1.0);
+                                        let natural = tex.size(0);
+                                        let natural_w = i32::from(natural.width).max(1) as f32;
+                                        let natural_h = i32::from(natural.height).max(1) as f32;
+                                        let max_h =
+                                            (item_thumb * GRID_PREVIEW_MAX).min(item_icon_area_h);
+                                        let scale = (item_thumb / natural_w)
+                                            .min(max_h / natural_h)
+                                            .min(1.0);
+                                        let w = (natural_w * scale).round();
+                                        let h = (natural_h * scale).round();
+                                        let half_w = (w * 0.5).round();
+                                        let half_h = (h * 0.5).round();
+                                        let cx = f32::from(icon_center.x).round();
+                                        let cy = f32::from(icon_center.y).round();
+                                        let icon_bounds = Bounds {
+                                            origin: point(px(cx - half_w), px(cy - half_h)),
+                                            size: size(px(w), px(h)),
+                                        };
+                                        let _ = window.paint_image(
+                                            icon_bounds,
+                                            icon_bounds,
+                                            Corners::default(),
+                                            tex.clone(),
+                                            0,
+                                            false,
+                                        );
+                                    }
+                                    FileIcon::IconTexture(tex) => {
+                                        let item_thumb = (thumb * scale_h).max(1.0);
+                                        let sz = ((item_thumb * GRID_TEXTURE_ICON_MAX)
+                                            .min(item_icon_area_h))
+                                        .round();
+                                        let half = (sz * 0.5).round();
+                                        let cx = f32::from(icon_center.x).round();
+                                        let cy = f32::from(icon_center.y).round();
+                                        let icon_bounds = Bounds {
+                                            origin: point(px(cx - half), px(cy - half)),
+                                            size: size(px(sz), px(sz)),
+                                        };
+                                        let resolved = tex.for_size(sz);
+                                        let _ = window.paint_image(
+                                            icon_bounds,
+                                            icon_bounds,
+                                            Corners::default(),
+                                            resolved,
+                                            0,
+                                            false,
+                                        );
+                                    }
+                                    FileIcon::Builtin { kind, .. } => {
+                                        let icon = if matches!(kind, FileKind::Dir) {
+                                            AtlasIcon::Folder
+                                        } else {
+                                            AtlasIcon::File
+                                        };
+                                        let item_thumb = (thumb * scale_h).max(1.0);
+                                        let sz =
+                                            (item_thumb * GRID_BUILTIN_ICON).min(item_icon_area_h);
+                                        let icon_bounds = Bounds {
+                                            origin: point(
+                                                icon_center.x - px(sz * 0.5),
+                                                icon_center.y - px(sz * 0.5),
+                                            ),
+                                            size: size(px(sz), px(sz)),
+                                        };
+                                        let _ = window.paint_svg(
+                                            icon_bounds,
+                                            SharedString::from(icon.path()),
+                                            None,
+                                            Default::default(),
+                                            if slot.selected {
+                                                colors.accent_fg
+                                            } else {
+                                                colors.muted
+                                            },
+                                            cx,
+                                        );
+                                    }
+                                }
                             }
-                            FileIcon::IconTexture(tex) => {
-                                let item_thumb = (thumb * scale_h).max(1.0);
-                                let sz = ((item_thumb * GRID_TEXTURE_ICON_MAX).min(item_icon_area_h)).round();
-                                let half = (sz * 0.5).round();
-                                let cx = f32::from(icon_center.x).round();
-                                let cy = f32::from(icon_center.y).round();
-                                let icon_bounds = Bounds {
-                                    origin: point(px(cx - half), px(cy - half)),
-                                    size: size(px(sz), px(sz)),
-                                };
-                                let resolved = tex.for_size(sz);
-                                let _ = window.paint_image(
-                                    icon_bounds,
-                                    icon_bounds,
-                                    Corners::default(),
-                                    resolved,
-                                    0,
-                                    false,
-                                );
-                            }
-                            FileIcon::Builtin { kind, .. } => {
-                                let icon = if matches!(kind, FileKind::Dir) {
-                                    AtlasIcon::Folder
-                                } else {
-                                    AtlasIcon::File
-                                };
-                                let item_thumb = (thumb * scale_h).max(1.0);
-                                let sz = (item_thumb * GRID_BUILTIN_ICON).min(item_icon_area_h);
-                                let icon_bounds = Bounds {
-                                    origin: point(
-                                        icon_center.x - px(sz * 0.5),
-                                        icon_center.y - px(sz * 0.5),
-                                    ),
-                                    size: size(px(sz), px(sz)),
-                                };
-                                let _ = window.paint_svg(
-                                    icon_bounds,
-                                    SharedString::from(icon.path()),
-                                    None,
-                                    Default::default(),
-                                    if slot.selected {
-                                        colors.accent_fg
-                                    } else {
-                                        colors.muted
-                                    },
+
+                            let name_bounds = grid_label_bounds(cell, item_icon_area_h, zoom);
+                            if !slot.editing {
+                                let _ = slot.name.paint(
+                                    point(name_bounds.origin.x, name_bounds.origin.y),
+                                    px(label_h),
+                                    TextAlign::Center,
+                                    Some(name_bounds.size.width),
+                                    window,
                                     cx,
                                 );
                             }
-                        }
-                    }
-
-                    let name_bounds = Bounds {
-                        origin: point(x + px(4.0 * zoom), y + px(item_icon_area_h)),
-                        size: size(px((visual_w - 8.0 * zoom).max(0.0)), px(label_h)),
-                    };
-                    let _ = slot.name.paint(
-                        point(name_bounds.origin.x, name_bounds.origin.y),
-                        px(label_h),
-                        TextAlign::Center,
-                        Some(name_bounds.size.width),
-                        window,
-                        cx,
+                        },
                     );
                 }
             }
@@ -1323,9 +1363,65 @@ fn grid_shape_key(
 
 #[cfg(test)]
 mod tests {
-    use super::FileSurfaceShapeCache;
+    use super::{FileSurfaceShapeCache, GridSurfaceSlot, GridSurfaceState};
+    use crate::ui::file_icons::FileIcon;
+    use atlas_model::file_entry::FileKind;
     use gpui::ShapedLine;
     use std::cell::Cell;
+
+    fn slot(row: usize) -> GridSurfaceSlot {
+        GridSurfaceSlot {
+            row,
+            entry_idx: row,
+            shape_key: row as u64,
+            selected: true,
+            cursor: true,
+            selected_at: None,
+            hovered: false,
+            flashing: false,
+            dimmed: false,
+            editing: false,
+            name: ShapedLine::default(),
+            icon: FileIcon::Builtin {
+                kind: FileKind::File,
+                extension: None,
+            },
+        }
+    }
+
+    #[test]
+    fn rename_keeps_retained_icon_selection_and_geometry_while_replacing_only_the_name() {
+        let mut state = GridSurfaceState::default();
+        state.ensure_capacity(4);
+        for row in 0..3 {
+            state.sync(row, row as u64, || slot(row), "test.hit", "test.miss");
+        }
+        let before = state.collect(0, 3);
+        state.touch_dynamic(1, 1, true, true, false, false, false, true, slot(1).icon);
+        let edited = state.slots[state.index(1)]
+            .as_ref()
+            .expect("edited cell retained");
+        assert!(edited.editing && edited.selected && edited.cursor);
+        assert_eq!(edited.shape_key, before[1].shape_key);
+        assert!(matches!(
+            edited.icon,
+            FileIcon::Builtin {
+                kind: FileKind::File,
+                ..
+            }
+        ));
+        assert_eq!(
+            state
+                .collect(0, 3)
+                .iter()
+                .map(|s| s.row)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        state.touch_dynamic(1, 1, true, true, false, false, false, false, slot(1).icon);
+        assert!(!state.collect(1, 2)[0].editing);
+        assert!(!before[1].editing);
+    }
 
     #[test]
     fn shared_shape_cache_fills_each_resident_key_once() {

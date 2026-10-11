@@ -3,7 +3,7 @@ use crate::input::action::{Action, SelectionMove};
 use crate::input::commands::{command_remappable, default_command_shortcut, COMMANDS};
 use atlas_model::profiles::ProfileScoped;
 use atlas_model::settings::ViewMode;
-use gpui::{Context, KeyDownEvent, KeybindingKeystroke, Keystroke, Window};
+use gpui::{Context, Focusable, KeyDownEvent, KeybindingKeystroke, Keystroke, Window};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -108,7 +108,124 @@ impl App {
             }
         }
 
+        if self.handle_vim_mode_key(ev, window, cx) {
+            return true;
+        }
+
         self.handle_command_shortcut_key(ev)
+    }
+
+    pub(crate) fn handle_vim_mode_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.state.settings.vim_mode {
+            self.vim_pending_key = None;
+            return false;
+        }
+
+        let text_input_focused = self.any_text_input_focused(window, cx);
+        let pane_filter_active = self
+            .state
+            .active_tab_state()
+            .is_some_and(|ts| ts.search.active);
+
+        if text_input_focused
+            || pane_filter_active
+            || self.modal_overlay_active()
+            || self.command_shortcuts_blocked_by_app_state()
+            || self
+                .state
+                .active_tab_state()
+                .is_some_and(|ts| ts.path_edit.editing)
+        {
+            self.vim_pending_key = None;
+            return false;
+        }
+
+        let key = ev.keystroke.key.as_str();
+        let shift = ev.keystroke.modifiers.shift;
+        let ctrl = ev.keystroke.modifiers.control;
+        let alt = ev.keystroke.modifiers.alt;
+        let platform = ev.keystroke.modifiers.platform;
+
+        if ctrl || alt || platform {
+            self.vim_pending_key = None;
+            return false;
+        }
+
+        if self.vim_pending_key == Some('g') {
+            self.vim_pending_key = None;
+            if key == "g" && !shift {
+                self.process_actions(vec![Action::MoveSelection {
+                    target: SelectionMove::First,
+                    extend: false,
+                }]);
+                return true;
+            }
+        }
+
+        match (key, shift) {
+            ("j", false) => {
+                self.process_actions(vec![Action::MoveSelection {
+                    target: SelectionMove::Next,
+                    extend: false,
+                }]);
+                true
+            }
+            ("k", false) => {
+                self.process_actions(vec![Action::MoveSelection {
+                    target: SelectionMove::Previous,
+                    extend: false,
+                }]);
+                true
+            }
+            ("h", false) => {
+                self.process_actions(vec![Action::NavigateUp(self.state.focused_tile)]);
+                true
+            }
+            ("l", false) | ("enter", false) => {
+                self.process_actions(vec![Action::OpenCursor]);
+                true
+            }
+            ("y", false) => {
+                self.copy_focused();
+                true
+            }
+            ("d", false) => {
+                self.cut_focused();
+                true
+            }
+            ("p", false) => {
+                self.paste_focused();
+                true
+            }
+            ("g", false) => {
+                self.vim_pending_key = Some('g');
+                true
+            }
+            ("G", _) | ("g", true) => {
+                self.process_actions(vec![Action::MoveSelection {
+                    target: SelectionMove::Last,
+                    extend: false,
+                }]);
+                true
+            }
+            ("/", _) | ("slash", _) => {
+                self.process_actions(vec![Action::OpenSearchInPlace]);
+                if let Some(input) = self.search_inputs.get(&self.state.focused_tile).cloned() {
+                    let focus = input.read(cx).focus_handle(cx);
+                    window.focus(&focus, cx);
+                }
+                true
+            }
+            _ => {
+                self.vim_pending_key = None;
+                false
+            }
+        }
     }
 
     pub(crate) fn command_shortcut_string(&self, command_id: &str) -> Option<String> {
@@ -249,13 +366,16 @@ impl App {
                 location: atlas_model::location::Location::RecycleBin,
             }),
             "view.hidden" => Some(Action::ToggleHidden),
+            "view.vim-mode" => Some(Action::ToggleVimMode),
             "view.inspector" => Some(Action::ToggleInspector),
+            "view.branch-view" => Some(Action::ToggleBranchViewFocused),
             "view.sidebar" => Some(Action::ToggleSidebar),
             "view.sidebar-collapse" => Some(Action::ToggleSidebarCollapsed),
             "view.details" => Some(Action::SetViewMode(ViewMode::Details)),
             "view.grid" => Some(Action::SetViewMode(ViewMode::Grid)),
             "view.list" => Some(Action::SetViewMode(ViewMode::List)),
             "view.miller" => Some(Action::SetViewMode(ViewMode::Miller)),
+            "view.tree" => Some(Action::SetViewMode(ViewMode::Tree)),
             "view.zoom-in" => Some(Action::ZoomIn),
             "view.zoom-out" => Some(Action::ZoomOut),
             "view.zoom-reset" => Some(Action::ZoomReset),
@@ -425,6 +545,14 @@ impl App {
     }
 }
 
+pub(crate) fn is_vim_navigation_key(key: &str, shift: bool) -> bool {
+    match key {
+        "h" | "j" | "k" | "l" | "y" | "d" | "p" | "/" | "slash" | "enter" => true,
+        "g" | "G" => true,
+        _ => shift && key.eq_ignore_ascii_case("g"),
+    }
+}
+
 fn reserved_static_shortcut(keystroke: &str) -> bool {
     let Ok(source) = Keystroke::parse(keystroke) else {
         return true;
@@ -449,5 +577,27 @@ mod tests {
     #[test]
     fn non_reserved_shortcuts_are_allowed() {
         assert!(!reserved_static_shortcut("ctrl-alt-1"));
+    }
+
+    #[test]
+    fn vim_navigation_keys_identified() {
+        assert!(is_vim_navigation_key("h", false));
+        assert!(is_vim_navigation_key("j", false));
+        assert!(is_vim_navigation_key("k", false));
+        assert!(is_vim_navigation_key("l", false));
+        assert!(is_vim_navigation_key("y", false));
+        assert!(is_vim_navigation_key("d", false));
+        assert!(is_vim_navigation_key("p", false));
+        assert!(is_vim_navigation_key("g", false));
+        assert!(is_vim_navigation_key("G", false));
+        assert!(is_vim_navigation_key("g", true));
+        assert!(is_vim_navigation_key("/", false));
+        assert!(is_vim_navigation_key("slash", false));
+        assert!(is_vim_navigation_key("enter", false));
+
+        assert!(!is_vim_navigation_key("a", false));
+        assert!(!is_vim_navigation_key("b", false));
+        assert!(!is_vim_navigation_key("x", false));
+        assert!(!is_vim_navigation_key("z", false));
     }
 }

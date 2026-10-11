@@ -15,3 +15,4 @@ pub mod watcher;
 
 pub mod archive;
 pub mod preview;
+pub mod properties;

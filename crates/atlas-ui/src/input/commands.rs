@@ -43,13 +43,16 @@ pub(crate) const COMMANDS: &[CommandMeta] = &[
     #[cfg(target_os = "windows")]
     CommandMeta::remappable("nav.recycle-bin", None),
     CommandMeta::remappable("view.hidden", Some("ctrl-.")),
+    CommandMeta::remappable("view.vim-mode", None),
     CommandMeta::remappable("view.inspector", Some("ctrl-i")),
-    CommandMeta::remappable("view.sidebar", Some("ctrl-b")),
+    CommandMeta::remappable("view.branch-view", Some("ctrl-b")),
+    CommandMeta::remappable("view.sidebar", None),
     CommandMeta::remappable("view.sidebar-collapse", Some("ctrl-alt-b")),
     CommandMeta::remappable("view.details", None),
     CommandMeta::remappable("view.grid", None),
     CommandMeta::remappable("view.list", None),
     CommandMeta::remappable("view.miller", None),
+    CommandMeta::remappable("view.tree", None),
     CommandMeta::remappable("view.zoom-in", Some("ctrl-=")),
     CommandMeta::remappable("view.zoom-out", Some("ctrl--")),
     CommandMeta::remappable("view.zoom-reset", Some("ctrl-0")),
@@ -139,5 +142,11 @@ mod tests {
     fn command_without_default_can_still_be_remapped() {
         assert_eq!(default_command_shortcut("view.details"), None);
         assert!(command_remappable("view.details"));
+    }
+
+    #[test]
+    fn vim_mode_command_is_registered_and_remappable() {
+        assert_eq!(default_command_shortcut("view.vim-mode"), None);
+        assert!(command_remappable("view.vim-mode"));
     }
 }

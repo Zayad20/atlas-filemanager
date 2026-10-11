@@ -31,6 +31,18 @@ const FOLD_ICON_WIDTH: Pixels = px(14.);
 const FOLD_ICON_HITBOX_WIDTH: Pixels = px(18.);
 const MAX_HIGHLIGHT_LINE_LENGTH: usize = 10_000;
 
+pub(super) fn horizontal_cursor_margin(single_line: bool, alignment: TextAlign) -> Pixels {
+    match alignment {
+        TextAlign::Left if !single_line => RIGHT_MARGIN,
+        TextAlign::Right => px(0.),
+        _ => CURSOR_WIDTH,
+    }
+}
+
+fn clamp_horizontal_scroll(offset: Pixels, content_width: Pixels, viewport_width: Pixels) -> Pixels {
+    offset.clamp(-(content_width - viewport_width).max(px(0.)), px(0.))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct EditorScrollbarLayout {
     bounds: Bounds<Pixels>,
@@ -461,11 +473,8 @@ impl TextElement {
             if selection_changed && !is_selected_all {
                 // For Right alignment use 0 margin: cursor is clamped to bounds separately,
                 // so we never scroll the text for cursor-at-edge, avoiding a first-click jump.
-                let safety_margin = match last_layout.text_align {
-                    TextAlign::Left => RIGHT_MARGIN,
-                    TextAlign::Right => px(0.),
-                    TextAlign::Center => CURSOR_WIDTH,
-                };
+                let safety_margin =
+                    horizontal_cursor_margin(state.mode.is_single_line(), last_layout.text_align);
 
                 scroll_offset.x = if scroll_offset.x + cursor_pos.x
                     > (bounds.size.width - line_number_width - safety_margin)
@@ -545,8 +554,23 @@ impl TextElement {
             ));
         }
 
+        let cursor_scroll_x = scroll_offset.x;
         if let Some(deferred_scroll_offset) = state.deferred_scroll_offset {
             scroll_offset = deferred_scroll_offset;
+        }
+        if state.mode.is_single_line() {
+            let clamped = clamp_horizontal_scroll(
+                scroll_offset.x,
+                scroll_size.width,
+                bounds.size.width,
+            );
+            if let Some(cursor_bounds) = cursor_bounds.as_mut() {
+                cursor_bounds.origin.x += clamped - cursor_scroll_x;
+            }
+            scroll_offset.x = clamped;
+            // Fractional row heights must not create vertical scrolling in a
+            // single-line field when Home/End changes the cursor position.
+            scroll_offset.y = px(0.);
         }
         scroll_offset.y = clamp_auto_grow_vertical_scroll_offset(
             &state.mode,
@@ -1782,9 +1806,11 @@ impl Element for TextElement {
         // Empty bottom and ghost lines both describe extra height past the
         // last content row, so take the max rather than summing — summing
         // left a band of empty space the cursor could never reach.
+        let horizontal_margin =
+            horizontal_cursor_margin(state.mode.is_single_line(), last_layout.text_align);
         let mut scroll_size = size(
-            if longest_line_width + line_number_width + RIGHT_MARGIN > bounds.size.width {
-                longest_line_width + line_number_width + RIGHT_MARGIN
+            if longest_line_width + line_number_width + horizontal_margin > bounds.size.width {
+                longest_line_width + line_number_width + horizontal_margin
             } else {
                 longest_line_width
             },
@@ -2022,17 +2048,22 @@ impl Element for TextElement {
 
         // Paint selections
         if window.is_window_active() {
-            let secondary_selection = cx.theme().selection.saturation(0.1);
+            let selection = self
+                .state
+                .read(cx)
+                .selection_color
+                .unwrap_or(cx.theme().selection);
+            let secondary_selection = selection.saturation(0.1);
             for (path, is_active) in prepaint.search_match_paths.iter() {
                 window.paint_path(path.clone(), secondary_selection);
 
                 if *is_active {
-                    window.paint_path(path.clone(), cx.theme().selection);
+                    window.paint_path(path.clone(), selection);
                 }
             }
 
             if let Some(path) = prepaint.selection_path.take() {
-                window.paint_path(path, cx.theme().selection);
+                window.paint_path(path, selection);
             }
 
             // Paint hover highlight
@@ -2368,6 +2399,21 @@ fn split_runs_by_bg_segments(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_line_cursor_does_not_reserve_an_editor_margin() {
+        assert_eq!(horizontal_cursor_margin(true, TextAlign::Left), CURSOR_WIDTH);
+        assert_eq!(horizontal_cursor_margin(false, TextAlign::Left), RIGHT_MARGIN);
+        assert_eq!(horizontal_cursor_margin(true, TextAlign::Center), CURSOR_WIDTH);
+    }
+
+    #[test]
+    fn horizontal_scroll_resets_when_the_name_fits_and_preserves_real_overflow() {
+        assert_eq!(clamp_horizontal_scroll(px(-8.), px(72.), px(80.)), px(0.));
+        assert_eq!(clamp_horizontal_scroll(px(-60.), px(200.), px(80.)), px(-60.));
+        assert_eq!(clamp_horizontal_scroll(px(-160.), px(200.), px(80.)), px(-120.));
+        assert_eq!(clamp_horizontal_scroll(px(3.), px(200.), px(80.)), px(0.));
+    }
 
     #[test]
     fn test_editor_scrollbar_layout_uses_current_scroll_size() {

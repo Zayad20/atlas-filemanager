@@ -1,0 +1,221 @@
+name: Linux packages
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+    outputs:
+      version:
+        value: ${{ jobs.build.outputs.version }}
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version with an entry in CHANGELOG.md (without v)
+        required: true
+        default: '0.1.0'
+  pull_request:
+    paths:
+      - '.github/workflows/linux-*'
+      - '.github/workflows/release.yml'
+      - 'packaging/**'
+      - 'scripts/linux*'
+      - 'scripts/test-linux-local.py'
+      - 'scripts/install-linux.sh'
+      - 'scripts/tests/test_linux*'
+      - 'CHANGELOG.md'
+      - 'Cargo.*'
+      - 'rust-toolchain.toml'
+      - 'src/**'
+      - 'crates/**'
+      - 'vendor/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Linux x86_64 (glibc 2.35)
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      test-matrix: ${{ steps.metadata.outputs.test-matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.97.1'
+      - uses: Swatinem/rust-cache@v2
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang g++ pkg-config \
+            libasound2-dev libfontconfig-dev libssl-dev libvulkan1 libxcb1-dev \
+            libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev libbz2-dev liblzma-dev \
+            desktop-file-utils appstream squashfs-tools librsvg2-bin
+      - name: Release metadata
+        id: metadata
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="$INPUT_VERSION"
+          if [ -z "$version" ]; then
+            version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          fi
+          python3 scripts/linux_release.py metadata --version "$version"
+          python3 -c 'import json; print("test-matrix=" + json.dumps(json.load(open("packaging/linux/test-matrix.json"))))' >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "ATLAS_VERSION=$version" >> "$GITHUB_ENV"
+          echo "ATLAS_RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "ATLAS_RELEASE_API=https://api.github.com/repos/$GITHUB_REPOSITORY/releases/latest" >> "$GITHUB_ENV"
+          echo "ATLAS_RELEASES_URL=https://github.com/$GITHUB_REPOSITORY/releases" >> "$GITHUB_ENV"
+      - name: Packaging and installer tests
+        run: python3 -m unittest discover -s scripts/tests -p 'test_linux*.py' -v
+      - name: Build release
+        run: cargo build --release --locked
+      - name: Check ELF portability
+        run: |
+          target/release/atlas --version
+          ldd target/release/atlas
+          if readelf -d target/release/atlas | grep -E 'NEEDED.*(libbz2|liblzma)'; then
+            echo 'Compression libraries must be statically linked' >&2
+            exit 1
+          fi
+      - name: Download verified packaging tools
+        run: python3 scripts/linux_release.py tools
+      - name: DEB, RPM, Arch, tarball, AppImage and AUR recipe
+        run: |
+          rm -rf target/linux-dist
+          python3 scripts/linux_release.py packages --version "$ATLAS_VERSION"
+      - name: Validate desktop metadata and checksums
+        run: |
+          desktop-file-validate packaging/linux/atlas.desktop
+          appstreamcli validate --no-net target/linux-release/*.metainfo.xml
+          cd target/linux-dist
+          sha256sum --check SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-linux-x86_64
+          path: target/linux-dist/*
+          if-no-files-found: error
+
+  native-test:
+    name: Install and open on ${{ matrix.name }}
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.build.outputs.test-matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-linux-x86_64
+          path: artifacts
+      - name: Native install, shared libraries, version and rendered GUI
+        env:
+          ATLAS_VERSION: ${{ needs.build.outputs.version }}
+          TEST_IMAGE: ${{ matrix.image }}
+          TEST_FORMAT: ${{ matrix.format }}
+        run: |
+          mkdir -p logs
+          docker run --rm --security-opt seccomp=unconfined \
+            -e ATLAS_VERSION -v "$PWD/artifacts:/artifacts:ro" \
+            -v "$PWD/scripts:/scripts:ro" -v "$PWD/logs:/logs" \
+            "$TEST_IMAGE" bash /scripts/linux-container-test.sh "$TEST_FORMAT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-test-${{ matrix.id }}
+          path: logs/
+          if-no-files-found: ignore
+
+  portable-test:
+    name: AppImage and tarball startup
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-linux-x86_64
+          path: artifacts
+      - name: Desktop test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth xdotool imagemagick mesa-vulkan-drivers \
+            libxkbcommon-x11-0 libfontconfig1 libwayland-client0 libegl1 libgl1-mesa-dri fonts-dejavu-core
+      - name: Verify and launch both portable formats
+        env:
+          ATLAS_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          (cd artifacts && sha256sum --check SHA256SUMS)
+          tar -xzf "artifacts/atlas-$ATLAS_VERSION-linux-x86_64.tar.gz" -C /tmp
+          ATLAS_SMOKE_LOG_DIR="$PWD/logs/tarball" xvfb-run -a bash scripts/linux-smoke.sh "/tmp/atlas-$ATLAS_VERSION-linux-x86_64/bin/atlas"
+          chmod +x artifacts/*.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 ATLAS_SMOKE_LOG_DIR="$PWD/logs/appimage" xvfb-run -a bash scripts/linux-smoke.sh "$PWD/artifacts/Atlas-$ATLAS_VERSION-x86_64.AppImage"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-portable-test
+          path: logs/
+          if-no-files-found: ignore
+
+  store-packages:
+    name: Build and test local ${{ matrix.format }}
+    needs: build
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        format: [flatpak, snap]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-linux-x86_64
+          path: artifacts
+      - name: Store packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak squashfs-tools snapd xvfb xauth xdotool imagemagick \
+            mesa-vulkan-drivers libxkbcommon-x11-0 libfontconfig1 libwayland-client0 libegl1 libgl1-mesa-dri fonts-dejavu-core
+      - name: Package and install locally
+        env:
+          ATLAS_VERSION: ${{ needs.build.outputs.version }}
+          PACKAGE_FORMAT: ${{ matrix.format }}
+        run: dbus-run-session -- bash scripts/linux-store-packages.sh "$PACKAGE_FORMAT" "$PWD/artifacts"
+      - name: Launch local store package
+        env:
+          ATLAS_VERSION: ${{ needs.build.outputs.version }}
+          PACKAGE_FORMAT: ${{ matrix.format }}
+        run: |
+          if [ "$PACKAGE_FORMAT" = snap ]; then
+            sudo snap install artifacts/*.snap --dangerous --classic
+            binary=/snap/bin/atlas-filemanager.atlas
+          else
+            printf '#!/usr/bin/env bash\nexec flatpak run --die-with-parent io.github.neondeex.atlas-filemanager "$@"\n' > /tmp/atlas-flatpak
+            chmod +x /tmp/atlas-flatpak
+            binary=/tmp/atlas-flatpak
+          fi
+          ATLAS_SMOKE_LOG_DIR="$PWD/logs" ATLAS_SMOKE_WINDOW_CLASS=atlas dbus-run-session -- xvfb-run -a bash scripts/linux-smoke.sh "$binary"
+      - name: Checksum store artifact
+        env:
+          PACKAGE_FORMAT: ${{ matrix.format }}
+        run: |
+          cd artifacts
+          for file in *."$PACKAGE_FORMAT"; do sha256sum "$file" > "$file.sha256"; done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-linux-${{ matrix.format }}
+          path: |
+            artifacts/*.${{ matrix.format }}
+            artifacts/*.${{ matrix.format }}.sha256
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-${{ matrix.format }}-test
+          path: logs/
+          if-no-files-found: ignore

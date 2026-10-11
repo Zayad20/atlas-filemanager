@@ -26,6 +26,11 @@ pub enum RemoteKind {
         port: u16,
         user: String,
     },
+    WebDav {
+        url: String,
+        vendor: String,
+        user: String,
+    },
     /// SMB/CIFS share. rclone lists shares as top-level directories.
     Smb {
         host: String,
@@ -44,6 +49,7 @@ impl RemoteKind {
         match self {
             Self::Sftp { .. } => "sftp",
             Self::Ftp { .. } => "ftp",
+            Self::WebDav { .. } => "webdav",
             Self::Smb { .. } => "smb",
             Self::GoogleDrive => "drive",
             Self::OneDrive => "onedrive",
@@ -55,6 +61,7 @@ impl RemoteKind {
         match self {
             Self::Sftp { .. } => "SFTP",
             Self::Ftp { .. } => "FTP",
+            Self::WebDav { .. } => "WebDAV",
             Self::Smb { .. } => "SMB",
             Self::GoogleDrive => "Google Drive",
             Self::OneDrive => "OneDrive",

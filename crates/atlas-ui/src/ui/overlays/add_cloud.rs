@@ -134,6 +134,7 @@ impl App {
             ("OneDrive", AddRemoteKind::OneDrive),
             ("SFTP", AddRemoteKind::Sftp),
             ("FTP", AddRemoteKind::Ftp),
+            ("WebDAV", AddRemoteKind::WebDav),
             ("SMB", AddRemoteKind::Smb),
         ];
         let service_picker = {

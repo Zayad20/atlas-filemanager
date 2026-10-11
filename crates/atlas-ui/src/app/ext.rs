@@ -33,6 +33,11 @@ pub const ICON_MANAGER_ICON: &[u8] =
 pub const RUNTIME_TOOLS_MANIFEST: &str =
     include_str!("../../../../extensions/runtime-tools/extension.toml");
 
+/// Bundled cloud virtual drives extension.
+pub const CLOUD_MANIFEST: &str =
+    include_str!("../../../../extensions/cloud/extension.toml");
+pub const CLOUD_ICON: &[u8] = include_bytes!("../../../../extensions/cloud/icon.svg");
+
 /// UI-level extension actions.
 #[derive(Debug, Clone)]
 pub enum ExtAction {

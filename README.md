@@ -42,6 +42,9 @@ Atlas is a desktop file manager for Windows and Linux designed for modern workfl
 
 Pre-built binaries for your operating system are available in the [Releases](https://github.com/neondeex/atlas-filemanager/releases) section. Simply download and run the executable.
 
+For Linux packages, native updates, store publishing, and the tested distributions,
+see [Linux distribution](docs/linux-distribution.md).
+
 ## Building from source
 
 To build and run Atlas locally, ensure you have [Rust](https://rustup.rs/) installed on your machine. Our repository includes a `rust-toolchain.toml` file, so `cargo` will automatically use the correct Rust version (1.95.0+) when you run these commands:

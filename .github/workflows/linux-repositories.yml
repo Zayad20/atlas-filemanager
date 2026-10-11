@@ -1,0 +1,126 @@
+name: Linux repositories
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+    secrets:
+      ATLAS_LINUX_SIGNING_KEY:
+        required: true
+      ATLAS_LINUX_SIGNING_PASSPHRASE:
+        required: false
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing latest stable release tag (for example v0.1.0)
+        required: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: atlas-linux-repositories
+  cancel-in-progress: false
+
+jobs:
+  repository:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure this is the latest stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ATLAS_TAG: ${{ inputs.tag }}
+        run: |
+          gh release view --json tagName,isPrerelease,isDraft > /tmp/atlas-latest.json
+          python3 - <<'PY'
+          import json, os
+          release = json.load(open('/tmp/atlas-latest.json'))
+          if release['tagName'] != os.environ['ATLAS_TAG'] or release['isDraft'] or release['isPrerelease']:
+              raise SystemExit('Only the latest stable release can update the stable repositories')
+          PY
+      - name: Download the release and retain recent package versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ATLAS_TAG: ${{ inputs.tag }}
+        run: |
+          gh release download "$ATLAS_TAG" --dir artifacts
+          gh release list --exclude-drafts --exclude-pre-releases --limit 3 --json tagName > /tmp/atlas-history.json
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          for release in json.load(open('/tmp/atlas-history.json')):
+              tag = release['tagName']
+              if tag == os.environ['ATLAS_TAG']:
+                  continue
+              metadata = json.loads(subprocess.check_output(['gh', 'release', 'view', tag, '--json', 'assets']))
+              names = {a['name'] for a in metadata['assets']}
+              packages = [n for n in names if n.endswith(('.deb', '.rpm', '.pkg.tar.zst'))]
+              if not packages:
+                  continue
+              destination = pathlib.Path('artifacts/history') / tag
+              destination.mkdir(parents=True)
+              for package in packages:
+                  subprocess.run(['gh', 'release', 'download', tag, '--dir', str(destination), '--pattern', package, '--pattern', package + '.sha256'], check=True)
+          PY
+      - name: Repository tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apt-utils createrepo-c rpm pacman-package-manager makepkg gnupg libarchive-tools zstd
+      - name: Import the signing key in an isolated keyring
+        env:
+          SIGNING_KEY: ${{ secrets.ATLAS_LINUX_SIGNING_KEY }}
+          EXPECTED_FINGERPRINT: ${{ vars.ATLAS_LINUX_SIGNING_FINGERPRINT }}
+        run: |
+          export GNUPGHOME="$RUNNER_TEMP/atlas-signing"
+          mkdir -m700 "$GNUPGHOME"
+          printf '%s' "$SIGNING_KEY" | gpg --batch --import
+          actual=$(gpg --batch --list-secret-keys --with-colons | awk -F: '$1 == "fpr" {print $10; exit}')
+          test -n "$EXPECTED_FINGERPRINT"
+          test "$actual" = "$EXPECTED_FINGERPRINT"
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+      - name: Build and verify signed repositories
+        env:
+          ATLAS_GPG_PASSPHRASE: ${{ secrets.ATLAS_LINUX_SIGNING_PASSPHRASE }}
+          REPOSITORY_URL: ${{ vars.ATLAS_LINUX_REPOSITORY_URL }}
+          SIGNING_FINGERPRINT: ${{ vars.ATLAS_LINUX_SIGNING_FINGERPRINT }}
+        run: |
+          if [ -z "$REPOSITORY_URL" ]; then
+            REPOSITORY_URL="https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}"
+          fi
+          python3 scripts/linux_repository.py --artifacts artifacts --output public \
+            --url "$REPOSITORY_URL" --fingerprint "$SIGNING_FINGERPRINT"
+          gpg --verify public/apt/dists/stable/InRelease
+          gpg --verify public/rpm/x86_64/repodata/repomd.xml.asc public/rpm/x86_64/repodata/repomd.xml
+          gpg --verify public/pacman/x86_64/atlas.db.sig public/pacman/x86_64/atlas.db
+          gpg --verify public/SHA256SUMS.asc public/SHA256SUMS
+          rpm --dbpath "$RUNNER_TEMP/atlas-rpm-db" --import public/atlas-signing-key.asc
+          rpm --dbpath "$RUNNER_TEMP/atlas-rpm-db" --checksig public/rpm/x86_64/*.rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-signed-linux-repositories
+          path: public/
+          if-no-files-found: error
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+      - name: Remove signing material
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/atlas-signing"
+
+  deploy:
+    needs: repository
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy signed Linux repositories
+        id: deployment
+        uses: actions/deploy-pages@v4

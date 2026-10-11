@@ -42,6 +42,8 @@ pub struct TabData {
     pub show_files: bool,
     #[serde(default = "default_true")]
     pub show_folders: bool,
+    #[serde(default)]
+    pub is_branch_view: bool,
 }
 
 /// Compat deserializer: accepts both the new format (`location: Location`) and the
@@ -72,6 +74,8 @@ struct TabDataRaw {
     show_files: bool,
     #[serde(default = "default_true")]
     show_folders: bool,
+    #[serde(default)]
+    is_branch_view: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -132,6 +136,7 @@ impl From<TabDataRaw> for TabData {
             folders_first: r.folders_first,
             show_files,
             show_folders,
+            is_branch_view: r.is_branch_view,
         }
     }
 }
@@ -161,6 +166,7 @@ impl TabData {
             folders_first: true,
             show_files: true,
             show_folders: true,
+            is_branch_view: false,
         }
     }
 }
@@ -251,5 +257,16 @@ mod tests {
         );
         assert_eq!(td.history.len(), 2);
         assert!(matches!(td.history[0], Location::Directory(_)));
+        assert!(!td.is_branch_view);
+    }
+
+    #[test]
+    fn branch_view_serializes_and_deserializes() {
+        let mut tab = TabData::with_view(PathBuf::from("/home/user/docs"), ViewMode::Details, 128.0, false);
+        tab.is_branch_view = true;
+        let json = serde_json::to_string(&tab).unwrap();
+        assert!(json.contains("\"is_branch_view\":true"));
+        let restored: TabData = serde_json::from_str(&json).unwrap();
+        assert!(restored.is_branch_view);
     }
 }

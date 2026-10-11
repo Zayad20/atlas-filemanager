@@ -309,7 +309,7 @@ impl App {
                 )
             })
             .collect();
-        let ext_cmds = self.ext_registry.commands_for(&selection);
+        let ext_cmds = self.ext_registry.context_commands_for(&selection);
         let desktop_apps = if paths.is_empty() || is_recycle_bin {
             Vec::new()
         } else {

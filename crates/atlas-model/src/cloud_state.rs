@@ -12,6 +12,7 @@ pub enum AddRemoteKind {
     #[default]
     Sftp,
     Ftp,
+    WebDav,
     Smb,
     GoogleDrive,
     OneDrive,

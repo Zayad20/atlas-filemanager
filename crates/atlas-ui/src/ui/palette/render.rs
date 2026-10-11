@@ -16,6 +16,7 @@ use crate::app::App;
 use crate::input::action::Action;
 use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::motion;
+use std::path::PathBuf;
 use gpui::prelude::*;
 use gpui::AnimationExt;
 use gpui::ColorExt as _;
@@ -940,13 +941,106 @@ impl App {
                     .min(row_count.saturating_sub(1));
                 match props.rows.get(idx) {
                     Some(KeyRow::Item { action, .. }) => {
-                        self.process_actions(vec![action.clone(), props.close_action.clone()]);
+                        let m = &props.ev.keystroke.modifiers;
+                        let mut actions_to_run = Vec::new();
+                        let action = if matches!(props.kind, PaletteKind::Goto) {
+                            let (path, is_create) = match action {
+                                Action::Navigate { path, .. } => (Some(path.clone()), false),
+                                Action::Open(paths) => (paths.first().cloned(), false),
+                                Action::CreateFolder { parent, name } => {
+                                    (Some(parent.join(name)), true)
+                                }
+                                Action::CreateFile { parent, name } => {
+                                    (Some(parent.join(name)), true)
+                                }
+                                _ => (None, false),
+                            };
+                            let focused_tile = self.state.focused_tile;
+                            let pane = self
+                                .state
+                                .find_tabs_container(focused_tile)
+                                .or_else(|| self.state.find_any_tabs_container())
+                                .unwrap_or(focused_tile);
+                            if (m.control || m.platform) && !m.shift && !m.alt {
+                                if is_create {
+                                    actions_to_run.push(action.clone());
+                                }
+                                path.map(|p| Action::OpenDirInRightSplit { pane, path: p })
+                                    .unwrap_or_else(|| action.clone())
+                            } else if m.alt || ((m.control || m.platform) && m.shift) {
+                                if is_create {
+                                    actions_to_run.push(action.clone());
+                                }
+                                path.map(|p| Action::OpenDirInBottomSplit { pane, path: p })
+                                    .unwrap_or_else(|| action.clone())
+                            } else if m.shift && !m.control && !m.platform && !m.alt {
+                                if is_create {
+                                    actions_to_run.push(action.clone());
+                                }
+                                path.map(Action::OpenPathInNewWindow)
+                                    .unwrap_or_else(|| action.clone())
+                            } else {
+                                action.clone()
+                            }
+                        } else {
+                            action.clone()
+                        };
+                        actions_to_run.push(action);
+                        actions_to_run.push(props.close_action.clone());
+                        self.process_actions(actions_to_run);
                         self.flush_dirty_panes(cx);
                     }
                     Some(KeyRow::Header(section_id)) => {
                         self.toggle_palette_section(props.kind, section_id);
                     }
-                    None => {}
+                    None => {
+                        if matches!(props.kind, PaletteKind::Goto) {
+                            let query = props.input.read(cx).value().trim().to_string();
+                            if !query.is_empty() {
+                                let focused_tile = self.state.focused_tile;
+                                let pane = self
+                                    .state
+                                    .find_tabs_container(focused_tile)
+                                    .or_else(|| self.state.find_any_tabs_container())
+                                    .unwrap_or(focused_tile);
+                                let resolved = {
+                                    let expanded = dirs::home_dir().and_then(|h| {
+                                        super::specs::expand_home_query(&query, &h)
+                                    });
+                                    let q = expanded.as_deref().unwrap_or(&query);
+                                    let p = PathBuf::from(q);
+                                    if p.exists() {
+                                        p
+                                    } else {
+                                        let base = self.goto_default_root();
+                                        let joined = base.join(q);
+                                        if joined.exists() {
+                                            joined
+                                        } else {
+                                            p
+                                        }
+                                    }
+                                };
+                                let m = &props.ev.keystroke.modifiers;
+                                let action = if (m.control || m.platform) && !m.shift && !m.alt {
+                                    Action::OpenDirInRightSplit { pane, path: resolved }
+                                } else if m.alt || ((m.control || m.platform) && m.shift) {
+                                    Action::OpenDirInBottomSplit { pane, path: resolved }
+                                } else if m.shift && !m.control && !m.platform && !m.alt {
+                                    Action::OpenPathInNewWindow(resolved)
+                                } else if resolved.is_dir() {
+                                    Action::Navigate {
+                                        tab: focused_tile,
+                                        path: resolved,
+                                    }
+                                } else {
+                                    Action::Open(vec![resolved])
+                                };
+                                self.process_actions(vec![action, props.close_action.clone()]);
+                                self.flush_dirty_panes(cx);
+                            }
+                        }
+                    }
                 }
                 true
             }

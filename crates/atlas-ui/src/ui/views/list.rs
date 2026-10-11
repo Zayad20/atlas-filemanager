@@ -164,6 +164,10 @@ impl App {
             let scroll_view = view.clone();
 
             let animate_list_reflow = !self.state.settings.disable_animations
+                && !self
+                    .rename_edit
+                    .as_ref()
+                    .is_some_and(|edit| edit.pane == pane_id)
                 && !self.suppress_window_resize_animations()
                 && self.dock_split_animations.is_empty()
                 && self.pane_layout_animations.is_empty()
@@ -242,10 +246,7 @@ impl App {
                                 == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
                         let rename_input =
                             crate::ui::views::rename::active_input(app, pane_id, entry_idx);
-                        let selected = ts.selection.selected.contains(&entry_idx)
-                            && !crate::ui::views::rename::suppress_row_chrome(
-                                app, pane_id, entry_idx,
-                            );
+                        let selected = ts.selection.selected.contains(&entry_idx);
 
                         render_cell_compact(ListCellProps {
                             entry,
@@ -265,7 +266,7 @@ impl App {
                                 app, pane_id, entry_idx,
                             ),
                             window,
-                        })
+                        }, cx)
                     },
                 )
                 .into_any_element()
@@ -278,50 +279,39 @@ impl App {
                         let Some(&entry_idx) = ts.visible.get(visible_pos) else {
                             continue;
                         };
-                        let Some(entry) = ts.entries.get(entry_idx) else {
-                            continue;
-                        };
                         let Some(rename_input) =
                             crate::ui::views::rename::active_input(self, pane_id, entry_idx)
                         else {
                             continue;
                         };
-                        let selected = ts.selection.selected.contains(&entry_idx)
-                            && !crate::ui::views::rename::suppress_row_chrome(
-                                self, pane_id, entry_idx,
-                            );
-                        let file_icon = self.file_icon_for_entry(
-                            &entry.path,
-                            &entry.kind,
-                            entry.extension.as_deref(),
-                        );
-                        let cell = render_cell_compact(ListCellProps {
-                            entry,
-                            entry_idx,
-                            selected,
-                            show_checkbox: ts.selection.selected.len() > 1,
-                            pane_id,
-                            view: &view,
-                            accent,
-                            accent_fg,
-                            hover,
-                            flashing: false,
-                            record_rects: false,
-                            file_icon,
-                            rename_input: Some(rename_input),
-                            dimmed: false,
-                            window,
-                        });
                         let col = visible_pos % cols;
                         let row = visible_pos / cols;
+                        let label = crate::ui::views::grid_surface_element::list_name_bounds(
+                            gpui::Bounds {
+                                origin: gpui::point(
+                                    px(col as f32 * cell_stride),
+                                    px(row as f32 * pitch),
+                                ),
+                                size: gpui::size(px(CELL_W * zoom_scale), px(cell_h_px)),
+                            },
+                            zoom_scale,
+                        );
                         rename_overlay = Some(
                             div()
                                 .absolute()
-                                .left(px(col as f32 * cell_stride))
-                                .top(px(row as f32 * pitch))
-                                .w(px(CELL_W * zoom_scale))
-                                .h(px(cell_h_px))
-                                .child(cell)
+                                .left(label.origin.x)
+                                .top(label.origin.y)
+                                .w(label.size.width)
+                                .h(label.size.height)
+                                .text_color(accent_fg)
+                                .child(crate::ui::views::rename::input_element(
+                                    &rename_input,
+                                    &view,
+                                    label.size.height,
+                                    font_size,
+                                    window,
+                                    cx,
+                                ))
                                 .into_any_element(),
                         );
                         break;
@@ -515,7 +505,7 @@ struct ListCellProps<'a> {
 
 /// One compact List cell: 16px icon + truncated name in a fixed 220px row. Click
 /// routing mirrors the Details rows (shift = range, ctrl = toggle, dbl = open).
-fn render_cell_compact(props: ListCellProps) -> AnyElement {
+fn render_cell_compact(props: ListCellProps, cx: &gpui::App) -> AnyElement {
     let ListCellProps {
         entry,
         entry_idx,
@@ -548,9 +538,7 @@ fn render_cell_compact(props: ListCellProps) -> AnyElement {
         .rounded_sm()
         .when(dimmed, |s| s.opacity(0.45))
         .cursor_pointer()
-        .when(selected && rename_input.is_none(), |s| {
-            s.bg(accent).text_color(accent_fg)
-        })
+        .when(selected, |s| s.bg(accent).text_color(accent_fg))
         .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
         .when(!selected && rename_input.is_none(), |s| {
             s.hover(|h| h.bg(hover))
@@ -586,7 +574,7 @@ fn render_cell_compact(props: ListCellProps) -> AnyElement {
                     .items_center()
                     .flex_none()
                     .child(crate::ui::views::rename::input_element(
-                        input, view, line_h, font_size, window,
+                        input, view, line_h, font_size, window, cx,
                     ))
                     .into_any_element()
             }

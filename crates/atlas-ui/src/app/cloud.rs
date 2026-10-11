@@ -145,6 +145,26 @@ impl App {
                 port: form.port.trim().parse().unwrap_or(21),
                 user,
             },
+            AddRemoteKind::WebDav => {
+                let url = if host.starts_with("http://") || host.starts_with("https://") {
+                    host.clone()
+                } else {
+                    let port_str = form.port.trim();
+                    let port = port_str.parse::<u16>().unwrap_or(80);
+                    if port == 443 {
+                        format!("https://{host}")
+                    } else if port == 80 {
+                        format!("http://{host}")
+                    } else {
+                        format!("http://{host}:{port}")
+                    }
+                };
+                RemoteKind::WebDav {
+                    url,
+                    vendor: "other".to_string(),
+                    user,
+                }
+            }
             AddRemoteKind::Smb => RemoteKind::Smb {
                 host: host.clone(),
                 port: form.port.trim().parse().unwrap_or(445),

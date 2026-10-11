@@ -1,77 +1,224 @@
-//! Cross-platform "Properties" overlay — F3 #15.
-//!
-//! On Windows, right-click → Properties opens the native shell dialog
-//! (`shell_context_menu::show_properties`, `ShellExecuteExW` + "properties" verb).
-//! Everywhere else that verb doesn't exist, so this is our own themed modal built
-//! from the same metadata the inspector already surfaces (name/path/size/modified),
-//! plus what the inspector doesn't stat: created time, read-only/symlink flags.
-//!
-//! Folder sizes are NOT computed recursively here — `std::fs::metadata` reports a
-//! directory's own inode size, not its contents, and walking the tree synchronously
-//! on open would block the UI thread. Shows "—" for directories; a future pass
-//! could compute this via the existing async size-scan used by the paste-conflict
-//! flow.
+//! Properties with Unix permission editing. Windows uses its native shell dialog.
+//! Directory sizes show "—": inode size is not the size of their contents.
 
 use crate::app::App;
 use crate::ui::icons::{file_type_icon, icon, AtlasIcon};
+use atlas_core::fs::properties::read_properties;
 use atlas_core::util::display::{format_date, format_size};
 use atlas_model::file_entry::FileKind;
 use atlas_model::overlay::{PropertiesState, PropertyRow};
 use gpui::prelude::*;
 use gpui::ColorExt as _;
 use gpui::{div, px, AnyElement, Context, KeyDownEvent, MouseButton, Window};
+use gpui_component::scroll::ScrollableElement;
+#[cfg(unix)]
+use gpui_component::{
+    button::{Button, ButtonVariants},
+    checkbox::Checkbox,
+    Disableable,
+};
 use gpui_component::{h_flex, v_flex, ActiveTheme};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Stat `paths` synchronously (a handful of files/dirs — one `metadata()` /
 /// `symlink_metadata()` call each) and build the overlay state.
 pub(crate) fn stat_properties(paths: &[PathBuf]) -> PropertiesState {
-    let rows = paths.iter().map(|path| stat_one(path)).collect::<Vec<_>>();
-    PropertiesState { rows }
-}
-
-fn stat_one(path: &Path) -> PropertyRow {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string());
-    let meta = std::fs::metadata(path).ok();
-    let is_symlink = std::fs::symlink_metadata(path)
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false);
-    let kind = match &meta {
-        Some(m) if m.is_dir() => FileKind::Dir,
-        _ if is_symlink => FileKind::Symlink,
-        _ => FileKind::File,
-    };
-    PropertyRow {
-        name,
-        path: path.to_path_buf(),
-        kind,
-        size: meta.as_ref().filter(|m| m.is_file()).map(|m| m.len()),
-        created: meta.as_ref().and_then(|m| m.created().ok()),
-        modified: meta.as_ref().and_then(|m| m.modified().ok()),
-        readonly: meta.as_ref().is_some_and(|m| m.permissions().readonly()),
-        is_symlink,
+    let rows = paths.iter().map(|path| read_properties(path)).collect();
+    PropertiesState {
+        rows,
+        saving: false,
     }
 }
 
 impl App {
     #[allow(dead_code)] // reason: only called from the cfg(not(windows)) ctx-menu branch
     pub(crate) fn open_properties(&mut self, paths: Vec<PathBuf>) {
-        if paths.is_empty() {
+        if paths.is_empty()
+            || self
+                .state
+                .overlay
+                .properties
+                .as_ref()
+                .is_some_and(|s| s.saving)
+        {
             return;
         }
         self.state.overlay.properties = Some(stat_properties(&paths));
     }
 
     fn close_properties(&mut self) {
-        self.state.overlay.properties = None;
+        if !self
+            .state
+            .overlay
+            .properties
+            .as_ref()
+            .is_some_and(|s| s.saving)
+        {
+            self.state.overlay.properties = None;
+        }
+    }
+
+    #[cfg(unix)]
+    fn apply_property_permissions(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = self.state.overlay.properties.as_mut() else {
+            return;
+        };
+        if state.saving {
+            return;
+        }
+        let edits: Vec<_> = state
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                let permissions = row.permissions.as_ref()?;
+                (!row.is_symlink && permissions.edited_mode != permissions.mode)
+                    .then(|| (index, row.path.clone(), permissions.clone()))
+            })
+            .collect();
+        if edits.is_empty() {
+            return;
+        }
+        state.saving = true;
+        let task = cx.background_executor().spawn(async move {
+            edits
+                .into_iter()
+                .map(|(index, path, permissions)| {
+                    let result = atlas_core::fs::properties::apply_permissions(&path, &permissions)
+                        .map(|()| read_properties(&path))
+                        .map_err(|error| error.to_string());
+                    (index, result)
+                })
+                .collect::<Vec<_>>()
+        });
+        cx.spawn(async move |this, cx| {
+            let results = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(state) = this.state.overlay.properties.as_mut() {
+                    for (index, result) in results {
+                        if let Some(row) = state.rows.get_mut(index) {
+                            match result {
+                                Ok(refreshed) => *row = refreshed,
+                                Err(error) => row.error = Some(error),
+                            }
+                        }
+                    }
+                    state.saving = false;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    #[cfg(unix)]
+    fn property_permissions(
+        row: &PropertyRow,
+        index: usize,
+        saving: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(permissions) = row.permissions.as_ref() else {
+            return div().into_any_element();
+        };
+        let muted = cx.theme().muted_foreground;
+        let fg = cx.theme().popover_foreground;
+        let mode = permissions.edited_mode;
+        let mut section = v_flex()
+            .gap_2()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(rust_i18n::t!("properties_permissions").to_string()),
+            )
+            .child(prop_row(
+                rust_i18n::t!("properties_owner").to_string(),
+                format!("UID {}", permissions.uid),
+                muted,
+                fg,
+            ))
+            .child(prop_row(
+                rust_i18n::t!("properties_group").to_string(),
+                format!("GID {}", permissions.gid),
+                muted,
+                fg,
+            ))
+            .child(prop_row(
+                rust_i18n::t!("properties_mode").to_string(),
+                format!("{mode:04o}"),
+                muted,
+                fg,
+            ));
+        if row.is_symlink {
+            return section
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(rust_i18n::t!("properties_symlink_permissions").to_string()),
+                )
+                .into_any_element();
+        }
+        for (label, shift) in [
+            ("properties_owner", 6),
+            ("properties_group", 3),
+            ("properties_others", 0),
+        ] {
+            let mut line = h_flex().gap_2().items_center().child(
+                div()
+                    .w(px(90.))
+                    .text_xs()
+                    .text_color(muted)
+                    .child(rust_i18n::t!(label).to_string()),
+            );
+            for (label, bit) in [
+                ("properties_read", 4),
+                ("properties_write", 2),
+                ("properties_execute", 1),
+            ] {
+                let mask = bit << shift;
+                line = line.child(
+                    Checkbox::new(format!("permission-{index}-{mask}"))
+                        .label(rust_i18n::t!(label).to_string())
+                        .checked(mode & mask != 0)
+                        .disabled(saving)
+                        .on_click(cx.listener(move |this, checked: &bool, _window, cx| {
+                            if let Some(state) = this.state.overlay.properties.as_mut() {
+                                if !state.saving {
+                                    if let Some(permissions) = state
+                                        .rows
+                                        .get_mut(index)
+                                        .and_then(|row| row.permissions.as_mut())
+                                    {
+                                        if *checked {
+                                            permissions.edited_mode |= mask;
+                                        } else {
+                                            permissions.edited_mode &= !mask;
+                                        }
+                                    }
+                                }
+                            }
+                            cx.notify();
+                        })),
+                );
+            }
+            section = section.child(line);
+        }
+        section
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(rust_i18n::t!("properties_permissions_scope").to_string()),
+            )
+            .into_any_element()
     }
 
     pub(crate) fn render_properties(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(state) = self.state.overlay.properties.clone() else {
@@ -88,17 +235,39 @@ impl App {
         };
         let view = cx.entity();
         let focus = self.overlay_focus(cx);
+        let scroll = window
+            .use_keyed_state("properties-scroll", cx, |_, _| gpui::ScrollHandle::new())
+            .read(cx)
+            .clone();
+        let body_height = (window.viewport_size().height - px(168.)).max(px(80.));
 
-        let body = if let [row] = state.rows.as_slice() {
-            single_row(row, fg, muted)
-        } else {
-            multi_summary(&state.rows, fg, muted)
-        };
+        let mut body = v_flex().gap_4();
+        if state.rows.len() > 1 {
+            body = body.child(multi_summary(&state.rows, fg, muted));
+        }
+        for (index, row) in state.rows.iter().enumerate() {
+            body = body.child(single_row(row, fg, muted));
+            #[cfg(unix)]
+            {
+                body = body.child(Self::property_permissions(row, index, state.saving, cx));
+            }
+            #[cfg(not(unix))]
+            let _ = index;
+            if let Some(error) = &row.error {
+                body = body.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(rust_i18n::t!("properties_error", detail = error).to_string()),
+                );
+            }
+        }
 
         let close_view = view.clone();
         let panel = v_flex()
-            .w(px(420.))
-            .max_h(px(480.))
+            .w(px(520.))
+            .max_w(window.viewport_size().width - px(32.))
+            .max_h(window.viewport_size().height - px(48.))
             .bg(popover)
             .text_color(fg)
             .border_1()
@@ -118,6 +287,7 @@ impl App {
             }))
             .child(
                 h_flex()
+                    .flex_shrink_0()
                     .items_center()
                     .justify_between()
                     .child(
@@ -146,7 +316,65 @@ impl App {
                             }),
                     ),
             )
-            .child(body);
+            .child(
+                div()
+                    .relative()
+                    .child(
+                        div()
+                            .id("properties-body")
+                            .max_h(body_height)
+                            .overflow_y_scroll()
+                            .track_scroll(&scroll)
+                            .pr_2()
+                            .child(body),
+                    )
+                    .vertical_scrollbar(&scroll),
+            )
+            .when(cfg!(unix), |panel| {
+                #[cfg(unix)]
+                {
+                    let dirty = state.rows.iter().any(|row| {
+                        !row.is_symlink
+                            && row
+                                .permissions
+                                .as_ref()
+                                .is_some_and(|p| p.edited_mode != p.mode)
+                    });
+                    panel.child(
+                        h_flex()
+                            .flex_shrink_0()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                Button::new("properties-cancel")
+                                    .label(rust_i18n::t!("properties_close").to_string())
+                                    .disabled(state.saving)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.close_properties();
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("properties-apply")
+                                    .primary()
+                                    .label(
+                                        rust_i18n::t!(if state.saving {
+                                            "properties_applying"
+                                        } else {
+                                            "properties_apply"
+                                        })
+                                        .to_string(),
+                                    )
+                                    .disabled(!dirty || state.saving)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.apply_property_permissions(cx)
+                                    })),
+                            ),
+                    )
+                }
+                #[cfg(not(unix))]
+                panel
+            });
 
         self.overlay_scrim_custom(
             "scrim-properties",
@@ -188,6 +416,10 @@ fn single_row(row: &PropertyRow, fg: gpui::Hsla, muted: gpui::Hsla) -> AnyElemen
         .modified
         .map(format_date)
         .unwrap_or_else(|| "—".to_string());
+    let accessed_label = row
+        .accessed
+        .map(format_date)
+        .unwrap_or_else(|| "—".to_string());
     let attrs = {
         let mut parts = Vec::new();
         if row.readonly {
@@ -225,6 +457,14 @@ fn single_row(row: &PropertyRow, fg: gpui::Hsla, muted: gpui::Hsla) -> AnyElemen
                 .text_color(muted)
                 .child(row.path.display().to_string()),
         )
+        .when_some(row.link_target.as_ref(), |body, target| {
+            body.child(prop_row(
+                rust_i18n::t!("properties_link_target").to_string(),
+                target.display().to_string(),
+                muted,
+                fg,
+            ))
+        })
         .child(div().h(px(1.)).w_full().bg(muted.opacity(0.2)))
         .child(v_flex().gap(px(6.)).text_xs().children(vec![
             prop_row(
@@ -253,6 +493,11 @@ fn single_row(row: &PropertyRow, fg: gpui::Hsla, muted: gpui::Hsla) -> AnyElemen
                 modified_label,
                 muted,
                 fg,
+            )
+            .into_any_element(),
+            prop_row(
+                rust_i18n::t!("properties_accessed").to_string(),
+                accessed_label, muted, fg,
             )
             .into_any_element(),
             prop_row(

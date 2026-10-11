@@ -15,8 +15,11 @@ const TEXT_EXTS: &[&str] = &[
     "txt", "md", "markdown", "toml", "json", "yaml", "yml", "css", "html", "xml",
 ];
 const CODE_EXTS: &[&str] = &[
-    "rs", "js", "jsx", "ts", "tsx", "py", "go", "java", "c", "cc", "cpp", "cxx", "h", "hpp", "cs",
-    "php", "rb", "swift", "kt", "kts", "sh", "ps1", "bat",
+    "rs", "js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts", "py", "pyw", "go",
+    "java", "c", "cc", "cpp", "cxx", "h", "hpp", "cs", "csx", "php", "rb", "swift",
+    "kt", "kts", "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd", "lua", "dart",
+    "zig", "html", "htm", "css", "scss", "sass", "less", "json", "jsonc", "vue",
+    "svelte", "astro", "xml", "yaml", "yml", "toml", "sql", "graphql", "gql",
 ];
 const ARCHIVE_EXTS: &[&str] = &["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz"];
 const PRESENTATION_EXTS: &[&str] = &["ppt", "pptx", "odp", "key"];

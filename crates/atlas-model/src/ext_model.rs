@@ -115,6 +115,9 @@ pub struct ExtCommand {
     pub id: String,
     #[allow(dead_code)] // reason: extension manager and palette keep this field available
     pub title: String,
+    /// Whether this command appears in file context menus. Palette access is independent.
+    #[serde(default = "default_true")]
+    pub context_menu: bool,
     #[serde(default)]
     pub accepts: Accepts,
     /// Declarative template. Placeholders: `{input}` `{dir}` `{stem}` `{ext}`
@@ -301,4 +304,3 @@ mod tests {
         assert!(validate_extension_id("control\x00char").is_err());
     }
 }
-
