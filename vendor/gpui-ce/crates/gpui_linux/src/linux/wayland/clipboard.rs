@@ -22,7 +22,8 @@ pub(crate) const TEXT_MIME_TYPES: [&str; 3] =
 pub(crate) const FILE_LIST_MIME_TYPE: &str = "text/uri-list";
 
 /// Text mime types that we'll accept from other programs.
-pub(crate) const ALLOWED_TEXT_MIME_TYPES: [&str; 2] = ["text/plain;charset=utf-8", "UTF8_STRING"];
+pub(crate) const ALLOWED_TEXT_MIME_TYPES: [&str; 3] =
+    ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
 
 pub(crate) struct Clipboard {
     connection: Connection,
@@ -116,7 +117,7 @@ impl<T: ReceiveData> DataOffer<T> {
         // Normalize the text to unix line endings, otherwise
         // copying from eg: firefox inserts a lot of blank
         // lines, and that is super annoying.
-        let result = text_content.replace("\r\n", "\n");
+        let result = text_content.replace("\r\n", "\n").replace('\0', "");
         Some(ClipboardItem::new_string(result))
     }
 
@@ -182,7 +183,8 @@ impl Clipboard {
 
     pub fn send(&self, _mime_type: String, fd: OwnedFd) {
         if let Some(text) = self.contents.as_ref().and_then(|contents| contents.text()) {
-            self.send_bytes(fd, text.as_bytes().to_owned());
+            let sanitized = text.replace('\0', "");
+            self.send_bytes(fd, sanitized.into_bytes());
         }
     }
 
@@ -192,7 +194,8 @@ impl Clipboard {
             .as_ref()
             .and_then(|contents| contents.text())
         {
-            self.send_bytes(fd, text.as_bytes().to_owned());
+            let sanitized = text.replace('\0', "");
+            self.send_bytes(fd, sanitized.into_bytes());
         }
     }
 

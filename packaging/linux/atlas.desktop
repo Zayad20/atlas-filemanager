@@ -12,3 +12,4 @@ Categories=System;FileManager;Utility;
 MimeType=inode/directory;
 Keywords=files;folders;explorer;manager;
 StartupNotify=true
+StartupWMClass=atlas

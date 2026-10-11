@@ -267,6 +267,16 @@ pub fn parse_uri_list_with_cut(text: &str) -> (Vec<PathBuf>, bool) {
             if !path.as_os_str().is_empty() {
                 paths.push(path);
             }
+        } else if trimmed.starts_with('/') {
+            let path = PathBuf::from(trimmed);
+            if path.exists() {
+                paths.push(path);
+            }
+        } else if cfg!(windows) && trimmed.len() >= 2 && trimmed.as_bytes().get(1) == Some(&b':') {
+            let path = PathBuf::from(trimmed);
+            if path.exists() {
+                paths.push(path);
+            }
         }
     }
 
@@ -480,5 +490,18 @@ mod tests {
         } else {
             panic!("expected Drop event");
         }
+    }
+
+    #[test]
+    fn parse_uri_list_with_raw_existing_paths() {
+        // /tmp or /etc always exist on Linux
+        let existing = if cfg!(windows) {
+            "C:\\Windows"
+        } else {
+            "/tmp"
+        };
+        let (paths, is_cut) = parse_uri_list_with_cut(existing);
+        assert!(!is_cut);
+        assert_eq!(paths, vec![PathBuf::from(existing)]);
     }
 }

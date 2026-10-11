@@ -627,7 +627,7 @@ impl App {
                     self.spawn_open_files(paths);
                 }
                 Action::CopyPathToClipboard(path) => {
-                    let text = path.to_string_lossy().to_string();
+                    let text = path.to_string_lossy().replace('\0', "");
                     if let Ok(mut cb) = arboard::Clipboard::new() {
                         let _ = cb.set_text(text.clone());
                         #[cfg(target_os = "linux")]

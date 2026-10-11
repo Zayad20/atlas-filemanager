@@ -271,6 +271,7 @@ pub fn run(
             titlebar: Some(TitleBar::title_bar_options()),
             window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
             window_min_size: Some(size(px(900.), px(560.))),
+            app_id: Some("atlas".to_string()),
             ..Default::default()
         };
 

@@ -853,6 +853,18 @@ impl App {
                     {
                         crate::dnd::windows::ole_clipboard::acknowledge_external_cut();
                     }
+                    #[cfg(unix)]
+                    if (origin == atlas_model::ops::TransferOrigin::PasteExternalCut
+                        || (kind == atlas_model::ops::TransferKind::Move
+                            && origin == atlas_model::ops::TransferOrigin::Paste))
+                        && report.errors.is_empty()
+                        && !report.completed.is_empty()
+                    {
+                        self.state.ops.clipboard = None;
+                        if let Ok(mut cb) = arboard::Clipboard::new() {
+                            let _ = cb.clear();
+                        }
+                    }
                     if report.cancelled {
                         self.toast_error(
                             rust_i18n::t!("op_cancelled_partial", done = report.completed.len())

@@ -1744,10 +1744,11 @@ impl LinuxClient for X11Client {
 
     fn write_to_primary(&self, item: gpui::ClipboardItem) {
         let state = self.0.borrow_mut();
+        let sanitized = item.text().unwrap_or_default().replace('\0', "");
         state
             .clipboard
             .set_text(
-                std::borrow::Cow::Owned(item.text().unwrap_or_default()),
+                std::borrow::Cow::Owned(sanitized),
                 clipboard::ClipboardKind::Primary,
                 clipboard::WaitConfig::None,
             )
@@ -1757,10 +1758,11 @@ impl LinuxClient for X11Client {
 
     fn write_to_clipboard(&self, item: gpui::ClipboardItem) {
         let mut state = self.0.borrow_mut();
+        let sanitized = item.text().unwrap_or_default().replace('\0', "");
         state
             .clipboard
             .set_text(
-                std::borrow::Cow::Owned(item.text().unwrap_or_default()),
+                std::borrow::Cow::Owned(sanitized),
                 clipboard::ClipboardKind::Clipboard,
                 clipboard::WaitConfig::None,
             )

@@ -1540,6 +1540,25 @@ impl InputState {
             return;
         }
 
+        // Middle click to paste from Primary selection on Linux
+        #[cfg(target_os = "linux")]
+        if event.button == MouseButton::Middle {
+            self.move_to(offset, None, cx);
+            if let Some(primary) = cx.read_from_primary() {
+                if let Some(mut text) = primary.text() {
+                    text = text.replace('\0', "");
+                    if !self.mode.is_multi_line() {
+                        text = text.replace('\n', "").replace('\r', "");
+                    }
+                    if !text.is_empty() {
+                        self.replace_text_in_range_silent(None, &text, window, cx);
+                        self.scroll_to(self.cursor(), None, cx);
+                    }
+                }
+            }
+            return;
+        }
+
         // Show Mouse context menu
         if event.button == MouseButton::Right {
             if self.enable_context_menu || self.context_menu_builder.is_some() {
@@ -1563,6 +1582,12 @@ impl InputState {
     ) {
         if self.selected_range.is_empty() {
             self.selection_reversed = false;
+        } else {
+            #[cfg(target_os = "linux")]
+            {
+                let text = self.text.slice(self.selected_range.clone()).to_string().replace('\0', "");
+                _cx.write_to_primary(gpui::ClipboardItem::new_string(text));
+            }
         }
         self.selecting = false;
         self.selected_word_range = None;
@@ -1786,7 +1811,9 @@ impl InputState {
         }
 
         let selected_text = self.text.slice(self.selected_range).to_string();
-        cx.write_to_clipboard(ClipboardItem::new_string(selected_text));
+        cx.write_to_clipboard(ClipboardItem::new_string(selected_text.clone()));
+        #[cfg(target_os = "linux")]
+        cx.write_to_primary(ClipboardItem::new_string(selected_text.replace('\0', "")));
     }
 
     pub(super) fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
@@ -1795,16 +1822,18 @@ impl InputState {
         }
 
         let selected_text = self.text.slice(self.selected_range).to_string();
-        cx.write_to_clipboard(ClipboardItem::new_string(selected_text));
+        cx.write_to_clipboard(ClipboardItem::new_string(selected_text.clone()));
+        #[cfg(target_os = "linux")]
+        cx.write_to_primary(ClipboardItem::new_string(selected_text.replace('\0', "")));
 
         self.replace_text_in_range_silent(None, "", window, cx);
     }
 
     pub(super) fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(clipboard) = cx.read_from_clipboard() {
-            let mut new_text = clipboard.text().unwrap_or_default();
+            let mut new_text = clipboard.text().unwrap_or_default().replace('\0', "");
             if !self.mode.is_multi_line() {
-                new_text = new_text.replace('\n', "");
+                new_text = new_text.replace('\n', "").replace('\r', "");
             }
 
             self.replace_text_in_range_silent(None, &new_text, window, cx);

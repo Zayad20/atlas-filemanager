@@ -17,6 +17,11 @@ impl InputState {
 
         self.selected_range = (range.start..range.end).into();
         self.selected_word_range = Some(self.selected_range);
+        #[cfg(target_os = "linux")]
+        {
+            let text = self.text.slice(self.selected_range.clone()).to_string().replace('\0', "");
+            cx.write_to_primary(gpui::ClipboardItem::new_string(text));
+        }
         cx.notify()
     }
 
@@ -27,6 +32,11 @@ impl InputState {
         let range = TextSelector::line_range(&self.text, offset);
         self.selected_range = (range.start..range.end).into();
         self.selected_word_range = None;
+        #[cfg(target_os = "linux")]
+        {
+            let text = self.text.slice(self.selected_range.clone()).to_string().replace('\0', "");
+            cx.write_to_primary(gpui::ClipboardItem::new_string(text));
+        }
         cx.notify()
     }
 }

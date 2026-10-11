@@ -296,7 +296,7 @@ impl App {
 
             #[cfg(unix)]
             {
-                let uri_list = crate::dnd::format_uri_list_with_cut(&paths, is_cut);
+                let uri_list = crate::dnd::format_uri_list_with_cut(&paths, is_cut).replace('\0', "");
                 if let Ok(mut cb) = arboard::Clipboard::new() {
                     let _ = cb.set_text(uri_list.clone());
                     #[cfg(target_os = "linux")]

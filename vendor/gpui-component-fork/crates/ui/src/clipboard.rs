@@ -93,7 +93,10 @@ impl RenderOnce for Clipboard {
                             .as_ref()
                             .map(|f| f(window, cx))
                             .unwrap_or_else(|| value.clone());
-                        cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()));
+                        let str_val = value.to_string();
+                        cx.write_to_clipboard(ClipboardItem::new_string(str_val.clone()));
+                        #[cfg(target_os = "linux")]
+                        cx.write_to_primary(ClipboardItem::new_string(str_val.replace('\0', "")));
                         state.update(cx, |state, cx| {
                             state.copied = true;
                             cx.notify();
