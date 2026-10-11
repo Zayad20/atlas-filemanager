@@ -49,6 +49,7 @@ pub(crate) enum DragHoverCommand {
 
 #[derive(Clone)]
 pub(crate) enum DragHoverDropCommand {
+    AddBookmarks,
     AssignTag(TagId),
     StageInSidebar,
     TransferTo(PathBuf),
@@ -555,6 +556,27 @@ impl App {
         self.mark_drag_committed();
         self.rubber = None;
         match command {
+            DragHoverDropCommand::AddBookmarks => {
+                let mut actions = Vec::new();
+                for path in paths {
+                    let bookmark_path = if path.is_dir() {
+                        path
+                    } else if let Some(parent) = path.parent() {
+                        parent.to_path_buf()
+                    } else {
+                        path
+                    };
+                    let name = bookmark_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| bookmark_path.display().to_string());
+                    actions.push(Action::AddBookmark {
+                        name,
+                        path: bookmark_path,
+                    });
+                }
+                self.process_actions(actions);
+            }
             DragHoverDropCommand::AssignTag(tag) => {
                 for path in &paths {
                     if self.state.sidebar_drop_zone.iter().any(|item| &item.path == path) {
@@ -1095,6 +1117,12 @@ mod tests {
         assert!(matches!(location_drop_command(&Location::Archive { archive: "example.zip".into(), inner: "folder".into() }), DragHoverDropCommand::RejectArchive));
         #[cfg(feature = "provider-host")]
         assert!(matches!(location_drop_command(&Location::Remote { id: "drive".into(), path: "folder".into() }), DragHoverDropCommand::TransferTo(path) if path == PathBuf::from("remote:drive/folder")));
+    }
+
+    #[test]
+    fn bookmarks_drop_command_variant() {
+        let cmd = DragHoverDropCommand::AddBookmarks;
+        assert!(matches!(cmd, DragHoverDropCommand::AddBookmarks));
     }
 
     #[test]

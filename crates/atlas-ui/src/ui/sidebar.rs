@@ -19,9 +19,10 @@ use crate::ui::root::DraggedFiles;
 #[cfg(all(feature = "provider-host", windows))]
 use crate::InstallWinFspForRemote;
 use crate::{
-    OpenPropertiesForPath, OpenSpaceLensForPath, OpenThisPcProperties, SidebarHideSection,
-    SidebarMoveSectionDown, SidebarMoveSectionUp, SidebarNewGlobalTag, SidebarNewProfileTag,
-    SidebarResetSections, SidebarToggleSection,
+    OpenPropertiesForPath, OpenSpaceLensForPath, OpenThisPcProperties, SidebarDeleteTag,
+    SidebarHideSection, SidebarMoveSectionDown, SidebarMoveSectionUp, SidebarNewGlobalTag,
+    SidebarNewProfileTag, SidebarRemoveBookmark, SidebarRenameTag, SidebarResetSections,
+    SidebarToggleSection,
 };
 #[cfg(feature = "provider-host")]
 use crate::{RemoveCloudRemote, StartRenameCloudRemote};
@@ -1151,6 +1152,41 @@ impl Render for SidebarPanel {
                     });
                 }
             }))
+            .on_action(cx.listener(|this, action: &SidebarDeleteTag, _window, cx| {
+                if let Some(app) = this.app.upgrade() {
+                    let tag = action.tag;
+                    app.update(cx, |app, cx| {
+                        app.process_actions(vec![Action::DeleteTag(tag)]);
+                        cx.notify();
+                    });
+                }
+            }))
+            .on_action(cx.listener(|this, action: &SidebarRenameTag, _window, cx| {
+                if let Some(app) = this.app.upgrade() {
+                    let tag = action.tag;
+                    let name = action.name.clone();
+                    let color = action.color;
+                    let global = action.global;
+                    app.update(cx, |app, cx| {
+                        app.process_actions(vec![Action::OpenRenameTagOverlay {
+                            tag,
+                            name,
+                            color,
+                            global,
+                        }]);
+                        cx.notify();
+                    });
+                }
+            }))
+            .on_action(cx.listener(|this, action: &SidebarRemoveBookmark, _window, cx| {
+                if let Some(app) = this.app.upgrade() {
+                    let index = action.index;
+                    app.update(cx, |app, cx| {
+                        app.process_actions(vec![Action::RemoveBookmark(index)]);
+                        cx.notify();
+                    });
+                }
+            }))
             .on_action(
                 cx.listener(|this, action: &OpenSpaceLensForPath, _window, cx| {
                     if let Some(app) = this.app.upgrade() {
@@ -2094,13 +2130,13 @@ fn render_collapsed_sections(
                 if !bookmarks.is_empty() && before {
                     col = col.child(collapsed_divider());
                 }
-                for (name, path) in bookmarks {
+                for (idx, (name, path)) in bookmarks.into_iter().enumerate() {
                     let active = current.is_some_and(|c| c == path.as_path());
                     let shell_tex = sidebar_shell_tex(app, &path, windows_theme, cx);
-                    col = col.child(collapsed_nav_row(
+                    col = col.child(collapsed_bookmark_row(
+                        idx,
                         SharedString::from(format!("rail-bm-{}", path.display())),
                         name,
-                        "folder",
                         path,
                         shell_tex,
                         app,
@@ -2478,6 +2514,121 @@ fn collapsed_virtual_nav_row(
         })
 }
 
+fn collapsed_bookmark_row(
+    index: usize,
+    id: SharedString,
+    label: String,
+    path: PathBuf,
+    shell_tex: Option<Arc<gpui::RenderImage>>,
+    app: &Entity<AtlasApp>,
+    style: SidebarStyle,
+    active: bool,
+) -> impl IntoElement {
+    let SidebarStyle {
+        hover,
+        active_bg,
+        accent,
+        fg,
+        windows_theme,
+        ..
+    } = style;
+    let app = app.clone();
+    let tooltip = label.clone();
+    let hover_id = DragHoverId::Sidebar(id.to_string());
+    let drop_app = app.clone();
+    let drop_app_external = app.clone();
+    let shell_path = path.clone();
+    let shell_app = app.clone();
+    let icon_color = if active {
+        accent
+    } else {
+        hsla(
+            (fg.hue.into_positive_degrees() / 360.0),
+            fg.saturation,
+            fg.lightness,
+            0.84,
+        )
+    };
+    h_flex()
+        .id(id)
+        .w_full()
+        .h(crate::ui::rem_px(32.))
+        .block_mouse_except_scroll()
+        .items_center()
+        .justify_center()
+        .rounded(px(9.))
+        .cursor_pointer()
+        .when(active, |s| s.bg(active_bg))
+        .when(!active, |s| s.hover(|h| h.bg(hover)))
+        .on_drag_over::<DraggedFiles>(move |s, _, _, _| s.bg(hover))
+        .on_drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(hover))
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .child(match shell_tex {
+            Some(tex) => img(tex)
+                .size(crate::ui::rem_px(18.0))
+                .flex_none()
+                .into_any_element(),
+            None => theme_icon(ph_icon("folder"), 17.0, icon_color, windows_theme),
+        })
+        .on_prepaint_child(move |_bounds, _window, cx| {
+            #[cfg(target_os = "windows")]
+            if windows_theme {
+                shell_app.update(cx, |this, _cx| {
+                    this.request_shell_thumbnail_or_icon(&shell_path);
+                });
+            }
+        })
+        .on_prepaint_child(drag_hover_recorder_with_drop(
+            hover_id,
+            DragHoverKind::Nav,
+            DragHoverCommand::NavigatePath(path.clone()),
+            DragHoverDropCommand::AddBookmarks,
+            &app,
+        ))
+        .on_drop::<DraggedFiles>(move |d, window, cx| {
+            if !is_sidebar_drop_allowed(&drop_app, window.mouse_position(), cx) {
+                return;
+            }
+            let paths = d.paths.clone();
+            drop_app.update(cx, |this, cx| {
+                this.execute_drag_hover_drop_command(
+                    DragHoverDropCommand::AddBookmarks,
+                    paths,
+                    true,
+                );
+                cx.notify();
+            });
+        })
+        .on_drop::<gpui::ExternalPaths>(move |paths, window, cx| {
+            if !is_sidebar_drop_allowed(&drop_app_external, window.mouse_position(), cx) {
+                return;
+            }
+            let paths = paths.paths().to_vec();
+            drop_app_external.update(cx, |this, cx| {
+                this.execute_drag_hover_drop_command(
+                    DragHoverDropCommand::AddBookmarks,
+                    paths,
+                    false,
+                );
+                cx.notify();
+            });
+        })
+        .on_click(move |_ev, _window, cx| {
+            let path = path.clone();
+            app.update(cx, |this, cx| {
+                let tile = this.state.focused_tile;
+                this.navigate(tile, path);
+                cx.notify();
+            });
+        })
+        .context_menu(move |menu, _window, _cx| {
+            menu.menu(
+                rust_i18n::t!("sidebar_remove_bookmark"),
+                Box::new(SidebarRemoveBookmark { index }),
+            )
+        })
+}
+
 fn collapsed_tag_row(
     name: String,
     color: [u8; 3],
@@ -2500,6 +2651,8 @@ fn collapsed_tag_row(
         .rounded(px(9.))
         .cursor_pointer()
         .hover(|s| s.bg(hover))
+        .on_drag_over::<DraggedFiles>(move |s, _, _, _| s.bg(hover))
+        .on_drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(hover))
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .child(
             div()
@@ -2547,6 +2700,12 @@ fn collapsed_tag_row(
                 this.open_tag_results(tile, id);
                 cx.notify();
             });
+        })
+        .context_menu(move |menu, _window, _cx| {
+            menu.menu(
+                rust_i18n::t!("tag_delete"),
+                Box::new(SidebarDeleteTag { tag: id }),
+            )
         })
 }
 
@@ -2811,17 +2970,64 @@ fn render_section_body(
                 .map(|b| (b.name.clone(), b.path.clone()))
                 .collect();
             if bookmarks.is_empty() {
-                col = col.child(empty_row(
-                    rust_i18n::t!("sidebar_no_bookmarks").to_string(),
-                    muted,
-                ));
+                let drop_app = app.clone();
+                let drop_app_ext = app.clone();
+                let bm_app = app.clone();
+                let hover_id = DragHoverId::Sidebar("empty-bookmarks".to_string());
+                col = col.child(
+                    div()
+                        .w_full()
+                        .rounded(px(7.))
+                        .hover(|s| s.bg(hover))
+                        .on_drag_over::<DraggedFiles>(move |s, _, _, _| s.bg(hover))
+                        .on_drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(hover))
+                        .on_prepaint_child(drag_hover_recorder_with_drop(
+                            hover_id,
+                            DragHoverKind::Nav,
+                            DragHoverCommand::Process(Action::CloseOverlays),
+                            DragHoverDropCommand::AddBookmarks,
+                            &bm_app,
+                        ))
+                        .on_drop::<DraggedFiles>(move |d, window, cx| {
+                            if !is_sidebar_drop_allowed(&drop_app, window.mouse_position(), cx) {
+                                return;
+                            }
+                            let paths = d.paths.clone();
+                            drop_app.update(cx, |this, cx| {
+                                this.execute_drag_hover_drop_command(
+                                    DragHoverDropCommand::AddBookmarks,
+                                    paths,
+                                    true,
+                                );
+                                cx.notify();
+                            });
+                        })
+                        .on_drop::<gpui::ExternalPaths>(move |paths, window, cx| {
+                            if !is_sidebar_drop_allowed(&drop_app_ext, window.mouse_position(), cx) {
+                                return;
+                            }
+                            let paths = paths.paths().to_vec();
+                            drop_app_ext.update(cx, |this, cx| {
+                                this.execute_drag_hover_drop_command(
+                                    DragHoverDropCommand::AddBookmarks,
+                                    paths,
+                                    false,
+                                );
+                                cx.notify();
+                            });
+                        })
+                        .child(empty_row(
+                            rust_i18n::t!("sidebar_no_bookmarks").to_string(),
+                            muted,
+                        )),
+                );
             } else {
-                for (name, path) in bookmarks {
+                for (idx, (name, path)) in bookmarks.into_iter().enumerate() {
                     let id = SharedString::from(format!("bm-{}", path.display()));
                     let active = current.is_some_and(|c| c == path.as_path());
                     let shell_tex = sidebar_shell_tex(app, &path, windows_theme, cx);
-                    col = col.child(nav_row(
-                        id, name, "folder", path, shell_tex, app, style, active,
+                    col = col.child(bookmark_row(
+                        idx, id, name, path, shell_tex, app, style, active,
                     ));
                 }
             }
@@ -2988,6 +3194,7 @@ fn tag_row(
     } = style;
     let app = app.clone();
     let edit_app = app.clone();
+    let delete_app = app.clone();
     let edit_name = name.clone();
     let group = SharedString::from(format!("tag-row-{}", id.0));
     let rgb =
@@ -3006,8 +3213,10 @@ fn tag_row(
         .cursor_pointer()
         .text_color(fg)
         .hover(|s| s.bg(hover))
+        .on_drag_over::<DraggedFiles>(move |s, _, _, _| s.bg(hover))
+        .on_drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(hover))
         .child(div().size(crate::ui::rem_px(11.)).rounded_full().bg(rgb))
-        .child(div().min_w(px(0.)).flex_1().truncate().child(name))
+        .child(div().min_w(px(0.)).flex_1().truncate().child(name.clone()))
         .child(
             div()
                 .id(SharedString::from(format!("tag-{}-rename", id.0)))
@@ -3018,7 +3227,7 @@ fn tag_row(
                 .rounded_sm()
                 .cursor_pointer()
                 .invisible()
-                .group_hover(group, gpui::Styled::visible)
+                .group_hover(group.clone(), gpui::Styled::visible)
                 .hover(|h| h.bg(hover))
                 .tooltip(|window, cx| {
                     Tooltip::new(rust_i18n::t!("tag_rename").to_string()).build(window, cx)
@@ -3033,6 +3242,30 @@ fn tag_row(
                             color,
                             global,
                         }]);
+                        cx.notify();
+                    });
+                }),
+        )
+        .child(
+            div()
+                .id(SharedString::from(format!("tag-{}-delete", id.0)))
+                .size(crate::ui::rem_px(20.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_sm()
+                .cursor_pointer()
+                .invisible()
+                .group_hover(group, gpui::Styled::visible)
+                .hover(|h| h.bg(hover))
+                .tooltip(|window, cx| {
+                    Tooltip::new(rust_i18n::t!("tag_delete").to_string()).build(window, cx)
+                })
+                .child(icon(AtlasIcon::Trash, 12.0, fg))
+                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                    cx.stop_propagation();
+                    delete_app.update(cx, |this, cx| {
+                        this.process_actions(vec![Action::DeleteTag(id)]);
                         cx.notify();
                     });
                 }),
@@ -3087,6 +3320,24 @@ fn tag_row(
                 this.open_tag_results(tile, id);
                 cx.notify();
             });
+        })
+        .context_menu({
+            let rename_name = name;
+            move |menu, _window, _cx| {
+                menu.menu(
+                    rust_i18n::t!("tag_rename"),
+                    Box::new(SidebarRenameTag {
+                        tag: id,
+                        name: rename_name.clone(),
+                        color,
+                        global,
+                    }),
+                )
+                .menu(
+                    rust_i18n::t!("tag_delete"),
+                    Box::new(SidebarDeleteTag { tag: id }),
+                )
+            }
         })
 }
 
@@ -3462,6 +3713,49 @@ fn section_header(
                 cx.notify();
             });
         })
+        .when(section.kind == SectionKind::Bookmarks, |row| {
+            let drop_app = app.clone();
+            let drop_app_ext = app.clone();
+            let hover_id = DragHoverId::Sidebar("bookmarks-header".to_string());
+            let bm_app = app.clone();
+            row.on_prepaint_child(drag_hover_recorder_with_drop(
+                hover_id,
+                DragHoverKind::Nav,
+                DragHoverCommand::Process(Action::CloseOverlays),
+                DragHoverDropCommand::AddBookmarks,
+                &bm_app,
+            ))
+            .on_drag_over::<DraggedFiles>(move |s, _, _, _| s.bg(hover))
+            .on_drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(hover))
+            .on_drop::<DraggedFiles>(move |d, window, cx| {
+                if !is_sidebar_drop_allowed(&drop_app, window.mouse_position(), cx) {
+                    return;
+                }
+                let paths = d.paths.clone();
+                drop_app.update(cx, |this, cx| {
+                    this.execute_drag_hover_drop_command(
+                        DragHoverDropCommand::AddBookmarks,
+                        paths,
+                        true,
+                    );
+                    cx.notify();
+                });
+            })
+            .on_drop::<gpui::ExternalPaths>(move |paths, window, cx| {
+                if !is_sidebar_drop_allowed(&drop_app_ext, window.mouse_position(), cx) {
+                    return;
+                }
+                let paths = paths.paths().to_vec();
+                drop_app_ext.update(cx, |this, cx| {
+                    this.execute_drag_hover_drop_command(
+                        DragHoverDropCommand::AddBookmarks,
+                        paths,
+                        false,
+                    );
+                    cx.notify();
+                });
+            })
+        })
         .context_menu(move |menu, _window, _cx| {
             sidebar_context_menu(menu, idx, section_count, menu_kind.clone(), menu_collapsed)
         })
@@ -3542,6 +3836,157 @@ fn linux_root_label(path: &std::path::Path) -> String {
 
 fn empty_row(label: String, muted: Hsla) -> impl IntoElement {
     div().px_2().py_1().text_xs().text_color(muted).child(label)
+}
+
+fn bookmark_row(
+    index: usize,
+    id: SharedString,
+    label: String,
+    path: PathBuf,
+    shell_tex: Option<Arc<gpui::RenderImage>>,
+    app: &Entity<AtlasApp>,
+    style: SidebarStyle,
+    active: bool,
+) -> impl IntoElement {
+    let SidebarStyle {
+        hover,
+        active_bg,
+        accent,
+        fg,
+        windows_theme,
+        ..
+    } = style;
+    let app = app.clone();
+    let remove_app = app.clone();
+    let drop_app = app.clone();
+    let drop_app_external = app.clone();
+    let shell_path = path.clone();
+    let shell_app = app.clone();
+    let group = SharedString::from(format!("bm-row-{index}"));
+    let hover_id = DragHoverId::Sidebar(id.to_string());
+    let content = if active { accent } else { fg };
+    let icon_color = if active {
+        accent
+    } else {
+        hsla(
+            (fg.hue.into_positive_degrees() / 360.0),
+            fg.saturation,
+            fg.lightness,
+            0.85,
+        )
+    };
+    h_flex()
+        .id(id)
+        .group(group.clone())
+        .w_full()
+        .h(crate::ui::rem_px(if windows_theme { 30.0 } else { 24.0 }))
+        .block_mouse_except_scroll()
+        .px_2()
+        .gap(crate::ui::rem_px(if windows_theme { 10.0 } else { 8.0 }))
+        .items_center()
+        .rounded(px(7.))
+        .cursor_pointer()
+        .text_color(content)
+        .when(active, |s| {
+            s.bg(active_bg).font_weight(gpui::FontWeight::MEDIUM)
+        })
+        .when(!active, |s| s.hover(|h| h.bg(hover)))
+        .on_drag_over::<DraggedFiles>(move |s, _, _, _| s.bg(hover))
+        .on_drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(hover))
+        .child(match shell_tex {
+            Some(tex) => img(tex)
+                .size(crate::ui::rem_px(if windows_theme { 18.0 } else { 16.0 }))
+                .flex_none()
+                .into_any_element(),
+            None => theme_icon(
+                ph_icon("folder"),
+                if windows_theme { 18.0 } else { 16.0 },
+                icon_color,
+                windows_theme,
+            ),
+        })
+        .child(div().min_w(px(0.)).flex_1().truncate().child(SharedString::from(label)))
+        .child(
+            div()
+                .id(SharedString::from(format!("bm-remove-{index}")))
+                .size(crate::ui::rem_px(20.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_sm()
+                .cursor_pointer()
+                .invisible()
+                .group_hover(group, gpui::Styled::visible)
+                .hover(|h| h.bg(hover))
+                .tooltip(|window, cx| {
+                    Tooltip::new(rust_i18n::t!("sidebar_remove_bookmark").to_string()).build(window, cx)
+                })
+                .child(icon(AtlasIcon::X, 11.0, fg))
+                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                    cx.stop_propagation();
+                    remove_app.update(cx, |this, cx| {
+                        this.process_actions(vec![Action::RemoveBookmark(index)]);
+                        cx.notify();
+                    });
+                }),
+        )
+        .on_prepaint_child(move |_bounds, _window, cx| {
+            #[cfg(target_os = "windows")]
+            if windows_theme {
+                shell_app.update(cx, |this, _cx| {
+                    this.request_shell_thumbnail_or_icon(&shell_path);
+                });
+            }
+        })
+        .on_prepaint_child(drag_hover_recorder_with_drop(
+            hover_id,
+            DragHoverKind::Nav,
+            DragHoverCommand::NavigatePath(path.clone()),
+            DragHoverDropCommand::AddBookmarks,
+            &app,
+        ))
+        .on_drop::<DraggedFiles>(move |d, window, cx| {
+            if !is_sidebar_drop_allowed(&drop_app, window.mouse_position(), cx) {
+                return;
+            }
+            let paths = d.paths.clone();
+            drop_app.update(cx, |this, cx| {
+                this.execute_drag_hover_drop_command(
+                    DragHoverDropCommand::AddBookmarks,
+                    paths,
+                    true,
+                );
+                cx.notify();
+            });
+        })
+        .on_drop::<gpui::ExternalPaths>(move |paths, window, cx| {
+            if !is_sidebar_drop_allowed(&drop_app_external, window.mouse_position(), cx) {
+                return;
+            }
+            let paths = paths.paths().to_vec();
+            drop_app_external.update(cx, |this, cx| {
+                this.execute_drag_hover_drop_command(
+                    DragHoverDropCommand::AddBookmarks,
+                    paths,
+                    false,
+                );
+                cx.notify();
+            });
+        })
+        .on_click(move |_ev, _window, cx| {
+            let path = path.clone();
+            app.update(cx, |this, cx| {
+                let tile = this.state.focused_tile;
+                this.navigate(tile, path);
+                cx.notify();
+            });
+        })
+        .context_menu(move |menu, _window, _cx| {
+            menu.menu(
+                rust_i18n::t!("sidebar_remove_bookmark"),
+                Box::new(SidebarRemoveBookmark { index }),
+            )
+        })
 }
 
 /// One clickable row that navigates the focused pane to `path`. Styled per the Figma

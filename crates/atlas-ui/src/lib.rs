@@ -151,6 +151,28 @@ pub struct OpenPropertiesForPath {
 #[action(namespace = atlas, no_json)]
 pub struct OpenThisPcProperties;
 
+#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
+#[action(namespace = atlas, no_json)]
+pub struct SidebarDeleteTag {
+    pub tag: atlas_model::tag_cache::TagId,
+}
+
+#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
+#[action(namespace = atlas, no_json)]
+pub struct SidebarRenameTag {
+    pub tag: atlas_model::tag_cache::TagId,
+    pub name: String,
+    pub color: [u8; 3],
+    pub global: bool,
+}
+
+#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
+#[action(namespace = atlas, no_json)]
+pub struct SidebarRemoveBookmark {
+    pub index: usize,
+}
+
+
 /// Launch the gpui application. The caller owns the tokio runtime and passes its
 /// handle in; gpui drives the UI on the calling (main) thread.
 pub fn run(

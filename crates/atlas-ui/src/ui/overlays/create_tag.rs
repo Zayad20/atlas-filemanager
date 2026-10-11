@@ -4,6 +4,7 @@
 use crate::app::App;
 use crate::input::action::Action;
 use gpui::prelude::*;
+use gpui::ColorExt as _;
 use gpui::{
     div, px, AnyElement, Context, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton,
     SharedString, Window,
@@ -43,7 +44,7 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (popover, fg, muted, border, accent, accent_fg) = {
+        let (popover, fg, muted, border, accent, accent_fg, danger) = {
             let t = cx.theme();
             (
                 t.popover,
@@ -52,6 +53,7 @@ impl App {
                 t.border,
                 t.accent,
                 t.accent_foreground,
+                t.danger,
             )
         };
         let view = cx.entity();
@@ -159,48 +161,83 @@ impl App {
             })
             .child(
                 h_flex()
-                    .justify_end()
-                    .gap_2()
+                    .w_full()
+                    .justify_between()
+                    .items_center()
                     .child(
-                        div()
-                            .id("create-tag-cancel")
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(border)
-                            .cursor_pointer()
-                            .hover(|h| h.bg(border))
-                            .child(rust_i18n::t!("tag_cancel").to_string())
-                            .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
-                                cancel_view.update(cx, |this, cx| {
-                                    this.process_actions(vec![Action::CloseCreateTagOverlay]);
-                                    cx.notify();
-                                });
-                            }),
+                        h_flex().when(editing, |row| {
+                            let delete_view = view.clone();
+                            let tag_id = self.state.profile_ui.editing_tag;
+                            row.child(
+                                div()
+                                    .id("create-tag-delete")
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(danger.opacity(0.4))
+                                    .text_color(danger)
+                                    .cursor_pointer()
+                                    .hover(move |h| h.bg(danger.opacity(0.12)))
+                                    .child(rust_i18n::t!("tag_delete").to_string())
+                                    .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
+                                        if let Some(tag) = tag_id {
+                                            delete_view.update(cx, |this, cx| {
+                                                this.process_actions(vec![
+                                                    Action::DeleteTag(tag),
+                                                    Action::CloseCreateTagOverlay,
+                                                ]);
+                                                cx.notify();
+                                            });
+                                        }
+                                    }),
+                            )
+                        }),
                     )
                     .child(
-                        div()
-                            .id("create-tag-confirm")
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(if can_create { accent } else { border })
-                            .when(can_create, |s| s.bg(accent).text_color(accent_fg))
-                            .when(!can_create, |s| s.text_color(muted))
-                            .cursor_pointer()
-                            .child(if editing {
-                                rust_i18n::t!("tag_save").to_string()
-                            } else {
-                                rust_i18n::t!("tag_create").to_string()
-                            })
-                            .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
-                                create_view.update(cx, |this, cx| {
-                                    this.submit_create_tag(cx);
-                                    cx.notify();
-                                });
-                            }),
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("create-tag-cancel")
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(border)
+                                    .cursor_pointer()
+                                    .hover(|h| h.bg(border))
+                                    .child(rust_i18n::t!("tag_cancel").to_string())
+                                    .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
+                                        cancel_view.update(cx, |this, cx| {
+                                            this.process_actions(vec![Action::CloseCreateTagOverlay]);
+                                            cx.notify();
+                                        });
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .id("create-tag-confirm")
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(if can_create { accent } else { border })
+                                    .when(can_create, |s| s.bg(accent).text_color(accent_fg))
+                                    .when(!can_create, |s| s.text_color(muted))
+                                    .cursor_pointer()
+                                    .child(if editing {
+                                        rust_i18n::t!("tag_save").to_string()
+                                    } else {
+                                        rust_i18n::t!("tag_create").to_string()
+                                    })
+                                    .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
+                                        create_view.update(cx, |this, cx| {
+                                            this.submit_create_tag(cx);
+                                            cx.notify();
+                                        });
+                                    }),
+                            ),
                     ),
             );
 

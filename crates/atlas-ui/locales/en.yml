@@ -228,10 +228,13 @@ tag_color: "Color"
 tag_cancel: "Cancel"
 tag_create: "Create"
 tag_save: "Save"
+tag_delete: "Delete tag"
 tag_rename: "Rename tag"
 tag_rename_title: "Rename tag"
 tag_rename_scope: "Update this tag name."
 tag_global_hint: "Global tag — visible in every profile"
+sidebar_remove_bookmark: "Remove from bookmarks"
+
 
 batch_invalid_name: " ⚠ invalid name"
 batch_collision: " ⚠ collision"
