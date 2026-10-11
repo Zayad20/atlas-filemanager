@@ -608,7 +608,7 @@ impl App {
                         .motion_feedback()
                         .when(!is_branch_view, |s| s.hover(move |s| s.bg(controls.hover)))
                         .child(theme_icon(
-                            AtlasIcon::TreeStructure,
+                            AtlasIcon::GitBranch,
                             14.0,
                             if is_branch_view { accent_fg } else { muted },
                             windows_theme,
@@ -726,7 +726,7 @@ impl App {
                         .when(!is_branch_view, |s| s.hover(move |s| s.bg(controls.hover)))
                         .active(move |s| s.bg(controls.pressed))
                         .child(theme_icon(
-                            AtlasIcon::TreeStructure,
+                            AtlasIcon::GitBranch,
                             14.0,
                             if is_branch_view { accent_fg } else { controls.foreground },
                             windows_theme,
@@ -1405,7 +1405,7 @@ fn breadcrumb(
                         this.process_actions([Action::ToggleBranchView(tile)]);
                     });
                 })
-                .child(crate::ui::icons::icon(AtlasIcon::TreeStructure, 12.0, fg))
+                .child(crate::ui::icons::icon(AtlasIcon::GitBranch, 12.0, fg))
                 .child(rust_i18n::t!("branch_view_badge").to_string()),
         );
     }

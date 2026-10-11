@@ -1631,7 +1631,7 @@ impl App {
                 "view.branch-view",
                 rust_i18n::t!("cmd_view_branch_view_title"),
                 rust_i18n::t!("cmd_view_branch_view_desc"),
-                AtlasIcon::TreeStructure,
+                AtlasIcon::GitBranch,
                 Action::ToggleBranchViewFocused,
             ),
             CommandDef::new(

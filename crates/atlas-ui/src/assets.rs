@@ -117,6 +117,7 @@ phosphor_icons!(
     "selection-inverse",
     "sort-ascending",
     "tree-structure",
+    "git-branch",
     "x",
     "minus",
     "square",
