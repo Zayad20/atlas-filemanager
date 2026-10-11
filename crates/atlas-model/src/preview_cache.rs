@@ -128,7 +128,7 @@ pub enum MarkdownBlock {
 pub fn is_image_ext(ext: &str) -> bool {
     matches!(
         ext,
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "tiff" | "tif"
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "tiff" | "tif" | "svg"
     )
 }
 
@@ -136,6 +136,28 @@ pub fn is_audio_ext(ext: &str) -> bool {
     matches!(
         ext,
         "mp3" | "flac" | "m4a" | "ogg" | "opus" | "wav" | "aac" | "aiff" | "wv" | "ape"
+    )
+}
+
+pub fn is_video_ext(ext: &str) -> bool {
+    matches!(
+        ext,
+        "mp4"
+            | "mkv"
+            | "mov"
+            | "webm"
+            | "avi"
+            | "flv"
+            | "wmv"
+            | "m4v"
+            | "mpeg"
+            | "mpg"
+            | "3gp"
+            | "ts"
+            | "mts"
+            | "m2ts"
+            | "vob"
+            | "asf"
     )
 }
 

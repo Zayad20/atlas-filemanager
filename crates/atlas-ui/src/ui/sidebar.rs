@@ -1661,15 +1661,15 @@ fn prime_drop_zone_thumbnails(app: &mut AtlasApp, paths: &[PathBuf], windows_the
             continue;
         }
         if extension.as_deref().is_some_and(|ext| {
-            [
-                "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tif", "tiff",
-            ]
-            .contains(&ext)
+            atlas_model::preview_cache::is_image_ext(ext)
+                || atlas_model::preview_cache::is_audio_ext(ext)
         }) {
             app.request_thumbnail(path);
         } else {
             #[cfg(target_os = "windows")]
             app.request_shell_thumbnail(path);
+            #[cfg(not(target_os = "windows"))]
+            app.request_thumbnail(path);
         }
     }
 }
@@ -1798,11 +1798,47 @@ fn drop_zone_item(
         .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
             cx.stop_propagation();
         })
-        .on_drag(
-            file_drag_value(vec![drag_path.clone()]),
-            staged_drop_drag_handler(app.clone(), drag_path),
-        )
-        .external_drag_payload(crate::ui::drag::file_external_drag_payload(app.clone()))
+        .on_drag_alt({
+            let app = app.clone();
+            let drag_path = drag_path.clone();
+            move |_cursor_offset, cursor_style, _window, cx| {
+                let paths = sidebar_drop_drag_paths(&app.read(&*cx), &drag_path);
+                app.update(cx, |app, cx| {
+                    app.begin_dropzone_file_drag(&paths);
+                    app.begin_drag_hover();
+                    cx.notify();
+                });
+                #[cfg(windows)]
+                {
+                    app.read(&*cx).trigger_os_drag_copy_only(paths.clone());
+                    gpui::AnyDrag::new(crate::ui::root::DragNoop, cx.new(|_| crate::ui::root::DragNoop))
+                        .cursor_style(cursor_style)
+                }
+                #[cfg(not(windows))]
+                {
+                    let ext_app = app.clone();
+                    let ext_paths = paths.clone();
+                    app.update(cx, |app, _cx| {
+                        app.active_external_drag = Some(crate::ui::drag::ActiveExternalDrag {
+                            paths: paths.clone(),
+                            archive_items: None,
+                        });
+                    });
+                    let payload = DraggedFiles { paths: paths.clone() };
+                    let ghost = cx.new(|_| DraggedFiles { paths });
+                    gpui::AnyDrag::new(payload, ghost)
+                        .offset(gpui::point(gpui::px(-12.0), gpui::px(-12.0)))
+                        .cursor_style(cursor_style)
+                        .external_payload(move |_window, cx| {
+                            crate::ui::drag::resolve_external_drag_payload(
+                                &ext_app,
+                                &DraggedFiles { paths: ext_paths },
+                                cx,
+                            )
+                        })
+                }
+            }
+        })
 }
 
 fn drop_zone_preview(
@@ -1844,35 +1880,6 @@ fn drop_zone_preview(
     }
 }
 
-fn staged_drop_drag_handler(
-    app: Entity<AtlasApp>,
-    path: PathBuf,
-) -> impl Fn(&DragView, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> Entity<DragView>
-       + 'static {
-    move |_d, _pos, _window, cx| {
-        let paths = sidebar_drop_drag_paths(&app.read(&*cx), &path);
-        app.update(cx, |app, cx| {
-            app.begin_dropzone_file_drag(&paths);
-            app.begin_drag_hover();
-            cx.notify();
-        });
-        #[cfg(windows)]
-        {
-            app.read(&*cx).trigger_os_drag_copy_only(paths.clone());
-            cx.new(|_| crate::ui::root::DragNoop)
-        }
-        #[cfg(not(windows))]
-        {
-            app.update(cx, |app, _cx| {
-                app.active_external_drag = Some(crate::ui::drag::ActiveExternalDrag {
-                    paths: paths.clone(),
-                    archive_items: None,
-                });
-            });
-            cx.new(|_| DraggedFiles { paths })
-        }
-    }
-}
 
 fn sidebar_drop_drag_paths(app: &AtlasApp, path: &std::path::Path) -> Vec<PathBuf> {
     if app.dropzone_selected.contains(path) {
@@ -1917,6 +1924,28 @@ fn sidebar_shell_tex(
 }
 
 #[inline]
+pub(crate) fn drive_icon(drive: &atlas_core::fs::mounts::DriveInfo) -> AtlasIcon {
+    if drive.is_removable {
+        AtlasIcon::Usb
+    } else if drive.is_system {
+        AtlasIcon::HardDriveSystem
+    } else {
+        AtlasIcon::HardDrive
+    }
+}
+
+#[inline]
+pub(crate) fn drive_icon_name(drive: &atlas_core::fs::mounts::DriveInfo) -> &'static str {
+    if drive.is_removable {
+        "usb"
+    } else if drive.is_system {
+        "hard-drive-system"
+    } else {
+        "hard-drive"
+    }
+}
+
+#[inline]
 fn ph_icon(name: &str) -> AtlasIcon {
     match name {
         "house" => AtlasIcon::House,
@@ -1928,7 +1957,10 @@ fn ph_icon(name: &str) -> AtlasIcon {
         "film-strip" => AtlasIcon::Video,
         "folder" => AtlasIcon::Folder,
         "cloud" => AtlasIcon::Cloud,
-        "hard-drives" => AtlasIcon::HardDrives,
+        "hard-drives" => AtlasIcon::HardDrive,
+        "hard-drive" => AtlasIcon::HardDrive,
+        "hard-drive-system" => AtlasIcon::HardDriveSystem,
+        "usb" => AtlasIcon::Usb,
         "terminal-window" => AtlasIcon::TerminalWindow,
         "caret-down" => AtlasIcon::CaretDown,
         "caret-right" => AtlasIcon::CaretRight,
@@ -2538,7 +2570,7 @@ fn collapsed_drive_row(
     collapsed_nav_row(
         SharedString::from(format!("rail-drive-{}", drive.mount_point.display())),
         tooltip,
-        "hard-drives",
+        drive_icon_name(&drive),
         drive.mount_point,
         shell_tex,
         app,
@@ -2593,7 +2625,7 @@ fn collapsed_removable_device_row(
         .when(active, |s| s.bg(active_bg))
         .when(!active, |s| s.hover(|h| h.bg(hover)))
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-        .child(icon(AtlasIcon::HardDrives, 16.0, icon_color))
+        .child(icon(AtlasIcon::Usb, 16.0, icon_color))
         .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
             if let Some(target) = click_mount_path.clone() {
                 click_app.update(cx, |this, cx| {
@@ -3129,7 +3161,7 @@ fn drive_row(
                         .flex_none()
                         .into_any_element(),
                     None => theme_icon(
-                        AtlasIcon::HardDrives,
+                        drive_icon(&drive),
                         if windows_theme { 18.0 } else { 16.0 },
                         icon_color,
                         windows_theme,
@@ -3308,7 +3340,7 @@ fn removable_device_row(
         .when(!active, |s| s.hover(|h| h.bg(hover)))
         .child(
             theme_icon(
-                AtlasIcon::HardDrives,
+                AtlasIcon::Usb,
                 if windows_theme { 18.0 } else { 16.0 },
                 icon_color,
                 windows_theme,

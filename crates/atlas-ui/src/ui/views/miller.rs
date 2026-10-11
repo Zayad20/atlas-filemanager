@@ -144,10 +144,12 @@ impl App {
                                         .filter_map(|i| {
                                             let entry = col.entries.get(i)?;
                                             let selected = col.selection.selected.contains(&i);
+                                            let cursor = col.selection.keyboard_cursor == Some(i);
                                             Some((
                                                 i,
                                                 entry.clone(),
                                                 selected,
+                                                cursor,
                                                 col.selection.selected.len() > 1,
                                             ))
                                         })
@@ -155,7 +157,7 @@ impl App {
                                 };
                                 rows_data
                                     .into_iter()
-                                    .map(|(i, entry, selected, show_checkbox)| {
+                                    .map(|(i, entry, selected, cursor, show_checkbox)| {
                                         let file_ref = crate::ui::file_icons::FileIconRef {
                                             path: entry.path.clone(),
                                             kind: entry.kind.clone(),
@@ -183,6 +185,7 @@ impl App {
                                             column: ci,
                                             idx: i,
                                             selected,
+                                            cursor,
                                             show_checkbox,
                                             pane_id,
                                             view: &list_view,
@@ -351,6 +354,7 @@ struct MillerRowProps<'a> {
     column: usize,
     idx: usize,
     selected: bool,
+    cursor: bool,
     show_checkbox: bool,
     pane_id: TabId,
     view: &'a Entity<App>,
@@ -372,6 +376,7 @@ fn render_miller_row(props: MillerRowProps) -> AnyElement {
         column,
         idx,
         selected,
+        cursor,
         show_checkbox,
         pane_id,
         view,
@@ -411,6 +416,13 @@ fn render_miller_row(props: MillerRowProps) -> AnyElement {
         .py(crate::ui::rem_px(3.))
         .gap_2()
         .items_center()
+        .rounded_sm()
+        .border_1()
+        .border_color(if cursor {
+            accent.opacity(if selected { 0.95 } else { 0.65 })
+        } else {
+            gpui::transparent_black()
+        })
         .when(dimmed, |s| s.opacity(0.45))
         .cursor_pointer()
         .when(selected && rename_input.is_none(), |s| {
@@ -530,72 +542,82 @@ fn render_miller_row(props: MillerRowProps) -> AnyElement {
         });
     if rename_input.is_none() {
         let drag_view = view.clone();
-        row = row.on_drag(crate::ui::drag::file_drag_value(vec![dest.clone()]), {
-            let anchor = dest.clone();
-            let in_archive = entry.archive_root.is_some();
-            move |_d, _pos, _window, cx| {
-                drag_view.update(cx, |this, cx| {
-                    let selected = this
-                        .state
-                        .tab_states
-                        .get(&pane_id)
-                        .and_then(|ts| ts.miller.columns.get(column))
-                        .is_some_and(|col| col.selection.selected.contains(&idx));
-                    if !selected {
-                        this.process_actions(vec![Action::MillerSelect {
-                            tile: pane_id,
-                            column,
-                            idx,
-                            shift: false,
-                            ctrl: false,
-                        }]);
-                    } else {
-                        this.activate_tab(pane_id);
-                        if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
-                            ts.miller.focused = column;
-                        }
+        let anchor = dest.clone();
+        let in_archive = entry.archive_root.is_some();
+        row = row.on_drag_alt(move |_cursor_offset, cursor_style, _window, cx| {
+            drag_view.update(cx, |this, cx| {
+                let selected = this
+                    .state
+                    .tab_states
+                    .get(&pane_id)
+                    .and_then(|ts| ts.miller.columns.get(column))
+                    .is_some_and(|col| col.selection.selected.contains(&idx));
+                if !selected {
+                    this.process_actions(vec![Action::MillerSelect {
+                        tile: pane_id,
+                        column,
+                        idx,
+                        shift: false,
+                        ctrl: false,
+                    }]);
+                } else {
+                    this.activate_tab(pane_id);
+                    if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
+                        ts.miller.focused = column;
                     }
-                    this.begin_drag_hover();
-                    cx.notify();
-                });
-                let paths = {
-                    let app = drag_view.read(&*cx);
-                    let p = app.miller_focused_selection_paths().unwrap_or_default();
-                    if p.is_empty() {
-                        vec![anchor.clone()]
-                    } else {
-                        p
-                    }
-                };
-                #[cfg(windows)]
-                {
-                    // Archive rows carry virtual paths — no OS drag for
-                    // them; extract-on-drag when someone needs it.
-                    if !in_archive {
-                        drag_view.read(&*cx).trigger_os_drag(paths, None);
-                    }
-                    cx.new(|_| crate::ui::root::DragNoop)
                 }
-                #[cfg(not(windows))]
-                {
-                    let _ = _window;
-                    let archive_items = if in_archive {
-                        let app = drag_view.read(&*cx);
-                        app.state.selected_archive_items()
-                    } else {
-                        None
-                    };
-                    drag_view.update(cx, |app, _cx| {
-                        app.active_external_drag = Some(crate::ui::drag::ActiveExternalDrag {
-                            paths: paths.clone(),
-                            archive_items,
-                        });
-                    });
-                    cx.new(|_| crate::ui::root::DraggedFiles { paths })
+                this.begin_drag_hover();
+                cx.notify();
+            });
+            let paths = {
+                let app = drag_view.read(&*cx);
+                let p = app.miller_selection_paths_for_pane(pane_id).unwrap_or_default();
+                if p.is_empty() || !p.contains(&anchor) {
+                    vec![anchor.clone()]
+                } else {
+                    p
                 }
+            };
+            #[cfg(windows)]
+            {
+                // Archive rows carry virtual paths — no OS drag for
+                // them; extract-on-drag when someone needs it.
+                if !in_archive {
+                    drag_view.read(&*cx).trigger_os_drag(paths, None);
+                }
+                gpui::AnyDrag::new(crate::ui::root::DragNoop, cx.new(|_| crate::ui::root::DragNoop))
+                    .cursor_style(cursor_style)
             }
-        })
-        .external_drag_payload(crate::ui::drag::file_external_drag_payload(view.clone()));
+            #[cfg(not(windows))]
+            {
+                let ext_view = drag_view.clone();
+                let ext_paths = paths.clone();
+                let archive_items = if in_archive {
+                    let app = drag_view.read(&*cx);
+                    app.state.selected_archive_items_for_pane(pane_id)
+                } else {
+                    None
+                };
+                drag_view.update(cx, |app, _cx| {
+                    app.active_external_drag = Some(crate::ui::drag::ActiveExternalDrag {
+                        paths: paths.clone(),
+                        archive_items,
+                    });
+                });
+                let payload = crate::ui::root::DraggedFiles { paths: paths.clone() };
+                let ghost = cx.new(|_| crate::ui::root::DraggedFiles { paths });
+                gpui::AnyDrag::new(payload, ghost)
+                    .offset(gpui::point(gpui::px(-12.0), gpui::px(-12.0)))
+                    .cursor_style(cursor_style)
+                    .external_payload(move |_window, cx| {
+                        crate::ui::drag::resolve_external_drag_payload(
+                            &ext_view,
+                            &crate::ui::root::DraggedFiles { paths: ext_paths },
+                            cx,
+                        )
+                    })
+            }
+        });
     }
     let entry_size = entry.size;
     let entry_modified = entry.modified;

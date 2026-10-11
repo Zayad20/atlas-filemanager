@@ -17,6 +17,7 @@
 
 use crate::app::App;
 use crate::input::action::Action;
+use crate::ui::drag::FileDragSource as _;
 use crate::ui::glass::{backdrop_tint, layer_color, GlassExt};
 use crate::ui::icons::{file_type_icon, icon, AtlasIcon};
 use crate::ui::root::DraggedFiles;
@@ -365,14 +366,30 @@ impl App {
         if same {
             return true;
         }
-        // New file — build a fresh code editor.
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_string();
+        let show_ln = self
+            .state
+            .profiles
+            .active()
+            .scoped::<atlas_model::profiles::PreviewFeature>()
+            .show_line_numbers;
+        // New file — build a fresh code editor with syntax highlighting.
         let state_entity = crate::ui::text_input::code_editor(
             window,
             cx,
             gpui::SharedString::from(lang.to_string()),
             text,
-            false,
+            show_ln,
         );
+        let syntax_provider =
+            std::rc::Rc::new(crate::ui::syntax_provider::AtlasSyntaxTokensProvider::new(&ext));
+        state_entity.update(cx, |state, _cx| {
+            state.lsp.semantic_tokens_provider = Some(syntax_provider);
+        });
         let text_str = text.to_string();
         let sub = cx.subscribe_in(
             &state_entity,
@@ -394,7 +411,7 @@ impl App {
             cached_text: text_str,
             dirty: false,
             editing: true,
-            line_numbers: false,
+            line_numbers: show_ln,
             ln_needs_sync: false,
             _sub: sub,
         });
@@ -1796,11 +1813,7 @@ impl App {
                             });
                         }
                     })
-                    .on_drag(
-                        crate::ui::drag::file_drag_value(vec![path.clone()]),
-                        crate::ui::drag::file_drag_handler(view.clone(), path.clone()),
-                    )
-                    .external_drag_payload(crate::ui::drag::file_external_drag_payload(view.clone()))
+                    .on_file_drag_anchor(view.clone(), path.clone())
                     .when(is_dir, {
                         let dest_move = path.clone();
                         let dest_copy = path.clone();

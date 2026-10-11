@@ -2,6 +2,7 @@
 #![allow(clippy::too_many_lines)] // reason: cohesive view renderer kept whole
 
 use crate::app::App;
+use crate::ui::drag::FileDragSource as _;
 use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::backdrop_tint;
@@ -24,8 +25,8 @@ use gpui_component::scroll::ScrollableElement;
 use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt};
 use std::ops::Range;
 
-pub(crate) const GRID_GAP: f32 = 8.0;
-pub(crate) const GRID_PAD: f32 = 0.0;
+pub(crate) const GRID_GAP: f32 = 16.0;
+pub(crate) const GRID_PAD: f32 = 12.0;
 pub(crate) const GRID_ICON_AREA: f32 = 0.72;
 pub(crate) const GRID_PREVIEW_MAX: f32 = 0.70;
 pub(crate) const GRID_TEXTURE_ICON_MAX: f32 = 0.66;
@@ -80,8 +81,10 @@ impl App {
             .tab_states
             .get_mut(&pane_id)
             .map_or(0, |ts| ts.visible_indices().len());
-        let grid_gap_px = GRID_GAP * zoom_scale;
-        let grid_pad_px = GRID_PAD * zoom_scale;
+        let grid_gap = self.state.settings.grid_spacing.clamp(4.0, 48.0);
+        let grid_pad = (grid_gap * 0.75).round().max(4.0);
+        let grid_gap_px = grid_gap * zoom_scale;
+        let grid_pad_px = grid_pad * zoom_scale;
         // Use the width captured by on_prepaint from the previous frame. This
         // reflects the real pane size and adapts to preview panels and splitter
         // drags. Fall back to a viewport estimate on the very first frame before
@@ -148,7 +151,7 @@ impl App {
             let content_h = if rows == 0 {
                 0.0
             } else {
-                rows as f32 * pitch - grid_gap_px
+                grid_pad_px * 2.0 + rows as f32 * pitch - grid_gap_px
             };
             let max_scroll = (content_h - viewport_h).max(0.0);
             if scroll_y > max_scroll {
@@ -197,6 +200,7 @@ impl App {
                     row_font.clone(),
                     font_size,
                 )
+                .padding(grid_pad_px, grid_pad_px)
                 .animated(animate_grid_reflow)
                 .absolute()
                 .inset_0()
@@ -324,8 +328,8 @@ impl App {
                         rename_overlay = Some(
                             div()
                                 .absolute()
-                                .left(px(col as f32 * (thumb_px + grid_gap_px)))
-                                .top(px(row as f32 * pitch))
+                                .left(px(grid_pad_px + col as f32 * (thumb_px + grid_gap_px)))
+                                .top(px(grid_pad_px + row as f32 * pitch))
                                 .w(px(thumb_px))
                                 .h(px(cell_h_px))
                                 .child(cell)
@@ -344,11 +348,7 @@ impl App {
                     .w_full()
                     .h(px(content_h))
                     .opacity(0.0)
-                    .on_drag(
-                        crate::ui::drag::file_drag_value(Vec::new()),
-                        crate::ui::drag::file_drag_handler_for_grid_content(view.clone(), pane_id),
-                    )
-                    .external_drag_payload(crate::ui::drag::file_external_drag_payload(view.clone()))
+                    .on_file_drag_grid(view.clone(), pane_id)
                     .into_any_element()
             });
             let tooltip_data = self
@@ -602,10 +602,7 @@ mod tests {
 
 /// Extensions worth decoding into a grid thumbnail.
 fn is_image_ext(ext: &str) -> bool {
-    matches!(
-        ext.to_ascii_lowercase().as_str(),
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "tif" | "tiff"
-    )
+    atlas_model::preview_cache::is_image_ext(ext)
 }
 
 fn is_video_ext(ext: &str) -> bool {
@@ -630,9 +627,13 @@ fn is_video_ext(ext: &str) -> bool {
     )
 }
 
-/// Whether this entry should get a downscaled thumbnail (an image file).
+/// Whether this entry should get a downscaled thumbnail (an image or audio file).
 fn is_thumbnailable(entry: &FileEntry) -> bool {
-    matches!(entry.kind, FileKind::File) && entry.extension.as_deref().is_some_and(is_image_ext)
+    matches!(entry.kind, FileKind::File)
+        && entry.extension.as_deref().is_some_and(|e| {
+            atlas_model::preview_cache::is_image_ext(e)
+                || atlas_model::preview_cache::is_audio_ext(e)
+        })
 }
 
 /// File types where asking Windows Shell for a real thumbnail is worth the COM call.
@@ -855,16 +856,12 @@ fn render_cell(props: GridCellProps) -> AnyElement {
                 })
         })
         .when(rename_input.is_none() && !is_animating, |s| {
-            s.on_drag(
-                crate::ui::drag::file_drag_value(vec![entry.path.clone()]),
-                crate::ui::drag::file_drag_handler_for_item(
-                    view.clone(),
-                    pane_id,
-                    entry_idx,
-                    entry.path.clone(),
-                ),
+            s.on_file_drag_item(
+                view.clone(),
+                pane_id,
+                entry_idx,
+                entry.path.clone(),
             )
-            .external_drag_payload(crate::ui::drag::file_external_drag_payload(view.clone()))
         })
         .tooltip({
             let tip_name = entry.name.clone();

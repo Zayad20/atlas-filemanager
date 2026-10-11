@@ -7,7 +7,56 @@ use atlas_model::preview_cache::{ImageData, PreviewResult};
 
 use super::{MAX_IMAGE_PREVIEW_EDGE, MAX_MULTI_THUMBNAIL_EDGE};
 
+pub fn decode_svg(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, usize)> {
+    let data = std::fs::read(path).ok()?;
+    let opts = resvg::usvg::Options::default();
+    let tree = resvg::usvg::Tree::from_data(&data, &opts).ok()?;
+    let size = tree.size();
+    let (w, h) = (size.width(), size.height());
+    if w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    let scale = (max_edge as f32 / w).min(max_edge as f32 / h).max(0.01);
+    let target_w = (w * scale).round().max(1.0) as u32;
+    let target_h = (h * scale).round().max(1.0) as u32;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(target_w, target_h)?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    Some((pixmap.take(), target_w as usize, target_h as usize))
+}
+
 pub(super) fn preview_image(path: &Path) -> PreviewResult {
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) => return PreviewResult::Error(e.to_string()),
+    };
+    if meta.len() == 0 {
+        return PreviewResult::Error("El archivo está vacío (0 bytes)".to_string());
+    }
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    if ext == "svg" {
+        return match decode_svg(path, MAX_IMAGE_PREVIEW_EDGE) {
+            Some((rgba, width, height)) => PreviewResult::Image {
+                rgba,
+                width,
+                height,
+                original_width: width,
+                original_height: height,
+                exif: Vec::new(),
+            },
+            None => PreviewResult::Error("Could not render SVG".into()),
+        };
+    }
+
     let img = match image::open(path) {
         Ok(i) => i,
         Err(e) => return PreviewResult::Error(e.to_string()),
@@ -29,6 +78,16 @@ pub(super) fn preview_image(path: &Path) -> PreviewResult {
 }
 
 pub(super) fn preview_thumbnail(path: &Path) -> Result<(Vec<u8>, usize, usize), image::ImageError> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext == "svg" {
+        if let Some(res) = decode_svg(path, MAX_MULTI_THUMBNAIL_EDGE) {
+            return Ok(res);
+        }
+    }
     let img = image::open(path)?.thumbnail(MAX_MULTI_THUMBNAIL_EDGE, MAX_MULTI_THUMBNAIL_EDGE);
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
@@ -116,4 +175,29 @@ pub(super) fn rotate_rgba(
         }
     }
     (out, new_w, new_h)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_decode_svg_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let svg_path = dir.path().join("icon.svg");
+        let svg_content = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="red"/></svg>"#;
+        std::fs::write(&svg_path, svg_content).unwrap();
+
+        let decoded = decode_svg(&svg_path, 64);
+        assert!(decoded.is_some());
+        let (rgba, w, h) = decoded.unwrap();
+        assert_eq!(w, 64);
+        assert_eq!(h, 64);
+        assert_eq!(rgba.len(), 64 * 64 * 4);
+        // Red color (255, 0, 0, 255)
+        assert_eq!(rgba[0], 255);
+        assert_eq!(rgba[1], 0);
+        assert_eq!(rgba[2], 0);
+        assert_eq!(rgba[3], 255);
+    }
 }

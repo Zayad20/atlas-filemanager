@@ -71,6 +71,7 @@ pub(crate) struct DetailsRowSlot {
     /// Hash of everything that changes the immutable row payload.
     pub shape_key: u64,
     pub selected: bool,
+    pub cursor: bool,
     /// Starts only on an observed selection transition, never merely because a
     /// virtual row was shaped while already selected.
     pub selected_at: Option<Instant>,
@@ -143,6 +144,7 @@ impl DetailsRowRing {
         row: usize,
         shape_key: u64,
         selected: bool,
+        cursor: bool,
         hovered: bool,
         flashing: bool,
         odd: bool,
@@ -159,6 +161,7 @@ impl DetailsRowRing {
             return;
         }
         if current.selected == selected
+            && current.cursor == cursor
             && current.hovered == hovered
             && current.flashing == flashing
             && current.odd == odd
@@ -172,6 +175,7 @@ impl DetailsRowRing {
             s.selected_at = selected.then(Instant::now);
         }
         s.selected = selected;
+        s.cursor = cursor;
         s.hovered = hovered;
         s.flashing = flashing;
         s.odd = odd;
@@ -240,6 +244,7 @@ mod tests {
             shape_key: key,
             selected_at: None,
             selected: false,
+            cursor: false,
             hovered: false,
             flashing: false,
             odd: row % 2 == 1,
@@ -280,7 +285,7 @@ mod tests {
         let _ = ring.sync_row(1, 7, || slot(1, 7));
         let snapshot = ring.collect_rows(1, 2);
 
-        ring.touch_flags(1, 7, true, true, false, true, false);
+        ring.touch_flags(1, 7, true, false, true, false, true, false);
 
         let current = ring.get(1).expect("ring row");
         assert!(!snapshot[0].selected);

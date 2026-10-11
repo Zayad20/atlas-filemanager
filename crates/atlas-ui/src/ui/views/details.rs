@@ -3,6 +3,7 @@
 
 use crate::app::{App, ColResizeState, DetailsColumn, RubberTarget};
 use crate::input::action::Action;
+use crate::ui::drag::FileDragSource as _;
 use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::backdrop_tint;
@@ -394,11 +395,7 @@ impl App {
                 .w_full()
                 .h(px(total_height))
                 .opacity(0.0)
-                .on_drag(
-                    crate::ui::drag::file_drag_value(Vec::new()),
-                    crate::ui::drag::file_drag_handler_for_details_content(view.clone(), pane_id),
-                )
-                .external_drag_payload(crate::ui::drag::file_external_drag_payload(view.clone()));
+                .on_file_drag_details(view.clone(), pane_id);
             let details_tooltip = self
                 .details_hover
                 .and_then(|(hover_pane, entry_idx)| (hover_pane == pane_id).then_some(entry_idx))

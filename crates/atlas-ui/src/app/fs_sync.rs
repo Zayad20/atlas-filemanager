@@ -298,16 +298,15 @@ impl App {
         }
     }
 
-    /// When the focused pane is in Miller view, the live selection is the focused
+    /// When the pane is in Miller view, the live selection is the focused
     /// column's — not `ts.selection` (which tracks the hidden flat listing).
     /// Returns `None` for non-Miller panes so callers fall through to the flat path.
-    pub(crate) fn miller_focused_selection_paths(&self) -> Option<Vec<PathBuf>> {
-        let tile = self.state.focused_tile;
-        let td = self.tab_data_for(tile)?;
+    pub(crate) fn miller_selection_paths_for_pane(&self, pane: TileId) -> Option<Vec<PathBuf>> {
+        let td = self.tab_data_for(pane)?;
         if !matches!(td.view_mode, atlas_model::settings::ViewMode::Miller) {
             return None;
         }
-        let ts = self.state.tab_states.get(&tile)?;
+        let ts = self.state.tab_states.get(&pane)?;
         let col = ts.miller.columns.get(ts.miller.focused)?;
         Some(
             col.selection
@@ -317,6 +316,13 @@ impl App {
                 .map(|e| e.path.clone())
                 .collect(),
         )
+    }
+
+    /// When the focused pane is in Miller view, the live selection is the focused
+    /// column's — not `ts.selection` (which tracks the hidden flat listing).
+    /// Returns `None` for non-Miller panes so callers fall through to the flat path.
+    pub(crate) fn miller_focused_selection_paths(&self) -> Option<Vec<PathBuf>> {
+        self.miller_selection_paths_for_pane(self.state.focused_tile)
     }
 
     /// Keyboard cursor movement inside the focused Miller column. Returns `true`
@@ -346,6 +352,89 @@ impl App {
         }
         let next = target(cur, len).min(len - 1);
         self.miller_select(tile, column, next, false, false);
+        true
+    }
+
+    /// Left in Miller view: move focus to the parent column (column - 1).
+    pub(crate) fn miller_nav_left(&mut self) -> bool {
+        let tile = self.state.focused_tile;
+        let is_miller = self
+            .tab_data_for(tile)
+            .is_some_and(|td| matches!(td.view_mode, atlas_model::settings::ViewMode::Miller));
+        if !is_miller {
+            return false;
+        }
+        let (ci, cur) = {
+            let Some(ts) = self.state.tab_states.get_mut(&tile) else {
+                return true;
+            };
+            if ts.miller.focused > 0 {
+                ts.miller.focused -= 1;
+                let ci = ts.miller.focused;
+                let cur = ts.miller.columns.get(ci).and_then(|col| col.selection.keyboard_cursor);
+                (Some(ci), cur)
+            } else {
+                (None, None)
+            }
+        };
+        if let (Some(ci), Some(cur)) = (ci, cur) {
+            self.miller_select(tile, ci, cur, false, false);
+        }
+        true
+    }
+
+    /// Right in Miller view: move focus to the child column (column + 1), or
+    /// expand the directory under cursor if not already open.
+    pub(crate) fn miller_nav_right(&mut self) -> bool {
+        let tile = self.state.focused_tile;
+        let is_miller = self
+            .tab_data_for(tile)
+            .is_some_and(|td| matches!(td.view_mode, atlas_model::settings::ViewMode::Miller));
+        if !is_miller {
+            return false;
+        }
+        let (has_next_col, has_children) = {
+            let Some(ts) = self.state.tab_states.get(&tile) else {
+                return true;
+            };
+            let ci = ts.miller.focused;
+            let next_col_exists = ci + 1 < ts.miller.columns.len();
+            let is_dir = ts
+                .miller
+                .columns
+                .get(ci)
+                .and_then(|c| {
+                    let cur = c.selection.keyboard_cursor?;
+                    c.entries.get(cur).map(|e| e.kind == atlas_model::file_entry::FileKind::Dir)
+                })
+                .unwrap_or(false);
+            (next_col_exists, is_dir)
+        };
+
+        if has_next_col {
+            let ci = if let Some(ts) = self.state.tab_states.get_mut(&tile) {
+                ts.miller.focused += 1;
+                ts.miller.focused
+            } else {
+                return true;
+            };
+            let cursor = self
+                .state
+                .tab_states
+                .get(&tile)
+                .and_then(|ts| ts.miller.columns.get(ci))
+                .and_then(|col| col.selection.keyboard_cursor)
+                .unwrap_or(0);
+            if let Some(ts) = self.state.tab_states.get(&tile) {
+                if let Some(col) = ts.miller.columns.get(ci) {
+                    if !col.entries.is_empty() {
+                        self.miller_select(tile, ci, cursor, false, false);
+                    }
+                }
+            }
+        } else if has_children {
+            self.miller_open_cursor();
+        }
         true
     }
 

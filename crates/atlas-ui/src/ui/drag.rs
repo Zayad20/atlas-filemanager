@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use gpui::prelude::*;
-use gpui::{Entity, ExternalDragPayload, FileDragPaths, Window};
+use gpui::{point, px, AnyDrag, CursorStyle, Entity, ExternalDragPayload, FileDragPaths, InteractiveElement, Window};
 
 use crate::app::App;
 #[cfg(windows)]
@@ -68,7 +68,7 @@ pub(crate) fn file_drag_handler_for_details_content(
     pane: TabId,
 ) -> impl Fn(&DragView, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> Entity<DragView>
        + 'static {
-    move |_d, cursor_offset, _window, cx| {
+    move |_d, cursor_offset, window, cx| {
         let item = {
             let app = view.read(&*cx);
             app.details_hit
@@ -90,7 +90,7 @@ pub(crate) fn file_drag_handler_for_details_content(
             return empty_drag_view(cx);
         };
 
-        build_file_drag_start(&view, Some((pane, idx)), anchor, _window, cx)
+        build_file_drag_start(&view, Some((pane, idx)), anchor, window, cx)
     }
 }
 
@@ -118,7 +118,7 @@ fn file_drag_handler_for_surface_content(
     list: bool,
 ) -> impl Fn(&DragView, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> Entity<DragView>
        + 'static {
-    move |_d, cursor_offset, _window, cx| {
+    move |_d, cursor_offset, window, cx| {
         let item = {
             let app = view.read(&*cx);
             let hit_model = if list {
@@ -147,7 +147,7 @@ fn file_drag_handler_for_surface_content(
             return empty_drag_view(cx);
         };
 
-        build_file_drag_start(&view, Some((pane, idx)), anchor, _window, cx)
+        build_file_drag_start(&view, Some((pane, idx)), anchor, window, cx)
     }
 }
 
@@ -157,7 +157,7 @@ fn build_file_drag_handler(
     anchor: PathBuf,
 ) -> impl Fn(&DragView, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> Entity<DragView>
        + 'static {
-    move |_d, _pos, _window, cx| build_file_drag_start(&view, item, anchor.clone(), _window, cx)
+    move |_d, _pos, window, cx| build_file_drag_start(&view, item, anchor.clone(), window, cx)
 }
 
 fn empty_drag_view(cx: &mut gpui::App) -> Entity<DragView> {
@@ -171,16 +171,31 @@ fn empty_drag_view(cx: &mut gpui::App) -> Entity<DragView> {
     }
 }
 
-fn build_file_drag_start(
+pub(crate) fn empty_any_drag(cx: &mut gpui::App) -> AnyDrag {
+    #[cfg(windows)]
+    {
+        AnyDrag::new(DragNoop, cx.new(|_| DragNoop))
+    }
+    #[cfg(not(windows))]
+    {
+        AnyDrag::new(
+            DraggedFiles { paths: Vec::new() },
+            cx.new(|_| DraggedFiles { paths: Vec::new() }),
+        )
+    }
+}
+
+pub(crate) fn build_file_any_drag(
     view: &Entity<App>,
     item: Option<(TabId, usize)>,
     anchor: PathBuf,
+    cursor_style: Option<CursorStyle>,
     _window: &mut Window,
     cx: &mut gpui::App,
-) -> Entity<DragView> {
+) -> AnyDrag {
     if view.read(&*cx).rubber.is_some() {
         tracing::info!(anchor = %anchor.display(), "dnd file drag blocked by active rubber");
-        return empty_drag_view(cx);
+        return empty_any_drag(cx);
     }
     // Recycle Bin rows carry mangled `$R` payload paths and remote rows carry
     // virtual paths — an OS drag would ship garbage. Block at the source.
@@ -207,28 +222,35 @@ fn build_file_drag_start(
                 app.toast_error(msg.into_owned());
                 cx.notify();
             });
-            return empty_drag_view(cx);
+            return empty_any_drag(cx);
         }
     }
     view.update(cx, |app, cx| {
         if let Some((pane, idx)) = item {
+            app.state.focused_tile = pane;
             app.ensure_drag_selection(pane, idx);
         }
         app.begin_drag_hover();
         cx.notify();
     });
-    // Full multi-selection at drag-start time (fix: was single entry).
+    // Full multi-selection at drag-start time for the dragged pane.
     let (paths, archive_items) = {
         let app = view.read(&*cx);
-        let mut arc = app.state.selected_archive_items();
+        let mut arc = if let Some((pane, _)) = item {
+            app.state.selected_archive_items_for_pane(pane)
+        } else {
+            app.state.selected_archive_items()
+        };
         // Fallback: single-entry archive drag when the selection set is empty.
         if let Some(ref mut items) = arc {
             if items.is_empty() {
-                if let Some(archive) = app
-                    .state
-                    .active_tab_data()
-                    .and_then(|t| t.location.as_archive().map(|(a, _)| a.to_path_buf()))
-                {
+                let archive = if let Some((pane, _)) = item {
+                    app.tab_data_for(pane)
+                } else {
+                    app.state.active_tab_data()
+                }
+                .and_then(|t| t.location.as_archive().map(|(a, _)| a.to_path_buf()));
+                if let Some(archive) = archive {
                     items.push((archive, anchor.clone()));
                 }
             }
@@ -239,8 +261,12 @@ fn build_file_drag_start(
         let p = if arc.is_some() {
             Vec::new()
         } else {
-            let p = app.state.selected_paths();
-            if p.is_empty() {
+            let p = if let Some((pane, _)) = item {
+                app.selected_paths_for_pane(pane)
+            } else {
+                app.state.selected_paths()
+            };
+            if p.is_empty() || !p.contains(&anchor) {
                 vec![anchor.clone()]
             } else {
                 p
@@ -259,20 +285,153 @@ fn build_file_drag_start(
         // Invisible zero-size placeholder; OLE provides cursor feedback and a
         // synthetic WM_LBUTTONUP clears gpui's active_drag without firing any
         // on_drop handler (DragNoop has no matching handlers).
-        cx.new(|_| DragNoop)
+        AnyDrag::new(DragNoop, cx.new(|_| DragNoop)).cursor_style(cursor_style)
     }
     #[cfg(not(windows))]
     {
         let _ = _window;
+        let ext_view = view.clone();
+        let ext_paths = paths.clone();
         view.update(cx, |app, _cx| {
             app.active_external_drag = Some(ActiveExternalDrag {
                 paths: paths.clone(),
                 archive_items,
             });
         });
+        let payload = DraggedFiles { paths: paths.clone() };
+        let ghost_view = cx.new(|_| DraggedFiles { paths });
+        AnyDrag::new(payload, ghost_view)
+            .offset(point(px(-12.0), px(-12.0)))
+            .cursor_style(cursor_style)
+            .external_payload(move |_window, cx| {
+                resolve_external_drag_payload(&ext_view, &DraggedFiles { paths: ext_paths }, cx)
+            })
+    }
+}
+
+fn build_file_drag_start(
+    view: &Entity<App>,
+    item: Option<(TabId, usize)>,
+    anchor: PathBuf,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) -> Entity<DragView> {
+    let any_drag = build_file_any_drag(view, item, anchor, None, window, cx);
+    #[cfg(windows)]
+    {
+        let _ = any_drag;
+        cx.new(|_| DragNoop)
+    }
+    #[cfg(not(windows))]
+    {
+        let paths = any_drag
+            .value
+            .downcast_ref::<DraggedFiles>()
+            .map(|d| d.paths.clone())
+            .unwrap_or_default();
         cx.new(|_| DraggedFiles { paths })
     }
 }
+
+/// Extension trait on interactive elements to cleanly attach Atlas file drag behavior.
+/// Ensures correct selection resolution from the dragging pane, compact mouse offset
+/// for the ghost badge, and proper internal payload propagation on Linux/macOS.
+pub trait FileDragSource: gpui::StatefulInteractiveElement {
+    fn on_file_drag_item(self, view: Entity<App>, pane: TabId, idx: usize, anchor: PathBuf) -> Self {
+        self.on_drag_alt(move |_cursor_offset, cursor_style, window, cx| {
+            build_file_any_drag(&view, Some((pane, idx)), anchor.clone(), cursor_style, window, cx)
+        })
+    }
+
+    fn on_file_drag_anchor(self, view: Entity<App>, anchor: PathBuf) -> Self {
+        self.on_drag_alt(move |_cursor_offset, cursor_style, window, cx| {
+            build_file_any_drag(&view, None, anchor.clone(), cursor_style, window, cx)
+        })
+    }
+
+    fn on_file_drag_details(self, view: Entity<App>, pane: TabId) -> Self {
+        self.on_drag_alt(move |cursor_offset, cursor_style, window, cx| {
+            let item = {
+                let app = view.read(&*cx);
+                app.details_hit
+                    .get(&pane)
+                    .and_then(|model| model.hit_entry_at_content_offset(cursor_offset))
+                    .and_then(|idx| {
+                        app.details_row_selected(pane, idx).then(|| {
+                            app.state
+                                .tab_states
+                                .get(&pane)
+                                .and_then(|ts| ts.entries.get(idx))
+                                .map(|entry| (idx, entry.path.clone()))
+                        })?
+                    })
+            };
+
+            let Some((idx, anchor)) = item else {
+                tracing::debug!("dnd details content drag ignored outside selected row");
+                return empty_any_drag(cx);
+            };
+
+            build_file_any_drag(&view, Some((pane, idx)), anchor, cursor_style, window, cx)
+        })
+    }
+
+    fn on_file_drag_grid(self, view: Entity<App>, pane: TabId) -> Self {
+        self.on_drag_alt(move |cursor_offset, cursor_style, window, cx| {
+            let item = {
+                let app = view.read(&*cx);
+                app.grid_hit
+                    .get(&pane)
+                    .and_then(|model| model.hit_entry_at_content_offset(cursor_offset))
+                    .and_then(|idx| {
+                        app.details_row_selected(pane, idx).then(|| {
+                            app.state
+                                .tab_states
+                                .get(&pane)
+                                .and_then(|ts| ts.entries.get(idx))
+                                .map(|entry| (idx, entry.path.clone()))
+                        })?
+                    })
+            };
+
+            let Some((idx, anchor)) = item else {
+                tracing::debug!("dnd grid content drag ignored outside selected cell");
+                return empty_any_drag(cx);
+            };
+
+            build_file_any_drag(&view, Some((pane, idx)), anchor, cursor_style, window, cx)
+        })
+    }
+
+    fn on_file_drag_list(self, view: Entity<App>, pane: TabId) -> Self {
+        self.on_drag_alt(move |cursor_offset, cursor_style, window, cx| {
+            let item = {
+                let app = view.read(&*cx);
+                app.list_hit
+                    .get(&pane)
+                    .and_then(|model| model.hit_entry_at_content_offset(cursor_offset))
+                    .and_then(|idx| {
+                        app.details_row_selected(pane, idx).then(|| {
+                            app.state
+                                .tab_states
+                                .get(&pane)
+                                .and_then(|ts| ts.entries.get(idx))
+                                .map(|entry| (idx, entry.path.clone()))
+                        })?
+                    })
+            };
+
+            let Some((idx, anchor)) = item else {
+                tracing::debug!("dnd list content drag ignored outside selected cell");
+                return empty_any_drag(cx);
+            };
+
+            build_file_any_drag(&view, Some((pane, idx)), anchor, cursor_style, window, cx)
+        })
+    }
+}
+
+impl<E: gpui::StatefulInteractiveElement> FileDragSource for E {}
 
 /// Staging directory for extracting virtual archive items for external OS DnD:
 /// `$XDG_CACHE_HOME/atlas/dnd_staging` (falling back to `~/.cache/atlas/dnd_staging` or `$TMP/atlas/dnd_staging`).

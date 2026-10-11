@@ -720,42 +720,42 @@ impl Render for App {
                 },
             )
             .on_action(cx.listener(|this, _: &crate::NavUp, _w, cx| {
-                this.nav_up(false);
+                this.nav_up(false, false);
                 this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::NavDown, _w, cx| {
-                this.nav_down(false);
+                this.nav_down(false, false);
                 this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::ExtendUp, _w, cx| {
-                this.nav_up(true);
+                this.nav_up(true, false);
                 this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::ExtendDown, _w, cx| {
-                this.nav_down(true);
+                this.nav_down(true, false);
                 this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::NavHome, _w, cx| {
-                this.nav_home(false);
+                this.nav_home(false, false);
                 this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::NavEnd, _w, cx| {
-                this.nav_end(false);
+                this.nav_end(false, false);
                 this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::NavPageUp, _w, cx| {
-                this.nav_page(false, false);
+                this.nav_page(false, false, false);
                 this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::NavPageDown, _w, cx| {
-                this.nav_page(true, false);
+                this.nav_page(true, false, false);
                 this.notify_pane(this.state.focused_tile, cx);
                 cx.notify();
             }))

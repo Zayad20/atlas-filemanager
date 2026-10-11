@@ -358,11 +358,15 @@ impl AppState {
             };
             idx.hash(&mut hasher);
             entry.path.hash(&mut hasher);
-            let is_image = entry
+            let is_thumbable = entry
                 .extension
                 .as_deref()
-                .is_some_and(crate::preview_cache::is_image_ext);
-            if paths.len() < MULTI_PREVIEW_LIMIT && is_image {
+                .is_some_and(|ext| {
+                    crate::preview_cache::is_image_ext(ext)
+                        || crate::preview_cache::is_audio_ext(ext)
+                        || crate::preview_cache::is_video_ext(ext)
+                });
+            if paths.len() < MULTI_PREVIEW_LIMIT && is_thumbable {
                 paths.push(entry.path.clone());
             }
         }
@@ -411,12 +415,15 @@ impl AppState {
 
     /// Like `selected_paths()` but returns `(archive, inner)` pairs for archive
     /// tabs, so callers can implement drag-out virtual (extract on drag).
-    /// Returns `None` when the focused tab is not in archive mode.
-    pub fn selected_archive_items(&self) -> Option<Vec<(PathBuf, PathBuf)>> {
-        let td = self.active_tab_data()?;
+    /// Returns `None` when the specified tab is not in archive mode.
+    pub fn selected_archive_items_for_pane(&self, pane: TileId) -> Option<Vec<(PathBuf, PathBuf)>> {
+        let td = match self.pane_tree.tiles.get(pane) {
+            Some(Tile::Pane(p)) => Some(p),
+            _ => None,
+        }?;
         let (archive, _) = td.location.as_archive()?;
         let archive = archive.to_path_buf();
-        let Some(ts) = self.active_tab_state() else {
+        let Some(ts) = self.tab_states.get(&pane) else {
             return Some(Vec::new());
         };
         let mut selected: Vec<usize> = ts.selection.selected.iter().copied().collect();
@@ -426,6 +433,13 @@ impl AppState {
             .filter_map(|i| ts.entries.get(i).map(|e| (archive.clone(), e.path.clone())))
             .collect();
         Some(items)
+    }
+
+    /// Like `selected_paths()` but returns `(archive, inner)` pairs for archive
+    /// tabs, so callers can implement drag-out virtual (extract on drag).
+    /// Returns `None` when the focused tab is not in archive mode.
+    pub fn selected_archive_items(&self) -> Option<Vec<(PathBuf, PathBuf)>> {
+        self.selected_archive_items_for_pane(self.focused_tile)
     }
 
     pub fn active_tab_data(&self) -> Option<&TabData> {
@@ -645,5 +659,31 @@ mod tests {
                 .map(PathBuf::from)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn selected_archive_items_for_pane_targets_specified_pane() {
+        let (mut state, tile1) = AppState::new(Settings::default());
+        let mut td = crate::pane::TabData::with_view(
+            PathBuf::from("test.zip"),
+            crate::settings::ViewMode::Details,
+            128.0,
+            false,
+        );
+        td.location = crate::location::Location::Archive {
+            archive: PathBuf::from("test.zip"),
+            inner: PathBuf::from(""),
+        };
+        let tile2 = state.pane_tree.tiles.insert_pane(td);
+        state.tab_states.insert(tile2, crate::tab::TabState::default());
+        state.focused_tile = tile1;
+
+        let tab2 = state.tab_states.get_mut(&tile2).unwrap();
+        tab2.set_entries(vec![entry("inner_file.txt")].into());
+        tab2.selection.selected.insert(0);
+
+        let items = state.selected_archive_items_for_pane(tile2).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0], (PathBuf::from("test.zip"), PathBuf::from("inner_file.txt")));
     }
 }

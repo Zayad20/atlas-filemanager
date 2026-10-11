@@ -47,6 +47,7 @@ pub mod shell_context_menu;
 pub mod sidebar;
 pub mod size_filter_menu;
 pub mod surface;
+pub mod syntax_provider;
 pub mod tag_picker_menu;
 pub mod text_input;
 pub mod thumbs;

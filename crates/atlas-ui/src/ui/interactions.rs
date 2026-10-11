@@ -336,11 +336,11 @@ impl App {
             atlas_model::settings::ViewMode::Details => (1, count),
             atlas_model::settings::ViewMode::Grid => {
                 let thumb = td.thumbnail_size;
-                const GAP: f32 = crate::ui::views::grid::GRID_GAP;
-                const PAD: f32 = crate::ui::views::grid::GRID_PAD;
+                let gap = self.state.settings.grid_spacing.clamp(4.0, 48.0);
+                let pad = (gap * 0.75).round().max(4.0);
                 let pane_w = ts.last_pane_width.max(thumb + 1.0);
-                let inner = (pane_w - 2.0 * PAD).max(thumb);
-                let cols = (((inner + GAP) / (thumb + GAP)).floor() as usize).max(1);
+                let inner = (pane_w - 2.0 * pad).max(thumb);
+                let cols = (((inner + gap) / (thumb + gap)).floor() as usize).max(1);
                 (cols, count.div_ceil(cols))
             }
             atlas_model::settings::ViewMode::List => {
@@ -559,17 +559,19 @@ impl App {
                 }
             }
             ViewMode::Grid => {
-                let gap = crate::ui::views::grid::GRID_GAP * zoom;
+                let gap = self.state.settings.grid_spacing.clamp(4.0, 48.0) * zoom;
+                let pad = (self.state.settings.grid_spacing.clamp(4.0, 48.0) * 0.75).round().max(4.0) * zoom;
                 let thumb = thumbnail_size * zoom;
                 let cell_h = thumb * crate::ui::views::grid::GRID_ICON_AREA
                     + crate::ui::views::grid::GRID_LABEL_H * zoom;
                 let pane_w = ts.last_pane_width.max(thumb + 1.0);
-                let cols = (((pane_w + gap) / (thumb + gap)).floor() as usize).max(1);
+                let inner = (pane_w - 2.0 * pad).max(thumb);
+                let cols = (((inner + gap) / (thumb + gap)).floor() as usize).max(1);
                 for (pos, idx) in visible.into_iter().enumerate() {
                     let row = pos / cols;
                     let col = pos % cols;
-                    let left = col as f32 * (thumb + gap);
-                    let top = row as f32 * (cell_h + gap);
+                    let left = pad + col as f32 * (thumb + gap);
+                    let top = pad + row as f32 * (cell_h + gap);
                     if rl < left + thumb && left < rr && rt < top + cell_h && top < rb {
                         hits.insert(idx);
                     }
@@ -786,9 +788,11 @@ impl App {
             return false;
         };
 
+        let gap = self.state.settings.grid_spacing.clamp(4.0, 48.0);
+        let pad = (gap * 0.75).round().max(4.0);
         let row_pitch = pane_data.thumbnail_size * crate::ui::views::grid::GRID_ICON_AREA
             + crate::ui::views::grid::GRID_LABEL_H
-            + crate::ui::views::grid::GRID_GAP;
+            + gap;
         let (_, row_count) = self.rubber_scroll_dims(pane);
         if row_count == 0 {
             return true;
@@ -800,9 +804,9 @@ impl App {
             return false;
         }
 
-        let row_top = row as f32 * row_pitch;
+        let row_top = pad + row as f32 * row_pitch;
         let row_bottom = row_top + row_pitch;
-        let content_h = row_count as f32 * row_pitch - crate::ui::views::grid::GRID_GAP;
+        let content_h = pad * 2.0 + row_count as f32 * row_pitch - gap;
         let max_scroll = (content_h - viewport_h).max(0.0);
         let offset = base.offset();
         let current_top = (-f32::from(offset.y)).max(0.0);

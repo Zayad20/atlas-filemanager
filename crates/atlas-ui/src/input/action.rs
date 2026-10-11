@@ -9,6 +9,8 @@ use std::path::PathBuf;
 pub enum SelectionMove {
     Previous,
     Next,
+    Left,
+    Right,
     First,
     Last,
     PageUp,
@@ -123,6 +125,9 @@ pub enum Action {
         target: SelectionMove,
         extend: bool,
     },
+    MoveCursor(SelectionMove),
+    ToggleSelectionCursor,
+    OpenPropertiesFocused,
     OpenCursor,
     OpenSelectedDirsInNewTabs,
     InvertSelection,

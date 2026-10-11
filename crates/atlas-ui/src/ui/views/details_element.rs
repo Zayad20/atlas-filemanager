@@ -274,6 +274,7 @@ impl Element for DetailsBodyElement {
                 row: usize,
                 entry_idx: usize,
                 selected: bool,
+                cursor: bool,
                 hovered: bool,
                 flashing: bool,
                 odd: bool,
@@ -305,6 +306,7 @@ impl Element for DetailsBodyElement {
 
                     let selected = tab_state.selection.selected.contains(&entry_idx)
                         && !crate::ui::views::rename::suppress_row_chrome(app, pane_id, entry_idx);
+                    let cursor = tab_state.selection.keyboard_cursor == Some(entry_idx);
                     let dimmed = crate::ui::views::rename::dim_other_entry(app, pane_id, entry_idx);
                     let flashing = matches!(entry.kind, FileKind::Dir)
                         && app.drag_hover.blink_id.as_ref()
@@ -348,6 +350,7 @@ impl Element for DetailsBodyElement {
                         row: i,
                         entry_idx,
                         selected,
+                        cursor,
                         hovered,
                         flashing,
                         odd,
@@ -430,6 +433,7 @@ impl Element for DetailsBodyElement {
                         row: row_i,
                         shape_key,
                         selected: b.selected,
+                        cursor: b.cursor,
                         selected_at,
                         hovered: b.hovered,
                         flashing: b.flashing,
@@ -441,7 +445,7 @@ impl Element for DetailsBodyElement {
                     }
                 });
                 ring.touch_flags(
-                    row_i, shape_key, b.selected, b.hovered, b.flashing, b.odd, b.dimmed,
+                    row_i, shape_key, b.selected, b.cursor, b.hovered, b.flashing, b.odd, b.dimmed,
                 );
             }
             crate::perf::time_us(
@@ -552,6 +556,10 @@ impl Element for DetailsBodyElement {
                             color = color.opacity(color.alpha * 0.45);
                         }
                         window.paint_quad(gpui::fill(row_bounds, color));
+                    }
+                    if row.cursor {
+                        let outline_color = accent.opacity(if row.selected { 0.95 } else { 0.65 });
+                        window.paint_quad(gpui::outline(row_bounds, outline_color, Default::default()));
                     }
 
                     // 2. Icons

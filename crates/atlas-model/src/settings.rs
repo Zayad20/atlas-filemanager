@@ -36,6 +36,8 @@ pub struct Workspace {
     pub font_family: String,
     pub thumbnail_size: f32,
     pub global_zoom: f32,
+    #[serde(default = "default_grid_spacing")]
+    pub grid_spacing: f32,
 }
 
 impl Default for Workspace {
@@ -53,6 +55,7 @@ impl Default for Workspace {
             font_family: "Geist".to_string(),
             thumbnail_size: 128.0,
             global_zoom: 1.0,
+            grid_spacing: default_grid_spacing(),
         }
     }
 }
@@ -97,12 +100,19 @@ pub struct Settings {
     /// Background opacity for Glass themes (0.20 to 1.00, default 0.80).
     #[serde(default = "default_glass_opacity")]
     pub glass_opacity: f32,
+    /// Element spacing / gap in grid view (points, default 16.0).
+    #[serde(default = "default_grid_spacing")]
+    pub grid_spacing: f32,
     /// True after the first-run setup has been dismissed or completed.
     pub getting_started_seen: bool,
 }
 
 pub fn default_glass_opacity() -> f32 {
     0.80
+}
+
+pub fn default_grid_spacing() -> f32 {
+    16.0
 }
 
 impl Settings {
@@ -121,6 +131,7 @@ impl Settings {
             font_family: self.font_family.clone(),
             thumbnail_size: self.thumbnail_size,
             global_zoom: self.global_zoom,
+            grid_spacing: self.grid_spacing,
         }
     }
 
@@ -139,6 +150,7 @@ impl Settings {
         self.font_family.clone_from(&ws.font_family);
         self.thumbnail_size = ws.thumbnail_size;
         self.global_zoom = ws.global_zoom;
+        self.grid_spacing = ws.grid_spacing;
     }
 }
 
@@ -166,6 +178,7 @@ impl Default for Settings {
             autosave_session: true,
             dim_inactive_panes: false,
             glass_opacity: default_glass_opacity(),
+            grid_spacing: default_grid_spacing(),
             getting_started_seen: false,
         }
     }
@@ -187,6 +200,20 @@ mod tests {
         let json = r#"{"glass_opacity": 0.55}"#;
         let s: Settings = serde_json::from_str(json).unwrap();
         assert!((s.glass_opacity - 0.55).abs() < 1e-4);
+    }
+
+    #[test]
+    fn settings_defaults_grid_spacing_when_absent() {
+        let json = r#"{"font_size": 13.0}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert!((s.grid_spacing - 16.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn settings_preserves_custom_grid_spacing() {
+        let json = r#"{"grid_spacing": 24.0}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert!((s.grid_spacing - 24.0).abs() < 1e-4);
     }
 }
 

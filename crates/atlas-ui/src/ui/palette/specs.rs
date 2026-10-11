@@ -758,10 +758,11 @@ impl App {
             .into_iter()
             .take(GOTO_HOME_LIMIT)
             .map(|d| {
+                let icon = crate::ui::sidebar::drive_icon(&d);
                 goto_entry(
                     d.label.clone(),
                     d.mount_point,
-                    AtlasIcon::HardDrives,
+                    icon,
                     true,
                     tab,
                     pane,
@@ -770,7 +771,7 @@ impl App {
             .collect();
         sections.extend(section_or_empty(
             "storage",
-            AtlasIcon::HardDrives,
+            AtlasIcon::HardDrive,
             rust_i18n::t!("palette_sec_storage"),
             drives,
         ));
@@ -1196,6 +1197,13 @@ impl App {
                 AtlasIcon::X,
                 Action::CloseFocusedPane,
             ),
+            CommandDef::new(
+                "pane.focus-next",
+                rust_i18n::t!("cmd_pane_focus_next_title"),
+                rust_i18n::t!("cmd_pane_focus_next_desc"),
+                AtlasIcon::SplitVertical,
+                Action::FocusNextPane,
+            ),
         ];
 
         let nav = vec![
@@ -1269,6 +1277,26 @@ impl App {
                 },
             ),
             CommandDef::new(
+                "selection.left",
+                rust_i18n::t!("cmd_selection_left_title"),
+                rust_i18n::t!("cmd_selection_left_desc"),
+                AtlasIcon::ArrowLeft,
+                Action::MoveSelection {
+                    target: crate::input::action::SelectionMove::Left,
+                    extend: false,
+                },
+            ),
+            CommandDef::new(
+                "selection.right",
+                rust_i18n::t!("cmd_selection_right_title"),
+                rust_i18n::t!("cmd_selection_right_desc"),
+                AtlasIcon::ArrowRight,
+                Action::MoveSelection {
+                    target: crate::input::action::SelectionMove::Right,
+                    extend: false,
+                },
+            ),
+            CommandDef::new(
                 "selection.first",
                 rust_i18n::t!("cmd_selection_first_title"),
                 rust_i18n::t!("cmd_selection_first_desc"),
@@ -1329,6 +1357,26 @@ impl App {
                 },
             ),
             CommandDef::new(
+                "selection.extend-left",
+                rust_i18n::t!("cmd_selection_extend_left_title"),
+                rust_i18n::t!("cmd_selection_extend_left_desc"),
+                AtlasIcon::SelectionAll,
+                Action::MoveSelection {
+                    target: crate::input::action::SelectionMove::Left,
+                    extend: true,
+                },
+            ),
+            CommandDef::new(
+                "selection.extend-right",
+                rust_i18n::t!("cmd_selection_extend_right_title"),
+                rust_i18n::t!("cmd_selection_extend_right_desc"),
+                AtlasIcon::SelectionAll,
+                Action::MoveSelection {
+                    target: crate::input::action::SelectionMove::Right,
+                    extend: true,
+                },
+            ),
+            CommandDef::new(
                 "selection.extend-first",
                 rust_i18n::t!("cmd_selection_extend_first_title"),
                 rust_i18n::t!("cmd_selection_extend_first_desc"),
@@ -1367,6 +1415,41 @@ impl App {
                     target: crate::input::action::SelectionMove::PageDown,
                     extend: true,
                 },
+            ),
+            CommandDef::new(
+                "selection.cursor-previous",
+                rust_i18n::t!("cmd_selection_cursor_previous_title"),
+                rust_i18n::t!("cmd_selection_cursor_previous_desc"),
+                AtlasIcon::ArrowLeft,
+                Action::MoveCursor(crate::input::action::SelectionMove::Previous),
+            ),
+            CommandDef::new(
+                "selection.cursor-next",
+                rust_i18n::t!("cmd_selection_cursor_next_title"),
+                rust_i18n::t!("cmd_selection_cursor_next_desc"),
+                AtlasIcon::ArrowRight,
+                Action::MoveCursor(crate::input::action::SelectionMove::Next),
+            ),
+            CommandDef::new(
+                "selection.cursor-left",
+                rust_i18n::t!("cmd_selection_cursor_left_title"),
+                rust_i18n::t!("cmd_selection_cursor_left_desc"),
+                AtlasIcon::ArrowLeft,
+                Action::MoveCursor(crate::input::action::SelectionMove::Left),
+            ),
+            CommandDef::new(
+                "selection.cursor-right",
+                rust_i18n::t!("cmd_selection_cursor_right_title"),
+                rust_i18n::t!("cmd_selection_cursor_right_desc"),
+                AtlasIcon::ArrowRight,
+                Action::MoveCursor(crate::input::action::SelectionMove::Right),
+            ),
+            CommandDef::new(
+                "selection.toggle",
+                rust_i18n::t!("cmd_selection_toggle_title"),
+                rust_i18n::t!("cmd_selection_toggle_desc"),
+                AtlasIcon::Square,
+                Action::ToggleSelectionCursor,
             ),
             CommandDef::new(
                 "selection.open",
@@ -1626,7 +1709,7 @@ impl App {
                     rust_i18n::t!("cmd_files_compress_title"),
                     rust_i18n::t!("cmd_files_compress_desc"),
                     AtlasIcon::File,
-                    Action::CompressToZip(selected_paths),
+                    Action::CompressToZip(selected_paths.clone()),
                 ),
                 CommandDef::new(
                     "files.open-dirs-in-tabs",
@@ -1655,6 +1738,20 @@ impl App {
                     rust_i18n::t!("cmd_files_open_bottom_split_desc"),
                     AtlasIcon::SplitVertical,
                     Action::OpenSelectedDirInBottomSplit,
+                ),
+                CommandDef::new(
+                    "files.copy-path",
+                    rust_i18n::t!("cmd_files_copy_path_title"),
+                    rust_i18n::t!("cmd_files_copy_path_desc"),
+                    AtlasIcon::Copy,
+                    Action::CopyPathToClipboard(selected_paths[0].clone()),
+                ),
+                CommandDef::new(
+                    "files.properties",
+                    rust_i18n::t!("cmd_files_properties_title"),
+                    rust_i18n::t!("cmd_files_properties_desc"),
+                    AtlasIcon::Gear,
+                    Action::OpenPropertiesFocused,
                 ),
             ]
         };

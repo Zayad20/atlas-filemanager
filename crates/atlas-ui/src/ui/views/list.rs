@@ -2,6 +2,7 @@
 #![allow(clippy::too_many_lines)] // reason: cohesive view renderer kept whole
 
 use crate::app::App;
+use crate::ui::drag::FileDragSource as _;
 use crate::ui::drag_hover::DragHoverId;
 use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::backdrop_tint;
@@ -336,11 +337,7 @@ impl App {
                     .w_full()
                     .h(px(content_h))
                     .opacity(0.0)
-                    .on_drag(
-                        crate::ui::drag::file_drag_value(Vec::new()),
-                        crate::ui::drag::file_drag_handler_for_list_content(view.clone(), pane_id),
-                    )
-                    .external_drag_payload(crate::ui::drag::file_external_drag_payload(view.clone()))
+                    .on_file_drag_list(view.clone(), pane_id)
                     .into_any_element()
             });
             let tooltip_data = self
@@ -628,16 +625,12 @@ fn render_cell_compact(props: ListCellProps) -> AnyElement {
             s.on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
                 cx.stop_propagation();
             })
-            .on_drag(
-                crate::ui::drag::file_drag_value(vec![entry.path.clone()]),
-                crate::ui::drag::file_drag_handler_for_item(
-                    view.clone(),
-                    pane_id,
-                    entry_idx,
-                    entry.path.clone(),
-                ),
+            .on_file_drag_item(
+                view.clone(),
+                pane_id,
+                entry_idx,
+                entry.path.clone(),
             )
-            .external_drag_payload(crate::ui::drag::file_external_drag_payload(view.clone()))
         })
         .tooltip({
             let tip_name = entry.name.clone();

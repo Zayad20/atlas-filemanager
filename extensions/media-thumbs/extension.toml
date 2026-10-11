@@ -1,15 +1,15 @@
 id = "media-thumbs"
 name = "Media Thumbnails"
-version = "0.1.3"
+version = "0.1.4"
 author = "Atlas Team"
-description = "Grid thumbnails for video and PSD/large-raster files using local tools"
+description = "Grid thumbnails for video, PDF and PSD/large-raster files using local tools"
 kind = "declarative"
 
 # Thumbnailer commands (thumbnail = true) are not shown in the menu. Atlas runs them in
 # the background for files they `accept`, substituting {input} and {output} (a temp PNG),
 # then caches the result as a grid thumbnail. They only activate when their `requires`
 # binaries are on PATH, so missing tools simply fall back to the file-type glyph.
-# Placeholders: {input} {output} {dir} {stem} {ext}
+# Placeholders: {input} {output} {output_prefix} {dir} {stem} {ext}
 
 [[commands]]
 id = "video-thumb"
@@ -17,7 +17,15 @@ title = "Video thumbnail"
 thumbnail = true
 requires = ["ffmpeg"]
 run = "ffmpeg -y -ss 1 -i {input} -frames:v 1 -vf scale=384:-1 {output}"
-accepts = { extensions = ["mp4", "mkv", "mov", "webm", "avi", "flv", "wmv", "m4v", "mpeg", "mpg"] }
+accepts = { extensions = ["mp4", "mkv", "mov", "webm", "avi", "flv", "wmv", "m4v", "mpeg", "mpg", "3gp", "ts", "mts", "m2ts", "vob", "asf"] }
+
+[[commands]]
+id = "pdf-thumb"
+title = "PDF thumbnail"
+thumbnail = true
+requires = ["pdftoppm"]
+run = "pdftoppm -f 1 -l 1 -scale-to 384 -png -singlefile {input} {output_prefix}"
+accepts = { extensions = ["pdf"] }
 
 [[commands]]
 id = "raster-thumb"

@@ -230,6 +230,10 @@ impl App {
                 {
                     return Err(());
                 }
+                #[cfg(target_os = "linux")]
+                if let Some(thumb) = atlas_core::fs::preview::freedesktop_thumbnail(&path, THUMB_MAX_EDGE) {
+                    return Ok(Some(thumb));
+                }
                 let thumb = atlas_core::ext::runner::run_thumbnail(
                     &path,
                     &run_tmpl,
@@ -387,11 +391,40 @@ impl App {
 /// Decode `path` and box-resize so its longest edge is `max_edge`, returning packed
 /// RGBA8. Returns an empty vec on any failure (cached as a permanent miss).
 fn decode_thumbnail(path: &std::path::Path, max_edge: u32) -> BgResult {
-    let result = image::open(path).ok().map(|img| {
-        let thumb = img.thumbnail(max_edge, max_edge).to_rgba8();
-        let (w, h) = (thumb.width() as usize, thumb.height() as usize);
-        (thumb.into_raw(), w, h)
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.len() == 0 {
+            return BgResult::GridThumbnailReady {
+                path: path.to_path_buf(),
+                rgba: Vec::new(),
+                width: 0,
+                height: 0,
+            };
+        }
+    }
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    let result = if atlas_model::preview_cache::is_audio_ext(&ext) {
+        atlas_core::fs::preview::extract_audio_thumbnail(path, max_edge)
+    } else if ext == "svg" {
+        atlas_core::fs::preview::decode_svg(path, max_edge)
+    } else {
+        image::open(path).ok().map(|img| {
+            let thumb = img.thumbnail(max_edge, max_edge).to_rgba8();
+            let (w, h) = (thumb.width() as usize, thumb.height() as usize);
+            (thumb.into_raw(), w, h)
+        })
+    };
+
+    #[cfg(target_os = "linux")]
+    let result = result.or_else(|| {
+        atlas_core::fs::preview::freedesktop_thumbnail(path, max_edge)
     });
+
     match result {
         Some((rgba, width, height)) => BgResult::GridThumbnailReady {
             path: path.to_path_buf(),

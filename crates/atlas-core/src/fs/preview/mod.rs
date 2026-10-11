@@ -8,11 +8,17 @@ mod archive;
 mod audio;
 mod dir;
 mod image;
+mod linux_thumb;
 mod markdown;
 mod pdf;
+pub mod syntax;
 mod text;
+mod video;
 
 pub use archive::load_archive_preview;
+pub use audio::extract_audio_thumbnail;
+pub use image::decode_svg;
+pub use linux_thumb::freedesktop_thumbnail;
 pub use pdf::{preview_pdf_public, preview_pdf_with_pdftoppm};
 
 use std::path::PathBuf;
@@ -43,6 +49,11 @@ pub async fn load_preview(tab: TabId, path: PathBuf, tx: flume::Sender<BgResult>
         tokio::task::spawn_blocking(move || image::preview_image(&p))
             .await
             .unwrap_or_else(|e| PreviewResult::Error(e.to_string()))
+    } else if atlas_model::preview_cache::is_video_ext(&ext) {
+        let p = path.clone();
+        tokio::task::spawn_blocking(move || video::preview_video(&p))
+            .await
+            .unwrap_or_else(|e| PreviewResult::Error(e.to_string()))
     } else if ext == "pdf" {
         let p = path.clone();
         tokio::task::spawn_blocking(move || pdf::preview_pdf_public(&p))
@@ -71,9 +82,24 @@ pub async fn load_multi_thumbnail(
 ) {
     let thumbnail_path = path.clone();
     let thumbnail = tokio::task::spawn_blocking(move || {
-        let (rgba, width, height) = image::preview_thumbnail(&thumbnail_path)?;
+        let ext = thumbnail_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let decoded = if is_audio_ext(&ext) {
+            audio::extract_audio_thumbnail(&thumbnail_path, MAX_MULTI_THUMBNAIL_EDGE)
+        } else if ext == "svg" {
+            image::decode_svg(&thumbnail_path, MAX_MULTI_THUMBNAIL_EDGE)
+        } else {
+            image::preview_thumbnail(&thumbnail_path).ok()
+        };
+        let decoded = decoded.or_else(|| {
+            linux_thumb::freedesktop_thumbnail(&thumbnail_path, MAX_MULTI_THUMBNAIL_EDGE)
+        });
+        let (rgba, width, height) = decoded?;
         let angle = MULTI_BUTTERFLY_ANGLES.get(index).copied().unwrap_or(0.0);
-        Ok::<_, ::image::ImageError>(if angle == 0.0 {
+        Some(if angle == 0.0 {
             (rgba, width, height)
         } else {
             image::rotate_rgba(&rgba, width, height, angle)
@@ -81,7 +107,7 @@ pub async fn load_multi_thumbnail(
     })
     .await
     .ok()
-    .and_then(Result::ok);
+    .flatten();
     let Some((rgba, width, height)) = thumbnail else {
         return;
     };

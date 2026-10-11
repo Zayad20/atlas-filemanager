@@ -478,13 +478,27 @@ impl App {
                     self.state.focused_tile = tile;
                 }
                 Action::MoveSelection { target, extend } => match target {
-                    SelectionMove::Previous => self.nav_up(extend),
-                    SelectionMove::Next => self.nav_down(extend),
-                    SelectionMove::First => self.nav_home(extend),
-                    SelectionMove::Last => self.nav_end(extend),
-                    SelectionMove::PageUp => self.nav_page(false, extend),
-                    SelectionMove::PageDown => self.nav_page(true, extend),
+                    SelectionMove::Previous => self.nav_up(extend, false),
+                    SelectionMove::Next => self.nav_down(extend, false),
+                    SelectionMove::Left => self.nav_left(extend, false),
+                    SelectionMove::Right => self.nav_right(extend, false),
+                    SelectionMove::First => self.nav_home(extend, false),
+                    SelectionMove::Last => self.nav_end(extend, false),
+                    SelectionMove::PageUp => self.nav_page(false, extend, false),
+                    SelectionMove::PageDown => self.nav_page(true, extend, false),
                 },
+                Action::MoveCursor(target) => match target {
+                    SelectionMove::Previous => self.nav_up(false, true),
+                    SelectionMove::Next => self.nav_down(false, true),
+                    SelectionMove::Left => self.nav_left(false, true),
+                    SelectionMove::Right => self.nav_right(false, true),
+                    SelectionMove::First => self.nav_home(false, true),
+                    SelectionMove::Last => self.nav_end(false, true),
+                    SelectionMove::PageUp => self.nav_page(false, false, true),
+                    SelectionMove::PageDown => self.nav_page(true, false, true),
+                },
+                Action::ToggleSelectionCursor => self.toggle_selection_cursor(),
+                Action::OpenPropertiesFocused => self.open_properties_focused(),
                 Action::OpenCursor => self.open_cursor(),
                 Action::OpenSelectedDirsInNewTabs => {
                     let focused = self.state.focused_tile;

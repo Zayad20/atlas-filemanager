@@ -33,9 +33,6 @@ image = { version = "0.25", default-features = false, features = [
     "jpeg", "png", "gif", "webp", "tiff", "bmp", "ico",
 ] }
 kamadak-exif = "0.6"
-syntect = { version = ">=5.0, <5.3", default-features = false, features = [
-    "default-syntaxes", "default-themes", "parsing", "regex-fancy",
-] }
 walkdir = "2"
 # ripgrep's library crates: blazing-fast content search (goto bar "search in content").
 ignore = "0.4"
@@ -46,6 +43,9 @@ regex = "1"
 jwalk = "0.8.1"
 pulldown-cmark = { version = "0.12", default-features = false }
 lofty = "0.22"
+resvg = "0.45"
+md-5 = "0.10"
+url = "2"
 sysinfo = "0.38.4"
 nucleo = "0.5"
 rayon = "1"

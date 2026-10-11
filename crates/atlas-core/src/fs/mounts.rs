@@ -18,6 +18,8 @@ pub struct DriveInfo {
     pub mount_point: PathBuf,
     pub total_bytes: u64,
     pub available_bytes: u64,
+    pub is_removable: bool,
+    pub is_system: bool,
 }
 
 impl DriveInfo {
@@ -78,17 +80,40 @@ fn list_drives_internal() -> Vec<DriveInfo> {
             } else {
                 name.into_owned()
             };
+            let is_system = is_system_mount(&mount_point);
+            let is_removable = disk.is_removable();
             DriveInfo {
                 label,
                 mount_point,
                 total_bytes: disk.total_space(),
                 available_bytes: disk.available_space(),
+                is_removable,
+                is_system,
             }
         })
         .collect();
     drives.sort_by(|a, b| a.mount_point.cmp(&b.mount_point));
     drives.dedup_by(|a, b| a.mount_point == b.mount_point);
     drives
+}
+
+#[inline]
+fn is_system_mount(mount_point: &std::path::Path) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(sys_drive) = std::env::var("SystemDrive") {
+            let p_str = mount_point.to_string_lossy();
+            if p_str.starts_with(&sys_drive) {
+                return true;
+            }
+        }
+        let s = mount_point.to_string_lossy();
+        s.starts_with("C:") || s.starts_with("c:")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        mount_point == std::path::Path::new("/")
+    }
 }
 
 pub fn read_mounts() -> Vec<PathBuf> {

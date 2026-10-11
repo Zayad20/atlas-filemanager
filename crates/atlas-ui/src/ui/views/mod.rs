@@ -182,10 +182,11 @@ pub(super) fn pane_background_interactions(
                 }
             });
         })
-        .on_drop::<DraggedFiles>(move |d, _window, cx| {
+        .on_drop::<DraggedFiles>(move |d, window, cx| {
             let paths = d.paths.clone();
+            let pos = window.mouse_position();
             drop_view.update(cx, |this, cx| {
-                if let Some(command) = this.active_drag_hover_drop_command() {
+                if let Some(command) = this.drag_hover_drop_command_at(f32::from(pos.x), f32::from(pos.y)) {
                     this.execute_drag_hover_drop_command(command, paths, true);
                 } else {
                     this.drop_files_on_pane(pane_id, paths, false);
@@ -193,10 +194,11 @@ pub(super) fn pane_background_interactions(
                 cx.notify();
             });
         })
-        .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
+        .on_drop::<gpui::ExternalPaths>(move |paths, window, cx| {
             let paths = paths.paths().to_vec();
+            let pos = window.mouse_position();
             drop_ext_view.update(cx, |this, cx| {
-                if let Some(command) = this.active_drag_hover_drop_command() {
+                if let Some(command) = this.drag_hover_drop_command_at(f32::from(pos.x), f32::from(pos.y)) {
                     this.execute_drag_hover_drop_command(command, paths, false);
                 } else {
                     this.drop_files_on_pane(pane_id, paths, true);

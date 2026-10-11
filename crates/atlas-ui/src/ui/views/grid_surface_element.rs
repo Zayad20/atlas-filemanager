@@ -153,6 +153,7 @@ struct GridSurfaceSlot {
     entry_idx: usize,
     shape_key: u64,
     selected: bool,
+    cursor: bool,
     selected_at: Option<Instant>,
     hovered: bool,
     flashing: bool,
@@ -213,6 +214,7 @@ impl GridSurfaceState {
         row: usize,
         key: u64,
         selected: bool,
+        cursor: bool,
         hovered: bool,
         flashing: bool,
         dimmed: bool,
@@ -228,6 +230,7 @@ impl GridSurfaceState {
                     slot.selected_at = selected.then(Instant::now);
                 }
                 slot.selected = selected;
+                slot.cursor = cursor;
                 slot.hovered = hovered;
                 slot.flashing = flashing;
                 slot.dimmed = dimmed;
@@ -270,6 +273,8 @@ pub(crate) struct GridSurfaceElement {
     style: StyleRefinement,
     layout: GridSurfaceLayout,
     animate: bool,
+    pad_x: f32,
+    pad_y: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -332,7 +337,15 @@ impl GridSurfaceElement {
             style: StyleRefinement::default(),
             layout: GridSurfaceLayout::Thumbnail,
             animate: false,
+            pad_x: 0.0,
+            pad_y: 0.0,
         }
+    }
+
+    pub(crate) fn padding(mut self, pad_x: f32, pad_y: f32) -> Self {
+        self.pad_x = pad_x;
+        self.pad_y = pad_y;
+        self
     }
 
     pub(crate) fn animated(mut self, animate: bool) -> Self {
@@ -535,6 +548,8 @@ impl Element for GridSurfaceElement {
                 origin: point(bounds.origin.x, bounds.origin.y + px(self.scroll_y)),
                 size: size(bounds.size.width, px(self.viewport_h)),
             },
+            pad_x: self.pad_x,
+            pad_y: self.pad_y,
             scroll_y: self.scroll_y,
             cell_w: self.cell_w,
             cell_h: self.cell_h,
@@ -622,6 +637,7 @@ impl Element for GridSurfaceElement {
                 }
                 let selected = tab_state.selection.selected.contains(&entry_idx)
                     && !crate::ui::views::rename::suppress_row_chrome(app, pane_id, entry_idx);
+                let cursor = tab_state.selection.keyboard_cursor == Some(entry_idx);
                 let dimmed = crate::ui::views::rename::dim_other_entry(app, pane_id, entry_idx);
                 let hovered = match layout {
                     GridSurfaceLayout::Thumbnail => app.grid_hover == Some((pane_id, entry_idx)),
@@ -687,6 +703,7 @@ impl Element for GridSurfaceElement {
                             entry_idx,
                             shape_key: key,
                             selected,
+                            cursor,
                             selected_at: (selected && !previous_selected).then(Instant::now),
                             hovered,
                             flashing,
@@ -718,7 +735,7 @@ impl Element for GridSurfaceElement {
                     layout.ring_hit_metric(),
                     layout.ring_miss_metric(),
                 );
-                state.touch_dynamic(row, key, selected, hovered, flashing, dimmed, icon);
+                state.touch_dynamic(row, key, selected, cursor, hovered, flashing, dimmed, icon);
             }
 
             show_checkboxes
@@ -791,6 +808,8 @@ impl Element for GridSurfaceElement {
         let thumb = self.thumb;
         let layout = self.layout;
         let animate = self.animate;
+        let grid_pad_x = self.pad_x;
+        let grid_pad_y = self.pad_y;
 
         let mut state_rc = prepaint.state.0.borrow_mut();
         let state = &mut *state_rc;
@@ -834,8 +853,8 @@ impl Element for GridSurfaceElement {
                     }
                     let col = slot.row % cols;
                     let row = slot.row / cols;
-                    let target_x = col as f32 * pitch_x;
-                    let target_y = row as f32 * pitch_y;
+                    let target_x = grid_pad_x + col as f32 * pitch_x;
+                    let target_y = grid_pad_y + row as f32 * pitch_y;
                     let (visual_x, visual_y, visual_w, visual_h) = compute_flip(
                         slot.entry_idx,
                         target_x,
@@ -882,6 +901,13 @@ impl Element for GridSurfaceElement {
                             color = color.opacity(color.alpha * 0.45);
                         }
                         paint_rounded(window, cell, 4.0 * zoom, color);
+                    }
+                    if slot.cursor {
+                        let outline_color = colors.accent.opacity(if slot.selected { 0.95 } else { 0.65 });
+                        window.paint_quad(
+                            gpui::outline(cell, outline_color, Default::default())
+                                .corner_radii(Corners::all(px(4.0 * zoom))),
+                        );
                     }
 
                     let icon_center =
@@ -1000,8 +1026,8 @@ impl Element for GridSurfaceElement {
                     }
                     let col = slot.row % cols;
                     let row = slot.row / cols;
-                    let target_x = col as f32 * pitch_x;
-                    let target_y = row as f32 * pitch_y;
+                    let target_x = grid_pad_x + col as f32 * pitch_x;
+                    let target_y = grid_pad_y + row as f32 * pitch_y;
                     let (visual_x, visual_y, visual_w, visual_h) = compute_flip(
                         slot.entry_idx,
                         target_x,
@@ -1048,6 +1074,13 @@ impl Element for GridSurfaceElement {
                             color = color.opacity(color.alpha * 0.45);
                         }
                         paint_rounded(window, cell, 6.0 * zoom, color);
+                    }
+                    if slot.cursor {
+                        let outline_color = colors.accent.opacity(if slot.selected { 0.95 } else { 0.65 });
+                        window.paint_quad(
+                            gpui::outline(cell, outline_color, Default::default())
+                                .corner_radii(Corners::all(px(6.0 * zoom))),
+                        );
                     }
 
                     let scale_h = if cell_h > 1.0 { (visual_h / cell_h).clamp(0.2, 5.0) } else { 1.0 };
@@ -1151,7 +1184,7 @@ impl Element for GridSurfaceElement {
                         point(name_bounds.origin.x, name_bounds.origin.y),
                         px(label_h),
                         TextAlign::Center,
-                        None,
+                        Some(name_bounds.size.width),
                         window,
                         cx,
                     );

@@ -23,8 +23,12 @@ const RESERVED_STATIC_SHORTCUTS: &[&str] = &[
     "ctrl-q",
     "up",
     "down",
+    "left",
+    "right",
     "shift-up",
     "shift-down",
+    "shift-left",
+    "shift-right",
     "home",
     "end",
     "pageup",
@@ -76,6 +80,32 @@ impl App {
             .is_some_and(|ts| ts.path_edit.editing)
         {
             return false;
+        }
+
+        if !text_input_focused
+            && !pane_filter_active
+            && ev.keystroke.key == "backspace"
+            && !ev.keystroke.modifiers.control
+            && !ev.keystroke.modifiers.alt
+            && !ev.keystroke.modifiers.platform
+        {
+            self.process_actions(vec![Action::NavigateUp(self.state.focused_tile)]);
+            return true;
+        }
+
+        if ev.keystroke.key == "menu" || ev.keystroke.key == "apps" {
+            self.open_context_menu_focused(window, cx);
+            return true;
+        }
+
+        if let Some(keys) = self.command_shortcut_string("files.context-menu") {
+            if let Ok(target) = Keystroke::parse(&keys) {
+                let target = KeybindingKeystroke::from_keystroke(target);
+                if ev.keystroke.should_match(&target) {
+                    self.open_context_menu_focused(window, cx);
+                    return true;
+                }
+            }
         }
 
         self.handle_command_shortcut_key(ev)
@@ -207,6 +237,7 @@ impl App {
             "pane.split-h" => Some(Action::SplitHorizontalFocused),
             "pane.split-v" => Some(Action::SplitVerticalFocused),
             "pane.close" => Some(Action::CloseFocusedPane),
+            "pane.focus-next" => Some(Action::FocusNextPane),
             "nav.back" => Some(Action::NavigateBack(focused)),
             "nav.forward" => Some(Action::NavigateForward(focused)),
             "nav.parent" => Some(Action::NavigateUp(focused)),
@@ -243,6 +274,14 @@ impl App {
                 target: SelectionMove::Next,
                 extend: false,
             }),
+            "selection.left" => Some(Action::MoveSelection {
+                target: SelectionMove::Left,
+                extend: false,
+            }),
+            "selection.right" => Some(Action::MoveSelection {
+                target: SelectionMove::Right,
+                extend: false,
+            }),
             "selection.first" => Some(Action::MoveSelection {
                 target: SelectionMove::First,
                 extend: false,
@@ -267,6 +306,14 @@ impl App {
                 target: SelectionMove::Next,
                 extend: true,
             }),
+            "selection.extend-left" => Some(Action::MoveSelection {
+                target: SelectionMove::Left,
+                extend: true,
+            }),
+            "selection.extend-right" => Some(Action::MoveSelection {
+                target: SelectionMove::Right,
+                extend: true,
+            }),
             "selection.extend-first" => Some(Action::MoveSelection {
                 target: SelectionMove::First,
                 extend: true,
@@ -283,6 +330,11 @@ impl App {
                 target: SelectionMove::PageDown,
                 extend: true,
             }),
+            "selection.cursor-previous" => Some(Action::MoveCursor(SelectionMove::Previous)),
+            "selection.cursor-next" => Some(Action::MoveCursor(SelectionMove::Next)),
+            "selection.cursor-left" => Some(Action::MoveCursor(SelectionMove::Left)),
+            "selection.cursor-right" => Some(Action::MoveCursor(SelectionMove::Right)),
+            "selection.toggle" => Some(Action::ToggleSelectionCursor),
             "selection.open" => Some(Action::OpenCursor),
             "edit.select-all" => Some(Action::SelectAll),
             "edit.invert" => Some(Action::InvertSelection),
@@ -292,6 +344,11 @@ impl App {
             "files.rename" if !archive_focused => Some(Action::RenameFocused),
             "files.create-folder" if !archive_focused => Some(Action::CreateFolderFocused),
             "files.create-file" if !archive_focused => Some(Action::CreateFileFocused),
+            "files.copy-path" if !archive_focused => {
+                let paths = self.selected_paths();
+                paths.first().cloned().map(Action::CopyPathToClipboard)
+            }
+            "files.properties" if !archive_focused => Some(Action::OpenPropertiesFocused),
             "files.trash" if !archive_focused => {
                 let paths = self.selected_paths();
                 (!paths.is_empty()).then_some(Action::Delete {

@@ -518,11 +518,11 @@ impl App {
                                 true
                             }
                             "down" => {
-                                this.nav_down(false);
+                                this.nav_down(false, false);
                                 true
                             }
                             "up" => {
-                                this.nav_up(false);
+                                this.nav_up(false, false);
                                 true
                             }
                             _ => false,

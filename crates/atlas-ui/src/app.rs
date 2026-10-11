@@ -857,6 +857,8 @@ mod tests {
                 origin: gpui::point(gpui::px(10.0), gpui::px(20.0)),
                 size: gpui::size(gpui::px(220.0), gpui::px(120.0)),
             },
+            pad_x: 0.0,
+            pad_y: 0.0,
             scroll_y: 0.0,
             cell_w: 100.0,
             cell_h: 80.0,
@@ -1522,15 +1524,14 @@ impl App {
         }
     }
 
-    /// Paths currently selected in the focused tab (for clipboard / delete shortcuts).
-    pub(crate) fn selected_paths(&self) -> Vec<PathBuf> {
-        // Miller view keeps its selection per column; the flat `tab.selection`
-        // below would be stale (whatever was selected before switching views).
-        if let Some(paths) = self.miller_focused_selection_paths() {
+    /// Paths currently selected in the specified tab (for drag-and-drop / operations).
+    pub(crate) fn selected_paths_for_pane(&self, pane: TileId) -> Vec<PathBuf> {
+        if let Some(paths) = self.miller_selection_paths_for_pane(pane) {
             return paths;
         }
         self.state
-            .active_tab_state()
+            .tab_states
+            .get(&pane)
             .map(|tab| {
                 tab.selection
                     .selected
@@ -1540,6 +1541,11 @@ impl App {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Paths currently selected in the focused tab (for clipboard / delete shortcuts).
+    pub(crate) fn selected_paths(&self) -> Vec<PathBuf> {
+        self.selected_paths_for_pane(self.state.focused_tile)
     }
 
     pub(crate) fn selected_paths_with_target_names(
@@ -1584,8 +1590,9 @@ impl App {
 
     /// Move the keyboard cursor within the focused tab's visible list. `target`
     /// maps `(current_pos, len)` to the new visible position. `extend` grows the
-    /// selection from the anchor (Shift); otherwise it becomes a single selection.
-    fn nav_apply(&mut self, target: impl Fn(usize, usize) -> usize, extend: bool) {
+    /// selection from the anchor (Shift); `cursor_only` moves the cursor without
+    /// changing `selected` (Ctrl+arrows); otherwise it becomes a single selection.
+    fn nav_apply(&mut self, target: impl Fn(usize, usize) -> usize, extend: bool, cursor_only: bool) {
         // Miller view: move the cursor inside the focused column instead of the
         // hidden flat listing. (extend/Shift ignored there — single selection.)
         if self.miller_nav_apply(&target) {
@@ -1611,7 +1618,9 @@ impl App {
             let anchor = ts.selection.selection_anchor.unwrap_or(next_idx);
             ts.selection.keyboard_cursor = Some(next_idx);
             ts.selection.last_clicked_index = Some(next_idx);
-            if extend {
+            if cursor_only {
+                // Keep selected set intact; cursor moves freely for Ctrl+Space toggling.
+            } else if extend {
                 let ap = visible.iter().position(|v| *v == anchor).unwrap_or(np);
                 let (lo, hi) = (ap.min(np), ap.max(np));
                 ts.selection.selected.clear();
@@ -1646,30 +1655,182 @@ impl App {
         }
     }
 
-    pub(crate) fn nav_up(&mut self, extend: bool) {
-        self.nav_apply(|c, _| c.saturating_sub(1), extend);
+    pub(crate) fn nav_up(&mut self, extend: bool, cursor_only: bool) {
+        let tile = self.state.focused_tile;
+        let cols = self.rubber_scroll_dims(tile).0;
+        self.nav_apply(move |c, _| c.saturating_sub(cols), extend, cursor_only);
     }
-    pub(crate) fn nav_down(&mut self, extend: bool) {
-        self.nav_apply(|c, _| c + 1, extend);
+
+    pub(crate) fn nav_down(&mut self, extend: bool, cursor_only: bool) {
+        let tile = self.state.focused_tile;
+        let cols = self.rubber_scroll_dims(tile).0;
+        self.nav_apply(move |c, _| c + cols, extend, cursor_only);
     }
-    pub(crate) fn nav_home(&mut self, extend: bool) {
-        self.nav_apply(|_, _| 0, extend);
+
+    pub(crate) fn nav_left(&mut self, extend: bool, cursor_only: bool) {
+        if self.miller_nav_left() {
+            return;
+        }
+        let tile = self.state.focused_tile;
+        let is_grid_or_list = self
+            .tab_data_for(tile)
+            .map(|td| {
+                matches!(
+                    td.view_mode,
+                    atlas_model::settings::ViewMode::Grid | atlas_model::settings::ViewMode::List
+                )
+            })
+            .unwrap_or(false);
+
+        if is_grid_or_list {
+            self.nav_apply(|c, _| c.saturating_sub(1), extend, cursor_only);
+        } else if !extend && !cursor_only {
+            // In Details view, Left navigates up to the parent directory.
+            self.process_actions(vec![crate::input::action::Action::NavigateUp(tile)]);
+        }
     }
-    pub(crate) fn nav_end(&mut self, extend: bool) {
-        self.nav_apply(|_, len| len - 1, extend);
+
+    pub(crate) fn nav_right(&mut self, extend: bool, cursor_only: bool) {
+        if self.miller_nav_right() {
+            return;
+        }
+        let tile = self.state.focused_tile;
+        let is_grid_or_list = self
+            .tab_data_for(tile)
+            .map(|td| {
+                matches!(
+                    td.view_mode,
+                    atlas_model::settings::ViewMode::Grid | atlas_model::settings::ViewMode::List
+                )
+            })
+            .unwrap_or(false);
+
+        if is_grid_or_list {
+            self.nav_apply(|c, _| c + 1, extend, cursor_only);
+        } else if !extend && !cursor_only {
+            // In Details view, Right enters the directory under cursor.
+            let dir_path = self.state.tab_states.get(&tile).and_then(|ts| {
+                let cur = ts.selection.keyboard_cursor?;
+                let entry = ts.entries.get(cur)?;
+                (entry.kind == atlas_model::file_entry::FileKind::Dir).then(|| entry.path.clone())
+            });
+            if let Some(path) = dir_path {
+                self.navigate(tile, path);
+            }
+        }
     }
-    pub(crate) fn nav_page(&mut self, down: bool, extend: bool) {
-        const STEP: usize = 20;
+
+    pub(crate) fn nav_home(&mut self, extend: bool, cursor_only: bool) {
+        self.nav_apply(|_, _| 0, extend, cursor_only);
+    }
+
+    pub(crate) fn nav_end(&mut self, extend: bool, cursor_only: bool) {
+        self.nav_apply(|_, len| len - 1, extend, cursor_only);
+    }
+
+    pub(crate) fn nav_page(&mut self, down: bool, extend: bool, cursor_only: bool) {
+        let tile = self.state.focused_tile;
+        let cols = self.rubber_scroll_dims(tile).0;
+        let step = (cols * 5).max(20);
         self.nav_apply(
             move |c, _| {
                 if down {
-                    c + STEP
+                    c + step
                 } else {
-                    c.saturating_sub(STEP)
+                    c.saturating_sub(step)
                 }
             },
             extend,
+            cursor_only,
         );
+    }
+
+    /// Toggle the item currently under the keyboard cursor in/out of the selected set.
+    pub(crate) fn toggle_selection_cursor(&mut self) {
+        let tile = self.state.focused_tile;
+        let is_miller = self
+            .tab_data_for(tile)
+            .is_some_and(|tab| tab.view_mode == atlas_model::settings::ViewMode::Miller);
+        if let Some(ts) = self.state.tab_states.get_mut(&tile) {
+            if is_miller {
+                if let Some(col) = ts.miller.columns.get_mut(ts.miller.focused) {
+                    if let Some(cursor) = col.selection.keyboard_cursor {
+                        if col.selection.selected.contains(&cursor) {
+                            col.selection.selected.remove(&cursor);
+                        } else {
+                            col.selection.selected.insert(cursor);
+                        }
+                    }
+                }
+                return;
+            }
+            let cursor = match ts.selection.keyboard_cursor {
+                Some(c) => c,
+                None => match ts.visible_indices().first().copied() {
+                    Some(first) => {
+                        ts.selection.keyboard_cursor = Some(first);
+                        first
+                    }
+                    None => return,
+                },
+            };
+            if ts.selection.selected.contains(&cursor) {
+                ts.selection.selected.remove(&cursor);
+            } else {
+                ts.selection.selected.insert(cursor);
+                ts.selection.selection_anchor = Some(cursor);
+            }
+            ts.selection.last_clicked_index = Some(cursor);
+        }
+    }
+
+    /// Open properties modal for focused or selected files.
+    pub(crate) fn open_properties_focused(&mut self) {
+        let paths = self.selected_paths();
+        let target_paths = if paths.is_empty() {
+            let tile = self.state.focused_tile;
+            self.tab_data_for(tile)
+                .and_then(|t| t.location.fs_dir().map(std::path::Path::to_path_buf))
+                .into_iter()
+                .collect()
+        } else {
+            paths
+        };
+
+        if target_paths.is_empty() {
+            return;
+        }
+
+        #[cfg(windows)]
+        {
+            if let Some(first) = target_paths.first() {
+                crate::ui::shell_context_menu::show_properties(first);
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            self.open_properties(target_paths);
+        }
+    }
+
+    /// Open the shell or background context menu anchored to the focused pane.
+    pub(crate) fn open_context_menu_focused(&mut self, window: &mut gpui::Window, cx: &mut gpui::Context<Self>) {
+        let tile = self.state.focused_tile;
+        let paths = self.selected_paths();
+        let anchor = self
+            .pane_view_bounds
+            .iter()
+            .find_map(|(id, b)| (*id == tile).then_some(b.center()))
+            .unwrap_or_else(|| gpui::point(gpui::px(200.0), gpui::px(200.0)));
+
+        if paths.is_empty() {
+            let active_dir = self
+                .tab_data_for(tile)
+                .and_then(|t| t.location.fs_dir().map(std::path::Path::to_path_buf));
+            self.open_background_ctx_menu(active_dir, anchor, window, cx);
+        } else {
+            self.open_ctx_menu(paths, anchor, window, cx);
+        }
     }
 
     pub(crate) fn select_first_visible(&mut self, tile: TileId) {
@@ -1826,6 +1987,8 @@ pub(crate) struct GridFlipState {
 #[derive(Clone, Debug)]
 pub(crate) struct GridHitModel {
     pub(crate) bounds: gpui::Bounds<gpui::Pixels>,
+    pub(crate) pad_x: f32,
+    pub(crate) pad_y: f32,
     pub(crate) scroll_y: f32,
     pub(crate) cell_w: f32,
     pub(crate) cell_h: f32,
@@ -1843,8 +2006,8 @@ impl GridHitModel {
         if !self.bounds.contains(&pos) {
             return None;
         }
-        let y = f32::from(pos.y) - f32::from(self.bounds.top()) + self.scroll_y;
-        let x = f32::from(pos.x) - f32::from(self.bounds.left());
+        let y = f32::from(pos.y) - f32::from(self.bounds.top()) + self.scroll_y - self.pad_y;
+        let x = f32::from(pos.x) - f32::from(self.bounds.left()) - self.pad_x;
         if y < 0.0 || x < 0.0 {
             return None;
         }
@@ -1877,8 +2040,8 @@ impl GridHitModel {
         &self,
         offset: gpui::Point<gpui::Pixels>,
     ) -> Option<usize> {
-        let y = f32::from(offset.y);
-        let x = f32::from(offset.x);
+        let y = f32::from(offset.y) - self.pad_y;
+        let x = f32::from(offset.x) - self.pad_x;
         if y < 0.0 || x < 0.0 {
             return None;
         }
@@ -1903,8 +2066,8 @@ impl GridHitModel {
     pub(crate) fn cell_bounds(&self, visible_pos: usize) -> gpui::Bounds<gpui::Pixels> {
         let row = visible_pos / self.cols;
         let col = visible_pos % self.cols;
-        let y = (row as f32) * self.pitch_y - self.scroll_y;
-        let x = (col as f32) * self.pitch_x;
+        let y = (row as f32) * self.pitch_y - self.scroll_y + self.pad_y;
+        let x = (col as f32) * self.pitch_x + self.pad_x;
         gpui::Bounds {
             origin: gpui::point(
                 self.bounds.left() + gpui::px(x),

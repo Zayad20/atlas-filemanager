@@ -1,15 +1,6 @@
 use std::path::Path;
 
-use syntect::easy::HighlightLines;
-use syntect::highlighting::ThemeSet;
-use syntect::parsing::SyntaxSet;
-
 use atlas_model::preview_cache::PreviewResult;
-
-pub(super) static SYNTAX_SET: std::sync::LazyLock<SyntaxSet> =
-    std::sync::LazyLock::new(SyntaxSet::load_defaults_newlines);
-pub(super) static THEME_SET: std::sync::LazyLock<ThemeSet> =
-    std::sync::LazyLock::new(ThemeSet::load_defaults);
 
 pub(super) async fn preview_text(path: &Path, ext: &str) -> PreviewResult {
     let meta = match tokio::fs::metadata(path).await {
@@ -66,48 +57,41 @@ pub(super) async fn preview_text(path: &Path, ext: &str) -> PreviewResult {
     }
 }
 
-/// Syntax-highlighted spans resolved by file extension.
+/// Syntax-highlighted spans resolved by file extension using the zero-dependency syntax lexer.
 pub(crate) fn highlight_text(text: &str, ext: &str) -> Vec<([u8; 4], String)> {
-    let syntax = SYNTAX_SET
-        .find_syntax_by_extension(ext)
-        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
-    let theme = &THEME_SET.themes["base16-ocean.dark"];
-    let mut h = HighlightLines::new(syntax, theme);
     let mut result = Vec::new();
-    for line in text.lines().take(2000) {
-        let ranges = h.highlight_line(line, &SYNTAX_SET).unwrap_or_default();
-        for (style, token) in ranges {
-            if token.is_empty() {
+    let lines = super::syntax::tokenize_document(text, ext);
+    for line in lines.into_iter().take(2000) {
+        for (kind, tok) in line {
+            if tok.is_empty() {
                 continue;
             }
-            let c = style.foreground;
-            result.push(([c.r, c.g, c.b, 0xff], token.to_string()));
+            let color = match kind {
+                super::syntax::TokenKind::Keyword => [0x56, 0x9c, 0xd6, 0xff],    // Blue/Cyan
+                super::syntax::TokenKind::Type => [0x4e, 0xc9, 0xb0, 0xff],       // Teal
+                super::syntax::TokenKind::String => [0xce, 0x91, 0x78, 0xff],     // Green/Tan
+                super::syntax::TokenKind::Number => [0xb5, 0xce, 0xa8, 0xff],     // Light Green/Gold
+                super::syntax::TokenKind::Comment => [0x6a, 0x99, 0x55, 0xff],    // Green/Muted
+                super::syntax::TokenKind::Preprocessor => [0xc5, 0x86, 0xc0, 0xff],// Magenta
+                super::syntax::TokenKind::Symbol => [0xd4, 0xd4, 0xd4, 0xff],     // Subtle
+                super::syntax::TokenKind::DiffAdd => [0x34, 0xc7, 0x59, 0xff],
+                super::syntax::TokenKind::DiffRemove => [0xff, 0x3b, 0x30, 0xff],
+                super::syntax::TokenKind::DiffHeader => [0x00, 0x7a, 0xff, 0xff],
+                super::syntax::TokenKind::LogError => [0xff, 0x3b, 0x30, 0xff],
+                super::syntax::TokenKind::LogWarn => [0xff, 0x9f, 0x0a, 0xff],
+                super::syntax::TokenKind::LogInfo => [0x62, 0x62, 0x68, 0xff],
+                _ => [0xd4, 0xd4, 0xd4, 0xff],
+            };
+            result.push((color, tok.to_string()));
         }
         result.push(([0, 0, 0, 0], "\n".to_string()));
     }
     result
 }
 
-/// Syntax-highlighted spans resolved by language token (markdown fence info string).
+/// Syntax-highlighted spans resolved by language token.
 pub(crate) fn highlight_code(text: &str, lang: &str) -> Vec<([u8; 4], String)> {
-    let syntax = SYNTAX_SET
-        .find_syntax_by_token(lang)
-        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
-    let theme = &THEME_SET.themes["base16-ocean.dark"];
-    let mut h = HighlightLines::new(syntax, theme);
-    let mut result = Vec::new();
-    for line in text.lines().take(2000) {
-        let ranges = h.highlight_line(line, &SYNTAX_SET).unwrap_or_default();
-        for (style, token) in ranges {
-            if token.is_empty() {
-                continue;
-            }
-            let c = style.foreground;
-            result.push(([c.r, c.g, c.b, 0xff], token.to_string()));
-        }
-        result.push(([0, 0, 0, 0], "\n".to_string()));
-    }
-    result
+    highlight_text(text, lang)
 }
 
 #[cfg(test)]

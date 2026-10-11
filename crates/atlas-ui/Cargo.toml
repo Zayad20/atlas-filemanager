@@ -43,6 +43,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 open = "5"
 rfd = "0.15"
 resvg = "0.45"
+lsp-types = "0.97"
+anyhow = "1"
 tracy-client = { version = "0.18.4", optional = true, default-features = false, features = ["enable", "only-localhost", "ondemand"] }
 
 [target.'cfg(windows)'.dependencies]

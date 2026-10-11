@@ -120,6 +120,11 @@ impl App {
         let font_row = show_all || setting_matches(&query_lower, &["font", "fuente", "text"]);
         let thumbnail_row =
             show_all || setting_matches(&query_lower, &["thumbnail", "thumb", "miniatura"]);
+        let grid_spacing_row = show_all
+            || setting_matches(
+                &query_lower,
+                &["grid", "spacing", "espaciado", "gap", "cuadricula", "icon"],
+            );
         let about_row = show_all
             || setting_matches(
                 &query_lower,
@@ -171,6 +176,7 @@ impl App {
                 || inspector_width_row
                 || font_row
                 || thumbnail_row
+                || grid_spacing_row
                 || setting_matches(&query_lower, &["size", "sizes", "tamano"])
         };
         let show_about = if show_all {
@@ -235,6 +241,7 @@ impl App {
         let font_size = s.font_size;
         let font_family = s.font_family.clone();
         let thumbnail_size = s.thumbnail_size;
+        let grid_spacing = s.grid_spacing;
 
         let segment = move |id: &'static str,
                             label: &str,
@@ -1052,6 +1059,31 @@ impl App {
                             |app| {
                                 app.state.settings.thumbnail_size =
                                     (app.state.settings.thumbnail_size + 16.0).clamp(64.0, 256.0);
+                            },
+                            view.clone(),
+                        ))
+                    })
+                    .when(grid_spacing_row, |panel| {
+                        panel.child(stepper(
+                            "set-grid-spacing",
+                            &rust_i18n::t!("settings_grid_spacing"),
+                            grid_spacing,
+                            " px",
+                            |app| {
+                                app.state.settings.grid_spacing =
+                                    (app.state.settings.grid_spacing - 2.0).clamp(4.0, 48.0);
+                                app.state.profiles.active_mut().workspace =
+                                    app.state.settings.workspace();
+                                atlas_core::util::config::save_profiles(&app.state.profiles);
+                                atlas_core::util::config::save_settings(&app.state.settings);
+                            },
+                            |app| {
+                                app.state.settings.grid_spacing =
+                                    (app.state.settings.grid_spacing + 2.0).clamp(4.0, 48.0);
+                                app.state.profiles.active_mut().workspace =
+                                    app.state.settings.workspace();
+                                atlas_core::util::config::save_profiles(&app.state.profiles);
+                                atlas_core::util::config::save_settings(&app.state.settings);
                             },
                             view,
                         ))
