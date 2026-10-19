@@ -7,7 +7,7 @@ use std::path::{Component, Path};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) fn image(command: &Command, settings: &Settings, output: &Path) -> Result<()> {
-    use image::ImageDecoder;
+    use image::{ImageDecoder, ImageEncoder};
     let mut reader = image::ImageReader::open(&command.source)?.with_guessed_format()?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(512 * 1024 * 1024);
@@ -47,9 +47,27 @@ pub(super) fn image(command: &Command, settings: &Settings, output: &Path) -> Re
             .encode_image(&rgb)?;
         }
     } else {
-        let format = image::ImageFormat::from_extension(command.target.extension)
-            .context("Unknown image encoder")?;
-        img.write_to(&mut file, format)?;
+        // Keep this dispatch explicit. DynamicImage::write_to links every
+        // encoder enabled anywhere in GPUI's unified image dependency graph,
+        // including AV1/AVIF and EXR encoders this feature never uses.
+        let rgba = img.to_rgba8();
+        let (width, height) = rgba.dimensions();
+        let color = image::ExtendedColorType::Rgba8;
+        match command.target.extension {
+            "png" => image::codecs::png::PngEncoder::new(&mut file)
+                .write_image(&rgba, width, height, color)?,
+            "webp" => image::codecs::webp::WebPEncoder::new_lossless(&mut file)
+                .write_image(&rgba, width, height, color)?,
+            "bmp" => image::codecs::bmp::BmpEncoder::new(&mut file)
+                .write_image(&rgba, width, height, color)?,
+            "tiff" => image::codecs::tiff::TiffEncoder::new(&mut file)
+                .write_image(&rgba, width, height, color)?,
+            "gif" => image::codecs::gif::GifEncoder::new(&mut file)
+                .encode_frame(image::Frame::new(rgba))?,
+            "ico" => image::codecs::ico::IcoEncoder::new(&mut file)
+                .write_image(&rgba, width, height, color)?,
+            _ => bail!("Unsupported native image output"),
+        }
     }
     Ok(())
 }

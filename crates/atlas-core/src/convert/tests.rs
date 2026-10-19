@@ -40,6 +40,13 @@ fn native_image_outputs_are_decodable_and_resize_is_bounded() {
     image::RgbaImage::from_pixel(40, 20, image::Rgba([30, 60, 90, 255]))
         .save(&source)
         .unwrap();
+    let bitmap = dir.path().join("input.bmp");
+    image::RgbImage::from_pixel(8, 4, image::Rgb([30, 60, 90]))
+        .save(&bitmap)
+        .unwrap();
+    let png = run(&bitmap, "png");
+    assert!(png.errors().is_empty(), "{:?}", png.errors());
+    assert_eq!(image::open(&png.outputs()[0]).unwrap().width(), 8);
     for target in ["jpg", "webp", "bmp", "tiff", "gif", "ico"] {
         let plan = Plan::build(
             &[source.clone()],
