@@ -36,6 +36,9 @@ pub const RUNTIME_TOOLS_MANIFEST: &str =
 pub const CONVERSION_PANDOC_MANIFEST: &str =
     include_str!("../../../../extensions/conversion-pandoc/extension.toml");
 
+pub const CONVERSION_OPUS_MANIFEST: &str =
+    include_str!("../../../../extensions/conversion-opus/extension.toml");
+
 /// Bundled cloud virtual drives extension.
 pub const CLOUD_MANIFEST: &str =
     include_str!("../../../../extensions/cloud/extension.toml");

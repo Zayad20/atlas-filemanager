@@ -873,6 +873,7 @@ convert_contacts_note: "Exporta datos de contacto comunes. Fotos, etiquetas y pr
 convert_book_note: "Libro de texto: omite imágenes, estilos y estructura de capítulos. No convierte contenido cifrado."
 convert_pcm_note: "PCM entero de 8/16/24/32 bits: conserva muestras, canales y frecuencia. Se omiten metadatos."
 convert_flac_note: "FLAC propio sin pérdida: PCM entero de 8/16/24/32 bits, hasta 8 canales. Conserva las muestras; omite metadatos."
+convert_opus_note: "Audio con pérdida a 48 kHz; hasta 8 canales. Se omiten etiquetas y carátulas."
 convert_install_package: "Instalar %{engine} · %{size} · Alt+I"
 convert_enable_package: "Activar complemento de %{engine} · Alt+I"
 convert_package_downloading: "Descargando %{engine} · %{amount}"

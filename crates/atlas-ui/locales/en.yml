@@ -876,6 +876,7 @@ convert_contacts_note: "Exports common contact fields. Photos, labels and custom
 convert_book_note: "Text-based book: omits images, styling and chapter structure. Encrypted content is not converted."
 convert_pcm_note: "8/16/24/32-bit integer PCM: preserves samples, channels and rate. Metadata is omitted."
 convert_flac_note: "Handmade lossless FLAC: 8/16/24/32-bit integer PCM, up to 8 channels. Preserves samples; omits metadata."
+convert_opus_note: "Lossy audio at 48 kHz; up to 8 channels. Tags and cover art are omitted."
 convert_install_package: "Install %{engine} · %{size} · Alt+I"
 convert_enable_package: "Enable %{engine} plugin · Alt+I"
 convert_package_downloading: "Downloading %{engine} · %{amount}"

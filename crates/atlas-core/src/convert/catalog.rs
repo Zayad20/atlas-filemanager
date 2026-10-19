@@ -182,6 +182,12 @@ pub fn route(source: &Path, target: &Format, tools: &Tools) -> Option<Backend> {
         "zip", "7z", "rar", "tar", "tar.gz", "tar.bz2", "tar.xz", "gz", "bz2", "xz", "cab", "iso",
     ];
     let external = |t| Some(Backend::External(t));
+    if dst == "opus"
+        && (["wav", "aiff", "aifc", "au"].contains(&src) || tools.1.supports(src, "wav"))
+        && (tools.has(Tool::Opus) || !tools.has(Tool::Ffmpeg))
+    {
+        return external(Tool::Opus);
+    }
     if tools.1.h264 && ["mov", "m4v", "avi", "wmv", "3gp"].contains(&src) && dst == "mp4" {
         return Some(Backend::SystemVideo);
     }

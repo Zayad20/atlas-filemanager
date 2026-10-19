@@ -11,10 +11,22 @@ fn run(command: Command, cancel: &AtomicBool) -> Result<()> {
     run_captured(command, cancel, None)
 }
 
-fn run_captured(mut command: Command, cancel: &AtomicBool, capture: Option<&File>) -> Result<()> {
+fn run_captured(command: Command, cancel: &AtomicBool, capture: Option<&File>) -> Result<()> {
+    run_stdio(command, cancel, None, capture)
+}
+
+fn run_stdio(
+    mut command: Command,
+    cancel: &AtomicBool,
+    input: Option<&File>,
+    capture: Option<&File>,
+) -> Result<()> {
     let stderr = tempfile::tempfile()?;
     command
-        .stdin(Stdio::null())
+        .stdin(match input {
+            Some(file) => Stdio::from(file.try_clone()?),
+            None => Stdio::null(),
+        })
         .stdout(match capture {
             Some(file) => Stdio::from(file.try_clone()?),
             None => Stdio::null(),
@@ -76,6 +88,7 @@ pub(super) fn convert(
     let source = &conversion.source;
     let target = conversion.target.extension;
     match tool {
+        Tool::Opus => opus(command, conversion, plan, output, cancel),
         Tool::Ffmpeg => {
             command
                 .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i"])
@@ -222,6 +235,84 @@ pub(super) fn convert(
         }
         Tool::SevenZip => seven_zip(conversion, plan, output, cancel),
     }
+}
+
+fn opus(
+    mut command: Command,
+    conversion: &Conversion,
+    plan: &Plan,
+    output: &Path,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    anyhow::ensure!(
+        conversion.target.extension == "opus",
+        "Unsupported Opus output"
+    );
+    // Feed the small encoder a canonical WAV, with no untrusted metadata or
+    // compressed chunks. PCM stays handmade; other input uses Windows decoding.
+    let wave = tempfile::Builder::new()
+        .prefix(".atlas-opus-")
+        .suffix(".wav")
+        .tempfile_in(output.parent().context("Missing Opus staging directory")?)?
+        .into_temp_path();
+    let input = Conversion {
+        source: conversion.source.clone(),
+        target: super::FORMATS
+            .iter()
+            .find(|format| format.extension == "wav")
+            .context("Missing WAV format")?,
+        backend: super::Backend::Pcm,
+    };
+    if let Err(error) = super::pcm::convert(&input, &wave, cancel) {
+        anyhow::ensure!(!cancel.load(Ordering::Relaxed), "Cancelled");
+        if !plan.tools.1.wave {
+            return Err(error);
+        }
+        #[cfg(target_os = "windows")]
+        atlas_win_space::media::convert_audio(
+            &input.source,
+            &wave,
+            atlas_win_space::media::AudioTarget::Wave,
+            plan.settings.quality,
+            cancel,
+        )
+        .map_err(anyhow::Error::msg)?;
+        #[cfg(not(target_os = "windows"))]
+        return Err(error);
+    }
+    let (_, pcm) = super::pcm::open(&wave)?;
+    anyhow::ensure!(
+        pcm.channels <= 8,
+        "Opus conversion accepts up to eight channels"
+    );
+    let bitrate = if plan.settings.quality >= 95 {
+        224
+    } else if plan.settings.quality >= 85 {
+        160
+    } else {
+        96
+    };
+    let bitrate = bitrate * u32::from(pcm.channels) / 2;
+    command
+        .args([
+            "--quiet",
+            "--vbr",
+            "--comp",
+            "8",
+            "--discard-comments",
+            "--discard-pictures",
+            "--bitrate",
+        ])
+        .arg(bitrate.to_string())
+        .args(["-", "-"]);
+    // Handles keep Unicode paths out of older engine argument parsers and avoid
+    // buffering an audio stream in RAM. Both files stay owned by this worker.
+    run_stdio(
+        command,
+        cancel,
+        Some(&File::open(&wave)?),
+        Some(&File::create(output)?),
+    )
 }
 
 fn seven_zip(

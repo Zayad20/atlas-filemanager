@@ -1,0 +1,21 @@
+id = "conversion-opus"
+name = "Opus · Small audio encoder"
+version = "0.2"
+description = "Optional BSD audio encoder. Installs only opusenc, its manual and upstream licenses (under 1 MiB)."
+kind = "tool_provider"
+
+[[tools]]
+name = "opusenc"
+os = "windows"
+arch = "x86_64"
+path = "tools/windows-x64/opus/0.2/opusenc.exe"
+download_url = "https://archive.mozilla.org/pub/opus/win64/opus-tools-0.2-win64.zip"
+download_bytes = 1459976
+installed_bytes = 684580
+sha256 = "84e643f1cc3fd26fc743ea7830392de765507f72846e24719804d3d07f1ad96f"
+archive_format = "zip"
+archive_root = "."
+archive_path = "opusenc.exe"
+archive_files = ["opusenc.exe", "opusenc.html", "LICENSE"]
+license = "BSD-2-Clause AND BSD-3-Clause"
+license_url = "https://opus-codec.org/license/"

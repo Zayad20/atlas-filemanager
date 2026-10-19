@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 pub enum Tool {
     Magick,
     Ffmpeg,
+    Opus,
     Pandoc,
     Office,
     PdfText,
@@ -13,9 +14,10 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Magick,
         Self::Ffmpeg,
+        Self::Opus,
         Self::Pandoc,
         Self::Office,
         Self::PdfText,
@@ -26,6 +28,7 @@ impl Tool {
         match self {
             Self::Magick => "ImageMagick",
             Self::Ffmpeg => "FFmpeg",
+            Self::Opus => "Opus",
             Self::Pandoc => "Pandoc",
             Self::Office => "LibreOffice",
             Self::PdfText => "Poppler",
@@ -37,6 +40,7 @@ impl Tool {
         match self {
             Self::Magick => "magick",
             Self::Ffmpeg => "ffmpeg",
+            Self::Opus => "opusenc",
             Self::Pandoc => "pandoc",
             Self::Office => "soffice",
             Self::PdfText => "pdftotext",
@@ -48,6 +52,7 @@ impl Tool {
         match self {
             Self::Magick => "https://imagemagick.org/script/download.php",
             Self::Ffmpeg => "https://ffmpeg.org/download.html",
+            Self::Opus => "https://opus-codec.org/downloads/",
             Self::Pandoc => "https://pandoc.org/installing.html",
             Self::Office => "https://www.libreoffice.org/download/download-libreoffice/",
             Self::PdfText => "https://poppler.freedesktop.org/",

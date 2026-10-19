@@ -133,13 +133,14 @@ impl App {
                 .catalog
                 .get(session.selected)
                 .is_some_and(|option| !option.available());
-        let video_detail = session.catalog.get(session.selected).is_some_and(|option| {
-            option.target.extension == "mp4" && option.engines.contains(&"Windows")
+        let extended_detail = session.catalog.get(session.selected).is_some_and(|option| {
+            (option.target.extension == "mp4" && option.engines.contains(&"Windows"))
+                || option.engines.contains(&"Opus")
         });
         let available_height = f32::from(viewport.height)
             - if package_detail {
                 370.
-            } else if video_detail {
+            } else if extended_detail {
                 320.
             } else {
                 265.
@@ -704,6 +705,8 @@ impl App {
             };
             let note = if extension == "flac" && option.engines.contains(&"Atlas") {
                 Some("convert_flac_note")
+            } else if option.engines.contains(&"Opus") {
+                Some("convert_opus_note")
             } else if extension == "mp4" && option.engines.contains(&"Windows") {
                 Some("convert_windows_video_note")
             } else if option.engines.contains(&"Windows") {

@@ -424,6 +424,10 @@ impl App {
             "conversion-pandoc",
             crate::app::ext::CONVERSION_PANDOC_MANIFEST,
         );
+        let _ = atlas_core::ext::install::ensure_bundled(
+            "conversion-opus",
+            crate::app::ext::CONVERSION_OPUS_MANIFEST,
+        );
         let _ = atlas_core::ext::install::ensure_bundled_with_assets(
             "runtime-tools",
             crate::app::ext::RUNTIME_TOOLS_MANIFEST,

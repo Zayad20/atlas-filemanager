@@ -10,21 +10,25 @@ pub(crate) fn install(view: &Entity<App>, window: &mut Window, cx: &mut gpui::Ap
     std::fs::create_dir_all(&directory).unwrap();
     let audio = std::env::var_os("ATLAS_CONVERSION_LAB_AUDIO").is_some();
     let package = std::env::var_os("ATLAS_CONVERSION_LAB_PACKAGE").is_some();
+    let opus_package = std::env::var("ATLAS_CONVERSION_LAB_PACKAGE")
+        .ok()
+        .as_deref()
+        == Some("opus");
     let video = std::env::var_os("ATLAS_CONVERSION_LAB_VIDEO").map(PathBuf::from);
-    let source = directory.join(if package {
+    let source = directory.join(if package && !opus_package {
         "Documento.rst"
     } else if video.is_some() {
         "Clip.mov"
-    } else if audio {
+    } else if audio || opus_package {
         "Tone.wav"
     } else {
         "Sample.png"
     });
     if let Some(video) = video {
         std::fs::copy(video, &source).unwrap();
-    } else if package {
+    } else if package && !opus_package {
         std::fs::write(&source, "Documento\n=========\n\nTexto para convertir.\n").unwrap();
-    } else if audio {
+    } else if audio || opus_package {
         // Explicit 16-bit PCM WAV fixture; keep the validation encoder unrelated
         // to the converter's audio implementation.
         let samples: Vec<_> = (0..22050)
@@ -66,6 +70,9 @@ fn drive(view: Entity<App>, directory: PathBuf, window: &Window, cx: &mut gpui::
                 .update(cx, |_, window, cx| {
                     // Exercise real layout/paint on a hidden window. No presenting
                     // or focusing a window on the user's desktop is necessary.
+                    // A platform frame can consume the previous refresh before
+                    // this task runs. Force a complete scene for offscreen capture.
+                    window.refresh();
                     window.draw(cx).clear(cx);
                     frame(&view, &directory, step, window, cx)
                 })
@@ -216,6 +223,11 @@ fn package_frame(
         ext::{registry::ToolInstallRequest, tool_package::Progress},
     };
     use std::sync::{atomic::AtomicBool, Arc};
+    let opus = std::env::var("ATLAS_CONVERSION_LAB_PACKAGE")
+        .ok()
+        .as_deref()
+        == Some("opus");
+    let tool = if opus { Tool::Opus } else { Tool::Pandoc };
     if step == 8 {
         view.update(cx, |app, cx| {
             let session = app.converter.as_mut().unwrap();
@@ -225,15 +237,17 @@ fn package_frame(
             session.selected = session
                 .catalog
                 .iter()
-                .position(|option| option.target.extension == "docx")
+                .position(|option| option.target.extension == if opus { "opus" } else { "docx" })
                 .unwrap();
             session.disabled_providers.clear();
-            let manifest = atlas_model::ext_model::Manifest::parse(
-                crate::app::ext::CONVERSION_PANDOC_MANIFEST,
-            )
+            let manifest = atlas_model::ext_model::Manifest::parse(if opus {
+                crate::app::ext::CONVERSION_OPUS_MANIFEST
+            } else {
+                crate::app::ext::CONVERSION_PANDOC_MANIFEST
+            })
             .unwrap();
             session.installers.insert(
-                Tool::Pandoc,
+                tool,
                 ToolInstallRequest {
                     provider_dir: directory.join("fixture-provider"),
                     tool: manifest.tools[0].clone(),
@@ -257,12 +271,15 @@ fn package_frame(
             .save(directory.join("package-laptop.png"))
             .unwrap();
         view.update(cx, |app, cx| {
+            let total = app.converter.as_ref().unwrap().installers[&tool]
+                .tool
+                .download_bytes;
             app.converter.as_mut().unwrap().package = Some(super::PackageJob {
-                tool: Tool::Pandoc,
+                tool,
                 cancel: Arc::new(AtomicBool::new(false)),
                 progress: Progress::Download {
-                    bytes: 10_485_760,
-                    total: Some(42_154_914),
+                    bytes: total / 4,
+                    total: Some(total),
                 },
             });
             cx.notify();
@@ -297,8 +314,10 @@ fn package_frame(
         view.update(cx, |app, cx| {
             let session = app.converter.as_mut().unwrap();
             session.package = None;
-            session.package_error =
-                Some("Connection interrupted. Select Install Pandoc to retry.".into());
+            session.package_error = Some(format!(
+                "Connection interrupted. Select Install {} to retry.",
+                tool.name()
+            ));
             cx.notify();
         });
     }
@@ -311,9 +330,15 @@ fn package_frame(
         view.update(cx, |app, cx| {
             let session = app.converter.as_mut().unwrap();
             session.package_error = None;
-            session
-                .disabled_providers
-                .insert(Tool::Pandoc, "conversion-pandoc".into());
+            session.disabled_providers.insert(
+                tool,
+                if opus {
+                    "conversion-opus"
+                } else {
+                    "conversion-pandoc"
+                }
+                .into(),
+            );
             cx.notify();
         });
     }

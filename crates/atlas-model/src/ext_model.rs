@@ -217,6 +217,9 @@ pub struct ToolSpec {
     /// Empty retains the legacy executable-directory selection.
     #[serde(default)]
     pub archive_root: String,
+    /// Optional package-relative allowlist for a reduced payload.
+    #[serde(default)]
+    pub archive_files: Vec<String>,
 }
 
 /// Validate an extension identifier (SEC-01).

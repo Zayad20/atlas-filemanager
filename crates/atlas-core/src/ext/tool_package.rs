@@ -137,6 +137,19 @@ pub async fn install(
         archive_binary.strip_prefix(&archive_root)? == Path::new(executable),
         "Package executable must be directly inside its declared root"
     );
+    ensure!(
+        tool.archive_files.len() <= MAX_ENTRIES,
+        "Too many selected package files"
+    );
+    let selected: Vec<_> = tool
+        .archive_files
+        .iter()
+        .map(|name| relative(name))
+        .collect::<Result<_>>()?;
+    ensure!(
+        selected.is_empty() || selected.iter().any(|path| path == Path::new(executable)),
+        "Selected package files omit the executable"
+    );
     let base = provider_dir
         .canonicalize()
         .context("Tool provider no longer exists")?;
@@ -233,11 +246,12 @@ pub async fn install(
     check(&cancel)?;
     progress(Progress::Extracting);
     tokio::task::spawn_blocking(move || {
-        let expanded = extract(
+        let expanded = extract_selected(
             &download,
             &payload,
             &tool.archive_format,
             &archive_root,
+            &selected,
             &cancel,
         )?;
         ensure!(
@@ -280,6 +294,7 @@ pub async fn install(
 struct Extractor<'a> {
     output: &'a Path,
     root: &'a Path,
+    selected: &'a [PathBuf],
     cancel: &'a AtomicBool,
     seen: HashSet<String>,
     bytes: u64,
@@ -292,6 +307,9 @@ impl Extractor<'_> {
         let Ok(path) = path.strip_prefix(self.root) else {
             return Ok(());
         };
+        if !self.selected.is_empty() && !self.selected.iter().any(|selected| selected == path) {
+            return Ok(());
+        }
         ensure!(
             !path.as_os_str().is_empty(),
             "Package entry is its own root"
@@ -324,6 +342,7 @@ impl Extractor<'_> {
     }
 }
 
+#[cfg(test)]
 fn extract(
     archive: &Path,
     output: &Path,
@@ -331,9 +350,21 @@ fn extract(
     root: &Path,
     cancel: &AtomicBool,
 ) -> Result<u64> {
+    extract_selected(archive, output, format, root, &[], cancel)
+}
+
+fn extract_selected(
+    archive: &Path,
+    output: &Path,
+    format: &str,
+    root: &Path,
+    selected: &[PathBuf],
+    cancel: &AtomicBool,
+) -> Result<u64> {
     let mut state = Extractor {
         output,
         root,
+        selected,
         cancel,
         seen: HashSet::new(),
         bytes: 0,
@@ -382,6 +413,12 @@ fn extract(
         }
         _ => bail!("Unsupported package archive"),
     }
+    ensure!(
+        selected.iter().all(|path| state
+            .seen
+            .contains(&path.to_string_lossy().to_ascii_lowercase())),
+        "A selected package file is missing"
+    );
     Ok(state.bytes)
 }
 
@@ -485,6 +522,180 @@ mod tests {
         )
         .is_err());
         assert_eq!(std::fs::read_dir(output).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn reduced_packages_extract_only_explicit_files_and_require_every_selected_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("fixture.zip");
+        let output = dir.path().join("output");
+        std::fs::create_dir(&output).unwrap();
+        fixture(
+            &archive,
+            &[
+                ("opusenc.exe", b"encoder"),
+                ("LICENSE", b"license"),
+                ("opusinfo.exe", b"unused"),
+            ],
+        );
+        let selected = [PathBuf::from("opusenc.exe"), PathBuf::from("LICENSE")];
+        assert_eq!(
+            extract_selected(
+                &archive,
+                &output,
+                "zip",
+                Path::new(""),
+                &selected,
+                &AtomicBool::new(false)
+            )
+            .unwrap(),
+            14
+        );
+        assert!(output.join("opusenc.exe").is_file() && output.join("LICENSE").is_file());
+        assert!(!output.join("opusinfo.exe").exists());
+        let missing = dir.path().join("missing");
+        std::fs::create_dir(&missing).unwrap();
+        assert!(extract_selected(
+            &archive,
+            &missing,
+            "zip",
+            Path::new(""),
+            &[PathBuf::from("missing.exe")],
+            &AtomicBool::new(false)
+        )
+        .is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn real_reduced_opus_package_encodes_without_ffmpeg_when_enabled() {
+        if std::env::var_os("ATLAS_REAL_PACKAGE_TEST").is_none() {
+            return;
+        }
+        use crate::convert::{self, Backend, Plan, Settings, Tool, Tools};
+        let manifest = atlas_model::ext_model::Manifest::parse(include_str!(
+            "../../../../extensions/conversion-opus/extension.toml"
+        ))
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let provider = dir.path().join("provider");
+        std::fs::create_dir(&provider).unwrap();
+        let tool = manifest.tools[0].clone();
+        let path = install(
+            provider,
+            tool.clone(),
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert!(path.parent().unwrap().join("LICENSE").is_file());
+        assert!(path.parent().unwrap().join("opusenc.html").is_file());
+        assert!(!path.parent().unwrap().join("opusinfo.exe").exists());
+        assert!(!path.parent().unwrap().join("opusdec.exe").exists());
+        let mut tools = Tools::discover_with([("opusenc".into(), path.clone())]);
+        let reader = tools.get(Tool::Ffmpeg).map(Path::to_path_buf);
+        tools.0.retain(|tool, _| *tool == Tool::Opus);
+        let folder = dir.path().join("日本語 y español");
+        std::fs::create_dir(&folder).unwrap();
+        let source = folder.join("canción.wav");
+        let samples: Vec<_> = (0..22050)
+            .map(|index| {
+                ((f64::from(index) * 440.0 * std::f64::consts::TAU / 44100.0).sin() * 16000.0)
+                    as i16
+            })
+            .flat_map(i16::to_le_bytes)
+            .collect();
+        let mut wave = b"RIFF".to_vec();
+        wave.extend_from_slice(&(36 + samples.len() as u32).to_le_bytes());
+        wave.extend_from_slice(
+            b"WAVEfmt \x10\0\0\0\x01\0\x01\0\x44\xac\0\0\x88\x58\x01\0\x02\0\x10\0data",
+        );
+        wave.extend_from_slice(&(samples.len() as u32).to_le_bytes());
+        wave.extend_from_slice(&samples);
+        std::fs::write(&source, &wave).unwrap();
+        let mut cases = vec![source.clone()];
+        for extension in ["aiff", "au"] {
+            let plan = Plan::build(
+                &[source.clone()],
+                extension,
+                Settings::default(),
+                Tools::default(),
+            )
+            .unwrap();
+            let report = convert::execute(&plan, &Arc::new(AtomicBool::new(false)), |_, _, _| {});
+            assert!(report.errors().is_empty(), "{:?}", report.errors());
+            cases.extend(report.outputs());
+        }
+        if tools.1.mp3 {
+            let plan =
+                Plan::build(&[source.clone()], "mp3", Settings::default(), tools.clone()).unwrap();
+            let report = convert::execute(&plan, &Arc::new(AtomicBool::new(false)), |_, _, _| {});
+            assert!(report.errors().is_empty(), "{:?}", report.errors());
+            cases.extend(report.outputs());
+        }
+        for source in &cases {
+            let plan = Plan::build(
+                &[source.clone()],
+                "opus",
+                Settings::default(),
+                tools.clone(),
+            )
+            .unwrap();
+            assert_eq!(plan.commands[0].backend, Backend::External(Tool::Opus));
+            assert!(!plan.tools.has(Tool::Ffmpeg));
+            let report = convert::execute(&plan, &Arc::new(AtomicBool::new(false)), |_, _, _| {});
+            assert!(report.errors().is_empty(), "{:?}", report.errors());
+            let output = report.outputs()[0].clone();
+            let bytes = std::fs::read(&output).unwrap();
+            assert_eq!(&bytes[..4], b"OggS");
+            assert!(bytes.windows(8).any(|bytes| bytes == b"OpusHead"));
+            if let Some(reader) = &reader {
+                let result = std::process::Command::new(reader)
+                    .args(["-v", "error", "-xerror", "-i"])
+                    .arg(&output)
+                    .args(["-f", "f32le", "-acodec", "pcm_f32le", "pipe:1"])
+                    .output()
+                    .unwrap();
+                assert!(
+                    result.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                let samples: Vec<_> = result
+                    .stdout
+                    .chunks_exact(4)
+                    .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+                    .collect();
+                assert!(
+                    (23990..=30000).contains(&samples.len()),
+                    "Unexpected Opus duration: {}",
+                    samples.len()
+                );
+                let energy = samples
+                    .iter()
+                    .map(|sample| f64::from(*sample).powi(2))
+                    .sum::<f64>()
+                    / samples.len() as f64;
+                assert!(
+                    energy > 0.02 && energy < 0.3,
+                    "Unexpected Opus signal: {energy}"
+                );
+            }
+        }
+        assert_eq!(std::fs::read(&source).unwrap(), wave);
+        let version = std::process::Command::new(&path)
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert!(version.status.success());
+        let evidence = serde_json::json!({"package": "opusenc", "version": "0.2 (libopus 1.3-rc2)", "download_bytes": tool.download_bytes, "installed_payload_bytes": tool.installed_bytes, "sha256": tool.sha256, "selected_files": tool.archive_files, "unused_binaries_excluded": ["opusinfo.exe", "opusdec.exe"], "inputs_verified": cases.iter().map(|source| source.extension().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>(), "unicode_directory": true, "ffmpeg_used_as_engine": false, "independent_decoder": reader.is_some(), "version_output": String::from_utf8_lossy(&version.stdout)});
+        std::fs::write(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../artifacts/handmade-conversion-validation/opus-package.json"),
+            serde_json::to_vec_pretty(&evidence).unwrap(),
+        )
+        .unwrap();
     }
 
     #[tokio::test]

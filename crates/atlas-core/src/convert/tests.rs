@@ -33,6 +33,44 @@ fn pcm_wave(bits: u16, channels: u16, rate: u32, samples: &[u8]) -> Vec<u8> {
 }
 
 #[test]
+fn small_opus_engine_has_explicit_missing_state_and_preserves_native_priority() {
+    let source = Path::new("song.wav");
+    let opus = FORMATS
+        .iter()
+        .find(|format| format.extension == "opus")
+        .unwrap();
+    let flac = FORMATS
+        .iter()
+        .find(|format| format.extension == "flac")
+        .unwrap();
+    let mut tools = Tools::default();
+    assert_eq!(
+        catalog::route(source, opus, &tools),
+        Some(Backend::External(Tool::Opus))
+    );
+    let option = options(&[source.to_path_buf()], &tools)
+        .into_iter()
+        .find(|option| option.target.extension == "opus")
+        .unwrap();
+    assert_eq!(option.missing, [Tool::Opus]);
+    tools.0.insert(Tool::Ffmpeg, PathBuf::from("ffmpeg"));
+    assert_eq!(
+        catalog::route(source, opus, &tools),
+        Some(Backend::External(Tool::Ffmpeg))
+    );
+    tools.0.insert(Tool::Opus, PathBuf::from("opusenc"));
+    assert_eq!(
+        catalog::route(source, opus, &tools),
+        Some(Backend::External(Tool::Opus))
+    );
+    assert_eq!(catalog::route(source, flac, &tools), Some(Backend::Flac));
+    assert_eq!(
+        catalog::route(Path::new("song.ape"), opus, &tools),
+        Some(Backend::External(Tool::Ffmpeg))
+    );
+}
+
+#[test]
 fn native_pcm_preserves_samples_channels_rates_and_odd_chunk_padding() {
     let dir = tempfile::tempdir().unwrap();
     for bits in [8, 16, 24, 32] {
