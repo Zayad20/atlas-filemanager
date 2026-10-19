@@ -658,7 +658,33 @@ impl App {
                 option.engines.join(" + ")
             ));
             let extension = option.target.extension;
-            let note = if ["gif", "tiff", "pdf"].iter().any(|ext| {
+            let has_source = |extensions: &[&str]| {
+                session.sources.iter().any(|p| {
+                    p.extension()
+                        .is_some_and(|e| extensions.iter().any(|s| e.eq_ignore_ascii_case(s)))
+                })
+            };
+            let note = if option.engines.contains(&"Windows") {
+                Some("convert_windows_audio_note")
+            } else if has_source(&["srt", "vtt", "ass", "ssa", "lrc", "smi", "ttml", "dfxp"]) {
+                Some(if extension == "lrc" || extension == "smi" {
+                    "convert_subtitle_linear_note"
+                } else {
+                    "convert_subtitle_note"
+                })
+            } else if extension == "vcf" || has_source(&["vcf"]) {
+                Some("convert_contacts_note")
+            } else if option.engines.contains(&"Atlas")
+                && (["epub", "fb2"].contains(&extension) || has_source(&["epub", "fb2"]))
+            {
+                Some("convert_book_note")
+            } else if has_source(&["wav", "wave", "aiff", "aif", "aifc", "au", "snd"])
+                && option.engines.contains(&"Atlas")
+            {
+                Some("convert_pcm_note")
+            } else if has_source(&["svg", "svgz"]) && extension == "pdf" {
+                Some("convert_svg_pdf_note")
+            } else if ["gif", "tiff", "pdf"].iter().any(|ext| {
                 session
                     .sources
                     .iter()

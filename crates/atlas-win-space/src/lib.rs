@@ -8,6 +8,7 @@ pub mod storage;
 pub mod recycle;
 pub mod integration;
 pub mod metadata;
+pub mod media;
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;

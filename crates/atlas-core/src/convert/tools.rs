@@ -57,8 +57,32 @@ impl Tool {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemAudio {
+    pub wave: bool,
+    pub mp3: bool,
+    pub aac: bool,
+}
+
+impl SystemAudio {
+    pub fn supports(self, input: &str, output: &str) -> bool {
+        self.wave
+            && [
+                "wav", "aiff", "aifc", "au", "mp3", "m4a", "aac", "wma", "flac", "mp4", "mov",
+                "m4v",
+            ]
+            .contains(&input)
+            && match output {
+                "wav" => true,
+                "mp3" => self.mp3,
+                "m4a" | "aac" => self.aac,
+                _ => false,
+            }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
-pub struct Tools(pub BTreeMap<Tool, PathBuf>);
+pub struct Tools(pub BTreeMap<Tool, PathBuf>, pub SystemAudio);
 
 impl Tools {
     pub fn has(&self, tool: Tool) -> bool {
@@ -68,8 +92,8 @@ impl Tools {
         self.0.get(&tool).map(PathBuf::as_path)
     }
 
-    /// Filesystem-only discovery. Never launch an engine, download a payload or
-    /// enumerate recursively. The caller runs this outside the interactive lane.
+    /// Scan executable paths and query system codecs off the interactive lane.
+    /// Never start an external process, download a payload or scan recursively.
     pub fn discover() -> Self {
         let mut directories: Vec<PathBuf> = std::env::var_os("PATH")
             .map(|p| {
@@ -111,6 +135,15 @@ impl Tools {
             PathBuf::from("/Applications/calibre.app/Contents/MacOS"),
         ]);
         let mut tools = Self::default();
+        #[cfg(target_os = "windows")]
+        {
+            let audio = atlas_win_space::media::audio_capabilities();
+            tools.1 = SystemAudio {
+                wave: audio.wave,
+                mp3: audio.mp3,
+                aac: audio.aac,
+            };
+        }
         for tool in Tool::ALL {
             let executable = format!("{}{}", tool.executable(), std::env::consts::EXE_SUFFIX);
             if let Some(path) = directories

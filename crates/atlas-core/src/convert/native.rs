@@ -7,7 +7,7 @@ use std::path::{Component, Path};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) fn image(command: &Command, settings: &Settings, output: &Path) -> Result<()> {
-    use image::{ImageDecoder, ImageEncoder};
+    use image::ImageDecoder;
     let mut reader = image::ImageReader::open(&command.source)?.with_guessed_format()?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(512 * 1024 * 1024);
@@ -18,6 +18,16 @@ pub(super) fn image(command: &Command, settings: &Settings, output: &Path) -> Re
         .unwrap_or(image::metadata::Orientation::NoTransforms);
     let mut img = image::DynamicImage::from_decoder(decoder)?;
     img.apply_orientation(orientation);
+    write_image(img, command, settings, output)
+}
+
+pub(super) fn write_image(
+    mut img: image::DynamicImage,
+    command: &Command,
+    settings: &Settings,
+    output: &Path,
+) -> Result<()> {
+    use image::ImageEncoder;
     let edge = if command.target.extension == "ico" {
         Some(settings.max_edge.unwrap_or(256).min(256))
     } else {
@@ -145,10 +155,18 @@ pub(super) fn extracted_document(text: &str, extension: &str, output: &Path) -> 
 }
 
 pub(super) fn text(command: &Command, output: &Path) -> Result<()> {
-    let content = if super::catalog::extension(&command.source) == "txt" {
-        read_text(&command.source)?
+    extracted_document(
+        &document_text(&command.source)?,
+        command.target.extension,
+        output,
+    )
+}
+
+pub(super) fn document_text(source: &Path) -> Result<String> {
+    let content = if super::catalog::extension(source) == "txt" {
+        read_text(source)?
     } else {
-        let mut zip = zip::ZipArchive::new(File::open(&command.source)?)?;
+        let mut zip = zip::ZipArchive::new(File::open(source)?)?;
         let xml = zip.by_name("word/document.xml")?;
         if xml.size() > 64 * 1024 * 1024 {
             bail!("Document text is limited to 64 MiB");
@@ -177,17 +195,22 @@ pub(super) fn text(command: &Command, output: &Path) -> Result<()> {
         }
         result
     };
-    extracted_document(&content, command.target.extension, output)
+    Ok(content)
 }
 
-fn read_text(path: &Path) -> Result<String> {
-    if std::fs::metadata(path)?.len() > 64 * 1024 * 1024 {
+pub(super) fn read_text(path: &Path) -> Result<String> {
+    let file = File::open(path)?;
+    if file.metadata()?.len() > 64 * 1024 * 1024 {
         bail!("Text conversion is limited to 64 MiB per file");
     }
-    Ok(std::fs::read_to_string(path)
-        .context("Expected UTF-8 text")?
-        .trim_start_matches('\u{feff}')
-        .to_owned())
+    let mut content = String::new();
+    file.take(64 * 1024 * 1024 + 1)
+        .read_to_string(&mut content)
+        .context("Expected UTF-8 text")?;
+    if content.len() > 64 * 1024 * 1024 {
+        bail!("Text conversion is limited to 64 MiB per file");
+    }
+    Ok(content.trim_start_matches('\u{feff}').to_owned())
 }
 
 pub(super) fn data(command: &Command, output: &Path) -> Result<()> {
@@ -286,7 +309,7 @@ fn write_value(value: &serde_json::Value, extension: &str, output: &Path) -> Res
 }
 
 /// RFC 4180 quoting, embedded newlines, CRLF, empty trailing fields and UTF-8.
-fn parse_delimited(text: &str, delimiter: char) -> Result<Vec<Vec<String>>> {
+pub(super) fn parse_delimited(text: &str, delimiter: char) -> Result<Vec<Vec<String>>> {
     let mut rows = Vec::new();
     let mut row = Vec::new();
     let mut field = String::new();
@@ -340,7 +363,7 @@ fn parse_delimited(text: &str, delimiter: char) -> Result<Vec<Vec<String>>> {
     Ok(rows)
 }
 
-fn write_row(file: &mut File, row: &[String], delimiter: char) -> Result<()> {
+pub(super) fn write_row(file: &mut File, row: &[String], delimiter: char) -> Result<()> {
     for (index, field) in row.iter().enumerate() {
         if index > 0 {
             write!(file, "{delimiter}")?;
@@ -409,27 +432,34 @@ pub(super) fn markdown(command: &Command, output: &Path) -> Result<()> {
         );
         result.push_str("</body></html>\n");
     } else {
-        for event in parser {
-            match event {
-                Event::Text(t) | Event::Code(t) => result.push_str(&t),
-                Event::SoftBreak | Event::HardBreak | Event::Rule => result.push('\n'),
-                Event::End(
-                    pulldown_cmark::TagEnd::Paragraph
-                    | pulldown_cmark::TagEnd::Heading(_)
-                    | pulldown_cmark::TagEnd::CodeBlock
-                    | pulldown_cmark::TagEnd::Item
-                    | pulldown_cmark::TagEnd::TableRow,
-                ) => {
-                    if !result.ends_with('\n') {
-                        result.push('\n');
-                    }
-                }
-                _ => {}
-            }
-        }
+        result = markdown_text(&text);
     }
     std::fs::write(output, result)?;
     Ok(())
+}
+
+pub(super) fn markdown_text(text: &str) -> String {
+    use pulldown_cmark::{Event, Options, Parser};
+    let mut result = String::new();
+    for event in Parser::new_ext(text, Options::all()) {
+        match event {
+            Event::Text(t) | Event::Code(t) => result.push_str(&t),
+            Event::SoftBreak | Event::HardBreak | Event::Rule => result.push('\n'),
+            Event::End(
+                pulldown_cmark::TagEnd::Paragraph
+                | pulldown_cmark::TagEnd::Heading(_)
+                | pulldown_cmark::TagEnd::CodeBlock
+                | pulldown_cmark::TagEnd::Item
+                | pulldown_cmark::TagEnd::TableRow,
+            ) => {
+                if !result.ends_with('\n') {
+                    result.push('\n');
+                }
+            }
+            _ => {}
+        }
+    }
+    result
 }
 
 enum ArchiveWriter {

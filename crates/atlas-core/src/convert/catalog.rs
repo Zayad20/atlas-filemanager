@@ -14,10 +14,12 @@ formats! {
     "epub" => "EPUB", "odt" => "ODT", "rtf" => "RTF", "pptx" => "PPTX", "odp" => "ODP",
     "xlsx" => "XLSX", "ods" => "ODS", "csv" => "CSV", "tsv" => "TSV",
     "json" => "JSON", "jsonl" => "JSONL", "toml" => "TOML",
+    "vcf" => "vCard",
     "bmp" => "BMP", "tiff" => "TIFF", "gif" => "GIF", "ico" => "ICO", "avif" => "AVIF", "heic" => "HEIC", "jxl" => "JXL",
-    "mp3" => "MP3", "wav" => "WAV", "flac" => "FLAC", "m4a" => "M4A", "ogg" => "OGG", "opus" => "Opus", "aac" => "AAC", "aiff" => "AIFF",
+    "svg" => "SVG", "svgz" => "SVGZ",
+    "mp3" => "MP3", "wav" => "WAV", "flac" => "FLAC", "m4a" => "M4A", "ogg" => "OGG", "opus" => "Opus", "aac" => "AAC", "aiff" => "AIFF", "au" => "AU",
     "mp4" => "MP4", "webm" => "WebM", "mkv" => "MKV", "mov" => "MOV", "avi" => "AVI",
-    "srt" => "SRT", "vtt" => "VTT", "ass" => "ASS",
+    "srt" => "SRT", "vtt" => "VTT", "ass" => "ASS", "lrc" => "LRC", "smi" => "SAMI", "ttml" => "TTML",
     "zip" => "ZIP", "7z" => "7Z", "tar" => "TAR", "tar.gz" => "TAR.GZ",
     "mobi" => "MOBI", "azw3" => "AZW3", "fb2" => "FB2",
 }
@@ -30,18 +32,26 @@ pub enum Backend {
     Markdown,
     Text,
     Archive,
+    Subtitles,
+    Pcm,
+    Vector,
+    Contacts,
+    Book,
+    SystemAudio,
     External(Tool),
 }
 impl Backend {
     pub fn available(self, tools: &Tools) -> bool {
         match self {
             Self::External(t) => tools.has(t),
+            Self::SystemAudio => tools.1.wave,
             _ => true,
         }
     }
     pub fn name(self) -> &'static str {
         match self {
             Self::External(t) => t.name(),
+            Self::SystemAudio => "Windows",
             _ => "Atlas",
         }
     }
@@ -82,6 +92,10 @@ pub fn extension(path: &Path) -> String {
         "markdown" => "md".into(),
         "htm" => "html".into(),
         "ndjson" => "jsonl".into(),
+        "aif" => "aiff".into(),
+        "wave" => "wav".into(),
+        "snd" => "au".into(),
+        "dfxp" => "ttml".into(),
         e => e.to_owned(),
     }
 }
@@ -147,8 +161,8 @@ pub fn route(source: &Path, target: &Format, tools: &Tools) -> Option<Backend> {
         "arw", "dng", "orf", "raf", "rw2", "xcf", "jp2", "j2k", "pcx",
     ];
     let audio = [
-        "mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "aiff", "aif", "wma", "amr", "ape",
-        "ac3", "alac", "wv",
+        "mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "aiff", "aifc", "au", "wma", "amr",
+        "ape", "ac3", "alac", "wv",
     ];
     let video = [
         "mp4", "webm", "mkv", "mov", "avi", "wmv", "flv", "mpeg", "mpg", "m4v", "ts", "m2ts",
@@ -165,6 +179,28 @@ pub fn route(source: &Path, target: &Format, tools: &Tools) -> Option<Backend> {
         "zip", "7z", "rar", "tar", "tar.gz", "tar.bz2", "tar.xz", "gz", "bz2", "xz", "cab", "iso",
     ];
     let external = |t| Some(Backend::External(t));
+    if ["wav", "aiff", "aifc", "au"].contains(&src) && ["wav", "aiff", "au"].contains(&dst) {
+        return Some(Backend::Pcm);
+    }
+    if ["svg", "svgz"].contains(&src)
+        && (images.contains(&dst) || ["pdf", "svg", "svgz"].contains(&dst))
+    {
+        return Some(Backend::Vector);
+    }
+    if (src == "vcf" && ["csv", "tsv", "json"].contains(&dst))
+        || (["csv", "tsv", "json"].contains(&src) && dst == "vcf")
+    {
+        return Some(Backend::Contacts);
+    }
+    if tools.1.supports(src, dst) {
+        return Some(Backend::SystemAudio);
+    }
+    if (["epub", "fb2"].contains(&src)
+        && ["epub", "fb2", "txt", "md", "html", "docx"].contains(&dst))
+        || (["txt", "md", "docx", "docm", "dotx"].contains(&src) && ["epub", "fb2"].contains(&dst))
+    {
+        return Some(Backend::Book);
+    }
     if images.contains(&src) && (images.contains(&dst) || dst == "pdf") {
         // Native still-image conversion is tiny; animated/multi-page inputs go
         // through ImageMagick so frames/pages aren't silently discarded.
@@ -181,10 +217,10 @@ pub fn route(source: &Path, target: &Format, tools: &Tools) -> Option<Backend> {
     {
         return external(Tool::Ffmpeg);
     }
-    if ["srt", "vtt", "ass", "ssa", "smi", "lrc"].contains(&src)
-        && ["srt", "vtt", "ass"].contains(&dst)
+    if ["srt", "vtt", "ass", "ssa", "smi", "lrc", "ttml"].contains(&src)
+        && ["srt", "vtt", "ass", "lrc", "smi", "ttml", "txt"].contains(&dst)
     {
-        return external(Tool::Ffmpeg);
+        return Some(Backend::Subtitles);
     }
     if ["json", "jsonl", "toml", "csv", "tsv"].contains(&src)
         && ["json", "jsonl", "toml", "csv", "tsv"].contains(&dst)

@@ -1,9 +1,14 @@
 //! Local, non-destructive conversion pipeline. Catalog -> immutable plan -> workers.
 //! Engines are discovered off-thread; no engine or codec is bundled by this module.
+mod books;
 mod catalog;
+mod contacts;
 mod native;
+mod pcm;
 mod process;
+mod subtitles;
 mod tools;
+mod vector;
 
 pub use catalog::{options, Backend, ConversionOption, Format, FORMATS};
 pub use tools::{Tool, Tools};
@@ -195,34 +200,86 @@ fn execute_one(command: &Command, plan: &Plan, cancel: &AtomicBool) -> Result<Pa
         .as_deref()
         .or_else(|| command.source.parent())
         .context("Missing output directory")?;
+    // Keep a path guard rather than an open file handle: system codecs can
+    // require exclusive access to their destination. The guard still removes
+    // every failed/cancelled temporary and publishes with noclobber atomically.
     let mut output = tempfile::Builder::new()
         .prefix(".atlas-convert-")
         .suffix(&format!(".{}", command.target.extension))
-        .tempfile_in(parent)?;
+        .tempfile_in(parent)?
+        .into_temp_path();
     match command.backend {
-        Backend::Image => native::image(command, &plan.settings, output.path())?,
-        Backend::Data => native::data(command, output.path())?,
-        Backend::Sheet => native::sheet(command, output.path())?,
-        Backend::Markdown => native::markdown(command, output.path())?,
-        Backend::Text => native::text(command, output.path())?,
-        Backend::Archive => native::archive(command, output.path(), cancel)?,
-        Backend::External(tool) => process::convert(tool, command, plan, output.path(), cancel)?,
+        Backend::Image => native::image(command, &plan.settings, &output)?,
+        Backend::Data => native::data(command, &output)?,
+        Backend::Sheet => native::sheet(command, &output)?,
+        Backend::Markdown => native::markdown(command, &output)?,
+        Backend::Text => native::text(command, &output)?,
+        Backend::Archive => native::archive(command, &output, cancel)?,
+        Backend::Subtitles => subtitles::convert(command, &output)?,
+        Backend::Pcm => pcm::convert(command, &output, cancel)?,
+        Backend::Vector => vector::convert(command, &plan.settings, &output)?,
+        Backend::Contacts => contacts::convert(command, &output)?,
+        Backend::Book => books::convert(command, &output)?,
+        Backend::SystemAudio => {
+            #[cfg(target_os = "windows")]
+            {
+                use atlas_win_space::media::{convert_audio, AudioTarget};
+                let target = match command.target.extension {
+                    "wav" => AudioTarget::Wave,
+                    "mp3" => AudioTarget::Mp3,
+                    "aac" => AudioTarget::Aac,
+                    "m4a" => AudioTarget::M4a,
+                    _ => bail!("Unsupported Windows audio target"),
+                };
+                let bridge;
+                let source = if ["aiff", "aifc", "au"]
+                    .contains(&catalog::extension(&command.source).as_str())
+                {
+                    bridge = tempfile::Builder::new()
+                        .prefix(".atlas-pcm-")
+                        .suffix(".wav")
+                        .tempfile_in(parent)?
+                        .into_temp_path();
+                    let pcm = Command {
+                        source: command.source.clone(),
+                        target: FORMATS
+                            .iter()
+                            .find(|f| f.extension == "wav")
+                            .context("Missing WAV format")?,
+                        backend: Backend::Pcm,
+                    };
+                    pcm::convert(&pcm, &bridge, cancel)?;
+                    bridge.as_ref()
+                } else {
+                    command.source.as_path()
+                };
+                convert_audio(source, &output, target, plan.settings.quality, cancel)
+                    .map_err(anyhow::Error::msg)?;
+            }
+            #[cfg(not(target_os = "windows"))]
+            bail!("Windows audio conversion is unavailable on this platform");
+        }
+        Backend::External(tool) => process::convert(tool, command, plan, &output, cancel)?,
     }
     if cancel.load(Ordering::Relaxed) {
         bail!("Cancelled");
     }
-    if output.as_file().metadata()?.len() == 0 {
+    if std::fs::metadata(&output)?.len() == 0 {
         bail!("The engine produced an empty file");
     }
-    output.as_file_mut().sync_all()?;
+    std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open(&output)?
+        .sync_all()?;
     // persist_noclobber atomically claims a destination, including races with
     // other workers/applications. Never truncate an existing file or a symlink.
     for index in 0..10_000 {
         let destination = output_name(&command.source, parent, command.target.extension, index);
         match output.persist_noclobber(&destination) {
-            Ok(_) => return Ok(destination),
+            Ok(()) => return Ok(destination),
             Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-                output = error.file
+                output = error.path
             }
             Err(error) => return Err(error.error.into()),
         }

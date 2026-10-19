@@ -12,6 +12,470 @@ fn run(path: &Path, target: &str) -> Report {
     execute(&plan, &Arc::new(AtomicBool::new(false)), |_, _, _| {})
 }
 
+fn pcm_wave(bits: u16, channels: u16, rate: u32, samples: &[u8]) -> Vec<u8> {
+    let mut wave = Vec::new();
+    let length = samples.len() as u32;
+    wave.extend_from_slice(b"RIFF");
+    wave.extend_from_slice(&(36 + length + length % 2).to_le_bytes());
+    wave.extend_from_slice(b"WAVEfmt \x10\0\0\0\x01\0");
+    wave.extend_from_slice(&channels.to_le_bytes());
+    wave.extend_from_slice(&rate.to_le_bytes());
+    wave.extend_from_slice(&(rate * u32::from(channels) * u32::from(bits / 8)).to_le_bytes());
+    wave.extend_from_slice(&(channels * (bits / 8)).to_le_bytes());
+    wave.extend_from_slice(&bits.to_le_bytes());
+    wave.extend_from_slice(b"data");
+    wave.extend_from_slice(&length.to_le_bytes());
+    wave.extend_from_slice(samples);
+    if length % 2 != 0 {
+        wave.push(0);
+    }
+    wave
+}
+
+#[test]
+fn native_pcm_preserves_samples_channels_rates_and_odd_chunk_padding() {
+    let dir = tempfile::tempdir().unwrap();
+    for bits in [8, 16, 24, 32] {
+        for channels in [1, 2, 6] {
+            let source = dir.path().join(format!("{bits}-{channels}.wav"));
+            let samples: Vec<u8> = (0..(bits / 8 * channels * 3))
+                .map(|i| (i * 37) as u8)
+                .collect();
+            let original = pcm_wave(bits, channels, 44100, &samples);
+            std::fs::write(&source, &original).unwrap();
+            for target in ["aiff", "au"] {
+                let converted = run(&source, target);
+                assert!(converted.errors().is_empty(), "{:?}", converted.errors());
+                let path = converted.outputs()[0].clone();
+                let bytes = std::fs::read(&path).unwrap();
+                let (data_offset, channels_offset, bits_offset) = if target == "aiff" {
+                    (54, 20, 26)
+                } else {
+                    (24, 20, 0)
+                };
+                if target == "aiff" {
+                    assert_eq!(&bytes[28..38], &[0x40, 0x0e, 0xac, 0x44, 0, 0, 0, 0, 0, 0]);
+                    assert_eq!(
+                        u16::from_be_bytes(
+                            bytes[channels_offset..channels_offset + 2]
+                                .try_into()
+                                .unwrap()
+                        ),
+                        channels
+                    );
+                    assert_eq!(
+                        u16::from_be_bytes(bytes[bits_offset..bits_offset + 2].try_into().unwrap()),
+                        bits
+                    );
+                } else {
+                    assert_eq!(
+                        u32::from_be_bytes(
+                            bytes[channels_offset..channels_offset + 4]
+                                .try_into()
+                                .unwrap()
+                        ),
+                        u32::from(channels)
+                    );
+                    assert_eq!(u32::from_be_bytes(bytes[16..20].try_into().unwrap()), 44100);
+                }
+                let expected: Vec<_> = if bits == 8 {
+                    samples.iter().map(|s| s ^ 0x80).collect()
+                } else {
+                    samples
+                        .chunks_exact(usize::from(bits / 8))
+                        .flat_map(|s| s.iter().rev().copied())
+                        .collect()
+                };
+                assert_eq!(&bytes[data_offset..data_offset + samples.len()], expected);
+                let back = run(&path, "wav");
+                assert!(back.errors().is_empty(), "{:?}", back.errors());
+                assert_eq!(std::fs::read(&back.outputs()[0]).unwrap(), original);
+            }
+            assert_eq!(std::fs::read(source).unwrap(), original);
+        }
+    }
+}
+
+#[test]
+fn native_pcm_rejects_truncation_partial_frames_and_compressed_wave_without_outputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let valid = pcm_wave(16, 2, 48000, &[0; 16]);
+    let mut compressed = valid.clone();
+    compressed[20] = 3; // IEEE float is deliberately not interpreted as integer PCM.
+    let partial = pcm_wave(16, 2, 48000, &[0; 3]);
+    for (index, bytes) in [valid[..45].to_vec(), compressed, partial, vec![0; 100]]
+        .iter()
+        .enumerate()
+    {
+        let path = dir.path().join(format!("invalid-{index}.wav"));
+        std::fs::write(&path, bytes).unwrap();
+        let report = run(&path, "aiff");
+        assert!(report.outputs().is_empty());
+        assert_eq!(report.errors().len(), 1);
+        assert_eq!(std::fs::read(path).unwrap(), *bytes);
+    }
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 4);
+}
+
+#[test]
+fn independent_ffmpeg_reader_decodes_native_aiff_and_au_when_installed() {
+    let tools = Tools::discover();
+    let Some(ffmpeg) = tools.get(Tool::Ffmpeg) else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("samples.wav");
+    let samples: Vec<_> = [-32768_i16, -1024, -1, 0, 1, 1024, 32767]
+        .into_iter()
+        .flat_map(i16::to_le_bytes)
+        .collect();
+    std::fs::write(&source, pcm_wave(16, 1, 44100, &samples)).unwrap();
+    for target in ["aiff", "au"] {
+        let report = run(&source, target);
+        assert!(report.errors().is_empty(), "{:?}", report.errors());
+        let decoded = std::process::Command::new(ffmpeg)
+            .args(["-v", "error", "-i"])
+            .arg(&report.outputs()[0])
+            .args(["-f", "s16le", "-acodec", "pcm_s16le", "pipe:1"])
+            .output()
+            .unwrap();
+        assert!(
+            decoded.status.success(),
+            "{}",
+            String::from_utf8_lossy(&decoded.stderr)
+        );
+        assert_eq!(decoded.stdout, samples);
+    }
+}
+
+#[test]
+fn subtitle_pipeline_converts_without_engines_and_keeps_originals() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("subtítulos.srt");
+    let source = "1\r\n00:00:01,250 --> 00:00:03,500\r\nHola &amp; adiós\r\nAna\r\n\r\n2\r\n00:00:04,000 --> 00:00:05,000\r\n&lt;literal&gt;\r\n";
+    std::fs::write(&path, source).unwrap();
+    for target in ["vtt", "ass", "smi", "ttml", "lrc", "txt"] {
+        let plan = Plan::build(
+            &[path.clone()],
+            target,
+            Settings::default(),
+            Tools::default(),
+        )
+        .unwrap();
+        assert!(matches!(plan.commands[0].backend, Backend::Subtitles));
+        let report = execute(&plan, &Arc::new(AtomicBool::new(false)), |_, _, _| {});
+        assert!(
+            report.errors().is_empty(),
+            "{target}: {:?}",
+            report.errors()
+        );
+        if target != "txt" {
+            let back = run(&report.outputs()[0], "srt");
+            assert!(back.errors().is_empty(), "{target}: {:?}", back.errors());
+            let result = std::fs::read_to_string(&back.outputs()[0]).unwrap();
+            assert!(
+                result.contains("00:00:01,250 --> 00:00:03,500"),
+                "{target}: {result}"
+            );
+            assert!(result.contains("Hola &amp; adiós"), "{target}: {result}");
+            assert!(result.contains("&lt;literal&gt;"), "{target}: {result}");
+        }
+    }
+    assert_eq!(std::fs::read_to_string(path).unwrap(), source);
+}
+
+#[test]
+fn invalid_subtitle_intervals_are_not_published() {
+    let dir = tempfile::tempdir().unwrap();
+    for (index, body) in [
+        "1\n00:00:03,000 --> 00:00:01,000\nwrong",
+        "not a subtitle",
+        "1\n00:01:99,000 --> 00:02:00,000\nwrong",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let source = dir.path().join(format!("bad-{index}.srt"));
+        std::fs::write(&source, body).unwrap();
+        assert_eq!(run(&source, "vtt").errors().len(), 1);
+    }
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
+}
+
+#[test]
+fn independent_ffmpeg_reader_checks_native_ass_and_webvtt_when_installed() {
+    let tools = Tools::discover();
+    let Some(ffmpeg) = tools.get(Tool::Ffmpeg) else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("text.srt");
+    std::fs::write(
+        &source,
+        "1\n00:00:01,250 --> 00:00:03,500\nAna: \"Hola\" &amp; José\n{literal} C:\\Windows\n\n",
+    )
+    .unwrap();
+    for target in ["vtt", "ass"] {
+        let report = run(&source, target);
+        assert!(report.errors().is_empty(), "{:?}", report.errors());
+        let decoded = std::process::Command::new(ffmpeg)
+            .args(["-v", "error", "-i"])
+            .arg(&report.outputs()[0])
+            .args(["-f", "srt", "pipe:1"])
+            .output()
+            .unwrap();
+        assert!(
+            decoded.status.success(),
+            "{}",
+            String::from_utf8_lossy(&decoded.stderr)
+        );
+        let text = String::from_utf8(decoded.stdout).unwrap();
+        assert!(
+            text.contains("00:00:01,250 --> 00:00:03,500"),
+            "{target}: {text}"
+        );
+        assert!(text.contains("\"Hola\""), "{target}: {text}");
+        assert!(text.contains("José"), "{target}: {text}");
+        // FFmpeg protects literal braces with ASS-style escapes in SRT output.
+        let literal = text.replace("\\{", "{").replace("\\}", "}");
+        assert!(
+            literal.contains("{literal} C:\\Windows"),
+            "{target}: {text}"
+        );
+    }
+}
+
+#[test]
+fn native_svg_rasterization_unpremultiplies_alpha_and_bounds_dimensions() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("vector.svg");
+    let xml = "<svg xmlns='http://www.w3.org/2000/svg' width='20' height='10'><rect width='20' height='10' fill='#ff0000' fill-opacity='0.5'/></svg>";
+    std::fs::write(&source, xml).unwrap();
+    let png = run(&source, "png");
+    assert!(png.errors().is_empty(), "{:?}", png.errors());
+    let image = image::open(&png.outputs()[0]).unwrap().to_rgba8();
+    assert_eq!(image.dimensions(), (20, 10));
+    assert_eq!(image.get_pixel(4, 4).0, [255, 0, 0, 128]);
+    let gzip = run(&source, "svgz");
+    assert!(gzip.errors().is_empty(), "{:?}", gzip.errors());
+    let restored = run(&gzip.outputs()[0], "svg");
+    assert!(restored.errors().is_empty(), "{:?}", restored.errors());
+    assert_eq!(
+        std::fs::read_to_string(&restored.outputs()[0]).unwrap(),
+        xml
+    );
+    let plan = Plan::build(
+        &[source],
+        "png",
+        Settings {
+            max_edge: Some(5),
+            ..Settings::default()
+        },
+        Tools::default(),
+    )
+    .unwrap();
+    let report = execute(&plan, &Arc::new(AtomicBool::new(false)), |_, _, _| {});
+    assert!(report.errors().is_empty(), "{:?}", report.errors());
+    assert_eq!(image::open(&report.outputs()[0]).unwrap().width(), 5);
+}
+
+#[test]
+fn native_svg_refuses_external_images_and_decompression_bombs() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("external.svg");
+    std::fs::write(&source, "<svg xmlns='http://www.w3.org/2000/svg' width='20' height='10'><image href='file:///private/image.png' width='20' height='10'/></svg>").unwrap();
+    assert_eq!(run(&source, "png").errors().len(), 1);
+    let source = dir.path().join("large.svgz");
+    let mut gzip =
+        flate2::write::GzEncoder::new(File::create(&source).unwrap(), flate2::Compression::fast());
+    let block = [b' '; 1024 * 1024];
+    for _ in 0..65 {
+        gzip.write_all(&block).unwrap();
+    }
+    gzip.finish().unwrap();
+    assert_eq!(run(&source, "svg").errors().len(), 1);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+}
+
+#[test]
+fn contacts_vcard_csv_tsv_and_json_roundtrip_multiple_values_without_an_engine() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("contactos.vcf");
+    let input = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ana Pérez\r\nN:Pérez;Ana;;;\r\nEMAIL:ana@example.com\r\nEMAIL:work@example.com\r\nTEL:+521234\r\nNOTE:Primera\\nSegunda línea\r\nADR:;;Calle 1;Ciudad;Región;123;México\r\nEND:VCARD\r\n";
+    std::fs::write(&source, input).unwrap();
+    for target in ["csv", "tsv", "json"] {
+        let report = run(&source, target);
+        assert!(
+            report.errors().is_empty(),
+            "{target}: {:?}",
+            report.errors()
+        );
+        let back = run(&report.outputs()[0], "vcf");
+        assert!(back.errors().is_empty(), "{target}: {:?}", back.errors());
+        let json = run(&back.outputs()[0], "json");
+        assert!(json.errors().is_empty(), "{:?}", json.errors());
+        let data: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&json.outputs()[0]).unwrap()).unwrap();
+        assert_eq!(
+            data[0]["emails"],
+            serde_json::json!(["ana@example.com", "work@example.com"])
+        );
+        assert_eq!(data[0]["note"], "Primera\nSegunda línea");
+        assert_eq!(data[0]["addresses"][0][2], "Calle 1");
+    }
+    assert_eq!(std::fs::read_to_string(source).unwrap(), input);
+    let csv = dir.path().join("simple.csv");
+    std::fs::write(
+        &csv,
+        "First Name,Last Name,Email,Phone\r\nAna,Pérez,ana@example.com,+521234\r\n",
+    )
+    .unwrap();
+    let report = run(&csv, "vcf");
+    assert!(report.errors().is_empty(), "{:?}", report.errors());
+    assert!(std::fs::read_to_string(&report.outputs()[0])
+        .unwrap()
+        .contains("FN:Ana Pérez\r\n"));
+}
+
+#[test]
+fn native_books_write_valid_epub_packages_and_roundtrip_text_without_engines() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("Libro de María.txt");
+    std::fs::write(&source, "Capítulo uno\nA < B & C\nOtra línea\n").unwrap();
+    let report = run(&source, "epub");
+    assert!(report.errors().is_empty(), "{:?}", report.errors());
+    let epub = report.outputs()[0].clone();
+    let mut zip = zip::ZipArchive::new(File::open(&epub).unwrap()).unwrap();
+    let first = zip.by_index(0).unwrap();
+    assert_eq!(first.name(), "mimetype");
+    assert_eq!(first.compression(), zip::CompressionMethod::Stored);
+    drop(first);
+    for index in 1..zip.len() {
+        let mut text = String::new();
+        zip.by_index(index)
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert!(roxmltree::Document::parse(&text).is_ok(), "{text}");
+    }
+    let report = run(&epub, "fb2");
+    assert!(report.errors().is_empty(), "{:?}", report.errors());
+    let report = run(&report.outputs()[0], "docx");
+    assert!(report.errors().is_empty(), "{:?}", report.errors());
+    let report = run(&report.outputs()[0], "txt");
+    assert!(report.errors().is_empty(), "{:?}", report.errors());
+    assert_eq!(
+        std::fs::read_to_string(&report.outputs()[0]).unwrap(),
+        "Capítulo uno\nA < B & C\nOtra línea\n"
+    );
+}
+
+fn spine_epub(path: &Path, encrypted: bool) {
+    let mut zip = zip::ZipWriter::new(File::create(path).unwrap());
+    let mut entries = vec![
+        ("META-INF/container.xml", "<container><rootfiles><rootfile full-path='OEBPS/package.opf'/></rootfiles></container>"),
+        ("OEBPS/package.opf", "<package><metadata><title>Book</title></metadata><manifest><item id='a' href='../Text/second.xhtml' media-type='application/xhtml+xml'/><item id='b' href='../Text/first.xhtml' media-type='application/xhtml+xml'/></manifest><spine><itemref idref='b'/><itemref idref='a'/></spine></package>"),
+        ("Text/second.xhtml", "<html><head><title>not body</title><script>not script</script></head><body><p>Second <b>chapter</b></p><script>not script</script></body></html>"),
+        ("Text/first.xhtml", "<html><body><h1>First</h1><p>one<br/>two</p></body></html>"),
+    ];
+    if encrypted {
+        entries.push(("META-INF/encryption.xml", "<encryption><EncryptedData><CipherReference URI='Text/first.xhtml'/></EncryptedData></encryption>"));
+    }
+    for (name, text) in entries {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(text.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap();
+}
+
+#[test]
+fn epub_uses_spine_order_and_refuses_encrypted_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("ordered.epub");
+    spine_epub(&source, false);
+    let report = run(&source, "txt");
+    assert!(report.errors().is_empty(), "{:?}", report.errors());
+    assert_eq!(
+        std::fs::read_to_string(&report.outputs()[0]).unwrap(),
+        "First\none\ntwo\n\nSecond chapter"
+    );
+    let encrypted = dir.path().join("encrypted.epub");
+    spine_epub(&encrypted, true);
+    let report = run(&encrypted, "txt");
+    assert!(report.outputs().is_empty());
+    assert!(report.errors()[0].contains("Encrypted EPUB"));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_audio_encodes_and_decodes_without_external_tools() {
+    let mut tools = Tools::discover();
+    let independent_reader = tools.get(Tool::Ffmpeg).map(Path::to_path_buf);
+    tools.0.clear();
+    assert!(
+        tools.1.wave,
+        "Media Foundation is required on this validation machine"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("tone.wav");
+    let samples: Vec<_> = (0..22050)
+        .flat_map(|i| {
+            ((f64::from(i) * 440.0 * std::f64::consts::TAU / 44100.0)
+                .sin()
+                .mul_add(16000.0, 0.0) as i16)
+                .to_le_bytes()
+        })
+        .collect();
+    std::fs::write(&source, pcm_wave(16, 1, 44100, &samples)).unwrap();
+    for target in ["mp3", "m4a", "aac"] {
+        assert!(
+            tools.1.supports("wav", target),
+            "Missing system {target} encoder"
+        );
+        let plan = Plan::build(
+            &[source.clone()],
+            target,
+            Settings::default(),
+            tools.clone(),
+        )
+        .unwrap();
+        assert!(matches!(plan.commands[0].backend, Backend::SystemAudio));
+        let report = execute(&plan, &Arc::new(AtomicBool::new(false)), |_, _, _| {});
+        assert!(
+            report.errors().is_empty(),
+            "{target}: {:?}",
+            report.errors()
+        );
+        let encoded = report.outputs()[0].clone();
+        assert!(std::fs::metadata(&encoded).unwrap().len() > 500);
+        if let Some(reader) = &independent_reader {
+            let decoded = std::process::Command::new(reader).args(["-v", "error", "-i"])
+                .arg(&encoded).args(["-f", "f32le", "-acodec", "pcm_f32le", "pipe:1"]).output().unwrap();
+            assert!(decoded.status.success(), "{}", String::from_utf8_lossy(&decoded.stderr));
+            let values: Vec<_> = decoded.stdout.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+            assert!(values.len() > 20000 && values.len() < 40000);
+            assert!(values.iter().all(|v| v.is_finite()));
+            let energy = values.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / values.len() as f64;
+            assert!(energy > 0.02 && energy < 0.3, "{target}: unexpected decoded signal energy {energy}");
+        }
+        let plan = Plan::build(&[encoded], "wav", Settings::default(), tools.clone()).unwrap();
+        let decoded = execute(&plan, &Arc::new(AtomicBool::new(false)), |_, _, _| {});
+        assert!(
+            decoded.errors().is_empty(),
+            "{target}: {:?}",
+            decoded.errors()
+        );
+        let bytes = std::fs::read(&decoded.outputs()[0]).unwrap();
+        assert_eq!(&bytes[..4], b"RIFF");
+        assert!(
+            bytes.len() > 40000 && bytes.len() < 80000,
+            "{target}: unexpected decoded audio size {}",
+            bytes.len()
+        );
+    }
+}
+
 #[test]
 fn converts_actual_image_bytes_and_preserves_source_and_colliding_destinations() {
     let dir = tempfile::tempdir().unwrap();
@@ -306,7 +770,7 @@ fn catalog_does_not_offer_unsupported_legacy_doc_or_calibre_html_routes() {
             .find(|o| o.target.extension == "html")
             .unwrap()
             .engines,
-        ["Pandoc"]
+        ["Atlas"]
     );
 }
 
@@ -355,7 +819,8 @@ fn docx_export_is_an_ooxml_package_with_escaped_text() {
 
 #[test]
 fn installed_ffmpeg_converts_real_audio_when_available() {
-    let tools = Tools::discover();
+    let mut tools = Tools::discover();
+    tools.1 = Default::default(); // This test exercises the optional engine explicitly.
     if !tools.has(Tool::Ffmpeg) {
         eprintln!("FFmpeg integration not run: engine not installed");
         return;
