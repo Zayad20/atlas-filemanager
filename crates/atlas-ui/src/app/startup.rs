@@ -27,7 +27,7 @@ impl App {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
         let rubber_escape_listener = cx.listener(|this, ev: &gpui::KeystrokeEvent, window, cx| {
-            if ev.keystroke.key == "escape" && this.rubber.is_some() {
+            if ev.keystroke.key == "escape" && (this.rubber.is_some() || this.pending_folder_click.is_some()) {
                 let pane = this.rubber.as_ref().and_then(|r| match r.target {
                     RubberTarget::Pane(pane) | RubberTarget::MillerColumn(pane, _) => Some(pane),
                     RubberTarget::Dropzone => None,
@@ -49,14 +49,63 @@ impl App {
             "startup: profiles"
         );
 
-        let (tx, rx) = flume::unbounded();
-        let (icon_tx, icon_rx) = flume::unbounded();
+        let (tx, incoming_rx) = flume::unbounded();
+        #[cfg(windows)]
+        {
+            let volume_tx = tx.clone();
+            rt.spawn_blocking(move || {
+                let _ = volume_tx.send(BgResult::VolumeSnapshot(atlas_win_space::storage::mounted_volume_serials()));
+            });
+        }
+        let (drain_tx, rx) = flume::unbounded();
+        let (icon_tx, incoming_icon_rx) = flume::unbounded();
+        let (drain_icon_tx, icon_rx) = flume::unbounded();
+        let wake_rx = crate::ui_wake::subscribe();
+        cx.observe_self(|_, _| crate::ui_wake::wake()).detach();
+        cx.on_release(|_, _| crate::ui_wake::wake()).detach();
+        cx.observe_global::<gpui_component::ThemeRegistry>(|this, cx| {
+            this.theme_dirty = true;
+            cx.notify();
+        }).detach();
+        // Forward off the foreground executor: the retained ingress queues must
+        // remain readable by the OLE modal-loop drag-hover drain as well.
+        cx.background_executor()
+            .spawn(async move {
+                while let Ok(result) = incoming_rx.recv_async().await {
+                    if drain_tx.send(result).is_err() {
+                        break;
+                    }
+                    crate::ui_wake::wake();
+                }
+            })
+            .detach();
+        cx.background_executor()
+            .spawn(async move {
+                while let Ok(result) = incoming_icon_rx.recv_async().await {
+                    if drain_icon_tx.send(result).is_err() {
+                        break;
+                    }
+                    crate::ui_wake::wake();
+                }
+            })
+            .detach();
 
         // Restore previous session tree if available, else create fresh state.
         // If initial_paths were provided (e.g. CLI path or "open in new window"),
         // start a clean session focused on that location rather than restoring older tabs.
         let session_started = std::time::Instant::now();
-        let restored_tree = if initial_paths.is_empty() {
+        #[cfg(windows)]
+        let transferred_tab = std::env::var("ATLAS_TAB_TRANSFER_TOKEN")
+            .ok()
+            .and_then(|token| {
+                crate::dnd::windows::ole_clipboard::take_tab_transfer(&token)
+                    .map(|tab| (token, tab))
+            });
+        #[cfg(windows)]
+        let importing_tab = transferred_tab.is_some();
+        #[cfg(not(windows))]
+        let importing_tab = false;
+        let restored_tree = if initial_paths.is_empty() && !importing_tab {
             load_session()
         } else {
             None
@@ -97,10 +146,31 @@ impl App {
                         state.pane_tree.tiles.get_mut(tile)
                     {
                         tab.location = atlas_model::location::Location::Directory(path);
+                        tab.volume_serial = None;
                         state.focused_tile = tile;
                         state.pane_tree.make_active(|id, _| id == tile);
                     }
                 }
+            }
+        }
+        #[cfg(windows)]
+        let mut pending_tab_restore = None;
+        #[allow(unused_mut)]
+        let mut initial_type_filters = HashMap::new();
+        #[allow(unused_mut)]
+        let mut initial_size_filters = HashMap::new();
+        #[cfg(windows)]
+        if let Some((token, tab)) = transferred_tab {
+            if let Some(Tile::Pane(current)) = state.pane_tree.tiles.get_mut(state.focused_tile) {
+                *current = tab.tab.clone();
+                if let Some(show_hidden) = tab.view_filters.show_hidden { state.settings.show_hidden = show_hidden; }
+                initial_type_filters.insert(state.focused_tile, tab.view_filters.types.clone());
+                initial_size_filters.insert(state.focused_tile, tab.view_filters.sizes.clone());
+                if let Some(runtime) = state.tab_states.get_mut(&state.focused_tile) {
+                    tab.apply_runtime(runtime);
+                }
+                pending_tab_restore = Some((state.focused_tile, tab));
+                crate::dnd::windows::ole_clipboard::acknowledge_tab_transfer(&token);
             }
         }
         state.profiles = profiles;
@@ -163,13 +233,14 @@ impl App {
         let pane_count = pane_ids.len();
         let show_hidden = state.settings.show_hidden;
         for tile_id in pane_ids {
-            let (location, sort_col, sort_dir, folders_first) =
+            let (location, sort_col, sort_dir, folder_order, is_branch) =
                 match state.pane_tree.tiles.get(tile_id) {
                     Some(Tile::Pane(p)) => (
                         p.location.clone(),
                         p.sort_col.clone(),
                         p.sort_dir.clone(),
-                        p.folders_first,
+                        p.folder_order,
+                        p.is_branch_view,
                     ),
                     _ => continue,
                 };
@@ -237,9 +308,17 @@ impl App {
 
             let tx_clone = tx.clone();
             rt.spawn(async move {
-                match list_dir(&path, show_hidden, sort_col, sort_dir, folders_first).await {
-                    Ok(mut entries) => {
-                        crate::ui::views::details::format_entries(&mut entries);
+                let started = std::time::Instant::now();
+                let listing = if is_branch {
+                    atlas_core::fs::list::list_branch_dir_with_preview(&path, show_hidden, sort_col, sort_dir, |_| {}).await
+                } else {
+                    list_dir(&path, show_hidden, sort_col, sort_dir, folder_order).await
+                };
+                match listing {
+                    Ok(entries) => {
+                        let has_excluded_items = super::fs_sync::has_excluded_directory_items(&path, show_hidden, entries.is_empty()).await;
+                        let _ = tx_clone.send(BgResult::DirListExclusions { tab: tile_id, op_id, has_excluded_items });
+                        let _ = tx_clone.send(BgResult::DirListTiming { tab: tile_id, op_id, elapsed: started.elapsed() });
                         let _ = tx_clone.send(BgResult::DirListed {
                             tab: tile_id,
                             op_id,
@@ -390,41 +469,64 @@ impl App {
             }
         }
 
-        // Drain background results on a ~60 Hz foreground loop, repainting only
-        // when the drain actually changed state. Breaks when the entity is gone.
-        cx.spawn(async move |this, cx| loop {
-            Timer::after(DRAIN_INTERVAL).await;
-            let alive = this
-                .update(cx, |app, cx| {
-                    let mut dirty = app.drain_bg_results(cx);
-                    // Drive matching only until this query's snapshot is ready;
-                    // streamed items must not repaint an already published list.
-                    if app.state.overlay.show_goto_bar
-                        && !app.state.profiles.active().search_in_content
-                        && !app.state.overlay.goto_state.query.trim().is_empty()
-                        && app.goto_snapshot.is_pending()
-                    {
-                        dirty |= app.nucleo.tick();
-                    }
-                    // Drain Windows OLE drop payloads enqueued by our IDropTarget.
-                    #[cfg(windows)]
-                    {
-                        dirty |= app.drain_dnd_queue();
-                        dirty |= app.drain_shell_menu_events(cx);
-                    }
-                    // Finalize a palette's exit animation once its fade-out has elapsed.
-                    dirty |= app.tick_palette_close();
-                    // Finalize pane close-out animations: queue their dock removal.
-                    dirty |= app.tick_pane_close();
-                    dirty |= app.tick_tab_close();
-                    dirty |= app.tick_toasts();
-                    if dirty {
-                        cx.notify();
-                    }
-                })
-                .is_ok();
-            if !alive {
-                break;
+        // Channels and input wake this task. Timers exist only for active
+        // animations, queries, caret edges and toast deadlines.
+        let window_handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            let mut delay = Some(Duration::ZERO);
+            loop {
+                smol::future::or(
+                    async {
+                        let _ = wake_rx.recv_async().await;
+                    },
+                    async {
+                        if let Some(delay) = delay {
+                            Timer::after(delay).await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    },
+                )
+                .await;
+                let alive = this
+                    .update(cx, |app, cx| {
+                        let mut dirty = app.drain_bg_results(cx);
+                        dirty |= app.tick_ctx_input_blink();
+                        // Drive matching only until this query's snapshot is ready;
+                        // streamed items must not repaint an already published list.
+                        if app.state.overlay.show_goto_bar
+                            && !app.state.profiles.active().search_in_content
+                            && !app.state.overlay.goto_state.query.trim().is_empty()
+                            && app.goto_snapshot.is_pending()
+                        {
+                            dirty |= app.nucleo.tick();
+                        }
+                        // Drain Windows OLE drop payloads enqueued by our IDropTarget.
+                        #[cfg(windows)]
+                        {
+                            dirty |= app.drain_dnd_queue();
+                            dirty |= app.drain_shell_menu_events(cx);
+                        }
+                        // Finalize a palette's exit animation once its fade-out has elapsed.
+                        dirty |= app.tick_palette_close();
+                        // Finalize pane close-out animations: queue their dock removal.
+                        dirty |= app.tick_pane_close();
+                        dirty |= app.tick_tab_close();
+                        dirty |= app.tick_toasts();
+                        if dirty {
+                            cx.notify();
+                        }
+                        delay = app.maintenance_delay();
+                        if app.close_after_tab_transfer {
+                            let _ = cx.update_window(window_handle, |_, window, _| {
+                                window.remove_window()
+                            });
+                        }
+                    })
+                    .is_ok();
+                if !alive {
+                    break;
+                }
             }
         })
         .detach();
@@ -464,10 +566,15 @@ impl App {
 
         // transfer_journal resume is WIP and not wired into atlas-core yet.
 
+        let thumbnail_cache_mb = state.settings.thumbnail_cache_mb;
         Self {
+            mounted_volumes: Vec::new(),
             state,
             startup_started,
             startup_first_render_logged: false,
+            close_after_tab_transfer: false,
+            #[cfg(windows)]
+            pending_tab_restore,
             tx,
             rx,
             rt,
@@ -503,7 +610,7 @@ impl App {
             overlay_focus: None,
             batch_rename_field: BatchRenameField::Pattern,
             // Phase4: grid thumbnail cache starts empty.
-            thumb_textures: HashMap::new(),
+            thumb_textures: crate::ui::thumbnail_cache::ThumbnailCache::new(thumbnail_cache_mb),
             ext_thumb_inflight: HashSet::new(),
             // Icon theme resolved above from the active profile (selection or
             // VSCode auto-discovery).
@@ -527,6 +634,8 @@ impl App {
             layout_revision: 0,
             // Phase C: rubber-band selection state.
             rubber: None,
+            pending_folder_click: None,
+            recent_folder_navigation: None,
             row_rects: std::cell::RefCell::new(HashMap::new()),
             miller_row_rects: std::cell::RefCell::new(HashMap::new()),
             details_hit: HashMap::new(),
@@ -546,6 +655,17 @@ impl App {
             dropzone_bounds: None,
             dropzone_drag_paths: HashSet::new(),
             dropzone_pending_tags: HashMap::new(),
+            operation_feedback: Default::default(),
+            hidden_operation_notices: Default::default(),
+            toast_stack: Default::default(),
+            recycle_bin_full: None,
+            recycle_bin_status_inflight: false,
+            recycle_bin_status_checked: false,
+            recycle_bin_status_dirty: false,
+            recycle_bin_icon_dirty: false,
+            view_selection_pending: Default::default(),
+            tab_reorder_preview: None,
+            view_scroll_pending: Default::default(),
             pending_transfers: std::collections::VecDeque::new(),
             pending_pane_zones: std::cell::RefCell::new(Vec::new()),
             goto_input: None,
@@ -559,6 +679,8 @@ impl App {
             create_tag_input: None,
             renaming_profile_idx: None,
             settings_input: None,
+            theme_editor: None,
+            theme_fork_error: None,
             settings_section: 0,
             settings_font_families: None,
             rename_edit: None,
@@ -582,11 +704,8 @@ impl App {
             inactive_since: None,
             eco_cleared: false,
             ctx_menu: None,
-            ctx_menu_input: None,
-            ctx_menu_sub: None,
             ctx_menu_seq: 0,
             suppress_next_shell_ctx_menu: false,
-            ctx_menu_scroll: gpui::ScrollHandle::new(),
             type_filter_scroll: gpui::ScrollHandle::new(),
             settings_scroll: gpui::ScrollHandle::new(),
             getting_started_theme_scroll: gpui::ScrollHandle::new(),
@@ -624,13 +743,19 @@ impl App {
             pending_rename: None,
             pending_select: None,
             col_widths: details_prefs.widths,
+            typed_selection: None,
+            #[cfg(windows)]
+            win_e_enabled: atlas_win_space::integration::win_e_enabled().unwrap_or(false),
+            preview_delay: Default::default(),
             details_column_order: details_prefs.order,
             col_resize: None,
             col_dragging: None,
             col_drag_x: 0.0,
-            details_reorder: None,
-            type_filters: HashMap::new(),
-            size_filters: HashMap::new(),
+            col_drag_grab_x: 0.0,
+            col_drag_pane: None,
+            type_filters: initial_type_filters,
+            size_filters: initial_size_filters,
+            file_filter_projections: HashMap::new(),
             type_filter_menu: None,
             type_filter_input: None,
             type_filter_sub: None,
@@ -648,6 +773,7 @@ impl App {
             inspector_resize: None,
             dirty_all_panes: false,
             command_shortcut_capture: None,
+            command_shortcut_conflict: None,
             vim_pending_key: None,
         }
     }

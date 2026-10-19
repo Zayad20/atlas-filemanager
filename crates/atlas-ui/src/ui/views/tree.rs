@@ -41,7 +41,7 @@ impl App {
             )
         };
 
-        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border, header_bg);
+        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border, header_bg, cx);
 
         let rows: Arc<[(FileEntry, usize, bool, bool)]> = {
             let Some(ts) = self.state.tab_states.get_mut(&pane_id) else {
@@ -56,14 +56,14 @@ impl App {
 
         // Fetch children asynchronously if an expanded directory has not loaded them yet.
         for (entry, _, is_expanded, _) in rows.iter() {
-            if entry.kind == FileKind::Dir && *is_expanded {
+            if entry.kind() == FileKind::Dir && *is_expanded {
                 let has_children = self
                     .state
                     .tab_states
                     .get(&pane_id)
-                    .is_some_and(|ts| ts.tree.children.contains_key(&entry.path));
+                    .is_some_and(|ts| ts.tree.children.contains_key(&entry.path()));
                 if !has_children {
-                    self.spawn_list_tree(pane_id, entry.path.clone());
+                    self.spawn_list_tree(pane_id, entry.path());
                 }
             }
         }
@@ -100,10 +100,10 @@ impl App {
                                     .is_some_and(|ts| ts.selection.keyboard_cursor == Some(i));
 
                                 let file_ref = crate::ui::file_icons::FileIconRef {
-                                    path: entry.path.clone(),
-                                    kind: entry.kind.clone(),
+                                    path: entry.path(),
+                                    kind: entry.kind().clone(),
                                     extension: entry
-                                        .extension
+                                        .extension()
                                         .as_ref()
                                         .map(|s| SharedString::from(s.to_string())),
                                 };
@@ -120,6 +120,7 @@ impl App {
                                     cursor,
                                     pane_id,
                                     file_icon,
+                                    cut: this.state.system_cut_paths.contains(&entry.path()),
                                     accent,
                                     accent_fg,
                                     hover,
@@ -196,6 +197,7 @@ impl App {
 }
 
 struct TreeRowProps<'a> {
+    cut: bool,
     entry: &'a FileEntry,
     depth: usize,
     is_expanded: bool,
@@ -218,6 +220,7 @@ struct TreeRowProps<'a> {
 
 fn render_tree_row(props: TreeRowProps) -> AnyElement {
     let TreeRowProps {
+        cut,
         entry,
         depth,
         is_expanded,
@@ -238,6 +241,7 @@ fn render_tree_row(props: TreeRowProps) -> AnyElement {
     } = props;
 
     let mut row = h_flex()
+        .opacity(if cut { 0.5 } else { 1.0 })
         .id(SharedString::from(format!("tree-row-{}-{idx}", pane_id.0)))
         .w_full()
         .h(px(24.0))
@@ -278,7 +282,7 @@ fn render_tree_row(props: TreeRowProps) -> AnyElement {
     }
 
     // 2. Directory chevron or aligned indentation spacer
-    if entry.kind == FileKind::Dir {
+    if entry.kind() == FileKind::Dir {
         let chevron_icon = if is_expanded {
             AtlasIcon::CaretDown
         } else {
@@ -286,7 +290,7 @@ fn render_tree_row(props: TreeRowProps) -> AnyElement {
         };
         let chevron_color = if selected { accent_fg } else { muted };
         let chevron_view = view.clone();
-        let chevron_path = entry.path.clone();
+        let chevron_path = entry.path();
         row = row.child(
             div()
                 .w(px(18.0))
@@ -331,7 +335,7 @@ fn render_tree_row(props: TreeRowProps) -> AnyElement {
             .truncate()
             .text_xs()
             .text_color(if selected { accent_fg } else { fg })
-            .child(entry.name.clone()),
+            .child(entry.name.to_string()),
     );
 
     // 5. Aligned metadata (size and date)
@@ -348,7 +352,7 @@ fn render_tree_row(props: TreeRowProps) -> AnyElement {
             .text_xs()
             .text_color(meta_color)
             .truncate()
-            .child(entry.display_size.to_string()),
+            .child(crate::ui::views::details::entry_display_size(&entry).to_string()),
     );
     row = row.child(
         div()
@@ -358,13 +362,13 @@ fn render_tree_row(props: TreeRowProps) -> AnyElement {
             .text_xs()
             .text_color(meta_color)
             .truncate()
-            .child(entry.display_date.to_string()),
+            .child(crate::ui::views::details::entry_display_date(&entry).to_string()),
     );
 
     // 6. Click, double click, right click selection and navigation
     let row_view = view.clone();
-    let click_path = entry.path.clone();
-    let is_dir = entry.kind == FileKind::Dir;
+    let click_path = entry.path();
+    let is_dir = entry.kind() == FileKind::Dir;
     row = row
         .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
             cx.stop_propagation();
@@ -374,10 +378,16 @@ fn render_tree_row(props: TreeRowProps) -> AnyElement {
             let m = ev.modifiers();
             let (shift, ctrl) = (m.shift, m.control || m.platform);
             row_view.update(cx, |this, cx| {
+                if this.suppress_navigation_double_click(pane_id, ev.position(), ev.click_count()) { return; }
                 if this.rename_edit.is_some() {
                     this.commit_rename(cx);
                 }
-                if activate {
+                if this.state.settings.single_click_opens_folder(is_dir, ev.click_count(), shift || ctrl) {
+                    this.navigate_clicked_folder(pane_id, click_path.clone());
+                    this.recent_folder_navigation = Some(crate::ui::click_navigation::NavigationClick {
+                        pane: pane_id, origin: ev.position(), at: std::time::Instant::now(),
+                    });
+                } else if activate {
                     if is_dir {
                         this.process_actions(vec![Action::ToggleTreeExpand(click_path.clone())]);
                     } else {
@@ -412,7 +422,7 @@ fn render_tree_row(props: TreeRowProps) -> AnyElement {
         })
         .on_mouse_down(MouseButton::Right, {
             let r_view = view.clone();
-            let ctx_path = entry.path.clone();
+            let ctx_path = entry.path();
             move |ev, window, cx| {
                 let pos = ev.position;
                 r_view.update(cx, |this, cx| {
@@ -435,9 +445,9 @@ fn render_tree_row(props: TreeRowProps) -> AnyElement {
         });
 
     // 7. Hover tooltip
-    let t_name = entry.name.clone();
-    let t_path = entry.path.clone();
-    let t_size = entry.size;
+    let t_name = entry.name.to_string();
+    let t_path = entry.path();
+    let t_size = entry.size();
     let t_mod = entry.modified;
     row = row.tooltip(move |window, cx| {
         crate::ui::tooltips::entry_hover_tooltip(

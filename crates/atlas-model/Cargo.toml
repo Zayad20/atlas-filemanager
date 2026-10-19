@@ -16,6 +16,8 @@ anyhow.workspace = true
 rust-i18n.workspace = true
 toml = "0.8"
 dirs.workspace = true
+compact_str = { version = "0.9", features = ["serde"] }
+chrono = "0.4"
 
 [lints]
 workspace = true

@@ -23,6 +23,9 @@ pub async fn load_archive_preview(
     let result = {
         let inner2 = inner.clone();
         tokio::task::spawn_blocking(move || -> PreviewResult {
+            if super::is_cloud_placeholder(&archive) {
+                return super::offline_preview();
+            }
             let provider = match crate::fs::archive::open_with(&archive, None) {
                 Some(p) => p,
                 None => return PreviewResult::Error("Formato de archivo no soportado".into()),

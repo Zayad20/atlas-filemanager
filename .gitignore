@@ -57,3 +57,9 @@ website/
 /vendor/gpui-ce/justfile
 /vendor/gpui-ce/rheo.toml
 /vendor/gpui-ce/typos.toml
+
+# Local verification builds and generated test executables
+/target-coreverify/
+/target-nativeverify/
+/artifacts/*.exe
+/artifacts/*.pdb

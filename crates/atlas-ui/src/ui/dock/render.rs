@@ -1,22 +1,16 @@
 use gpui::prelude::*;
 use gpui::ColorExt as _;
 use gpui::{
-    div, px, relative, AnimationExt, AnyElement, Context, Entity, Focusable, MouseButton,
+    div, px, relative, AnyElement, Context, Entity, Focusable, MouseButton,
     SharedString, Window,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme as _, ElementExt as _};
 
 use crate::app::{App, PaneAnimationKind};
-use crate::input::action::Action;
 use crate::ui::dock::drag::{tab_drag_entity, TabDrag};
-use crate::ui::drag_hover::{
-    drag_hover_recorder, drag_hover_recorder_with_drop, DragHoverCommand, DragHoverId,
-    DragHoverKind,
-};
 use crate::ui::glass::{backdrop_tint, GlassExt};
-use crate::ui::icons::{icon, is_windows_theme, theme_icon, AtlasIcon};
+use crate::ui::icons::{icon, is_windows_theme, AtlasIcon};
 use crate::ui::layout_region::{layout_region, timed_layout_region, LayoutRegionTimings};
-use crate::ui::motion::MotionFeedbackExt as _;
 use crate::ui::pane_panel::FilePanel;
 use atlas_core::util::display::display_name;
 use atlas_model::layout_tree::{Container, LinearDir, Tile, TileId};
@@ -337,6 +331,21 @@ impl App {
         // its own `DockHost` view means this render no longer runs every App frame, and
         // pane focus must be re-asserted every frame (see `sync_overlay_focus`).
         let is_dragging = cx.has_active_drag();
+        if is_dragging {
+            if let Some(pane) = self.state.dragging_pane {
+                let parent = self.state.find_tabs_container(pane).and_then(|id| self.state.find_parent_of(id));
+                // A Ctrl toggle retargets only a drag collapse. A simultaneous
+                // real close in the same split must retain its own timeline.
+                let real_close = parent.is_some_and(|parent| self.pane_closing.keys()
+                    .any(|closing| self.state.container_contains_pane(parent, *closing)));
+                let collapse = !window.modifiers().control;
+                if !real_close && parent.and_then(|id| self.dock_split_animations.get(&id))
+                    .is_some_and(|animation| animation.closing != collapse) {
+                    self.animate_pane_drag(pane, collapse);
+                }
+            }
+        }
+        if !is_dragging { self.tab_reorder_preview = None; }
         if !is_dragging && self.state.dragging_pane.is_some() {
             if !self.state.drag_pending {
                 let pane_id = self.state.dragging_pane.unwrap();
@@ -370,6 +379,7 @@ impl App {
                     .or_else(|| self.render_tree(root, window, cx))
             })
             .unwrap_or_else(|| div().size_full().into_any_element());
+        let content = self.with_root_drop_zones(content, window, cx);
         let view = cx.entity();
         div()
             .relative()
@@ -391,6 +401,69 @@ impl App {
                 });
             })
             .into_any_element()
+    }
+
+    fn with_root_drop_zones(&self, content: AnyElement, window: &Window, cx: &Context<Self>) -> AnyElement {
+        use crate::ui::tab_reorder::RootDropEdge;
+        let mut host = div().relative().size_full().child(content);
+        if !cx.active_drag().is_some_and(|drag| drag.value.is::<TabDrag>()) {
+            return host.into_any_element();
+        }
+        if !window.modifiers().control && self.state.pane_tree.tiles.iter()
+            .filter(|(_, tile)| matches!(tile, Tile::Pane(_))).take(2).count() < 2 {
+            return host.into_any_element();
+        }
+        let band = 20.0 * f32::from(window.rem_size()) / crate::ui::BASE_PX;
+        let accent = cx.theme().accent;
+        let animate = !self.state.settings.disable_animations && !cx.reduce_motion();
+        let preview_app = cx.entity();
+        // Canvas paints without a hitbox. Its translucent prediction therefore
+        // cannot intercept the pointer or turn the whole half-window into a zone.
+        host = host.child(gpui::canvas(|bounds, _, _| bounds, move |_, bounds, window, cx| {
+            let mouse = window.mouse_position();
+            if preview_app.read(cx).tab_drop_target_at(f32::from(mouse.x), f32::from(mouse.y)).is_some() {
+                return;
+            }
+            let pos = mouse - bounds.origin;
+            let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+            let Some(edge) = RootDropEdge::at(f32::from(pos.x), f32::from(pos.y), w, h, band) else { return; };
+            let [x, y, w, h] = edge.preview(w, h);
+            let prediction = gpui::Bounds::new(bounds.origin + gpui::point(px(x), px(y)), gpui::size(px(w), px(h)));
+            let pulse = if animate {
+                static CLOCK: OnceLock<Instant> = OnceLock::new();
+                let t = CLOCK.get_or_init(Instant::now).elapsed().as_secs_f32();
+                window.request_animation_frame();
+                0.68 + 0.24 * (t * 5.0).sin().abs()
+            } else { 0.85 };
+            window.paint_quad(gpui::quad(prediction, px(3.0), accent.opacity(0.16), px(2.0), accent.opacity(pulse), gpui::BorderStyle::Solid));
+        }).absolute().inset_0());
+        for edge in [RootDropEdge::RootTop, RootDropEdge::RootBottom, RootDropEdge::RootLeft, RootDropEdge::RootRight] {
+            let app = cx.entity();
+            let target_app = app.clone();
+            // Root edges overlap the top/side tab controls. Let the tab under
+            // the cursor receive its reorder drop instead of splitting the root.
+            let zone = div().id(SharedString::from(format!("root-drop-{edge:?}"))).absolute()
+                .can_drop(move |_, window, cx| {
+                    let pos = window.mouse_position();
+                    target_app.read(cx).tab_drop_target_at(f32::from(pos.x), f32::from(pos.y)).is_none()
+                });
+            let zone = match edge {
+                RootDropEdge::RootTop => zone.top_0().left_0().right_0().h(px(band)),
+                RootDropEdge::RootBottom => zone.bottom_0().left_0().right_0().h(px(band)),
+                RootDropEdge::RootLeft => zone.left_0().top(px(band)).bottom(px(band)).w(px(band)),
+                RootDropEdge::RootRight => zone.right_0().top(px(band)).bottom(px(band)).w(px(band)),
+            };
+            host = host.child(zone.on_drop::<TabDrag>(move |drag, window, cx| {
+                app.update(cx, |this, cx| {
+                    tracing::debug!(pane = drag.pane_id.0, ?edge, "dnd tab root drop");
+                    if let Some(id) = this.tab_for_drop(drag.pane_id, window.modifiers().control) {
+                        this.split_tab_at_root(id, edge.vertical(), edge.before());
+                    }
+                    cx.notify();
+                });
+            }));
+        }
+        host.into_any_element()
     }
 
     fn render_flat_tree(
@@ -450,8 +523,8 @@ impl App {
             let is_closing = matches!(motion, Some(SplitMotion::Closing));
             let is_opening = matches!(motion, Some(SplitMotion::Opening));
             let current_rect = pane.rect;
-            if is_closing && (current_rect.w <= 0.5 || current_rect.h <= 0.5) {
-                // A fully departed pane needs no scene replay while its logical
+            if is_closing && (current_rect.w < 12.0 || current_rect.h < 12.0) {
+                // A departing pane collapsed below visible threshold needs no scene replay while its logical
                 // teardown is pending during another pane's transition.
                 continue;
             }
@@ -687,18 +760,21 @@ impl App {
                 );
 
                 let mut final_shares = linear.shares.clone();
-                if cx.has_active_drag() {
+                if cx.has_active_drag() && !window.modifiers().control {
                     if let Some(dragged) = self.state.dragging_pane {
                         for (ix, child_id) in linear.children.iter().enumerate() {
                             if ix < final_shares.len()
-                                && self.state.container_contains_pane(*child_id, dragged)
+                                && self.drag_vacates_container(*child_id, dragged)
                             {
                                 final_shares[ix] = 0.0;
                             }
                         }
                     }
                 }
-                let closing_layout = self
+                let drag_collapsing = cx.has_active_drag() && !window.modifiers().control
+                    && self.state.dragging_pane.is_some_and(|pane| linear.children.iter()
+                        .any(|child| self.drag_vacates_container(*child, pane)));
+                let closing_layout = drag_collapsing || self
                     .dock_split_animations
                     .get(&id)
                     .is_some_and(|animation| animation.closing)
@@ -744,6 +820,8 @@ impl App {
                     .get(&id)
                     .filter(|animation| animation.closing)
                     .and_then(|animation| animation.closing_ix)
+                    .or_else(|| drag_collapsing.then(|| linear.children.iter().position(|child|
+                        self.state.dragging_pane.is_some_and(|pane| self.drag_vacates_container(*child, pane)))).flatten())
                     .or_else(|| {
                         linear.children.iter().position(|child| {
                             matches!(
@@ -963,16 +1041,19 @@ impl App {
                 }
 
                 let mut final_shares = linear.shares.clone();
-                if cx.has_active_drag() {
+                if cx.has_active_drag() && !window.modifiers().control {
                     if let Some(dragged) = self.state.dragging_pane {
                         for (ix, child_id) in linear.children.iter().enumerate() {
-                            if self.state.container_contains_pane(*child_id, dragged) {
+                            if self.drag_vacates_container(*child_id, dragged) {
                                 final_shares[ix] = 0.0;
                             }
                         }
                     }
                 }
-                let closing_layout = self
+                let drag_collapsing = cx.has_active_drag() && !window.modifiers().control
+                    && self.state.dragging_pane.is_some_and(|pane| linear.children.iter()
+                        .any(|child| self.drag_vacates_container(*child, pane)));
+                let closing_layout = drag_collapsing || self
                     .dock_split_animations
                     .get(&id)
                     .is_some_and(|animation| animation.closing)
@@ -1004,6 +1085,8 @@ impl App {
                     .get(&id)
                     .filter(|animation| animation.closing)
                     .and_then(|animation| animation.closing_ix)
+                    .or_else(|| drag_collapsing.then(|| linear.children.iter().position(|child|
+                        self.state.dragging_pane.is_some_and(|pane| self.drag_vacates_container(*child, pane)))).flatten())
                     .or_else(|| {
                         linear.children.iter().position(|child| {
                             matches!(
@@ -1277,9 +1360,11 @@ impl App {
             self.state.focused_tile.0.hash(&mut h);
         }
         window.modifiers().alt.hash(&mut h);
+        window.modifiers().control.hash(&mut h);
         cx.has_active_drag().hash(&mut h);
         self.drag_hover_maybe_active().hash(&mut h);
         self.state.dragging_pane.map(|p| p.0).hash(&mut h);
+        self.tab_reorder_preview.hash(&mut h);
         self.state.drag_pending.hash(&mut h);
         self.rename_edit
             .as_ref()
@@ -1461,7 +1546,7 @@ impl App {
         &mut self,
         children: Vec<TileId>,
         active: Option<TileId>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let border = cx.theme().border;
@@ -1488,36 +1573,22 @@ impl App {
         };
 
         let app = cx.entity();
-        let tab_min = crate::ui::rem_px(if windows_theme { 118.0 } else { 56.0 });
-        let tab_max = crate::ui::rem_px(if windows_theme { 210.0 } else { 220.0 });
-        let tab_gap = crate::ui::rem_px(4.0);
         let strip_height = crate::ui::rem_px(if windows_theme { 46.0 } else { 34.0 });
-        let mut strip = h_flex()
-            .id("tab-strip-scroll")
-            .w_full()
-            .h(strip_height)
-            .min_w(px(0.))
-            .overflow_x_scroll()
-            .items_center()
-            .px_2()
-            .bg(tab_bar_bg)
-            .rounded_tl(px(12.0))
-            .rounded_tr(px(12.0))
-            .when(!is_glass, |s| {
-                s.border_b_1().border_color(border.opacity(0.42))
-            });
+        let font = crate::ui::surface::chrome_ui_font(window);
+        let font_size = crate::ui::surface::chrome_font_size_tabs(window, windows_theme);
 
-        for pane_id in children {
+        let mut tab_items = Vec::with_capacity(children.len());
+
+        for pane_id in &children {
             let (label, tag_color) = self
-                .tab_data_for(pane_id)
+                .tab_data_for(*pane_id)
                 .map(|t| {
                     let tag_color = match &t.location {
-                        Location::Tag(id) => Some(
-                            self.state
-                                .tag_cache
-                                .def(*id)
-                                .map_or([128, 128, 128], |def| def.color),
-                        ),
+                        Location::Tag(id) => self
+                            .state
+                            .tag_cache
+                            .def(*id)
+                            .map(|def| def.color),
                         _ => None,
                     };
                     let label = match &t.location {
@@ -1530,241 +1601,117 @@ impl App {
                     (label, tag_color)
                 })
                 .unwrap_or_else(|| (rust_i18n::t!("fallback_tab_title").to_string(), None));
-            let is_active = Some(pane_id) == active;
-            let activate_app = app.clone();
-            let close_app = app.clone();
-            let drag_app = app.clone();
-            let tab_motion = (!self.state.settings.disable_animations)
-                .then(|| {
-                    self.tab_closing
-                        .get(&pane_id)
-                        .copied()
-                        .map(|started| (true, started))
-                        .or_else(|| {
-                            self.pane_animation_for(pane_id)
-                                .filter(|animation| animation.kind == PaneAnimationKind::NewTab)
-                                .map(|animation| (false, animation.started))
-                        })
-                })
-                .flatten();
-            let tab = h_flex()
-                .id(SharedString::from(format!("tab-chip-{}", pane_id.0)))
-                .block_mouse_except_scroll()
-                .relative()
-                .min_w(tab_min)
-                .max_w(tab_max)
-                .h(crate::ui::rem_px(if windows_theme { 38.0 } else { 26.0 }))
-                .items_center()
-                .gap(crate::ui::rem_px(if windows_theme { 8.0 } else { 6.0 }))
-                .px_3()
-                .overflow_hidden()
-                .rounded(cx.theme().radius)
-                .cursor_pointer()
-                .bg(if is_active {
-                    active_bg
-                } else {
-                    cx.theme().transparent
-                })
-                .text_color(if is_active { active_fg } else { tab_fg })
-                .motion_feedback()
-                .hover(move |s| {
-                    if is_active {
-                        s.bg(active_bg)
-                    } else {
-                        s.bg(hover_bg)
+
+            tab_items.push(crate::ui::views::tabs_bar_element::TabBarItem {
+                pane_id: *pane_id,
+                label,
+                is_active: Some(*pane_id) == active,
+                tag_rgb: tag_color,
+                closing: self.tab_closing.get(pane_id).copied(),
+            });
+        }
+
+        let geometry = std::rc::Rc::new(std::cell::RefCell::new(
+            crate::ui::views::tabs_bar_element::TabDropGeometry::default()));
+        let reorder = self.tab_reorder_preview.as_ref().filter(|preview|
+            preview.children == children && cx.has_active_drag()).cloned();
+        let instant = self.state.settings.disable_animations || cx.reduce_motion();
+        let tabs_bar = crate::ui::views::tabs_bar_element::TabsBarElement::new(
+            app.downgrade(),
+            tab_items,
+            active,
+            font,
+            font_size,
+            windows_theme,
+            tab_bar_bg,
+            active_bg,
+            hover_bg,
+            active_fg,
+            tab_fg,
+            muted,
+            border,
+            cx.theme().accent,
+        ).interaction(geometry.clone(), reorder, instant);
+
+        let mut strip_container = div()
+            .relative()
+            .w_full()
+            .h(strip_height)
+            .child(tabs_bar);
+        let preview_app = app.clone();
+        let preview_children = children.clone();
+        let drop_app = app.clone();
+        let drop_children = children.clone();
+        strip_container = strip_container
+            .on_drag_move::<TabDrag>(move |event, _window, cx| {
+                let dragged = event.drag(cx).pane_id;
+                let inside = event.bounds.contains(&event.event.position);
+                let boundary = geometry.borrow().boundary_at(f32::from(event.event.position.x - event.bounds.left()));
+                preview_app.update(cx, |this, cx| {
+                    let next = inside.then(|| crate::ui::tab_reorder::TabReorderPreview { dragged, children: preview_children.clone(), boundary, copying: event.event.modifiers.control });
+                    if !inside && this.tab_reorder_preview.as_ref().is_none_or(|preview| preview.children != preview_children) { return; }
+                    if this.tab_reorder_preview != next {
+                        this.tab_reorder_preview = next;
+                        for view in this.pane_tabs_cache.values() { view.update(cx, |_, cx| cx.notify()); }
+                        cx.notify();
                     }
-                })
-                .on_drag_alt(tab_drag_source(
-                    TabDrag {
-                        pane_id,
-                        content: self.get_or_make_file_panel(pane_id, cx).clone().into(),
-                        size: self.pane_view_bounds.get(&pane_id).map(|b| b.size),
-                    },
-                    move |drag, _pos, _window, cx| {
-                        drag_app.update(cx, |this, cx| {
-                            if this.state.dragging_pane != Some(drag.pane_id) {
-                                this.animate_pane_drag(drag.pane_id, true);
-                                this.state.dragging_pane = Some(drag.pane_id);
-                                cx.notify();
-                            }
-                        });
-                        tab_drag_entity(drag.pane_id, drag.content.clone(), drag.size, cx)
-                    },
-                ))
-                .on_drop::<TabDrag>({
-                    let drop_app = app.clone();
-                    move |drag, _window, cx| {
-                        drop_app.update(cx, |this, cx| {
-                            this.move_tab_before(drag.pane_id, pane_id);
-                            cx.notify();
-                        });
+                });
+            })
+            .on_drop::<TabDrag>(move |drag, window, cx| {
+                drop_app.update(cx, |this, cx| {
+                    let boundary = this.tab_reorder_preview.as_ref().filter(|preview| preview.dragged == drag.pane_id && preview.children == drop_children).map_or(drop_children.len(), |preview| preview.boundary);
+                    tracing::debug!(pane = drag.pane_id.0, boundary, targets = drop_children.len(), "dnd tab strip drop");
+                    if let Some(id) = this.tab_for_drop(drag.pane_id, window.modifiers().control) {
+                        this.commit_tab_reorder(id, &drop_children, boundary);
                     }
-                })
-                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                    activate_app.update(cx, |this, cx| {
-                        this.process_actions(vec![Action::FocusTab(pane_id)]);
+                    cx.notify();
+                });
+            });
+
+        let target_anchor = active.or_else(|| children.first().copied());
+        if let Some(target) = target_anchor {
+            let drop_app_ext = app.clone();
+            let drop_app_ext2 = app;
+            strip_container = strip_container
+                .on_drop::<crate::ui::root::DraggedFiles>(move |d, window, cx| {
+                    let paths = d.paths.clone();
+                    drop_app_ext.update(cx, |this, cx| {
+                        let pos = window.mouse_position();
+                        let target = this.tab_drop_target_at(f32::from(pos.x), f32::from(pos.y)).unwrap_or(target);
+                        if let Some(command) = this.tab_drop_command(target) {
+                            this.execute_drag_hover_drop_command(command, paths, true);
+                        }
                         cx.notify();
                     });
                 })
-                .when_some(tag_color, |s, color| {
-                    s.child(
-                        div()
-                            .flex_none()
-                            .size(crate::ui::rem_px(9.))
-                            .rounded_full()
-                            .bg(gpui::rgb(
-                                (u32::from(color[0]) << 16)
-                                    | (u32::from(color[1]) << 8)
-                                    | u32::from(color[2]),
-                            )),
-                    )
-                })
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .truncate()
-                        .when(!windows_theme, |s| s.text_xs())
-                        .when(windows_theme, |s| s.text_sm())
-                        .child(SharedString::from(label)),
-                )
-                .child(
-                    div()
-                        .size(crate::ui::rem_px(if windows_theme { 22.0 } else { 18.0 }))
-                        .rounded(px(5.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_color(muted)
-                        .hover(move |s| s.bg(border.opacity(0.5)))
-                        .child(theme_icon(
-                            AtlasIcon::X,
-                            if windows_theme { 11.0 } else { 10.0 },
-                            muted,
-                            windows_theme,
-                        ))
-                        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                            close_app.update(cx, |this, cx| {
-                                this.process_actions(vec![Action::CloseTab(pane_id)]);
-                                cx.notify();
-                            });
-                            cx.stop_propagation();
-                        }),
-                );
-            let is_closing =
-                self.tab_closing.contains_key(&pane_id) || self.pane_closing.contains_key(&pane_id);
-            let tab =
-                if !is_closing {
-                    let tab_drop_cmd = self.tab_drop_command(pane_id);
-                    let tab_hover_cmd = DragHoverCommand::Process(Action::FocusTab(pane_id));
-                    let tab_hover_id = DragHoverId::Tab(pane_id);
-                    match tab_drop_cmd {
-                        Some(drop_cmd) => {
-                            let drop_app_internal = app.clone();
-                            let drop_app_external = app.clone();
-                            tab.on_prepaint_child(drag_hover_recorder_with_drop(
-                                tab_hover_id,
-                                DragHoverKind::Nav,
-                                tab_hover_cmd,
-                                drop_cmd,
-                                &app,
-                            ))
-                            .on_drop::<crate::ui::root::DraggedFiles>(move |d, _window, cx| {
-                                let paths = d.paths.clone();
-                                drop_app_internal.update(cx, |this, cx| {
-                                    if let Some(command) = this.tab_drop_command(pane_id) {
-                                        this.execute_drag_hover_drop_command(command, paths, true);
-                                    }
-                                    cx.notify();
-                                });
-                            })
-                            .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
-                                let paths = paths.paths().to_vec();
-                                drop_app_external.update(cx, |this, cx| {
-                                    if let Some(command) = this.tab_drop_command(pane_id) {
-                                        this.execute_drag_hover_drop_command(command, paths, false);
-                                    }
-                                    cx.notify();
-                                });
-                            })
+                .on_drop::<gpui::ExternalPaths>(move |paths, window, cx| {
+                    let paths = paths.paths().to_vec();
+                    drop_app_ext2.update(cx, |this, cx| {
+                        let pos = window.mouse_position();
+                        let target = this.tab_drop_target_at(f32::from(pos.x), f32::from(pos.y)).unwrap_or(target);
+                        if let Some(command) = this.tab_drop_command(target) {
+                            this.execute_drag_hover_drop_command(command, paths, false);
                         }
-                        None => tab.on_prepaint_child(drag_hover_recorder(
-                            tab_hover_id,
-                            DragHoverKind::Nav,
-                            tab_hover_cmd,
-                            &app,
-                        )),
-                    }
-                } else {
-                    tab
-                };
-            let slot = h_flex()
-                .min_w(tab_min)
-                .max_w(tab_max)
-                .mr(tab_gap)
-                .overflow_hidden()
-                .child(tab);
-            let slot = if let Some((closing, started)) = tab_motion {
-                let phase = if closing { "close" } else { "open" };
-                slot.with_animation(
-                    crate::ui::motion::keyed("tab-chip-motion", pane_id.0, (phase, started)),
-                    crate::ui::motion::animation(crate::ui::motion::TAB_MS),
-                    move |this, t| {
-                        let openness = if closing { 1.0 - t } else { t };
-                        this.min_w(tab_min * openness)
-                            .max_w(tab_max * openness)
-                            .mr(tab_gap * openness)
-                            .opacity((openness * 1.2).clamp(0.0, 1.0))
-                            .scale(0.88 + 0.12 * openness)
-                    },
-                )
-                .into_any_element()
-            } else {
-                slot.into_any_element()
-            };
-            strip = strip.child(layout_region("pane.tabs_chips", slot));
+                        cx.notify();
+                    });
+                });
         }
 
-        if let Some(anchor) = active {
-            let new_app = app;
-            strip = strip.child(layout_region(
-                "pane.tabs_actions",
-                div()
-                    .id(SharedString::from(format!("tab-new-{}", anchor.0)))
-                    .block_mouse_except_scroll()
-                    .size(crate::ui::rem_px(if windows_theme { 32.0 } else { 24.0 }))
-                    .rounded(px(6.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hover_bg))
-                    .child(theme_icon(
-                        AtlasIcon::Plus,
-                        if windows_theme { 15.0 } else { 13.0 },
-                        muted,
-                        windows_theme,
-                    ))
-                    .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                        new_app.update(cx, |this, cx| {
-                            this.process_actions(vec![Action::NewTab(anchor)]);
-                            cx.notify();
-                        });
-                    }),
-            ));
-        }
-        let strip = strip.into_any_element();
         let strip = if self.state.settings.show_titlebar {
-            let height = strip_height.to_pixels(_window.rem_size());
+            let height = strip_height.to_pixels(window.rem_size());
             let controls_top = crate::ui::window_chrome::controls_top(
                 height,
                 px(if is_glass { 6.0 } else { 3.0 }),
-                f32::from(_window.rem_size()) / crate::ui::BASE_PX,
+                f32::from(window.rem_size()) / crate::ui::BASE_PX,
             );
-            crate::ui::window_chrome::CornerTabStrip::new(strip, height, controls_top)
-                .into_any_element()
+            crate::ui::window_chrome::CornerTabStrip::new(
+                strip_container.into_any_element(),
+                height,
+                controls_top,
+            )
+            .into_any_element()
         } else {
-            strip
+            strip_container.into_any_element()
         };
         timed_layout_region("pane.tabs_bar", PANE_TABS_BAR_TIMINGS, strip).into_any_element()
     }
@@ -1792,20 +1739,21 @@ impl App {
         let overlay_top_app = app.clone();
         let overlay_left_app = app.clone();
         let overlay_right_app = app.clone();
-        let overlay_bottom_app = app;
+        let overlay_bottom_app = app.clone();
+        let overlay_center_app = app;
 
-        el = el
-            .child(timed_layout_region(
-                "pane.drop_zones",
-                PANE_DROP_ZONES_TIMINGS,
+        let drop_zones = div()
+            .absolute()
+            .inset_0()
+            .child(
                 split_drop_zone(AtlasIcon::SplitHorizontal)
                     .left_0()
                     .top(relative(0.25))
                     .bottom(relative(0.25))
                     .w(relative(0.35))
-                    .on_drop::<TabDrag>(move |drag, _window, cx| {
+                    .on_drop::<TabDrag>(move |drag, window, cx| {
                         overlay_left_app.update(cx, |this, cx| {
-                            this.split_existing_tab(target, drag.pane_id, false, true);
+                            if let Some(id) = this.tab_for_drop(drag.pane_id, window.modifiers().control) { this.split_existing_tab(target, id, false, true); }
                             cx.notify();
                         });
                     })
@@ -1816,16 +1764,16 @@ impl App {
                             .opacity(0.0)
                             .group_hover("tab-split-zone", |s| s.opacity(1.0)),
                     ),
-            ))
+            )
             .child(
                 split_drop_zone(AtlasIcon::SplitHorizontal)
                     .right_0()
                     .top(relative(0.25))
                     .bottom(relative(0.25))
                     .w(relative(0.35))
-                    .on_drop::<TabDrag>(move |drag, _window, cx| {
+                    .on_drop::<TabDrag>(move |drag, window, cx| {
                         overlay_right_app.update(cx, |this, cx| {
-                            this.split_existing_tab(target, drag.pane_id, false, false);
+                            if let Some(id) = this.tab_for_drop(drag.pane_id, window.modifiers().control) { this.split_existing_tab(target, id, false, false); }
                             cx.notify();
                         });
                     })
@@ -1843,9 +1791,9 @@ impl App {
                     .left_0()
                     .right_0()
                     .h(relative(0.25))
-                    .on_drop::<TabDrag>(move |drag, _window, cx| {
+                    .on_drop::<TabDrag>(move |drag, window, cx| {
                         overlay_top_app.update(cx, |this, cx| {
-                            this.split_existing_tab(target, drag.pane_id, true, true);
+                            if let Some(id) = this.tab_for_drop(drag.pane_id, window.modifiers().control) { this.split_existing_tab(target, id, true, true); }
                             cx.notify();
                         });
                     })
@@ -1863,9 +1811,29 @@ impl App {
                     .left_0()
                     .right_0()
                     .h(relative(0.25))
-                    .on_drop::<TabDrag>(move |drag, _window, cx| {
+                    .on_drop::<TabDrag>(move |drag, window, cx| {
                         overlay_bottom_app.update(cx, |this, cx| {
-                            this.split_existing_tab(target, drag.pane_id, true, false);
+                            if let Some(id) = this.tab_for_drop(drag.pane_id, window.modifiers().control) { this.split_existing_tab(target, id, true, false); }
+                            cx.notify();
+                        });
+                    })
+                    .child(
+                        div()
+                            .size_full()
+                            .bg(cx.theme().background.opacity(0.85))
+                            .opacity(0.0)
+                            .group_hover("tab-split-zone", |s| s.opacity(1.0)),
+                    ),
+            )
+            .child(
+                split_drop_zone(AtlasIcon::Plus)
+                    .left(relative(0.35))
+                    .right(relative(0.35))
+                    .top(relative(0.25))
+                    .bottom(relative(0.25))
+                    .on_drop::<TabDrag>(move |drag, window, cx| {
+                        overlay_center_app.update(cx, |this, cx| {
+                            if let Some(id) = this.tab_for_drop(drag.pane_id, window.modifiers().control) { this.move_tab_before(id, target); }
                             cx.notify();
                         });
                     })
@@ -1877,6 +1845,12 @@ impl App {
                             .group_hover("tab-split-zone", |s| s.opacity(1.0)),
                     ),
             );
+
+        el = el.child(timed_layout_region(
+            "pane.drop_zones",
+            PANE_DROP_ZONES_TIMINGS,
+            drop_zones,
+        ));
 
         el.into_any_element()
     }

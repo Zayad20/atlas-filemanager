@@ -87,38 +87,102 @@ impl ProfileScoped for PreviewFeature {
 }
 
 /// View/sort remembered for a single directory (see [`FolderViewPrefs`]).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FolderViewPref {
     pub view_mode: crate::settings::ViewMode,
     pub sort_col: crate::file_entry::SortColumn,
     pub sort_dir: crate::file_entry::SortDir,
+    #[serde(default)]
+    pub recursive: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub columns: Option<FolderColumns>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FolderColumns {
+    pub ratios: [f32; 4],
+    pub order: [String; 3],
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct FolderViewRecord {
+    location: Bookmark,
+    pref: FolderViewPref,
+    #[serde(default)]
+    available: bool,
 }
 
 /// LRU-capped `path -> FolderViewPref` map, most-recently-used first. Lets each
 /// folder remember its own view mode / sort without growing [`Profile`] or
 /// [`ProfilePrefs`] unbounded as the user browses.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FolderViewPrefs {
     entries: Vec<(PathBuf, FolderViewPref)>,
+    #[serde(default)]
+    records: Vec<FolderViewRecord>,
 }
 
 impl FolderViewPrefs {
     const CAP: usize = 200;
 
+    pub fn get_exact(&self, path: &std::path::Path) -> Option<FolderViewPref> {
+        self.entries.iter().map(|(p, v)| (p, v))
+            .chain(self.records.iter().filter(|r| r.available).map(|r| (&r.location.path, &r.pref)))
+            .find(|(p, _)| *p == path).map(|(_, pref)| pref.clone())
+    }
+
     pub fn get(&self, path: &std::path::Path) -> Option<FolderViewPref> {
-        self.entries
-            .iter()
-            .find(|(p, _)| p == path)
-            .map(|(_, v)| v.clone())
+        let candidates = self.entries.iter().map(|(p, v)| (p, v))
+            .chain(self.records.iter().filter(|record| record.available).map(|r| (&r.location.path, &r.pref)));
+        candidates.clone().find(|(p, _)| *p == path)
+            .or_else(|| candidates.filter(|(p, pref)| pref.recursive && path.starts_with(p))
+                .max_by_key(|(p, _)| p.components().count()))
+            .map(|(_, pref)| pref.clone())
     }
 
     /// Insert/update `path`, bumping it to most-recently-used and evicting the
     /// oldest entry past [`Self::CAP`].
     pub fn set(&mut self, path: PathBuf, pref: FolderViewPref) {
+        if let Some(record) = self.records.iter_mut().find(|r| r.available && r.location.path == path) {
+            record.pref = pref;
+            return;
+        }
         self.entries.retain(|(p, _)| *p != path);
         self.entries.insert(0, (path, pref));
         self.entries.truncate(Self::CAP);
     }
+
+    /// Migrate old path keys, bind to a partition serial and repair drive-letter
+    /// changes. Disconnected volumes keep their settings without applying them
+    /// to a different disk that happens to reuse the same letter.
+    pub fn reconcile_volumes(&mut self, volumes: &[(PathBuf, u32)]) -> bool {
+        let before = self.clone();
+        for record in &mut self.records {
+            record.location.reconcile_volume(volumes);
+            record.available = volumes.iter().any(|(root, serial)| {
+                record.location.volume_serial == Some(*serial)
+                    && same_drive(root, &record.location.path)
+            });
+        }
+        let mut unbound = Vec::new();
+        for (path, pref) in self.entries.drain(..) {
+            let mut location = Bookmark::new(String::new(), path.clone());
+            location.reconcile_volume(volumes);
+            if location.volume_serial.is_none() { unbound.push((path, pref)); continue; }
+            self.records.retain(|r| r.location.volume_serial != location.volume_serial || r.location.path != location.path);
+            self.records.insert(0, FolderViewRecord { location, pref, available: true });
+        }
+        self.entries = unbound;
+        self.records.truncate(Self::CAP);
+        *self != before
+    }
+}
+
+fn same_drive(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let (a, b) = (a.to_string_lossy(), b.to_string_lossy());
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    a.len() >= 3 && b.len() >= 3 && a[1] == b':' && b[1] == b':'
+        && a[0].eq_ignore_ascii_case(&b[0])
 }
 
 /// Marker for [`ProfileScoped`] — stores [`FolderViewPrefs`] under key `"folder_view"`.
@@ -204,10 +268,73 @@ pub fn default_sections() -> Vec<SidebarSection> {
     ]
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Bookmark {
     pub name: String,
     pub path: PathBuf,
+    /// Stable identity of the Windows partition; absent in legacy/non-Windows saves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_serial: Option<u32>,
+}
+
+impl Bookmark {
+    pub const fn new(name: String, path: PathBuf) -> Self {
+        Self {
+            name,
+            path,
+            volume_serial: None,
+        }
+    }
+
+    /// Reconcile against a complete snapshot of mounted drive-letter volumes.
+    /// Never attach a missing bookmark to a different partition reusing its letter.
+    pub fn reconcile_volume(&mut self, volumes: &[(PathBuf, u32)]) -> bool {
+        let original = self.path.to_string_lossy();
+        let bytes = original.as_bytes();
+        if bytes.len() < 3
+            || !bytes[0].is_ascii_alphabetic()
+            || bytes[1] != b':'
+            || !matches!(bytes[2], b'\\' | b'/')
+        {
+            return false;
+        }
+        let current = volumes.iter().find(|(root, _)| {
+            root.to_string_lossy()
+                .as_bytes()
+                .first()
+                .is_some_and(|letter| letter.eq_ignore_ascii_case(&bytes[0]))
+        });
+        let Some(serial) = self.volume_serial else {
+            self.volume_serial = current.map(|(_, serial)| *serial);
+            return self.volume_serial.is_some();
+        };
+        if current.is_some_and(|(_, mounted)| *mounted == serial) {
+            return false;
+        }
+        let mut matches = volumes.iter().filter(|(_, mounted)| *mounted == serial);
+        let Some((root, _)) = matches.next() else {
+            return false;
+        };
+        // Cloned partitions can share a serial. Preserve the bookmark until unique.
+        if matches.next().is_some() {
+            return false;
+        }
+        let Some(letter) = root.to_string_lossy().chars().next() else {
+            return false;
+        };
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::{OsStrExt, OsStringExt};
+            let mut units: Vec<_> = self.path.as_os_str().encode_wide().collect();
+            units[0] = letter as u16;
+            self.path = PathBuf::from(std::ffi::OsString::from_wide(&units));
+        }
+        #[cfg(not(windows))]
+        {
+            self.path = PathBuf::from(format!("{letter}{}", &original[1..]));
+        }
+        true
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -299,6 +426,53 @@ impl Default for ProfileManager {
 }
 
 impl ProfileManager {
+    /// Update every profile, including inactive profiles, after device changes.
+    pub fn reconcile_bookmark_volumes(&mut self, volumes: &[(PathBuf, u32)]) -> bool {
+        self.reconcile_volume_paths(volumes).changed
+    }
+
+    /// Include saved tabs and recent folders, retaining identities while a disk
+    /// is disconnected. Return real path changes separately from first binding.
+    pub fn reconcile_volume_paths(&mut self, volumes: &[(PathBuf, u32)]) -> VolumeReconciliation {
+        let mut result = VolumeReconciliation::default();
+        for profile in &mut self.profiles {
+            for bookmark in &mut profile.bookmarks {
+                let old = bookmark.path.clone();
+                result.changed |= bookmark.reconcile_volume(volumes);
+                if old != bookmark.path { result.moved.push((old, bookmark.path.clone())); }
+            }
+            if let Some(tree) = &mut profile.tree {
+                for (_, tile) in tree.tiles.iter_mut() {
+                    if let crate::layout_tree::Tile::Pane(tab) = tile {
+                        let old = tab.volume_path().map(std::path::Path::to_path_buf);
+                        result.changed |= tab.reconcile_volume(volumes);
+                        if let (Some(old), Some(new)) = (old, tab.volume_path()) {
+                            if old != new { result.moved.push((old, new.to_path_buf())); }
+                        }
+                    }
+                }
+            }
+            let mut recent = profile.scoped::<RecentFoldersFeature>();
+            let saved: HashMap<PathBuf, u32> = profile.prefs.get("recent_folder_volumes").unwrap_or_default();
+            let mut identities = HashMap::new();
+            for path in &mut recent {
+                let old = path.clone();
+                let mut identity = Bookmark::new(String::new(), old.clone());
+                identity.volume_serial = saved.get(&old).copied();
+                result.changed |= identity.reconcile_volume(volumes);
+                *path = identity.path;
+                if let Some(serial) = identity.volume_serial { identities.insert(path.clone(), serial); }
+                if old != *path { result.moved.push((old, path.clone())); }
+            }
+            profile.set_scoped::<RecentFoldersFeature>(&recent);
+            profile.prefs.set("recent_folder_volumes", &identities);
+            let mut views = profile.scoped::<FolderViewFeature>();
+            result.changed |= views.reconcile_volumes(volumes);
+            profile.set_scoped::<FolderViewFeature>(&views);
+        }
+        result
+    }
+
     pub fn active(&self) -> &Profile {
         &self.profiles[self.active_idx]
     }
@@ -350,6 +524,12 @@ impl ProfileManager {
     }
 }
 
+#[derive(Default)]
+pub struct VolumeReconciliation {
+    pub changed: bool,
+    pub moved: Vec<(PathBuf, PathBuf)>,
+}
+
 /// Transient UI state for the sidebar profile/bookmark/tag forms.
 /// Not persisted.
 #[derive(Default)]
@@ -380,6 +560,102 @@ pub const PRESET_COLORS: &[[u8; 3]] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_tabs_and_recents_follow_their_volume_after_disconnect_and_letter_reuse() {
+        use crate::{layout_tree::Tree, pane::TabData, settings::ViewMode};
+        let mut profiles = ProfileManager::default();
+        profiles.profiles.push(Profile::new("Inactive"));
+        let profile = &mut profiles.profiles[1];
+        let mut tree = Tree::empty();
+        let tab = tree.tiles.insert_pane(TabData::with_view(PathBuf::from(r"E:\Music"), ViewMode::List, 128.0, false));
+        tree.root = Some(tree.tiles.insert_tab_tile(vec![tab]));
+        profile.tree = Some(tree);
+        profile.set_scoped::<RecentFoldersFeature>(&vec![PathBuf::from(r"E:\Music\日本語")]);
+        assert!(profiles.reconcile_volume_paths(&[(PathBuf::from(r"E:\"), 42)]).changed);
+        let json = serde_json::to_string(&profiles).unwrap();
+        let mut profiles: ProfileManager = serde_json::from_str(&json).unwrap();
+        // Another disk reuses E: while the original USB is disconnected.
+        let disconnected = profiles.reconcile_volume_paths(&[(PathBuf::from(r"E:\"), 99)]);
+        assert!(disconnected.moved.is_empty());
+        let changed = profiles.reconcile_volume_paths(&[(PathBuf::from(r"E:\"), 99), (PathBuf::from(r"F:\"), 42)]);
+        assert_eq!(changed.moved.len(), 2);
+        let profile = &profiles.profiles[1];
+        assert_eq!(profile.scoped::<RecentFoldersFeature>(), [PathBuf::from(r"F:\Music\日本語")]);
+        let restored = profile.tree.as_ref().unwrap().tiles.get_pane(&tab).unwrap();
+        assert_eq!(restored.location, crate::location::Location::Directory(PathBuf::from(r"F:\Music")));
+        assert_eq!(restored.volume_serial, Some(42));
+        // Capture survives a second roundtrip and can follow another letter.
+        let mut profiles: ProfileManager = serde_json::from_str(&serde_json::to_string(&profiles).unwrap()).unwrap();
+        assert_eq!(profiles.reconcile_volume_paths(&[(PathBuf::from(r"G:\"), 42)]).moved.len(), 2);
+    }
+
+    fn folder_pref(mode: crate::settings::ViewMode, recursive: bool) -> FolderViewPref {
+        FolderViewPref { view_mode: mode, sort_col: crate::file_entry::SortColumn::Name,
+            sort_dir: crate::file_entry::SortDir::Asc, recursive, columns: None }
+    }
+
+    #[test]
+    fn folder_views_follow_the_partition_and_do_not_leak_to_a_reused_letter() {
+        let mut prefs = FolderViewPrefs::default();
+        prefs.set(PathBuf::from(r"E:\photos"), folder_pref(crate::settings::ViewMode::Grid, true));
+        prefs.reconcile_volumes(&[(PathBuf::from(r"E:\"), 42)]);
+        let json = serde_json::to_string(&prefs).unwrap();
+        let mut prefs: FolderViewPrefs = serde_json::from_str(&json).unwrap();
+        prefs.reconcile_volumes(&[(PathBuf::from(r"E:\"), 99)]);
+        assert!(prefs.get(std::path::Path::new(r"E:\photos")).is_none());
+        prefs.set(PathBuf::from(r"E:\photos"), folder_pref(crate::settings::ViewMode::List, false));
+        prefs.reconcile_volumes(&[(PathBuf::from(r"E:\"), 99), (PathBuf::from(r"H:\"), 42)]);
+        assert_eq!(prefs.get(std::path::Path::new(r"E:\photos")).unwrap().view_mode, crate::settings::ViewMode::List);
+        assert_eq!(prefs.get(std::path::Path::new(r"H:\photos")).unwrap().view_mode, crate::settings::ViewMode::Grid);
+    }
+
+    #[test]
+    fn closest_recursive_folder_wins_and_exact_children_override_it() {
+        let mut prefs = FolderViewPrefs::default();
+        prefs.set(PathBuf::from("/a"), folder_pref(crate::settings::ViewMode::Grid, true));
+        prefs.set(PathBuf::from("/a/b"), folder_pref(crate::settings::ViewMode::List, true));
+        assert_eq!(prefs.get(std::path::Path::new("/a/b/c")).unwrap().view_mode, crate::settings::ViewMode::List);
+        prefs.set(PathBuf::from("/a/b/c"), folder_pref(crate::settings::ViewMode::Details, false));
+        assert_eq!(prefs.get(std::path::Path::new("/a/b/c")).unwrap().view_mode, crate::settings::ViewMode::Details);
+        assert!(prefs.get(std::path::Path::new("/ab")).is_none());
+        assert!(prefs.get_exact(std::path::Path::new("/a/b/c/d")).is_none());
+        assert_eq!(prefs.get(std::path::Path::new("/a/b/c/d")).unwrap().view_mode, crate::settings::ViewMode::List);
+    }
+
+    #[test]
+    fn bookmark_captures_serial_and_follows_volume_to_a_new_letter() {
+        let mut bookmark = Bookmark::new("USB".into(), PathBuf::from(r"E:\photos\旅行"));
+        assert!(bookmark.reconcile_volume(&[(PathBuf::from(r"E:\"), 123)]));
+        let json = serde_json::to_string(&bookmark).unwrap();
+        let mut restored: Bookmark = serde_json::from_str(&json).unwrap();
+        assert!(
+            restored.reconcile_volume(&[(PathBuf::from(r"E:\"), 99), (PathBuf::from(r"F:\"), 123)])
+        );
+        assert_eq!(restored.path, PathBuf::from(r"F:\photos\旅行"));
+        assert_eq!(restored.volume_serial, Some(123));
+        assert!(!restored.reconcile_volume(&[(PathBuf::from(r"F:\"), 123)]));
+    }
+
+    #[test]
+    fn disconnected_or_ambiguous_volumes_never_retarget_bookmarks() {
+        let mut bookmark = Bookmark::new("USB".into(), PathBuf::from(r"E:\photos"));
+        bookmark.volume_serial = Some(123);
+        assert!(!bookmark.reconcile_volume(&[(PathBuf::from(r"E:\"), 99)]));
+        assert!(!bookmark
+            .reconcile_volume(&[(PathBuf::from(r"F:\"), 123), (PathBuf::from(r"G:\"), 123)]));
+        assert_eq!(bookmark.path, PathBuf::from(r"E:\photos"));
+    }
+
+    #[test]
+    fn legacy_bookmarks_and_network_paths_remain_compatible() {
+        let mut bookmark: Bookmark =
+            serde_json::from_str(r#"{"name":"Old","path":"E:\\stuff"}"#).unwrap();
+        assert_eq!(bookmark.volume_serial, None);
+        assert!(bookmark.reconcile_volume(&[(PathBuf::from(r"E:\"), 123)]));
+        let mut network = Bookmark::new("Network".into(), PathBuf::from(r"\\server\share"));
+        assert!(!network.reconcile_volume(&[(PathBuf::from(r"E:\"), 123)]));
+    }
 
     #[derive(Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
     struct IconSel {

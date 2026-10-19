@@ -12,6 +12,7 @@ use atlas_model::profiles::ProfileManager;
 use atlas_model::settings::Settings;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::io::Write;
 use std::path::PathBuf;
 
 const APP_NAME: &str = "atlas";
@@ -37,6 +38,25 @@ pub fn themes_dir() -> PathBuf {
     config_dir().join("themes")
 }
 
+/// Save a custom ThemeSet atomically. The filename is a single JSON basename;
+/// bundled presets are always preserved.
+pub fn save_custom_theme(file_name: &str, theme: &impl Serialize) -> anyhow::Result<()> {
+    save_custom_theme_in(&themes_dir(), file_name, theme)
+}
+
+fn save_custom_theme_in(directory: &std::path::Path, file_name: &str, theme: &impl Serialize) -> anyhow::Result<()> {
+    let path = std::path::Path::new(file_name);
+    if path.file_name().and_then(std::ffi::OsStr::to_str) != Some(file_name)
+        || path.extension().and_then(std::ffi::OsStr::to_str) != Some("json")
+        || file_name.eq_ignore_ascii_case("atlas-themes.json")
+        || file_name.contains(['/', '\\'])
+    {
+        anyhow::bail!("invalid custom theme filename");
+    }
+    write_atomic(&directory.join(file_name), &serde_json::to_vec_pretty(theme)?)?;
+    Ok(())
+}
+
 /// Read a JSON blob, falling back to `Default` if it's missing or unparseable.
 fn read_or_default<T: DeserializeOwned + Default>(file: &str) -> T {
     read_opt(file).unwrap_or_default()
@@ -57,18 +77,56 @@ fn read_opt<T: DeserializeOwned>(file: &str) -> Option<T> {
 
 fn write_json<T: Serialize>(file: &str, value: &T) {
     let dir = config_dir();
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        tracing::warn!("failed to create config dir {}: {e}", dir.display());
-        return;
-    }
     match serde_json::to_vec_pretty(value) {
         Ok(json) => {
-            if let Err(e) = std::fs::write(dir.join(file), json) {
+            if let Err(e) = write_atomic(&dir.join(file), &json) {
                 tracing::warn!("failed to write {file}: {e}");
             }
         }
         Err(e) => tracing::warn!("failed to serialize {file}: {e}"),
     }
+}
+
+/// Serialize writers across processes and replace the destination only after all
+/// bytes reach disk. A crash leaves the previous JSON intact, never half a blob.
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    #[cfg(windows)]
+    let _guard = atlas_win_space::persistence::ConfigWriteGuard::acquire()?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("missing config directory"))?;
+    std::fs::create_dir_all(dir)?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".atlas-")
+        .suffix(".tmp")
+        .tempfile_in(dir)?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    #[cfg(windows)]
+    {
+        // Even a delete-sharing reader can briefly race MoveFileEx/antivirus.
+        // Retain the same complete temporary file and retry the atomic replace;
+        // never delete/truncate the destination to make a rename succeed.
+        let mut delay = std::time::Duration::from_millis(2);
+        for attempt in 0..8 {
+            match temporary.persist(path) {
+                Ok(_) => break,
+                Err(error)
+                    if attempt < 7 && matches!(error.error.raw_os_error(), Some(5 | 32 | 33)) =>
+                {
+                    temporary = error.file;
+                    std::thread::sleep(delay);
+                    delay *= 2;
+                }
+                Err(error) => return Err(error.error),
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    temporary.persist(path).map_err(|error| error.error)?;
+    #[cfg(unix)]
+    std::fs::File::open(dir)?.sync_all()?;
+    Ok(())
 }
 
 pub fn load_settings() -> Settings {
@@ -86,7 +144,14 @@ pub fn load_session() -> Option<atlas_model::layout_tree::Tree<TabData>> {
 }
 
 pub fn save_session(tree: &atlas_model::layout_tree::Tree<TabData>) {
-    write_json("session.json", tree);
+    let mut tree = tree.clone();
+    let volumes = volume_snapshot();
+    for (_, tile) in tree.tiles.iter_mut() {
+        if let atlas_model::layout_tree::Tile::Pane(tab) = tile {
+            tab.reconcile_volume(&volumes);
+        }
+    }
+    write_json("session.json", &tree);
 }
 
 pub fn load_profiles() -> ProfileManager {
@@ -94,7 +159,24 @@ pub fn load_profiles() -> ProfileManager {
 }
 
 pub fn save_profiles(profiles: &ProfileManager) {
-    write_json("profiles.json", profiles);
+    let mut profiles = profiles.clone();
+    refresh_bookmark_volumes(&mut profiles);
+    write_json("profiles.json", &profiles);
+}
+
+static VOLUME_SNAPSHOT: std::sync::RwLock<Vec<(PathBuf, u32)>> = std::sync::RwLock::new(Vec::new());
+
+pub fn set_volume_snapshot(volumes: &[(PathBuf, u32)]) {
+    if let Ok(mut snapshot) = VOLUME_SNAPSHOT.write() { *snapshot = volumes.to_vec(); }
+}
+
+fn volume_snapshot() -> Vec<(PathBuf, u32)> {
+    VOLUME_SNAPSHOT.read().map(|snapshot| snapshot.clone()).unwrap_or_default()
+}
+
+/// Apply the last background snapshot; saving never probes disconnected disks.
+pub fn refresh_bookmark_volumes(profiles: &mut ProfileManager) -> bool {
+    profiles.reconcile_bookmark_volumes(&volume_snapshot())
 }
 
 fn normalize_session_wsl_paths(tree: &mut atlas_model::layout_tree::Tree<TabData>) {
@@ -131,4 +213,65 @@ pub fn load_cloud_remotes() -> Vec<crate::cloud::CloudRemote> {
 #[cfg(feature = "provider-host")]
 pub fn save_cloud_remotes(remotes: &[crate::cloud::CloudRemote]) {
     write_json("cloud_remotes.json", &remotes.to_vec());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_atomic;
+
+    #[test]
+    fn custom_theme_save_roundtrips_and_preserves_bundled_presets() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundled = directory.path().join("atlas-themes.json");
+        std::fs::write(&bundled, b"bundled preset").unwrap();
+        let theme = serde_json::json!({"name": "Custom", "themes": [{"name": "Custom", "colors": {"accent.background": "#aabbcc"}}]});
+        super::save_custom_theme_in(directory.path(), "custom-1.json", &theme).unwrap();
+        let restored: serde_json::Value = serde_json::from_slice(&std::fs::read(directory.path().join("custom-1.json")).unwrap()).unwrap();
+        assert_eq!(restored, theme);
+        for name in ["atlas-themes.json", "../outside.json", "..\\outside.json", "nested/theme.json", "custom.tmp"] {
+            assert!(super::save_custom_theme_in(directory.path(), name, &theme).is_err());
+        }
+        assert_eq!(std::fs::read(bundled).unwrap(), b"bundled preset");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn concurrent_config_writers_and_readers_always_observe_complete_json() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        write_atomic(&path, br#"{"writer":0,"payload":"initial"}"#).unwrap();
+        std::thread::scope(|scope| {
+            for writer in 0..4 {
+                let path = &path;
+                scope.spawn(move || {
+                    for generation in 0..12 {
+                        let bytes = serde_json::to_vec(&serde_json::json!({
+                            "writer": writer, "generation": generation,
+                            "payload": "x".repeat(8192)
+                        }))
+                        .unwrap();
+                        write_atomic(path, &bytes).unwrap();
+                    }
+                });
+            }
+            for _ in 0..150 {
+                let bytes = std::fs::read(&path).unwrap();
+                let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert!(value.get("writer").is_some());
+                assert!(value.get("payload").is_some());
+            }
+        });
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn failed_atomic_replace_preserves_existing_destination() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("sentinel"), b"preserved").unwrap();
+        assert!(write_atomic(&path, b"new").is_err());
+        assert_eq!(std::fs::read(path.join("sentinel")).unwrap(), b"preserved");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
 }

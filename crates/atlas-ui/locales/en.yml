@@ -1,4 +1,40 @@
 app_name: "Atlas"
+group_by: "Group by"
+folder_order_first: Folders first
+folder_order_last: Folders last
+folder_order_mixed: Mix folders and files
+folder_order_choose: Choose folder order
+settings_single_click_folders: Open folders with a single click (files still require a double click)
+settings_scroll_beyond_last: Scroll space after the last item
+group_none: "None"
+group_date: "Date"
+group_size: "Size"
+group_type: "Type"
+group_name: "Name"
+group_unknown: "Unknown"
+group_future: "Future"
+group_today: "Today"
+group_yesterday: "Yesterday"
+group_week: "Earlier this week"
+group_last_week: "Last week"
+group_month: "Earlier this month"
+group_last_month: "Last month"
+group_year: "Earlier this year"
+group_last_year: "Last year"
+group_older: "A long time ago"
+group_other: "Other"
+group_empty: "Empty"
+group_tiny: "Tiny (< 16 KiB)"
+group_small: "Small (16 KiB–1 MiB)"
+group_medium: "Medium (1–128 MiB)"
+group_large: "Large (128 MiB–1 GiB)"
+group_huge: "Huge (1–4 GiB)"
+group_gigantic: "Gigantic (≥ 4 GiB)"
+cmd_group_none: "Group by: None^ungroup,sections,buckets"
+cmd_group_date: "Group by: Date^sections,buckets,today,yesterday"
+cmd_group_size: "Group by: Size^sections,buckets,large,huge"
+cmd_group_type: "Group by: Type^sections,buckets,category"
+cmd_group_name: "Group by: Name^sections,buckets,alphabet"
 menu_file: "File"
 menu_quit: "Quit"
 sidebar_tags: "Tags"
@@ -594,6 +630,11 @@ cmd_files_open_right_split_desc: "Opens the selected folder in a new split to th
 cmd_files_open_bottom_split_title: "Open In Bottom Split"
 cmd_files_open_bottom_split_desc: "Opens the selected folder in a new split below."
 cmd_files_copy_path_title: "Copy Path"
+cmd_files_copy_desc: "Copies the selected items to the clipboard."
+cmd_files_cut_desc: "Cuts the selected items to move them."
+cmd_files_paste_desc: "Pastes clipboard items into this folder."
+cmd_files_open_terminal_title: "Open Terminal"
+cmd_files_open_terminal_desc: "Opens a terminal in this folder."
 cmd_files_copy_path_desc: "Copies the full path of the selected item to clipboard."
 cmd_files_properties_title: "Properties"
 cmd_files_properties_desc: "Opens the properties dialog for the selected item."
@@ -716,3 +757,74 @@ op_compressing: "Compressing"
 cmd_files_compress_title: "Compress to zip"
 cmd_files_compress_desc: "Create a zip archive from the selected items"
 open_with: "Open with"
+
+sidebar_bookmark_folders_only: Only folders can be added to sidebar favorites.
+dnd_intent_copy: Copy here
+dnd_intent_move: Move here
+dnd_intent_trash: Move to Recycle Bin
+dnd_intent_tag: Assign tag
+dnd_intent_bookmark: Add to Favorites
+dnd_intent_stage: Stage here
+dnd_intent_blocked: Cannot drop here
+op_transfer_summary: "%{done} completed · %{skipped} skipped · %{failed} failed"
+op_restore_complete: "Restored %{count} items"
+tags_assignment_complete: "Tag assigned to %{count} items"
+tags_assignment_failed: Could not save the tag. Try again.
+sidebar_bookmark_remove_drop: Remove from Favorites
+sidebar_bookmark_removed: Removed from Favorites. The folder remains in its location.
+op_results_hidden: "%{count} completed items are hidden by filters"
+op_results_reveal: Show
+theme_fork: "Fork Theme"
+theme_active: "Theme: %{name}"
+theme_editing: "Editing: %{name}"
+theme_fork_description: "Create an editable copy of the active theme."
+theme_fork_unavailable: "The active theme is unavailable. Select another theme and try again."
+theme_save_error: "Could not save the theme: %{error}"
+theme_editor_description: "Your copy is saved. Color changes apply when you save them."
+theme_color_accent: "Accent"
+theme_color_background: "Window background"
+theme_color_foreground: "Text"
+theme_save: "Save theme"
+theme_discard: "Discard changes"
+theme_close_editor: "Close editor"
+cmd_pane_left_title: Focus panel to the left
+cmd_pane_right_title: Focus panel to the right
+cmd_pane_above_title: Focus panel above
+cmd_pane_below_title: Focus panel below
+cmd_pane_spatial_desc: Select the nearest visible panel in this direction
+cmd_pane_even_siblings_title: Balance sibling panels
+cmd_pane_even_siblings_desc: Give equal space to panels in the current split
+cmd_pane_even_all_title: Balance all panels
+cmd_pane_even_all_desc: Give equal space to children of every split
+cmd_folder_inherit_title: Toggle folder view inheritance
+cmd_folder_inherit_desc: Apply this folder's view, columns and sort to subfolders
+folder_inherit_enabled: Subfolders will inherit this folder's view
+folder_inherit_disabled: Subfolders will keep their own views
+settings_character_keys: When typing in a file panel
+settings_type_filter: Type in filter
+settings_type_select: Select matching item
+settings_type_hotkey: Trigger hotkey
+settings_filter_sticky: Keep the filter when switching folders
+breadcrumb_filter_folders: Filter folders...
+footer_dirs_visible: Folders listed. Click to hide.
+footer_dirs_hidden: Folders hidden by the view filter. Click to show.
+footer_files_visible: Files listed. Click to hide.
+footer_files_hidden: Files hidden by the view filter. Click to show.
+volume_path_updated: "Path automatically updated from %{from} to %{to}"
+shortcut_filename_suffix: Shortcut
+shortcut_conflict: "Conflicts with: %{command}"
+footer_dirs: "%{shown}/%{total} Dirs"
+footer_files: "%{shown}/%{total} Files"
+cmd_paste_shortcut_title: Paste shortcut
+cmd_paste_shortcut_desc: Create links to the files on the clipboard
+op_creating_shortcuts: Creating shortcuts
+drop_description_move: "Move to %1"
+drop_description_copy: "Copy to %1"
+preview_cloud_offline: Download this cloud file to preview it
+settings_win_e: "Open Atlas with Win+E"
+settings_win_e_error: "Could not change Win+E: %{error}"
+view_all_items_hidden: "All items are hidden by view settings"
+watcher_auto_refresh_disabled: "(Auto refresh disabled)"
+watcher_auto_refresh_disabled_help: "This folder could not be watched. Use Refresh to update it."
+footer_hidden_excluded: "Hidden and system items are excluded."
+footer_hidden_included: "Hidden and system items are included."

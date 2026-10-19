@@ -10,6 +10,73 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 impl App {
+    pub(crate) fn select_spatial_panel(&mut self, direction: crate::ui::tab_reorder::PanelDirection) {
+        let center = |id: TileId| self.pane_layout_bounds.get(&id).map(|b| (
+            f32::from(b.origin.x + b.size.width / 2.0),
+            f32::from(b.origin.y + b.size.height / 2.0),
+        ));
+        let Some(origin) = center(self.state.focused_tile) else { return; };
+        let panes = self.state.pane_tree.visible_panes().into_iter()
+            .filter(|id| !self.pane_closing.contains_key(id) && !self.tab_closing.contains_key(id))
+            .filter_map(|id| center(id).map(|p| (id, p)));
+        if let Some(id) = crate::ui::tab_reorder::spatial_neighbor(origin, panes, direction) {
+            self.activate_tab(id);
+        }
+    }
+
+    pub(crate) fn even_panels(&mut self, all: bool) {
+        // Finish deferred removal first: otherwise a zero-share closing pane
+        // would be given space again by the balance operation.
+        let closing: Vec<_> = self.pane_closing.keys().copied().collect();
+        self.pane_closing.clear();
+        if !closing.is_empty() { self.remove_panes_from_tree(&closing); }
+        for id in self.state.pane_tree.even_panes(self.state.focused_tile, all) {
+            self.dock_split_animations.remove(&id);
+        }
+    }
+
+    /// Copy navigation/view state into a new tab, with independent loading and
+    /// watcher ownership. No request in flight is shared with the source tab.
+    pub(crate) fn duplicate_tab(&mut self, source: TileId) -> Option<TileId> {
+        let data = self.tab_data_for(source)?.clone();
+        let location = data.location.clone();
+        let id = self.insert_tab(source, data)?;
+        self.spawn_list(id, location);
+        Some(id)
+    }
+
+    pub(crate) fn tab_for_drop(&mut self, source: TileId, copy: bool) -> Option<TileId> {
+        self.tab_reorder_preview = None;
+        if copy {
+            let group = self.state.find_tabs_container(source)?;
+            let active = match self.state.pane_tree.tiles.get(group) {
+                Some(Tile::Container(Container::Tabs(tabs))) => tabs.active,
+                _ => None,
+            };
+            let focused = self.state.focused_tile;
+            let id = self.duplicate_tab(source)?;
+            if let Some(Tile::Container(Container::Tabs(tabs))) = self.state.pane_tree.tiles.get_mut(group) {
+                tabs.active = active;
+            }
+            self.state.focused_tile = focused;
+            Some(id)
+        } else {
+            self.tab_data_for(source).map(|_| source)
+        }
+    }
+
+    /// Root splits wrap the complete surviving layout, regardless of its axis.
+    /// This always produces two equal halves with the normal five-pixel seam.
+    pub(crate) fn split_tab_at_root(&mut self, dragged: TileId, vertical: bool, before: bool) {
+        let Some(linear) = self.state.pane_tree.split_tab_at_root(dragged, vertical, before) else { return; };
+        if !self.state.settings.disable_animations {
+            self.dock_split_animations.insert(linear, DockSplitAnimation::new(vec![1.0, 1.0], if before { 0 } else { 1 }));
+        }
+        self.push_focus_history();
+        self.state.focused_tile = dragged;
+        self.reconcile_tree_state();
+    }
+
     fn preferred_tab_child(focused: TileId, children: &[TileId]) -> Option<TileId> {
         children
             .contains(&focused)
@@ -40,6 +107,8 @@ impl App {
 
     pub(crate) fn animate_pane_drag(&mut self, pane_id: TileId, is_starting: bool) {
         if let Some(tabs_id) = self.state.find_tabs_container(pane_id) {
+            if is_starting && !matches!(self.state.pane_tree.tiles.get(tabs_id),
+                Some(Tile::Container(Container::Tabs(tabs))) if tabs.children.len() == 1) { return; }
             if let Some(parent_id) = self.state.find_parent_of(tabs_id) {
                 if let Some(Tile::Container(Container::Linear(linear))) =
                     self.state.pane_tree.tiles.get(parent_id)
@@ -58,7 +127,7 @@ impl App {
                         // We do not mutate `linear.shares` here! We only create the animation.
                         // The render pass will dynamically override the target share to 0.0 while dragging.
 
-                        crate::app::normalize_split_shares(&mut target_shares);
+                        crate::app::normalize_split_shares_allow_zero(&mut target_shares);
 
                         let anim = DockSplitAnimation {
                             close_duration: None,
@@ -76,6 +145,11 @@ impl App {
                 }
             }
         }
+    }
+
+    pub(crate) fn drag_vacates_container(&self, container: TileId, pane: TileId) -> bool {
+        matches!(self.state.pane_tree.tiles.get(container),
+            Some(Tile::Container(Container::Tabs(tabs))) if tabs.children.as_slice() == [pane])
     }
 
     /// Reconcile the app's side-tables with `pane_tree` after `egui_tiles` may have
@@ -103,6 +177,7 @@ impl App {
 
         for id in dead {
             self.state.tab_states.remove(&id);
+            self.file_filter_projections.remove(&id);
             self.watchers.remove(&id);
             self.state.clear_preview(id);
         }
@@ -595,6 +670,15 @@ impl App {
         self.state.focused_tile = tab_id;
     }
 
+    pub(crate) fn reopen_closed_tab(&mut self) {
+        let Some(closed) = self.state.closed_tabs.pop_back() else { return };
+        if let Some(id) = self.insert_tab(self.state.focused_tile, closed.data.clone()) {
+            self.dispatch_list(id, closed.data.location, closed.data.sort_col, closed.data.sort_dir);
+        } else {
+            self.state.closed_tabs.push_back(closed);
+        }
+    }
+
     pub(crate) fn close_tab(&mut self, tab_id: TileId) {
         let _perf = crate::perf::span_detail("close_tab", || {
             format!(
@@ -838,8 +922,12 @@ impl App {
             }
         }
 
+        if let Some(Tile::Pane(data)) = self.state.pane_tree.tiles.get(pane_id) {
+            self.state.remember_closed_tab(data.clone());
+        }
         self.state.pane_tree.tiles.remove(pane_id);
         self.state.tab_states.remove(&pane_id);
+        self.file_filter_projections.remove(&pane_id);
         self.space_lens.remove(&pane_id);
         self.watchers.remove(&pane_id);
         self.state.clear_preview(pane_id);
@@ -888,7 +976,7 @@ impl App {
         if dragged == target {
             return;
         }
-        let Some(target_tabs) = self.state.find_tabs_container(target) else {
+        let Some(target_tabs) = self.resolve_tabs_container(target) else {
             return;
         };
         self.detach_tab_for_move(dragged);
@@ -909,6 +997,22 @@ impl App {
         self.cleanup_empty_tabs();
     }
 
+    pub(crate) fn commit_tab_reorder(&mut self, dragged: TileId, children: &[TileId], boundary: usize) {
+        let Some(anchor) = children.iter().find(|id| **id != dragged).copied() else { return; };
+        let Some(group) = self.resolve_tabs_container(anchor) else { return; };
+        let Some(Tile::Container(Container::Tabs(tabs))) = self.state.pane_tree.tiles.get(group) else { return; };
+        let order = crate::ui::tab_reorder::projected_order(&tabs.children, dragged, boundary);
+        self.detach_tab_for_move(dragged);
+        if let Some(Tile::Container(Container::Tabs(tabs))) = self.state.pane_tree.tiles.get_mut(group) {
+            tabs.children = order;
+            tabs.active = Some(dragged);
+        }
+        self.tab_reorder_preview = None;
+        self.push_focus_history();
+        self.state.focused_tile = dragged;
+        self.cleanup_empty_tabs();
+    }
+
     pub(crate) fn split_existing_tab(
         &mut self,
         target: TileId,
@@ -916,7 +1020,7 @@ impl App {
         vertical: bool,
         before: bool,
     ) {
-        let Some(target_tabs) = self.state.find_tabs_container(target) else {
+        let Some(target_tabs) = self.resolve_tabs_container(target) else {
             return;
         };
         if dragged == target {

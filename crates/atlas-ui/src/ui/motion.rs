@@ -73,6 +73,30 @@ pub const PANE_SPRING: Spring = Spring {
     zeta: 0.62,
 };
 
+/// Table neighbours settle without bouncing into adjacent hit targets.
+pub const TABLE_SPRING: Spring = Spring {
+    omega: 32.0,
+    zeta: 1.0,
+};
+
+/// Rows carry more visual mass than column dividers; they settle more gently.
+pub const ROW_REORDER_SPRING: Spring = Spring {
+    omega: 32.0,
+    zeta: 1.0,
+};
+pub const ROW_REORDER_FADE_MS: f32 = 120.0;
+
+pub const MENU_REVEAL_MS: u64 = 140;
+pub const MENU_STAGGER_MS: u64 = 9;
+pub const MENU_STAGGER_CAP: usize = 6;
+
+/// One bounded timeline for the whole menu. Filtering and async shell results
+/// do not restart it; every row remains immediately usable while revealing.
+pub fn menu_row_progress(elapsed_ms: f32, row: usize) -> f32 {
+    let delay = row.min(MENU_STAGGER_CAP) as f32 * MENU_STAGGER_MS as f32;
+    ease_out_quart(((elapsed_ms - delay) / MENU_REVEAL_MS as f32).clamp(0.0, 1.0))
+}
+
 /// Total animation duration for the appear of a row at (visible) index `row`,
 /// including its stagger delay. Each row is its own `with_animation`; the delay is
 /// folded into the duration and unwound in [`item_appear`] so rows cascade.
@@ -164,6 +188,16 @@ pub fn pane_intro(this: Div, openness: f32, offset: Pixels, vertical: bool) -> D
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_cascade_has_one_bounded_timeline() {
+        assert!(menu_row_progress(45.0, 0) > menu_row_progress(45.0, 4));
+        let done = (MENU_REVEAL_MS + MENU_STAGGER_MS * MENU_STAGGER_CAP as u64) as f32;
+        for row in 0..100 {
+            assert_eq!(menu_row_progress(done, row), 1.0);
+            assert_eq!(menu_row_progress(f32::MAX, row), 1.0);
+        }
+    }
 
     #[test]
     fn hover_motion_uses_transparency_without_replacing_authored_materials() {

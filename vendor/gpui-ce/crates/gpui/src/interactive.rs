@@ -556,6 +556,9 @@ pub enum ScrollDelta {
     Pixels(Point<Pixels>),
     /// An inexact scroll delta in lines.
     Lines(Point<f32>),
+    /// High-resolution wheel units. Convert with the actual row height, without
+    /// adding wheel inertia; unlike Pixels these retain device-independent units.
+    PreciseLines(Point<f32>),
 }
 
 impl Default for ScrollDelta {
@@ -605,7 +608,7 @@ impl ScrollDelta {
     /// Returns true if this is a precise scroll delta in pixels.
     pub fn precise(&self) -> bool {
         match self {
-            ScrollDelta::Pixels(_) => true,
+            ScrollDelta::Pixels(_) | ScrollDelta::PreciseLines(_) => true,
             ScrollDelta::Lines(_) => false,
         }
     }
@@ -614,7 +617,7 @@ impl ScrollDelta {
     pub fn pixel_delta(&self, line_height: Pixels) -> Point<Pixels> {
         match self {
             ScrollDelta::Pixels(delta) => *delta,
-            ScrollDelta::Lines(delta) => point(line_height * delta.x, line_height * delta.y),
+            ScrollDelta::Lines(delta) | ScrollDelta::PreciseLines(delta) => point(line_height * delta.x, line_height * delta.y),
         }
     }
 
@@ -640,7 +643,7 @@ impl ScrollDelta {
                 ScrollDelta::Pixels(point(x, y))
             }
 
-            (ScrollDelta::Lines(a), ScrollDelta::Lines(b)) => {
+            (ScrollDelta::Lines(a), ScrollDelta::Lines(b)) | (ScrollDelta::PreciseLines(a), ScrollDelta::PreciseLines(b)) => {
                 let x = if a.x.signum() == b.x.signum() {
                     a.x + b.x
                 } else {
@@ -653,7 +656,8 @@ impl ScrollDelta {
                     b.y
                 };
 
-                ScrollDelta::Lines(point(x, y))
+                if self.precise() { ScrollDelta::PreciseLines(point(x, y)) }
+                else { ScrollDelta::Lines(point(x, y)) }
             }
 
             _ => other,

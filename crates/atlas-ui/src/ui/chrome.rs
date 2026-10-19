@@ -85,9 +85,65 @@ impl App {
         None
     }
 
+    /// Toggle for immediate-mode experimental chrome (O(1) rect-slicing).
+    /// Enabled for testing.
+    pub const EXPERIMENTAL_IMM_CHROME: bool = true;
+
     /// Compact breadcrumb strip rendered at the top of each pane, showing the
     /// pane's current path. Clicking any segment navigates that specific pane.
     pub(crate) fn render_crumb_strip(
+        &self,
+        pane_id: TabId,
+        view: &Entity<App>,
+        fg: Hsla,
+        muted: Hsla,
+        border: Hsla,
+        header_bg: Hsla,
+        cx: &gpui::App,
+    ) -> AnyElement {
+        let body = self.render_crumb_strip_body(pane_id, view, fg, muted, border, header_bg);
+        let commands = self.pinned_header_commands(cx);
+        let loading = self.state.tab_states.get(&pane_id).is_some_and(|state|
+            matches!(state.load_state, atlas_model::tab::LoadState::Loading) ||
+            state.miller.columns.iter().any(|column| matches!(column.load_state, atlas_model::tab::LoadState::Loading))) ||
+            self.tree_loading.iter().any(|(pane, _)| *pane == pane_id);
+        let watcher_failed = self.tab_data_for(pane_id).is_some_and(|tab|
+            matches!(tab.location, Location::Directory(_))) && !self.watchers.contains_key(&pane_id);
+        let mut tools = h_flex().items_center().gap_1().flex_shrink_0();
+        if loading {
+            tools = tools.child(crate::ui::loading_spinner::loading_spinner(muted,
+                !self.state.settings.disable_animations && !cx.reduce_motion()));
+        }
+        if watcher_failed {
+            tools = tools.child(div().id(SharedString::from(format!("watcher-disabled-{}", pane_id.0)))
+                .text_xs().text_color(muted).px_1()
+                .child(rust_i18n::t!("watcher_auto_refresh_disabled").into_owned())
+                .tooltip(|window, cx| gpui_component::tooltip::Tooltip::new(
+                    rust_i18n::t!("watcher_auto_refresh_disabled_help").into_owned()).build(window, cx)));
+        }
+        for (id, title, icon) in commands {
+            let app = view.clone();
+            tools = tools.child(gpui_component::button::Button::new(
+                SharedString::from(format!("pinned-{}-{id}", pane_id.0)))
+                .ghost().small().icon(Icon::empty().path(icon.path()))
+                .tooltip(title)
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, _, cx| {
+                    app.update(cx, |this, cx| {
+                        this.run_pinned_header_command(pane_id, &id, cx);
+                        this.notify_all_panes(cx);
+                        cx.notify();
+                    });
+                }));
+        }
+        h_flex().w_full().min_w(px(0.0)).items_center().bg(header_bg)
+            .child(div().flex_1().min_w(px(0.0)).child(body))
+            .child(div().id(SharedString::from(format!("pane-tools-{}", pane_id.0)))
+                .max_w(gpui::relative(0.5)).min_w(px(0.0)).overflow_x_scroll().child(tools))
+            .into_any_element()
+    }
+
+    fn render_crumb_strip_body(
         &self,
         pane_id: TabId,
         view: &Entity<App>,
@@ -122,6 +178,50 @@ impl App {
         let is_glass = active_theme.ends_with(" Glass");
         let is_branch_view = self.tab_data_for(pane_id).is_some_and(|t| t.is_branch_view);
         let button_hover = control_hover(fg);
+
+        if Self::EXPERIMENTAL_IMM_CHROME {
+            if let Some(Location::Directory(dir)) = pane_location.as_ref() {
+                let trail = self.tab_data_for(pane_id).and_then(|tab| tab.breadcrumb_trail.as_deref());
+                let segments = std::sync::Arc::new(crate::ui::chrome_imm::path_with_ghost_segments(dir, trail));
+                let is_bookmarked = if let Some(path) = self
+                    .tab_data_for(pane_id)
+                    .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
+                {
+                    self.state
+                        .profiles
+                        .active()
+                        .bookmarks
+                        .iter()
+                        .any(|b| b.path == path)
+                } else {
+                    false
+                };
+                let strip_bg = if is_glass {
+                    header_bg
+                } else {
+                    border.opacity(0.03)
+                };
+                return crate::ui::chrome_imm::ImmChromeElement::new(
+                    pane_id,
+                    view.downgrade(),
+                    segments,
+                    can_back,
+                    can_forward,
+                    up_location.is_some(),
+                    is_bookmarked,
+                    windows_theme,
+                    is_glass,
+                    fg,
+                    muted,
+                    strip_bg,
+                    border,
+                    button_hover,
+                    fg,
+                )
+                .into_any_element();
+            }
+        }
+
         let crumbs: Option<AnyElement> = if let Some((archive, inner)) = pane_archive_inner.as_ref()
         {
             Some(
@@ -352,14 +452,16 @@ impl App {
     ) -> (AnyElement, AnyElement) {
         // Mirror the per-tab toggles into the TabState so its cached filtering
         // (and the counts below) pick them up.
-        let (folders_first, show_files, show_folders, is_branch_view) = self
+        let (folder_order, show_files, show_folders, is_branch_view) = self
             .tab_data_for(pane_id)
-            .map(|td| (td.folders_first, td.show_files, td.show_folders, td.is_branch_view))
-            .unwrap_or((true, true, true, false));
+            .map(|td| (td.folder_order, td.show_files, td.show_folders, td.is_branch_view))
+            .unwrap_or((atlas_model::pane::FolderOrder::default(), true, true, false));
         if let Some(ts) = self.state.tab_states.get_mut(&pane_id) {
             ts.set_visibility(show_files, show_folders);
             ts.is_branch_view = is_branch_view;
+            ts.refresh_miller_visibility();
         }
+        let flat_counts = self.flat_visible_counts(pane_id);
 
         let initial = self
             .state
@@ -417,7 +519,7 @@ impl App {
             .state
             .tab_states
             .get(&pane_id)
-            .map(|ts| ts.selection.selected.len())
+            .map(|ts| ts.selected_entries(&self.tab_data_for(pane_id).map(|tab| tab.view_mode.clone()).unwrap_or_default()).len())
             .unwrap_or_default();
         let filtering = active && !value.trim().is_empty();
         let is_glass = self.state.profiles.active().theme.ends_with(" Glass");
@@ -748,6 +850,29 @@ impl App {
         };
 
         // ── Right pill: visibility toggles + folders-first + view selector ──
+        let pane_mode = self.tab_data_for(pane_id).map(|tab| tab.view_mode.clone()).unwrap_or_default();
+        let (counts, listing_elapsed, selected_bytes) = self.state.tab_states.get_mut(&pane_id).map(|tab| {
+            tab.refresh_miller_visibility();
+            let counts = if pane_mode == ViewMode::Miller {
+                tab.miller.columns.get(tab.miller.focused).map_or(Default::default(), |column|
+                    column.visible_counts(&tab.filter, tab.show_files, tab.show_folders))
+            } else { flat_counts };
+            let bytes: u128 = tab.selected_entries(&pane_mode).into_iter()
+                .filter_map(|entry| entry.size()).map(u128::from).sum();
+            (counts, tab.listing_elapsed, bytes)
+        }).unwrap_or_default();
+        let byte_total = if selected_count > 0 { selected_bytes } else { counts.bytes_shown };
+        let footer_width = self.pane_layout_bounds.get(&pane_id).map_or(800.0, |b| f32::from(b.size.width));
+        let footer_zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
+        let wide_footer = footer_width >= 720.0 * footer_zoom;
+        let folder_label = if footer_width >= 480.0 * footer_zoom {
+            rust_i18n::t!("footer_dirs", shown = counts.folders_shown, total = counts.folders_total).to_string()
+        } else { format!("{}/{}", counts.folders_shown, counts.folders_total) };
+        let file_label = if footer_width >= 480.0 * footer_zoom {
+            rust_i18n::t!("footer_files", shown = counts.files_shown, total = counts.files_total).to_string()
+        } else { format!("{}/{}", counts.files_shown, counts.files_total) };
+        let bytes_tooltip = atlas_core::util::display::format_exact_bytes(byte_total,
+            if rust_i18n::locale().starts_with("es") { '.' } else { ',' });
         let tbtn = |id: String,
                     glyph: AtlasIcon,
                     on: bool,
@@ -757,6 +882,7 @@ impl App {
                     view: Entity<App>| {
             div()
                 .id(SharedString::from(id))
+                .flex().items_center().gap_1()
                 .p(crate::ui::rem_px(4.))
                 .rounded_md()
                 .cursor_pointer()
@@ -974,6 +1100,41 @@ impl App {
         );
 
         let focus_view = view.clone();
+        let order_click_view = view.clone();
+        let order_menu_view = view.clone();
+        let order_button = gpui_component::button::DropdownButton::new(
+            SharedString::from(format!("folder-order-{}", pane_id.0)))
+            .ghost().xsmall()
+            .tooltip(rust_i18n::t!("folder_order_choose").into_owned())
+            .button(gpui_component::button::Button::new(SharedString::from(format!("folder-order-cycle-{}", pane_id.0)))
+                .ghost().xsmall()
+                .child(theme_icon(AtlasIcon::SortAscending, 14.0, accent, windows_theme))
+                .tooltip(folder_order.label())
+                .on_click(move |_, _, cx| {
+                    order_click_view.update(cx, |this, cx| {
+                        this.activate_tab(pane_id);
+                        this.process_actions([Action::ToggleFoldersFirst(pane_id)]);
+                        this.notify_pane(pane_id, cx);
+                        cx.notify();
+                    });
+                }))
+            .dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |mut menu, _, cx| {
+                let active = order_menu_view.read(cx).tab_data_for(pane_id)
+                    .map(|pane| pane.folder_order).unwrap_or_default();
+                for order in atlas_model::pane::FolderOrder::ALL {
+                    let view = order_menu_view.clone();
+                    menu = menu.item(PopupMenuItem::new(order.label()).checked(active == order)
+                        .on_click(move |_, _, cx| {
+                            view.update(cx, |this, cx| {
+                                this.activate_tab(pane_id);
+                                this.process_actions([Action::SetFolderOrder(pane_id, order)]);
+                                this.notify_pane(pane_id, cx);
+                                cx.notify();
+                            });
+                        }));
+                }
+                menu
+            });
         let animate_selection_badge = !self.state.settings.disable_animations;
         let controls_pill = h_flex()
             .id(SharedString::from(format!("controls-pill-{}", pane_id.0)))
@@ -998,6 +1159,13 @@ impl App {
                     this.activate_tab(pane_id);
                 });
             })
+            .children(listing_elapsed.map(|elapsed| div().text_xs().text_color(muted).px_1().child(
+                if elapsed.as_secs_f64() < 1.0 { format!("{} ms", elapsed.as_millis()) }
+                else { format!("{:.2} s", elapsed.as_secs_f64()) })))
+            .when(wide_footer, |pill| pill.child(div().id(SharedString::from(format!("footer-bytes-{}", pane_id.0)))
+                .px_1().text_xs().text_color(muted)
+                .child(atlas_core::util::display::format_size(byte_total.min(u128::from(u64::MAX)) as u64))
+                .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(bytes_tooltip.clone()).build(window, cx))))
             .children((selected_count > 1).then(|| {
                 let badge = h_flex()
                     .id(SharedString::from(format!("selection-count-{}", pane_id.0)))
@@ -1035,28 +1203,22 @@ impl App {
                 AtlasIcon::Folder,
                 show_folders,
                 accent,
-                rust_i18n::t!("tooltip_toggle_folders").into_owned(),
+                format!("{}\n{}", rust_i18n::t!(if show_folders { "footer_dirs_visible" } else { "footer_dirs_hidden" }),
+                    rust_i18n::t!(if self.state.settings.show_hidden { "footer_hidden_included" } else { "footer_hidden_excluded" })),
                 Action::ToggleShowFolders(pane_id),
                 view.clone(),
-            ))
+            ).child(div().text_xs().child(folder_label)))
             .child(tbtn(
                 format!("bb-files-{}", pane_id.0),
                 AtlasIcon::File,
                 show_files,
                 accent,
-                rust_i18n::t!("tooltip_toggle_files").into_owned(),
+                format!("{}\n{}", rust_i18n::t!(if show_files { "footer_files_visible" } else { "footer_files_hidden" }),
+                    rust_i18n::t!(if self.state.settings.show_hidden { "footer_hidden_included" } else { "footer_hidden_excluded" })),
                 Action::ToggleShowFiles(pane_id),
                 view.clone(),
-            ))
-            .child(tbtn(
-                format!("bb-ffirst-{}", pane_id.0),
-                AtlasIcon::SortAscending,
-                folders_first,
-                accent,
-                rust_i18n::t!("tooltip_folders_first").into_owned(),
-                Action::ToggleFoldersFirst(pane_id),
-                view.clone(),
-            ))
+            ).child(div().text_xs().child(file_label)))
+            .child(order_button)
             .child(
                 div()
                     .w(px(1.))

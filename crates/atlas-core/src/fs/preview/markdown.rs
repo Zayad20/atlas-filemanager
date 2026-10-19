@@ -46,9 +46,7 @@ pub(super) async fn preview_markdown(path: &Path) -> PreviewResult {
     }
 
     if bytes.len() > super::MAX_TEXT_BYTES {
-        return PreviewResult::Binary {
-            size: meta.len(),
-        };
+        return PreviewResult::Binary { size: meta.len() };
     }
     match String::from_utf8(bytes) {
         Ok(source) => {
@@ -63,9 +61,7 @@ pub(super) async fn preview_markdown(path: &Path) -> PreviewResult {
                 base_uri,
             }
         }
-        Err(_) => PreviewResult::Binary {
-            size: meta.len(),
-        },
+        Err(_) => PreviewResult::Binary { size: meta.len() },
     }
 }
 
@@ -276,4 +272,3 @@ mod tests {
         }
     }
 }
-

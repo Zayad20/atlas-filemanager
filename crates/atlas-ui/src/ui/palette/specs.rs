@@ -63,7 +63,7 @@ struct CommandDef {
     description: std::borrow::Cow<'static, str>,
     icon: AtlasIcon,
     action: Action,
-    aliases: Vec<&'static str>,
+    aliases: Vec<String>,
 }
 
 impl CommandDef {
@@ -74,18 +74,20 @@ impl CommandDef {
         icon: AtlasIcon,
         action: Action,
     ) -> Self {
+        let raw_title = title.into();
+        let (title, keywords) = raw_title.split_once('^').unwrap_or((&raw_title, ""));
         Self {
             id: id.to_string(),
-            title: title.into(),
+            title: title.trim().to_owned(),
             description: description.into(),
             icon,
             action,
-            aliases: Vec::new(),
+            aliases: keywords.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect(),
         }
     }
 
     fn with_aliases(mut self, aliases: &[&'static str]) -> Self {
-        self.aliases.extend_from_slice(aliases);
+        self.aliases.extend(aliases.iter().map(|alias| (*alias).to_owned()));
         self
     }
 
@@ -126,6 +128,40 @@ impl CommandDef {
             closes_palette: false,
         });
         item
+    }
+}
+
+impl App {
+    pub(crate) fn pinned_header_commands(&self, cx: &gpui::App) -> Vec<(String, String, AtlasIcon)> {
+        if self.state.profiles.active().pinned_commands.is_empty() { return Vec::new(); }
+        let groups = self.command_groups(cx);
+        self.state.profiles.active().pinned_commands.iter().filter_map(|id| {
+            groups.iter().flat_map(|(_, _, _, defs)| defs).find(|def| &def.id == id)
+                .map(|def| (def.id.clone(), def.title.clone(), def.icon))
+        }).collect()
+    }
+
+    pub(crate) fn run_pinned_header_command(&mut self, pane: atlas_model::pane::TabId, id: &str, cx: &gpui::App) {
+        self.activate_tab(pane);
+        // Resolve after focus changes so pane IDs, selections and paths belong
+        // to the clicked panel, including context-sensitive shell operations.
+        let action = self.command_groups(cx).into_iter().flat_map(|(_, _, _, defs)| defs)
+            .find(|def| def.id == id).map(|def| def.action);
+        if let Some(action) = action { self.process_actions(vec![action]); }
+    }
+}
+
+#[cfg(test)]
+mod inline_keyword_tests {
+    use super::*;
+
+    #[test]
+    fn inline_keywords_are_searchable_but_never_displayed() {
+        let command = CommandDef::new("create", "Crear Carpeta^nueva, directorio,,mkdir", "", AtlasIcon::Plus, Action::CreateFolderFocused)
+            .with_aliases(&["folder"]);
+        assert_eq!(command.title, "Crear Carpeta");
+        assert_eq!(command.aliases, ["nueva", "directorio", "mkdir", "folder"]);
+        assert_eq!(command.item(false, None, false).title.as_ref(), "Crear Carpeta");
     }
 }
 
@@ -546,6 +582,13 @@ fn section_or_empty(
 }
 
 impl App {
+    pub(crate) fn shortcut_conflict_message(&self, cx: &gpui::App) -> Option<String> {
+        let id = self.command_shortcut_conflict.as_ref()?;
+        let title = self.command_groups(cx).into_iter().flat_map(|(_, _, _, commands)| commands)
+            .find(|command| command.id == *id).map_or_else(|| id.clone(), |command| command.title);
+        Some(rust_i18n::t!("shortcut_conflict", command = title).to_string())
+    }
+
     /// Goto bar: fuzzy folder/file navigation. Empty query → sidebar-like home
     /// sections (Recientes/Almacenamiento/Marcadores/Lugares); content mode →
     /// files whose contents matched the background grep; otherwise the
@@ -572,7 +615,7 @@ impl App {
         }
 
         let mut search_prefix: Option<gpui::AnyElement> = None;
-        let sections = if trimmed.is_empty() {
+        let mut sections = if trimmed.is_empty() {
             self.goto_snapshot = Default::default();
             self.goto_home_sections(focused_tile, pane)
         } else if content_mode {
@@ -932,6 +975,29 @@ impl App {
 
             sections
         };
+
+        if !content_mode && !trimmed.is_empty() && split_query_base(trimmed).is_none() {
+            let mut semantic = Vec::new();
+            for (icon, label, path, keywords) in [
+                (AtlasIcon::TextFile, rust_i18n::t!("palette_places_documents"), dirs::document_dir(), "pdf paper docs informe text"),
+                (AtlasIcon::Image, rust_i18n::t!("palette_places_pictures"), dirs::picture_dir(), "photos pics capturas wallpaper img"),
+                (AtlasIcon::Music, rust_i18n::t!("palette_places_music"), dirs::audio_dir(), "sound audio mp3 flac wav"),
+                (AtlasIcon::Download, rust_i18n::t!("palette_places_downloads"), dirs::download_dir(), "installer setup torrent pkg"),
+            ] {
+                if let Some(path) = path.filter(|_| self.fuzzy_scorer.scores(trimmed, keywords.split_whitespace()).iter().any(Option::is_some)) {
+                    semantic.push(goto_entry(label.to_string(), path, icon, true, focused_tile, pane));
+                }
+            }
+            if self.fuzzy_scorer.scores(trimmed, ["root", "pc", "disks", "discos", "volumes", "equipo"]).iter().any(Option::is_some) {
+                semantic.extend(atlas_core::fs::mounts::list_drives().into_iter().map(|drive| {
+                    let icon = crate::ui::sidebar::drive_icon(&drive);
+                    goto_entry(drive.label, drive.mount_point, icon, true, focused_tile, pane)
+                }));
+            }
+            let mut places = section_or_empty("semantic-places", AtlasIcon::House, rust_i18n::t!("palette_sec_places"), semantic);
+            places.append(&mut sections);
+            sections = places;
+        }
 
         PaletteSpec {
             id: "goto-bar",
@@ -1353,7 +1419,7 @@ impl App {
                     return Some(s);
                 }
                 if let Some(s) = d.aliases.iter().find_map(|alias| {
-                    self.fuzzy_scorer.scores(query, [*alias]).pop().flatten()
+                    self.fuzzy_scorer.scores(query, [alias.as_str()]).pop().flatten()
                 }) {
                     return Some(s.saturating_sub(5).max(1));
                 }
@@ -1434,6 +1500,20 @@ impl App {
                 rust_i18n::t!("cmd_tab_next_desc"),
                 AtlasIcon::ArrowRight,
                 Action::FocusNextTab,
+            ),
+            CommandDef::new(
+                "tab.reopen",
+                if rust_i18n::locale().starts_with("es") { "Reabrir pestaña cerrada^restaurar,deshacer,cerrada" } else { "Reopen closed tab^restore,undo,closed" },
+                "Ctrl+Shift+T",
+                AtlasIcon::ArrowLeft,
+                Action::ReopenClosedTab,
+            ),
+            CommandDef::new(
+                "tab.detach",
+                if rust_i18n::locale().starts_with("es") { "Mover pestaña a nueva ventana^desacoplar,separar" } else { "Move tab to new window^detach,separate" },
+                "",
+                AtlasIcon::ArrowRight,
+                Action::DetachFocusedTab,
             ),
             CommandDef::new(
                 "tab.previous",
@@ -1547,6 +1627,13 @@ impl App {
                 AtlasIcon::SplitVertical,
                 Action::FocusNextPane,
             ),
+            CommandDef::new("pane.focus-left", rust_i18n::t!("cmd_pane_left_title"), rust_i18n::t!("cmd_pane_spatial_desc"), AtlasIcon::SplitHorizontal, Action::SelectLeftPanel),
+            CommandDef::new("pane.focus-right", rust_i18n::t!("cmd_pane_right_title"), rust_i18n::t!("cmd_pane_spatial_desc"), AtlasIcon::SplitHorizontal, Action::SelectRightPanel),
+            CommandDef::new("pane.focus-above", rust_i18n::t!("cmd_pane_above_title"), rust_i18n::t!("cmd_pane_spatial_desc"), AtlasIcon::SplitVertical, Action::SelectPanelAbove),
+            CommandDef::new("pane.focus-below", rust_i18n::t!("cmd_pane_below_title"), rust_i18n::t!("cmd_pane_spatial_desc"), AtlasIcon::SplitVertical, Action::SelectPanelBelow),
+            CommandDef::new("pane.even-siblings", rust_i18n::t!("cmd_pane_even_siblings_title"), rust_i18n::t!("cmd_pane_even_siblings_desc"), AtlasIcon::SplitHorizontal, Action::EvenPanelSiblings),
+            CommandDef::new("pane.even-all", rust_i18n::t!("cmd_pane_even_all_title"), rust_i18n::t!("cmd_pane_even_all_desc"), AtlasIcon::SplitVertical, Action::EvenAllPanes),
+            CommandDef::new("folder.inherit-view", rust_i18n::t!("cmd_folder_inherit_title"), rust_i18n::t!("cmd_folder_inherit_desc"), AtlasIcon::Folder, Action::ToggleFolderViewRecursive),
         ];
 
         let nav = vec![
@@ -1886,6 +1973,31 @@ impl App {
                 Action::SetViewMode(ViewMode::Tree),
             ),
             CommandDef::new(
+                "view.group-none",
+                rust_i18n::t!("cmd_group_none"), "", AtlasIcon::List,
+                Action::SetGroupBy(atlas_model::tab::GroupBy::None),
+            ),
+            CommandDef::new(
+                "view.group-date",
+                rust_i18n::t!("cmd_group_date"), "", AtlasIcon::List,
+                Action::SetGroupBy(atlas_model::tab::GroupBy::Date),
+            ),
+            CommandDef::new(
+                "view.group-size",
+                rust_i18n::t!("cmd_group_size"), "", AtlasIcon::List,
+                Action::SetGroupBy(atlas_model::tab::GroupBy::Size),
+            ),
+            CommandDef::new(
+                "view.group-type",
+                rust_i18n::t!("cmd_group_type"), "", AtlasIcon::List,
+                Action::SetGroupBy(atlas_model::tab::GroupBy::Type),
+            ),
+            CommandDef::new(
+                "view.group-name",
+                rust_i18n::t!("cmd_group_name"), "", AtlasIcon::List,
+                Action::SetGroupBy(atlas_model::tab::GroupBy::Name),
+            ),
+            CommandDef::new(
                 "view.zoom-in",
                 rust_i18n::t!("cmd_zoom_in_title"),
                 rust_i18n::t!("cmd_zoom_in_desc"),
@@ -1999,12 +2111,50 @@ impl App {
         let focused_dir = self
             .tab_data_for(focused)
             .and_then(|t| t.location.fs_dir().map(std::path::Path::to_path_buf));
+        let archive_focused = self.tab_data_for(focused).is_some_and(|t| t.location.is_archive());
         let recycle_focused = self
             .tab_data_for(focused)
             .is_some_and(|t| t.location == atlas_model::location::Location::RecycleBin);
         // In the recycle bin, trash/delete don't apply to the $R payloads —
         // restore/purge below take their place.
         let mut files = Vec::new();
+
+        if !archive_focused && !recycle_focused {
+            if !selected_paths.is_empty() {
+                files.push(CommandDef::new(
+                    "files.copy",
+                    rust_i18n::t!("root_copy"),
+                    rust_i18n::t!("cmd_files_copy_desc"),
+                    AtlasIcon::Copy,
+                    Action::Copy(selected_paths.clone()),
+                ));
+                files.push(CommandDef::new(
+                    "files.cut",
+                    rust_i18n::t!("root_cut"),
+                    rust_i18n::t!("cmd_files_cut_desc"),
+                    AtlasIcon::Scissors,
+                    Action::Cut(selected_paths.clone()),
+                ));
+            }
+            if let Some(dir) = &focused_dir {
+                files.push(CommandDef::new(
+                    "files.paste",
+                    rust_i18n::t!("root_paste"),
+                    rust_i18n::t!("cmd_files_paste_desc"),
+                    AtlasIcon::Clipboard,
+                    Action::Paste { dest: dir.clone() },
+                ));
+            }
+        }
+        if let Some(dir) = &focused_dir {
+            files.push(CommandDef::new(
+                "files.open-terminal",
+                rust_i18n::t!("cmd_files_open_terminal_title"),
+                rust_i18n::t!("cmd_files_open_terminal_desc"),
+                AtlasIcon::Lightning,
+                Action::OpenTerminal { dir: dir.clone() },
+            ));
+        }
 
         if !recycle_focused {
             files.push(
@@ -2155,7 +2305,7 @@ impl App {
                 rust_i18n::t!("cmd_files_copy_path_title"),
                 rust_i18n::t!("cmd_files_copy_path_desc"),
                 AtlasIcon::Copy,
-                Action::CopyPathToClipboard(selected_paths[0].clone()),
+                Action::CopyPathsToClipboard(selected_paths.clone()),
             ));
             files.push(CommandDef::new(
                 "files.properties",
@@ -2164,6 +2314,11 @@ impl App {
                 AtlasIcon::Gear,
                 Action::OpenPropertiesFocused,
             ));
+        }
+        #[cfg(windows)]
+        if self.tab_data_for(focused).is_some_and(|tab| tab.location.fs_dir().is_some()) {
+            files.push(CommandDef::new("files.paste-shortcut", rust_i18n::t!("cmd_paste_shortcut_title"),
+                rust_i18n::t!("cmd_paste_shortcut_desc"), AtlasIcon::Copy, Action::PasteShortcutFocused));
         }
         if recycle_focused {
             files.push(CommandDef::new(

@@ -6,27 +6,24 @@
 //! Atlas rows dispatch the same boxed gpui actions the old `PopupMenu` used, so
 //! all existing wiring is reused. Native rows are invoked through the worker.
 
-use gpui::ColorExt as _;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use atlas_model::ext_model::CommandRef;
 
+use crate::ui::imm::{motion::RetainedSpring, ImmTextInputState};
 use gpui::{
-    div, img, px, AnimationExt, AnyElement, Context, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, KeyDownEvent, Keystroke, MouseButton, ParentElement, Pixels, Point, RenderImage,
-    SharedString, StatefulInteractiveElement, Styled, Window,
+    div, px, AnyElement, Context, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, ParentElement, Pixels, Point, RenderImage, Styled, Window,
 };
-use gpui_component::scroll::ScrollableElement;
-use gpui_component::StyledExt as _;
-use gpui_component::{h_flex, kbd::Kbd, v_flex, ActiveTheme};
+use gpui_component::{kbd::Kbd, ActiveTheme};
 
 use crate::app::App;
 use crate::input::action::Action;
 use crate::ui::icons::AtlasIcon;
-
-const SCROLLBAR_GUTTER: f32 = 16.0;
 
 /// One native shell entry, ready for rendering (icon already a GPU texture).
 pub(crate) struct UiNativeItem {
@@ -48,6 +45,18 @@ pub(crate) enum UiItemKind {
 pub(crate) struct CtxMenuState {
     /// Monotonic id; stale `Built` events from a prior open are ignored.
     pub menu_id: u64,
+    pub focus: FocusHandle,
+    pub input: ImmTextInputState,
+    pub scroll_top: f32,
+    pub scroll_motion: RetainedSpring,
+    pub input_bounds: Option<gpui::Bounds<Pixels>>,
+    pub input_line: Option<gpui::ShapedLine>,
+    pub input_scroll_x: f32,
+    pub input_drag: bool,
+    pub scroll_drag: Option<f32>,
+    pub blink_visible: bool,
+    /// One timeline per opening; search, hover and native results never replay it.
+    pub opened_at: Instant,
     /// Top-left of the panel, in window-logical pixels.
     pub anchor: Point<Pixels>,
     /// Physical screen pixels for the native `InvokeCommand` (`ptInvoke`).
@@ -81,6 +90,8 @@ enum AtlasCmd {
     Copy,
     Cut,
     Paste,
+    #[cfg(windows)]
+    PasteShortcut,
     Trash,
     DeletePerm,
     Restore,
@@ -99,12 +110,14 @@ impl AtlasCmd {
             Self::Rename => rust_i18n::t!("root_rename").to_string(),
             Self::Copy => rust_i18n::t!("root_copy").to_string(),
             Self::NewFolder => rust_i18n::t!("root_new_folder").to_string(),
-            Self::NewFile => "New file".to_string(),
-            Self::OpenTerminal => "Open terminal".to_string(),
+            Self::NewFile => rust_i18n::t!("cmd_files_create_file_title").to_string(),
+            Self::OpenTerminal => rust_i18n::t!("cmd_files_open_terminal_title").to_string(),
             Self::Refresh => rust_i18n::t!("cmd_nav_refresh_title").to_string(),
             Self::SelectAll => rust_i18n::t!("root_select_all").to_string(),
             Self::Cut => rust_i18n::t!("root_cut").to_string(),
             Self::Paste => rust_i18n::t!("root_paste").to_string(),
+            #[cfg(windows)]
+            Self::PasteShortcut => rust_i18n::t!("cmd_paste_shortcut_title").to_string(),
             Self::Trash => rust_i18n::t!("root_move_to_trash").to_string(),
             Self::DeletePerm => rust_i18n::t!("root_delete_permanently").to_string(),
             Self::Restore => rust_i18n::t!("root_restore").to_string(),
@@ -118,6 +131,8 @@ impl AtlasCmd {
             Self::Copy => Some(AtlasIcon::Copy),
             Self::Cut => Some(AtlasIcon::Scissors),
             Self::Paste => Some(AtlasIcon::Clipboard),
+            #[cfg(windows)]
+            Self::PasteShortcut => Some(AtlasIcon::Copy),
             Self::Trash => Some(AtlasIcon::Trash),
             Self::DeletePerm => Some(AtlasIcon::X),
             Self::Restore => Some(AtlasIcon::ArrowCounterClockwise),
@@ -130,22 +145,24 @@ impl AtlasCmd {
         }
     }
 
-    fn shortcut(self) -> Option<&'static str> {
+    fn command_id(self) -> &'static str {
         match self {
-            Self::Open => Some("enter"),
-            Self::Rename => Some("f2"),
-            Self::Copy => Some("ctrl-c"),
-            Self::Cut => Some("ctrl-x"),
-            Self::Paste => Some("ctrl-v"),
-            Self::Trash => Some("delete"),
-            Self::DeletePerm => Some("shift-delete"),
-            Self::Refresh => Some("f5"),
-            Self::SelectAll => Some("ctrl-a"),
-            Self::Restore
-            | Self::Properties
-            | Self::NewFolder
-            | Self::NewFile
-            | Self::OpenTerminal => None,
+            Self::Open => "selection.open",
+            Self::Rename => "files.rename",
+            Self::Copy => "files.copy",
+            Self::Cut => "files.cut",
+            Self::Paste => "files.paste",
+            #[cfg(windows)]
+            Self::PasteShortcut => "files.paste-shortcut",
+            Self::Trash => "files.trash",
+            Self::DeletePerm => "files.delete",
+            Self::Refresh => "nav.refresh",
+            Self::SelectAll => "edit.select-all",
+            Self::Restore => "recycle.restore",
+            Self::Properties => "files.properties",
+            Self::NewFolder => "files.create-folder",
+            Self::NewFile => "files.create-file",
+            Self::OpenTerminal => "files.open-terminal",
         }
     }
 }
@@ -157,6 +174,8 @@ const ATLAS_ITEMS: &[(AtlasCmd, bool)] = &[
     (AtlasCmd::Copy, false),
     (AtlasCmd::Cut, false),
     (AtlasCmd::Paste, true),
+    #[cfg(windows)]
+    (AtlasCmd::PasteShortcut, true),
     (AtlasCmd::Trash, false),
     (AtlasCmd::DeletePerm, true),
     (AtlasCmd::Properties, false),
@@ -176,12 +195,15 @@ const ATLAS_ITEMS_BACKGROUND: &[(AtlasCmd, bool)] = &[
     (AtlasCmd::NewFolder, false),
     (AtlasCmd::OpenTerminal, true),
     (AtlasCmd::Paste, false),
+    #[cfg(windows)]
+    (AtlasCmd::PasteShortcut, false),
     (AtlasCmd::Refresh, false),
     (AtlasCmd::SelectAll, false),
 ];
 
 /// A logical (non-element) row, recomputed each frame and shared by the renderer
 /// and the keyboard handler so selection indices always agree.
+#[derive(Clone)]
 enum CtxRow {
     Separator,
     Loading,
@@ -246,24 +268,6 @@ impl App {
         // Physical screen pixels for the eventual native invoke.
         let screen_pt = cursor_screen_pos();
 
-        let input = crate::ui::text_input::single_line(
-            window,
-            cx,
-            rust_i18n::t!("search_actions").into_owned(),
-            "",
-        );
-        // The menu is painted inline by App; typed characters change the InputState
-        // but won't repaint unless we notify. Mirror `PaletteHost`'s subscription.
-        self.ctx_menu_sub = Some(cx.subscribe(
-            &input,
-            |_this, _input, ev: &gpui_component::input::InputEvent, cx| {
-                if matches!(ev, gpui_component::input::InputEvent::Change) {
-                    cx.notify();
-                }
-            },
-        ));
-        self.ctx_menu_input = Some(input);
-
         // Same-parent grouping: the native shell menu needs one parent folder.
         // If the selection spans parents we still show Atlas items (native empty).
         let same_parent = paths
@@ -322,6 +326,17 @@ impl App {
 
         self.ctx_menu = Some(CtxMenuState {
             menu_id,
+            focus: cx.focus_handle(),
+            input: ImmTextInputState::new(""),
+            scroll_top: 0.0,
+            scroll_motion: RetainedSpring::new(0.0, Instant::now()),
+            input_bounds: None,
+            input_line: None,
+            input_scroll_x: 0.0,
+            input_drag: false,
+            scroll_drag: None,
+            blink_visible: true,
+            opened_at: Instant::now(),
             anchor,
             screen_pt,
             paths,
@@ -339,6 +354,9 @@ impl App {
 
     /// Close the menu, dismissing the worker's COM objects (Windows).
     pub(crate) fn close_ctx_menu(&mut self, cx: &mut Context<Self>) {
+        if self.ctx_menu.is_some() {
+            self.cancel_command_shortcut_capture();
+        }
         if let Some(state) = self.ctx_menu.take() {
             #[cfg(windows)]
             if let Some(handle) = &self.shell_menu {
@@ -346,13 +364,24 @@ impl App {
             }
             let _ = state;
         }
-        self.ctx_menu_input = None;
-        self.ctx_menu_sub = None;
+
         cx.notify();
     }
 
+    /// The existing foreground drain drives only blink edges, not continuous frames.
+    pub(crate) fn tick_ctx_input_blink(&mut self) -> bool {
+        let Some(menu) = self.ctx_menu.as_mut() else {
+            return false;
+        };
+        let visible = self.command_shortcut_capture.is_none()
+            && (menu.input.blink_epoch.elapsed().as_millis() / 530) % 2 == 0;
+        let changed = visible != menu.blink_visible;
+        menu.blink_visible = visible;
+        changed
+    }
+
     /// Drain shell-worker events into the open menu. Returns whether anything
-    /// changed (so the 60 Hz loop repaints). Windows-only.
+    /// changed (so the event-driven drain repaints). Windows-only.
     #[cfg(windows)]
     pub(crate) fn drain_shell_menu_events(&mut self, cx: &mut Context<Self>) -> bool {
         use crate::shell_menu::ShellMenuEvent;
@@ -397,8 +426,6 @@ impl App {
                     handle.send(crate::shell_menu::ShellMenuRequest::Dismiss { id });
                     if self.ctx_menu.as_ref().map(|m| m.menu_id) == Some(id) {
                         self.ctx_menu = None;
-                        self.ctx_menu_input = None;
-                        self.ctx_menu_sub = None;
                     }
                     dirty = true;
                 }
@@ -412,9 +439,8 @@ impl App {
 
     /// The focus handle of the context menu's search input, for `sync_overlay_focus`.
     pub(crate) fn ctx_menu_focus(&self, cx: &Context<Self>) -> Option<FocusHandle> {
-        self.ctx_menu_input
-            .as_ref()
-            .map(|i| i.read(cx).focus_handle(cx))
+        let _ = cx;
+        self.ctx_menu.as_ref().map(|menu| menu.focus.clone())
     }
 
     /// Build this frame's logical rows from the current query + native tree.
@@ -509,7 +535,7 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (fg, muted, border, accent, accent_fg) = {
+        let (fg, muted, border, accent, accent_fg, bg, radius) = {
             let t = cx.theme();
             (
                 t.popover_foreground,
@@ -517,15 +543,14 @@ impl App {
                 t.border,
                 t.accent,
                 t.accent_foreground,
+                t.popover,
+                f32::from(t.radius),
             )
         };
-        let (smooth_ease, smooth_boost) =
-            crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
-        self.ctx_menu_scroll.set_smooth(smooth_ease, smooth_boost);
-        let input = self.ctx_menu_input.clone();
-        let query = input
+        let query = self
+            .ctx_menu
             .as_ref()
-            .map(|i| i.read(cx).value().to_string())
+            .map(|menu| menu.input.text.clone())
             .unwrap_or_default();
 
         let rows = self.ctx_menu_rows(&query, &query);
@@ -539,138 +564,87 @@ impl App {
             }
         }
         let state = self.ctx_menu.as_ref();
+        let reveal_ms = if self.state.settings.disable_animations {
+            f32::MAX
+        } else {
+            state.map_or(f32::MAX, |s| s.opened_at.elapsed().as_secs_f32() * 1000.0)
+        };
+        let reveal_duration = crate::ui::motion::MENU_REVEAL_MS
+            + crate::ui::motion::MENU_STAGGER_MS * crate::ui::motion::MENU_STAGGER_CAP as u64;
+        if reveal_ms < reveal_duration as f32 {
+            window.request_animation_frame();
+        }
         let (anchor, selected) = state
             .map(|s| (s.anchor, s.selected))
             .unwrap_or((Point::default(), 0));
 
         // Clamp the panel into the window so it never spills off an edge.
         let win = window.bounds().size;
-        const W: f32 = 340.;
+        let zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
+        let width = (340.0 * zoom).min((f32::from(win.width) - 12.0).max(1.0));
         let (ax, ay) = (f32::from(anchor.x), f32::from(anchor.y));
         let (ww, wh) = (f32::from(win.width), f32::from(win.height));
         const MAX_H: f32 = 640.;
         const V_MARGIN: f32 = 72.;
-        const INPUT_H: f32 = 40.;
-        let content_h = rows.iter().map(ctx_row_height).sum::<f32>() + 8.0;
+        let input_h = 40.0 * zoom;
+        let content_h = (rows.iter().map(ctx_row_height).sum::<f32>() + 8.0) * zoom;
         let max_h = MAX_H.min((wh - V_MARGIN * 2.0).max(180.0));
-        let est_h = (content_h + INPUT_H).min(max_h);
-        let list_h = est_h - INPUT_H;
-        let left = ax.min((ww - W - 6.0).max(6.0)).max(6.0);
+        let est_h = (content_h + input_h).min(max_h);
+        let list_h = est_h - input_h;
+        let left = ax.min((ww - width - 6.0).max(6.0)).max(6.0);
         let top = ay.min((wh - est_h - 6.0).max(6.0)).max(6.0);
 
         let view = cx.entity();
 
-        // Map selectable index → element, tracking which selectable index each
-        // selectable row occupies so we can highlight `selected`.
-        let mut sel_idx = 0usize;
-        let mut selected_child_idx = None;
-        let mut children: Vec<AnyElement> = Vec::new();
+        // Logical rows remain the command authority; IMM only receives ink and ids.
+        let selected_child_idx = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.selectable())
+            .nth(selected)
+            .map(|(index, _)| index);
+        let mut ink = Vec::with_capacity(rows.len());
         for row in &rows {
+            use crate::ui::imm::menu::{MenuIcon, MenuRow, MenuRowKind};
+            let mut item = MenuRow {
+                kind: MenuRowKind::Item,
+                label: "".into(),
+                icon: None,
+                shortcut: None,
+                shortcut_editable: false,
+                shortcut_recording: false,
+                depth: 0,
+                disabled: false,
+                emphasized: false,
+                submenu: false,
+                expanded: false,
+            };
             match row {
-                CtxRow::Separator => {
-                    children.push(
-                        div()
-                            .my(px(4.))
-                            .h(px(1.))
-                            .w_full()
-                            .bg(border)
-                            .into_any_element(),
-                    );
-                }
+                CtxRow::Separator => item.kind = MenuRowKind::Separator,
                 CtxRow::Loading => {
-                    children.push(
-                        h_flex()
-                            .px_2()
-                            .py_1()
-                            .gap_2()
-                            .text_color(muted)
-                            .text_sm()
-                            .child(div().child(rust_i18n::t!("loading_actions")))
-                            .into_any_element(),
-                    );
+                    item.kind = MenuRowKind::Loading;
+                    item.label = rust_i18n::t!("palette_searching").to_string().into();
                 }
                 CtxRow::Atlas { cmd } => {
-                    let this_idx = sel_idx;
-                    sel_idx += 1;
-                    let is_sel = this_idx == selected;
-                    if is_sel {
-                        selected_child_idx = Some(children.len());
-                    }
-                    let cmd = *cmd;
-                    let v = view.clone();
-                    let icon_el = cmd.icon().map(|i| {
-                        crate::ui::icons::icon(i, 16., if is_sel { accent_fg } else { fg })
+                    item.label = cmd.label().to_string().into();
+                    item.icon = cmd.icon().map(MenuIcon::Theme);
+                    let command_id = cmd.command_id();
+                    item.shortcut_editable = crate::input::commands::command_remappable(command_id);
+                    item.shortcut_recording =
+                        self.command_shortcut_capture.as_deref() == Some(command_id);
+                    item.shortcut = Some(if item.shortcut_recording {
+                        rust_i18n::t!("palette_shortcut_recording").into()
+                    } else if let Some(key) = self.command_shortcut_keystroke(command_id) {
+                        Kbd::format(&key).into()
+                    } else {
+                        rust_i18n::t!("palette_shortcut_none").into()
                     });
-                    children.push(
-                        menu_row(
-                            SharedString::from(format!("ctx-atlas-{this_idx}")),
-                            icon_el,
-                            cmd.label().to_string(),
-                            cmd.shortcut(),
-                            false,
-                            false,
-                            false,
-                            is_sel,
-                            accent,
-                            accent_fg,
-                            fg,
-                            muted,
-                        )
-                        .on_mouse_move(ctx_hover_handler(&view, this_idx))
-                        .on_mouse_down(MouseButton::Left, move |_e, window, cx| {
-                            v.update(cx, |this, cx| {
-                                this.run_ctx_atlas(cmd, window, cx);
-                            });
-                        })
-                        .into_any_element(),
-                    );
                 }
-                CtxRow::Ext {
-                    ext_id,
-                    cmd_id,
-                    title,
-                } => {
-                    let this_idx = sel_idx;
-                    sel_idx += 1;
-                    let is_sel = this_idx == selected;
-                    if is_sel {
-                        selected_child_idx = Some(children.len());
-                    }
-                    let ext_id = ext_id.clone();
-                    let cmd_id = cmd_id.clone();
-                    let title = title.clone();
-                    let v = view.clone();
-                    let icon_el = Some(crate::ui::icons::icon(
-                        AtlasIcon::PuzzlePiece,
-                        16.,
-                        if is_sel { accent_fg } else { fg },
-                    ));
-                    children.push(
-                        menu_row(
-                            SharedString::from(format!("ctx-ext-{this_idx}")),
-                            icon_el,
-                            title,
-                            None,
-                            false,
-                            false,
-                            false,
-                            is_sel,
-                            accent,
-                            accent_fg,
-                            fg,
-                            muted,
-                        )
-                        .on_mouse_move(ctx_hover_handler(&view, this_idx))
-                        .on_mouse_down(MouseButton::Left, move |_e, _window, cx| {
-                            v.update(cx, |this, cx| {
-                                this.run_ctx_ext(&ext_id, &cmd_id, cx);
-                            });
-                        })
-                        .into_any_element(),
-                    );
+                CtxRow::Ext { title, .. } => {
+                    item.label = title.clone().into();
+                    item.icon = Some(MenuIcon::Theme(AtlasIcon::PuzzlePiece));
                 }
                 CtxRow::Native {
-                    id,
                     title,
                     icon,
                     depth,
@@ -678,160 +652,170 @@ impl App {
                     expanded,
                     disabled,
                     is_default,
+                    ..
                 } => {
-                    let this_idx = sel_idx;
-                    sel_idx += 1;
-                    let is_sel = this_idx == selected;
-                    if is_sel {
-                        selected_child_idx = Some(children.len());
-                    }
-                    let id = *id;
-                    let submenu = *submenu;
-                    let disabled = *disabled;
-                    let v = view.clone();
-                    let icon_el = icon.clone().map(|tex| {
-                        img(tex)
-                            .w(px(16.))
-                            .h(px(16.))
-                            .flex_none()
-                            .into_any_element()
-                    });
-                    let mut r = menu_row(
-                        SharedString::from(format!("ctx-native-{id}-{this_idx}")),
-                        icon_el,
-                        title.clone(),
-                        None,
-                        submenu,
-                        *expanded,
-                        *is_default,
-                        is_sel,
-                        accent,
-                        accent_fg,
-                        if disabled { muted } else { fg },
-                        muted,
-                    )
-                    .pl(px(8.0 + f32::from(*depth) * 14.0))
-                    .on_mouse_move(ctx_hover_handler(&view, this_idx));
-                    if !disabled {
-                        r = r.on_mouse_down(MouseButton::Left, move |_e, window, cx| {
-                            v.update(cx, |this, cx| {
-                                this.activate_ctx_native(id, submenu, window, cx);
-                            });
-                        });
-                    }
-                    children.push(r.into_any_element());
+                    item.label = title.clone().into();
+                    item.icon = icon.clone().map(MenuIcon::Image);
+                    item.depth = *depth;
+                    item.submenu = *submenu;
+                    item.expanded = *expanded;
+                    item.disabled = *disabled;
+                    item.emphasized = *is_default;
                 }
                 CtxRow::DesktopApp { app } => {
-                    let this_idx = sel_idx;
-                    sel_idx += 1;
-                    let is_sel = this_idx == selected;
-                    if is_sel {
-                        selected_child_idx = Some(children.len());
-                    }
-                    let app = app.clone();
-                    let v = view.clone();
-                    let title = format!("{} {}", rust_i18n::t!("open_with"), app.name);
-                    let icon_el = Some(crate::ui::icons::icon(
-                        AtlasIcon::Eye,
-                        16.,
-                        if is_sel { accent_fg } else { fg },
-                    ));
-                    children.push(
-                        menu_row(
-                            SharedString::from(format!("ctx-app-{this_idx}")),
-                            icon_el,
-                            title,
-                            None,
-                            false,
-                            false,
-                            false,
-                            is_sel,
-                            accent,
-                            accent_fg,
-                            fg,
-                            muted,
-                        )
-                        .on_mouse_move(ctx_hover_handler(&view, this_idx))
-                        .on_mouse_down(MouseButton::Left, move |_e, _window, cx| {
-                            v.update(cx, |this, cx| {
-                                this.run_ctx_desktop_app(&app, cx);
-                            });
-                        })
-                        .into_any_element(),
-                    );
+                    item.label = format!("{} {}", rust_i18n::t!("open_with"), app.name).into();
+                    item.icon = Some(MenuIcon::Theme(AtlasIcon::Eye));
                 }
             }
+            ink.push(item);
         }
-
+        // The list now has a single layout child. Keyboard visibility uses pixel slots.
         if self
             .ctx_menu
             .as_ref()
             .is_some_and(|state| state.scroll_to_selected)
         {
-            if let Some(idx) = selected_child_idx {
-                self.ctx_menu_scroll.scroll_to_item(idx);
+            if let Some(index) = selected_child_idx {
+                let row_top =
+                    4.0 * zoom + ink.iter().take(index).map(|r| r.height(zoom)).sum::<f32>();
+                let row_bottom = row_top + ink[index].height(zoom);
+                let scroll_top = self.ctx_menu.as_ref().map_or(0.0, |menu| menu.scroll_top);
+                let viewport = (list_h - zoom).max(1.0);
+                let next = crate::ui::imm::menu::visible_scroll_top(
+                    scroll_top, viewport, row_top, row_bottom,
+                );
+                if let Some(menu) = self.ctx_menu.as_mut() {
+                    menu.scroll_top = next;
+                }
             }
             if let Some(state) = self.ctx_menu.as_mut() {
                 state.scroll_to_selected = false;
             }
         }
+        let menu_id = self.ctx_menu.as_ref().map_or(0, |state| state.menu_id);
+        let snapshot = Rc::new(rows);
+        let hover_rows = snapshot.clone();
+        let hover_view = view.clone();
+        let on_hover = Rc::new(
+            move |index: usize, _window: &mut Window, cx: &mut gpui::App| {
+                let ordinal = hover_rows
+                    .iter()
+                    .take(index)
+                    .filter(|row| row.selectable())
+                    .count();
+                hover_view.update(cx, |this, cx| {
+                    if let Some(state) = this
+                        .ctx_menu
+                        .as_mut()
+                        .filter(|state| state.menu_id == menu_id)
+                    {
+                        if state.selected != ordinal {
+                            state.selected = ordinal;
+                            cx.notify();
+                        }
+                    }
+                });
+            },
+        );
+        let activate_view = view.clone();
+        let edit_rows = snapshot.clone();
+        let edit_view = view.clone();
+        let on_edit_shortcut = Rc::new(
+            move |index: usize, _window: &mut Window, cx: &mut gpui::App| {
+                edit_view.update(cx, |this, cx| {
+                    if this
+                        .ctx_menu
+                        .as_ref()
+                        .is_some_and(|state| state.menu_id == menu_id)
+                    {
+                        if let Some(CtxRow::Atlas { cmd }) = edit_rows.get(index) {
+                            this.process_actions(vec![Action::StartCommandShortcutCapture(
+                                cmd.command_id().to_string(),
+                            )]);
+                            cx.notify();
+                        }
+                    }
+                });
+            },
+        );
+        let on_activate = Rc::new(
+            move |index: usize, window: &mut Window, cx: &mut gpui::App| {
+                activate_view.update(cx, |this, cx| {
+                    if this
+                        .ctx_menu
+                        .as_ref()
+                        .is_some_and(|state| state.menu_id == menu_id)
+                    {
+                        if let Some(row) = snapshot.get(index) {
+                            this.activate_ctx_row(row, window, cx);
+                        }
+                    }
+                });
+            },
+        );
+        let canvas = crate::ui::imm::menu::MenuCanvas::new(
+            ink,
+            selected_child_idx,
+            crate::ui::imm::menu::MenuColors {
+                foreground: fg,
+                muted,
+                border,
+                accent,
+                accent_foreground: accent_fg,
+            },
+            reveal_ms,
+            on_hover,
+            on_activate,
+            on_edit_shortcut,
+        );
 
-        let input_row = input.as_ref().map(|state| {
-            h_flex()
-                .w_full()
-                .px_2()
-                .py_1()
-                .gap_2()
-                .border_b_1()
-                .border_color(border)
-                .items_center()
-                .child(crate::ui::icons::icon(AtlasIcon::Search, 14., muted))
-                .child(div().flex_1().child(crate::ui::text_input::flat(state)))
-        });
-
-        let panel = v_flex()
-            .id("ctx-menu-panel")
-            .absolute()
-            .left(px(left))
-            .top(px(top))
-            .w(px(W))
-            .h(px(est_h))
-            .popover_style(cx)
-            .text_color(fg)
-            .occlude()
-            .overflow_hidden()
-            .children(input_row)
-            .child(
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .max_h(px(list_h))
-                    .child(
-                        v_flex()
-                            .id("ctx-menu-list")
-                            .size_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.ctx_menu_scroll)
-                            .py_1()
-                            .pr(px(SCROLLBAR_GUTTER))
-                            .children(children),
-                    )
-                    .vertical_scrollbar(&self.ctx_menu_scroll),
-            )
-            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
-                if this.handle_ctx_menu_key(ev, window, cx) {
-                    cx.stop_propagation();
-                    cx.notify();
-                }
-            }))
-            .with_animation(
-                SharedString::from("ctx-menu-panel-appear"),
-                crate::ui::motion::animation(crate::ui::motion::MICRO_MS),
-                |this, t| this.opacity(t).mt(px(5.0 * (1.0 - t))),
-            );
-
-        // Full-window scrim: any click outside the panel closes the menu.
+        let Some(menu) = self.ctx_menu.as_mut() else {
+            return div().into_any_element();
+        };
+        let viewport_h = (list_h - zoom).max(0.0);
+        menu.scroll_top = menu
+            .scroll_top
+            .clamp(0.0, (content_h - viewport_h).max(0.0));
+        let instant = self.state.settings.disable_animations
+            || self.state.settings.scroll_smoothness <= 0.0
+            || menu.scroll_drag.is_some();
+        let scroll_config = crate::ui::motion::Spring {
+            omega: 46.0 - 26.0 * self.state.settings.scroll_smoothness.clamp(0.0, 1.0),
+            zeta: 1.0,
+        }
+        .config();
+        let (scroll, scrolling) = menu.scroll_motion.sample_with_config(
+            menu.scroll_top,
+            instant,
+            Instant::now(),
+            scroll_config,
+        );
+        let scroll = scroll.clamp(0.0, (content_h - viewport_h).max(0.0));
+        if scrolling {
+            window.request_animation_frame();
+        }
+        let focus = menu.focus.clone();
+        let panel = crate::ui::imm::menu_panel::MenuPanel {
+            app: view.downgrade(),
+            menu_id,
+            focus: focus.clone(),
+            input: menu.input.paint_snapshot(),
+            recording: self.command_shortcut_capture.is_some(),
+            scroll,
+            content_h,
+            height: est_h,
+            colors: crate::ui::imm::menu_panel::PanelColors {
+                background: bg,
+                foreground: fg,
+                muted,
+                border,
+                accent,
+                radius: if bg.alpha < 1.0 { 10.0 * zoom } else { radius },
+            },
+            rows: crate::ui::imm::menu_panel::MenuPanel::rows(canvas),
+        };
+        // Only generic GPUI boxes remain: anchoring/focus and the fullscreen scrim.
+        // All visible components, search editing and scrolling belong to IMM.
         let v = view.clone();
         gpui::deferred(
             div()
@@ -848,7 +832,23 @@ impl App {
                         v.update(cx, |this, cx| this.close_ctx_menu(cx));
                     }
                 })
-                .child(panel),
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(left))
+                        .top(px(top))
+                        .w(px(width))
+                        .h(px(est_h))
+                        .track_focus(&focus)
+                        .opacity(0.92 + 0.08 * crate::ui::motion::menu_row_progress(reveal_ms, 0))
+                        .paint_offset(gpui::point(
+                            px(0.0),
+                            px(4.0
+                                * zoom
+                                * (1.0 - crate::ui::motion::menu_row_progress(reveal_ms, 0))),
+                        ))
+                        .child(panel),
+                ),
         )
         .priority(2)
         .into_any_element()
@@ -856,16 +856,74 @@ impl App {
 
     /// Keyboard model for the open menu. Returns `true` when the key was consumed
     /// (so the search input doesn't also see it).
-    fn handle_ctx_menu_key(
+    pub(crate) fn handle_ctx_menu_key(
         &mut self,
         ev: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.command_shortcut_capture.is_some() {
+            return self.handle_command_shortcut_key(ev);
+        }
+        let ctrl = ev.keystroke.modifiers.control || ev.keystroke.modifiers.platform;
+        let shift = ev.keystroke.modifiers.shift;
+        let key = ev.keystroke.key.as_str();
+        if !ctrl
+            && self
+                .ctx_menu
+                .as_ref()
+                .is_some_and(|menu| menu.input.marked.is_some())
+        {
+            // Candidate navigation/confirmation belongs to the platform IME.
+            return false;
+        }
+        let editing_arrow = matches!(key, "left" | "right")
+            && (ctrl
+                || shift
+                || self
+                    .ctx_menu
+                    .as_ref()
+                    .is_some_and(|menu| !menu.input.text.is_empty()));
+        if editing_arrow
+            || matches!(key, "home" | "end" | "backspace" | "delete")
+            || (ctrl && matches!(key, "a" | "c" | "v" | "x" | "z" | "y"))
+        {
+            let Some(menu) = self.ctx_menu.as_mut() else {
+                return false;
+            };
+            let before = menu.input.text.clone();
+            match key {
+                "c" | "x" if ctrl => {
+                    if menu.input.has_selection() {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                            menu.input.selected_text().to_string(),
+                        ));
+                        if key == "x" {
+                            menu.input.delete_selection();
+                        }
+                    }
+                }
+                "v" if ctrl => {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        menu.input.replace_native(None, &text, None, false);
+                    }
+                }
+                _ => {
+                    menu.input.handle_key(key, None, ctrl, shift);
+                }
+            }
+            if before != menu.input.text {
+                menu.selected = 0;
+                menu.scroll_to_selected = true;
+                menu.scroll_top = 0.0;
+                menu.scroll_motion = RetainedSpring::new(0.0, Instant::now());
+            }
+            return true;
+        }
         let query = self
-            .ctx_menu_input
+            .ctx_menu
             .as_ref()
-            .map(|i| i.read(cx).value().to_string())
+            .map(|menu| menu.input.text.clone())
             .unwrap_or_default();
         let rows = self.ctx_menu_rows(&query, &query);
         let selectable: Vec<usize> = rows
@@ -957,7 +1015,12 @@ impl App {
         let Some(&row_i) = selectable.get(selected) else {
             return;
         };
-        match &rows[row_i] {
+        self.activate_ctx_row(&rows[row_i], window, cx);
+    }
+
+    fn activate_ctx_row(&mut self, row: &CtxRow, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_command_shortcut_capture();
+        match row {
             CtxRow::Atlas { cmd } => self.run_ctx_atlas(*cmd, window, cx),
             CtxRow::Ext { ext_id, cmd_id, .. } => {
                 let ext_id = ext_id.clone();
@@ -983,8 +1046,7 @@ impl App {
         if let Some(state) = self.ctx_menu.take() {
             let _ = atlas_core::fs::desktop_apps::launch_desktop_app(app, &state.paths);
         }
-        self.ctx_menu_input = None;
-        self.ctx_menu_sub = None;
+
         cx.notify();
     }
 
@@ -1052,6 +1114,8 @@ impl App {
                     self.process_actions(vec![Action::Paste { dest }]);
                 }
             }
+            #[cfg(windows)]
+            AtlasCmd::PasteShortcut => self.paste_shortcuts_focused(),
             AtlasCmd::Trash | AtlasCmd::DeletePerm => {
                 if is_archive {
                     self.toast_error(rust_i18n::t!("root_delete_archive_error").into());
@@ -1133,21 +1197,6 @@ impl App {
         self.ctx_menu_seq += 1;
         let menu_id = self.ctx_menu_seq;
         let screen_pt = cursor_screen_pos();
-        let input = crate::ui::text_input::single_line(
-            window,
-            cx,
-            rust_i18n::t!("search_actions").into_owned(),
-            "",
-        );
-        self.ctx_menu_sub = Some(cx.subscribe(
-            &input,
-            |_this, _input, ev: &gpui_component::input::InputEvent, cx| {
-                if matches!(ev, gpui_component::input::InputEvent::Change) {
-                    cx.notify();
-                }
-            },
-        ));
-        self.ctx_menu_input = Some(input);
 
         // Request native shell items for the current directory (background menu).
 
@@ -1175,6 +1224,17 @@ impl App {
 
         self.ctx_menu = Some(CtxMenuState {
             menu_id,
+            focus: cx.focus_handle(),
+            input: ImmTextInputState::new(""),
+            scroll_top: 0.0,
+            scroll_motion: RetainedSpring::new(0.0, Instant::now()),
+            input_bounds: None,
+            input_line: None,
+            input_scroll_x: 0.0,
+            input_drag: false,
+            scroll_drag: None,
+            blink_visible: true,
+            opened_at: Instant::now(),
             anchor,
             screen_pt,
             paths: current_dir.into_iter().collect(),
@@ -1245,8 +1305,7 @@ impl App {
         let _ = id;
         // Visually close now; the worker frees its COM objects on InvokeDone.
         self.ctx_menu = None;
-        self.ctx_menu_input = None;
-        self.ctx_menu_sub = None;
+
         cx.notify();
     }
 }
@@ -1494,94 +1553,6 @@ fn fill_submenu(items: &mut [UiNativeItem], id: u32, slot: &mut Option<Vec<UiNat
     }
 }
 
-/// One styled menu row (icon slot, label, optional chevron / default emphasis).
-#[allow(clippy::too_many_arguments)]
-/// Hover-to-select: moving the mouse over a selectable row makes it the current
-/// selection (mirrors keyboard nav). Only notifies on an actual change so a moving
-/// cursor doesn't thrash the renderer.
-fn ctx_hover_handler(
-    view: &gpui::Entity<App>,
-    idx: usize,
-) -> impl Fn(&gpui::MouseMoveEvent, &mut Window, &mut gpui::App) + 'static {
-    let view = view.clone();
-    move |_e, _window, cx| {
-        view.update(cx, |this, cx| {
-            if let Some(m) = this.ctx_menu.as_mut() {
-                if m.selected != idx {
-                    m.selected = idx;
-                    cx.notify();
-                }
-            }
-        });
-    }
-}
-
-fn menu_row(
-    id: SharedString,
-    icon: Option<AnyElement>,
-    label: String,
-    shortcut: Option<&'static str>,
-    submenu: bool,
-    expanded: bool,
-    is_default: bool,
-    selected: bool,
-    accent: gpui::Hsla,
-    accent_fg: gpui::Hsla,
-    fg: gpui::Hsla,
-    muted: gpui::Hsla,
-) -> gpui::Stateful<gpui::Div> {
-    let text_color = if selected { accent_fg } else { fg };
-    let mut row = h_flex()
-        .id(id)
-        .w_full()
-        .px_2()
-        .py_1()
-        .gap_2()
-        .items_center()
-        .rounded_md()
-        .cursor_pointer()
-        .text_color(text_color)
-        .text_sm()
-        .min_h(px(30.));
-    if selected {
-        row = row.bg(accent);
-    }
-    // Icon slot (fixed width so labels align with and without icons).
-    row = row.child(div().w(px(16.)).h(px(16.)).flex_none().children(icon));
-    let mut label_div = div().flex_1().min_w(px(0.)).truncate().child(label);
-    if is_default {
-        label_div = label_div.font_weight(gpui::FontWeight::SEMIBOLD);
-    }
-    row = row.child(label_div);
-    if let Some(shortcut) = shortcut {
-        let mut badge = Kbd::new(Keystroke::parse(shortcut).unwrap())
-            .outline()
-            .flex_shrink_0();
-        if selected {
-            badge = badge
-                .bg(gpui::transparent_black())
-                .border_1()
-                .border_color(accent_fg.opacity(0.4))
-                .text_color(accent_fg);
-        } else {
-            badge = badge.text_color(muted);
-        }
-        row = row.child(badge);
-    }
-    if submenu {
-        row = row.child(crate::ui::icons::icon(
-            if expanded {
-                AtlasIcon::CaretDown
-            } else {
-                AtlasIcon::CaretRight
-            },
-            12.,
-            text_color,
-        ));
-    }
-    row
-}
-
 /// Capture the cursor position in physical screen pixels (for `ptInvoke`).
 #[cfg(windows)]
 #[allow(unsafe_code)]
@@ -1641,4 +1612,21 @@ fn raw_icon_to_texture(raw: crate::shell_menu::RawIcon) -> Option<Arc<RenderImag
     }
     let buf = image::RgbaImage::from_raw(raw.w, raw.h, bytes)?;
     Some(Arc::new(RenderImage::new(vec![image::Frame::new(buf)])))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn every_atlas_menu_command_uses_the_palette_binding_registry() {
+        for items in [ATLAS_ITEMS, ATLAS_ITEMS_BACKGROUND, ATLAS_ITEMS_RECYCLE] {
+            for (cmd, _) in items {
+                assert!(
+                    crate::input::commands::command_remappable(cmd.command_id()),
+                    "{}",
+                    cmd.command_id()
+                );
+            }
+        }
+    }
 }

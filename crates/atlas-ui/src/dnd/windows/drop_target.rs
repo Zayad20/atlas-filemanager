@@ -224,6 +224,8 @@ pub struct AtlasDropTarget {
     helper: Option<IDropTargetHelper>,
     /// Last computed effect (used in DragOver to remember decision).
     last_effect: std::cell::Cell<DROPEFFECT>,
+    active_data: std::cell::RefCell<Option<IDataObject>>,
+    description_target: std::cell::RefCell<Option<(crate::dnd::DropEffect, PathBuf)>>,
 }
 
 impl AtlasDropTarget {
@@ -258,6 +260,8 @@ impl AtlasDropTarget {
             action_queue,
             helper,
             last_effect: std::cell::Cell::new(DROPEFFECT_NONE),
+            active_data: Default::default(),
+            description_target: Default::default(),
         }
         .into();
 
@@ -276,13 +280,42 @@ impl AtlasDropTarget {
             p.y as f32 / self.scale_factor,
         )
     }
+
+    fn update_description(&self, x: f32, y: f32, ctrl: bool, shift: bool) -> DROPEFFECT {
+        let target = self.zones.lock().ok().and_then(|zones| {
+            let dest = zones.hover_snapshot.as_ref()?.transfer_at(x, y, &zones.paths, ctrl, shift)?;
+            let default = if zones.paths.is_empty() { crate::dnd::DropEffect::Copy }
+                else { crate::dnd::default_effect_for_paths(&zones.paths, &dest) };
+            Some((crate::dnd::effect_with_modifiers(default, ctrl, shift), dest))
+        });
+        if *self.description_target.borrow() != target {
+            let object = self.active_data.borrow().clone();
+            if let Some(object) = object.as_ref() {
+                super::drop_description::publish(object, target.as_ref().map(|t| t.0), target.as_ref().map(|t| t.1.as_path()));
+            }
+            *self.description_target.borrow_mut() = target.clone();
+        }
+        match target.map(|(effect, _)| effect) {
+            Some(crate::dnd::DropEffect::Move) => windows::Win32::System::Ole::DROPEFFECT_MOVE,
+            Some(crate::dnd::DropEffect::Copy) => DROPEFFECT_COPY,
+            None => DROPEFFECT_NONE,
+        }
+    }
+
+    fn clear_description(&self) {
+        let object = self.active_data.borrow_mut().take();
+        if let Some(object) = object {
+            super::drop_description::publish(&object, None, None);
+        }
+        self.description_target.borrow_mut().take();
+    }
 }
 
 impl IDropTarget_Impl for AtlasDropTarget_Impl {
     fn DragEnter(
         &self,
         pdataobj: windows::core::Ref<IDataObject>,
-        _grfkeystate: MODIFIERKEYS_FLAGS,
+        grfkeystate: MODIFIERKEYS_FLAGS,
         pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> Result<()> {
@@ -290,12 +323,19 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
             unsafe { *pdweffect = DROPEFFECT_NONE };
             return Ok(());
         };
+        self.clear_description();
+        *self.active_data.borrow_mut() = Some(data_obj.clone());
+        super::drop_description::publish(data_obj, None, None);
 
         // Mark drag active so the render path starts publishing zones.
         let (x, y) = self.to_logical(pt);
+        let paths = unsafe { read_cf_hdrop(data_obj) };
         if let Ok(mut zones) = self.zones.lock() {
             zones.drag_active = true;
             zones.cursor = Some((x, y));
+            zones.paths = paths;
+            zones.ctrl = grfkeystate.0 & 0x0008 != 0;
+            zones.shift = grfkeystate.0 & 0x0004 != 0;
         }
 
         // Accept if the source offers real files (CF_HDROP) or virtual files
@@ -326,9 +366,10 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
         self.last_effect.set(effect);
         unsafe { *pdweffect = effect };
 
+        let visual_effect = self.update_description(x, y, grfkeystate.0 & 0x0008 != 0, grfkeystate.0 & 0x0004 != 0);
         if let Some(helper) = &self.helper {
             unsafe {
-                let _ = helper.DragEnter(self.hwnd, data_obj, &POINT { x: pt.x, y: pt.y }, effect);
+                let _ = helper.DragEnter(self.hwnd, data_obj, &POINT { x: pt.x, y: pt.y }, visual_effect);
             }
         }
         Ok(())
@@ -336,7 +377,7 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
 
     fn DragOver(
         &self,
-        _grfkeystate: MODIFIERKEYS_FLAGS,
+        grfkeystate: MODIFIERKEYS_FLAGS,
         pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> Result<()> {
@@ -345,28 +386,37 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
         let effect = self.last_effect.get();
         unsafe { *pdweffect = effect };
 
+        let (x, y) = self.to_logical(pt);
+        let visual_effect = self.update_description(x, y, grfkeystate.0 & 0x0008 != 0, grfkeystate.0 & 0x0004 != 0);
         if let Some(helper) = &self.helper {
             unsafe {
-                let _ = helper.DragOver(&POINT { x: pt.x, y: pt.y }, effect);
+                let _ = helper.DragOver(&POINT { x: pt.x, y: pt.y }, visual_effect);
             }
         }
         let (x, y) = self.to_logical(pt);
         if let Ok(mut zones) = self.zones.lock() {
             zones.cursor = Some((x, y));
+            zones.ctrl = grfkeystate.0 & 0x0008 != 0;
+            zones.shift = grfkeystate.0 & 0x0004 != 0;
         }
         if let Ok(mut q) = self.action_queue.lock() {
             q.push(super::DndEvent::DragOver { x, y });
+            crate::ui_wake::wake();
         }
         Ok(())
     }
 
     fn DragLeave(&self) -> Result<()> {
+        self.clear_description();
         if let Ok(mut zones) = self.zones.lock() {
             zones.drag_active = false;
             zones.cursor = None;
+            zones.paths.clear();
+            zones.hover_snapshot = None;
         }
         if let Ok(mut q) = self.action_queue.lock() {
             q.push(super::DndEvent::DragLeave);
+            crate::ui_wake::wake();
         }
         if let Some(helper) = &self.helper {
             unsafe {
@@ -383,9 +433,12 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
         pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> Result<()> {
+        self.clear_description();
         if let Ok(mut zones) = self.zones.lock() {
             zones.drag_active = false;
             zones.cursor = None;
+            zones.paths.clear();
+            zones.hover_snapshot = None;
         }
 
         let Some(data_obj) = pdataobj.as_ref() else {
@@ -429,6 +482,7 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
         };
         if let Ok(mut q) = self.action_queue.lock() {
             q.push(super::DndEvent::DropIn(payload));
+            crate::ui_wake::wake();
         }
         Ok(())
     }

@@ -3,13 +3,26 @@ use crate::input::action::{Action, SelectionMove};
 use crate::input::commands::{command_remappable, default_command_shortcut, COMMANDS};
 use atlas_model::profiles::ProfileScoped;
 use atlas_model::settings::ViewMode;
-use gpui::{Context, Focusable, KeyDownEvent, KeybindingKeystroke, Keystroke, Window};
+use gpui::{
+    Context, Focusable, InteractiveElement, KeyDownEvent, KeybindingKeystroke, Keystroke, Window,
+};
+use gpui_component::input;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CommandShortcutPrefs {
     #[serde(default)]
     bindings: HashMap<String, Option<String>>,
+}
+
+impl CommandShortcutPrefs {
+    fn shortcut_string(&self, command_id: &str) -> Option<String> {
+        match self.bindings.get(command_id) {
+            Some(Some(keys)) if Keystroke::parse(keys).is_ok() => Some(keys.clone()),
+            Some(Some(_)) | Some(None) => None,
+            None => default_command_shortcut(command_id).map(str::to_string),
+        }
+    }
 }
 
 pub(crate) struct CommandShortcuts;
@@ -33,22 +46,43 @@ const RESERVED_STATIC_SHORTCUTS: &[&str] = &[
     "end",
     "pageup",
     "pagedown",
-    "enter",
-    "f2",
     "ctrl-tab",
     "ctrl-shift-tab",
     "ctrl-f",
     "space",
     "escape",
     "alt-tab",
-    "f5",
     "ctrl-r",
     "ctrl-l",
     "alt-up",
-    "ctrl-c",
-    "ctrl-x",
-    "ctrl-v",
 ];
+
+/// A focused search input resolves these keys into actions before key listeners.
+/// The palette installs this adapter; IMM forwards raw keys to the same capture state.
+pub(crate) fn capture_shortcut_input_actions<E: InteractiveElement>(
+    element: E,
+    cx: &mut Context<App>,
+) -> E {
+    fn bind<E: InteractiveElement, A: gpui::Action>(
+        element: E,
+        key: &'static str,
+        cx: &mut Context<App>,
+    ) -> E {
+        element.capture_action(cx.listener(move |this, _: &A, _window, cx| {
+            if this.capture_command_shortcut(key) {
+                cx.stop_propagation();
+                cx.notify();
+            }
+        }))
+    }
+    let element = bind::<_, input::IndentInline>(element, "tab", cx);
+    let element = bind::<_, input::Backspace>(element, "backspace", cx);
+    let element = bind::<_, input::Delete>(element, "delete", cx);
+    let element = bind::<_, input::Escape>(element, "escape", cx);
+    let element = bind::<_, input::Copy>(element, "ctrl-c", cx);
+    let element = bind::<_, input::Cut>(element, "ctrl-x", cx);
+    bind::<_, input::Paste>(element, "ctrl-v", cx)
+}
 
 impl App {
     pub(crate) fn handle_global_command_shortcut_key(
@@ -59,6 +93,9 @@ impl App {
     ) -> bool {
         if self.command_shortcut_capture.is_some() {
             return self.handle_command_shortcut_key(ev);
+        }
+        if self.ctx_menu.is_some() {
+            return self.handle_ctx_menu_key(ev, window, cx);
         }
 
         let text_input_focused = self.any_text_input_focused(window, cx);
@@ -110,6 +147,11 @@ impl App {
 
         if self.handle_vim_mode_key(ev, window, cx) {
             return true;
+        }
+
+        if self.state.settings.character_key_action != atlas_model::settings::CharacterKeyAction::TriggerHotkey
+            && crate::ui::interactions::search_seed_from_key(ev).is_some() {
+            return false;
         }
 
         self.handle_command_shortcut_key(ev)
@@ -230,11 +272,7 @@ impl App {
 
     pub(crate) fn command_shortcut_string(&self, command_id: &str) -> Option<String> {
         let prefs = self.state.profiles.active().scoped::<CommandShortcuts>();
-        match prefs.bindings.get(command_id) {
-            Some(Some(keys)) if Keystroke::parse(keys).is_ok() => Some(keys.clone()),
-            Some(Some(_)) | Some(None) => None,
-            None => default_command_shortcut(command_id).map(str::to_string),
-        }
+        prefs.shortcut_string(command_id)
     }
 
     pub(crate) fn command_shortcut_keystroke(&self, command_id: &str) -> Option<Keystroke> {
@@ -243,6 +281,7 @@ impl App {
     }
 
     pub(crate) fn start_command_shortcut_capture(&mut self, command_id: String) {
+        self.command_shortcut_conflict = None;
         if command_remappable(&command_id) {
             self.command_shortcut_capture = Some(command_id);
         }
@@ -250,6 +289,7 @@ impl App {
 
     pub(crate) fn cancel_command_shortcut_capture(&mut self) {
         self.command_shortcut_capture = None;
+        self.command_shortcut_conflict = None;
     }
 
     pub(crate) fn set_command_shortcut(&mut self, command_id: String, keystroke: String) {
@@ -262,16 +302,17 @@ impl App {
             return;
         }
 
-        let mut prefs = self.state.profiles.active().scoped::<CommandShortcuts>();
+        let Ok(proposed) = Keystroke::parse(&keystroke) else { return; };
+        let proposed = KeybindingKeystroke::from_keystroke(proposed);
         for other in COMMANDS.iter().filter(|command| command.remappable) {
             if other.id != command_id
-                && self
-                    .command_shortcut_string(other.id)
-                    .is_some_and(|keys| keys == keystroke)
+                && self.command_shortcut_keystroke(other.id).is_some_and(|keys| keys.should_match(&proposed))
             {
-                prefs.bindings.insert(other.id.to_string(), None);
+                self.command_shortcut_conflict = Some(other.id.to_string());
+                return;
             }
         }
+        let mut prefs = self.state.profiles.active().scoped::<CommandShortcuts>();
         prefs.bindings.insert(command_id, Some(keystroke));
         self.state
             .profiles
@@ -279,9 +320,11 @@ impl App {
             .set_scoped::<CommandShortcuts>(&prefs);
         atlas_core::util::config::save_profiles(&self.state.profiles);
         self.command_shortcut_capture = None;
+        self.command_shortcut_conflict = None;
     }
 
     pub(crate) fn remove_command_shortcut(&mut self, command_id: String) {
+        self.command_shortcut_conflict = None;
         if !command_remappable(&command_id) {
             return;
         }
@@ -295,13 +338,28 @@ impl App {
         self.command_shortcut_capture = None;
     }
 
-    pub(crate) fn handle_command_shortcut_key(&mut self, ev: &KeyDownEvent) -> bool {
+    /// Shared by palette/menu key listeners and input actions (which GPUI
+    /// dispatches before raw key listeners). Never executes the command.
+    pub(crate) fn capture_command_shortcut(&mut self, keystroke: &str) -> bool {
         if let Some(command_id) = self.command_shortcut_capture.clone() {
-            match ev.keystroke.key.as_str() {
+            match keystroke {
                 "escape" => self.cancel_command_shortcut_capture(),
                 "backspace" | "delete" => self.remove_command_shortcut(command_id),
-                _ => self.set_command_shortcut(command_id, ev.keystroke.unparse()),
+                _ => self.set_command_shortcut(command_id, keystroke.to_string()),
             }
+            return true;
+        }
+        false
+    }
+
+    pub(crate) fn handle_command_shortcut_key(&mut self, ev: &KeyDownEvent) -> bool {
+        let key = ev.keystroke.key.as_str();
+        let capture_key = if matches!(key, "escape" | "backspace" | "delete") {
+            key.to_string()
+        } else {
+            ev.keystroke.unparse()
+        };
+        if self.capture_command_shortcut(&capture_key) {
             return true;
         }
 
@@ -318,8 +376,15 @@ impl App {
             };
             let target = KeybindingKeystroke::from_keystroke(target);
             if ev.keystroke.should_match(&target) {
-                if let Some(action) = self.action_for_command_shortcut(command.id) {
-                    self.process_actions(vec![action]);
+                match command.id {
+                    "files.copy" => self.copy_focused(),
+                    "files.cut" => self.cut_focused(),
+                    "files.paste" => self.paste_focused(),
+                    _ => {
+                        if let Some(action) = self.action_for_command_shortcut(command.id) {
+                            self.process_actions(vec![action]);
+                        }
+                    }
                 }
                 return true;
             }
@@ -338,6 +403,8 @@ impl App {
         match command_id {
             "tab.new" => Some(Action::NewTabFocused),
             "tab.close" => Some(Action::CloseFocusedTab),
+            "tab.reopen" => Some(Action::ReopenClosedTab),
+            "tab.detach" => Some(Action::DetachFocusedTab),
             "tab.next" => Some(Action::FocusNextTab),
             "tab.previous" => Some(Action::FocusPreviousTab),
             "tab.move-left" => Some(Action::MoveFocusedTabLeft),
@@ -355,6 +422,13 @@ impl App {
             "pane.split-v" => Some(Action::SplitVerticalFocused),
             "pane.close" => Some(Action::CloseFocusedPane),
             "pane.focus-next" => Some(Action::FocusNextPane),
+            "pane.focus-left" => Some(Action::SelectLeftPanel),
+            "pane.focus-right" => Some(Action::SelectRightPanel),
+            "pane.focus-above" => Some(Action::SelectPanelAbove),
+            "pane.focus-below" => Some(Action::SelectPanelBelow),
+            "pane.even-siblings" => Some(Action::EvenPanelSiblings),
+            "pane.even-all" => Some(Action::EvenAllPanes),
+            "folder.inherit-view" => Some(Action::ToggleFolderViewRecursive),
             "nav.back" => Some(Action::NavigateBack(focused)),
             "nav.forward" => Some(Action::NavigateForward(focused)),
             "nav.parent" => Some(Action::NavigateUp(focused)),
@@ -376,6 +450,11 @@ impl App {
             "view.list" => Some(Action::SetViewMode(ViewMode::List)),
             "view.miller" => Some(Action::SetViewMode(ViewMode::Miller)),
             "view.tree" => Some(Action::SetViewMode(ViewMode::Tree)),
+            "view.group-none" => Some(Action::SetGroupBy(atlas_model::tab::GroupBy::None)),
+            "view.group-date" => Some(Action::SetGroupBy(atlas_model::tab::GroupBy::Date)),
+            "view.group-size" => Some(Action::SetGroupBy(atlas_model::tab::GroupBy::Size)),
+            "view.group-type" => Some(Action::SetGroupBy(atlas_model::tab::GroupBy::Type)),
+            "view.group-name" => Some(Action::SetGroupBy(atlas_model::tab::GroupBy::Name)),
             "view.zoom-in" => Some(Action::ZoomIn),
             "view.zoom-out" => Some(Action::ZoomOut),
             "view.zoom-reset" => Some(Action::ZoomReset),
@@ -462,12 +541,42 @@ impl App {
             "edit.redo" => Some(Action::Redo),
             "edit.batch-rename" => Some(Action::OpenBatchRename),
             "files.rename" if !archive_focused => Some(Action::RenameFocused),
+            "files.copy" | "files.cut" if !archive_focused && !recycle_focused => {
+                let paths = self.selected_paths();
+                if paths.is_empty() {
+                    None
+                } else if command_id == "files.copy" {
+                    Some(Action::Copy(paths))
+                } else {
+                    Some(Action::Cut(paths))
+                }
+            }
+            "files.paste" if !archive_focused && !recycle_focused => {
+                active_location.and_then(|location| {
+                    let dest = location.fs_dir().map(std::path::Path::to_path_buf);
+                    #[cfg(feature = "provider-host")]
+                    let dest = dest.or_else(|| {
+                        matches!(location, atlas_model::location::Location::Remote { .. })
+                            .then(std::path::PathBuf::new)
+                    });
+                    dest.map(|dest| Action::Paste { dest })
+                })
+            }
+            "files.open-terminal" => {
+                active_location
+                    .and_then(|location| location.fs_dir())
+                    .map(|dir| Action::OpenTerminal {
+                        dir: dir.to_path_buf(),
+                    })
+            }
             "files.create-folder" if !archive_focused => Some(Action::CreateFolderFocused),
             "files.create-file" if !archive_focused => Some(Action::CreateFileFocused),
             "files.copy-path" if !archive_focused => {
                 let paths = self.selected_paths();
-                paths.first().cloned().map(Action::CopyPathToClipboard)
+                (!paths.is_empty()).then_some(Action::CopyPathsToClipboard(paths))
             }
+            #[cfg(windows)]
+            "files.paste-shortcut" if active_location.is_some_and(|location| location.fs_dir().is_some()) => Some(Action::PasteShortcutFocused),
             "files.properties" if !archive_focused => Some(Action::OpenPropertiesFocused),
             "files.trash" if !archive_focused => {
                 let paths = self.selected_paths();
@@ -567,10 +676,34 @@ fn reserved_static_shortcut(keystroke: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_shortcut_authority_resolves_defaults_overrides_and_removed_bindings() {
+        let mut prefs = CommandShortcutPrefs::default();
+        assert_eq!(
+            prefs.shortcut_string("files.copy").as_deref(),
+            Some("ctrl-c")
+        );
+        prefs
+            .bindings
+            .insert("files.copy".into(), Some("ctrl-alt-c".into()));
+        assert_eq!(
+            prefs.shortcut_string("files.copy").as_deref(),
+            Some("ctrl-alt-c")
+        );
+        prefs.bindings.insert("files.copy".into(), None);
+        assert_eq!(prefs.shortcut_string("files.copy"), None);
+        prefs
+            .bindings
+            .insert("files.copy".into(), Some("invalidmodifier-c".into()));
+        assert_eq!(prefs.shortcut_string("files.copy"), None);
+        assert!(!reserved_static_shortcut("ctrl-c"));
+        assert!(!reserved_static_shortcut("ctrl-x"));
+        assert!(!reserved_static_shortcut("ctrl-v"));
+    }
 
     #[test]
     fn reserved_shortcuts_reject_static_input_bindings() {
-        assert!(reserved_static_shortcut("ctrl-c"));
+        assert!(reserved_static_shortcut("ctrl-q"));
         assert!(reserved_static_shortcut("escape"));
     }
 

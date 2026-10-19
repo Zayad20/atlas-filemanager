@@ -19,9 +19,9 @@ use gpui::{
 };
 use gpui_component::ActiveTheme;
 
-pub(crate) const NAV_HOVER_DELAY: Duration = Duration::from_millis(350);
-pub(crate) const FOLDER_HOVER_DELAY: Duration = Duration::from_millis(650);
-const REPEAT_NAV_GUARD: Duration = Duration::from_millis(450);
+pub(crate) const NAV_HOVER_DELAY: Duration = Duration::from_millis(600);
+pub(crate) const FOLDER_HOVER_DELAY: Duration = Duration::from_millis(700);
+const REPEAT_NAV_GUARD: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum DragHoverId {
@@ -50,12 +50,37 @@ pub(crate) enum DragHoverCommand {
 #[derive(Clone)]
 pub(crate) enum DragHoverDropCommand {
     AddBookmarks,
+    InsertBookmarks(usize),
     AssignTag(TagId),
     StageInSidebar,
     TransferTo(PathBuf),
     /// Send the dropped paths to the OS trash (drop on the Recycle Bin).
     TrashPaths,
     RejectArchive,
+}
+
+#[cfg(windows)]
+pub(crate) struct NativeDropSnapshot {
+    targets: Vec<DragHoverTarget>,
+    dropzone: Option<gpui::Bounds<gpui::Pixels>>,
+    sidebar: Option<gpui::Bounds<gpui::Pixels>>,
+    tabs: std::collections::HashMap<TileId, DragHoverDropCommand>,
+    panes: Vec<(gpui::Bounds<gpui::Pixels>, DragHoverDropCommand)>,
+}
+
+#[cfg(windows)]
+impl NativeDropSnapshot {
+    pub(crate) fn transfer_at(&self, x: f32, y: f32, paths: &[PathBuf], ctrl: bool, shift: bool) -> Option<PathBuf> {
+        let command = self.command_at(x, y)?;
+        if drop_is_structurally_blocked(&command, paths, ctrl, shift) { return None; }
+        match command { DragHoverDropCommand::TransferTo(dest) => Some(dest), _ => None }
+    }
+    pub(crate) fn command_at(&self, x: f32, y: f32) -> Option<DragHoverDropCommand> {
+        let pos = gpui::point(gpui::px(x), gpui::px(y));
+        resolved_command_at(&self.targets, pos, self.dropzone, self.sidebar,
+            |id| self.tabs.get(&id).cloned(),
+            || self.panes.iter().find(|(bounds, _)| contains(*bounds, pos)).map(|(_, command)| command.clone()))
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -75,6 +100,7 @@ pub(crate) struct DragHoverTarget {
 
 #[derive(Default)]
 pub(crate) struct DragHoverState {
+    reference_drag: bool,
     active: bool,
     pub(crate) cursor: Option<gpui::Point<gpui::Pixels>>,
     active_id: Option<DragHoverId>,
@@ -101,6 +127,10 @@ pub(crate) struct DragHoverState {
 }
 
 impl DragHoverState {
+    pub(crate) fn navigation_is_provisional(&self) -> bool {
+        self.active && !self.committed
+    }
+
     fn reset_target(&mut self, id: Option<DragHoverId>, now: Instant) {
         if self.active_id == id {
             return;
@@ -114,6 +144,7 @@ impl DragHoverState {
     }
 
     pub(crate) fn clear(&mut self) {
+        self.reference_drag = false;
         self.active = false;
         self.cursor = None;
         self.active_id = None;
@@ -133,6 +164,10 @@ impl DragHoverState {
 }
 
 impl App {
+    pub(crate) fn begin_bookmark_drag(&mut self) {
+        self.begin_drag_hover();
+        self.drag_hover.reference_drag = true;
+    }
     pub(crate) fn begin_drag_hover(&mut self) {
         self.drag_hover.active = true;
         self.drag_hover.committed = false;
@@ -162,7 +197,31 @@ impl App {
     /// Mark the drag as committed (a real drop landed inside Atlas), so the
     /// cancel-revert is suppressed when the drag ends.
     pub(crate) fn mark_drag_committed(&mut self) {
+        if self.drag_hover.committed {
+            return;
+        }
         self.drag_hover.committed = true;
+        // Spring-loading must not reorder sidebar destinations under the cursor.
+        // Only the final route becomes recent when an actual drop commits it.
+        let focused = self.state.focused_tile;
+        let mut visited: Vec<_> = self
+            .drag_hover
+            .nav_snapshot
+            .as_ref()
+            .into_iter()
+            .flat_map(|snapshot| snapshot.iter())
+            .filter_map(|(pane, (before, _, _))| {
+                let current = &self.tab_data_for(*pane)?.location;
+                match current {
+                    Location::Directory(path) if current != before => Some((*pane, path.clone())),
+                    _ => None,
+                }
+            })
+            .collect();
+        visited.sort_by_key(|(pane, _)| (*pane == focused, pane.0));
+        for (_, path) in visited {
+            self.push_recent_folder(&path);
+        }
     }
 
     /// Undo any spring-load navigation that fired during the drag, restoring each
@@ -187,6 +246,8 @@ impl App {
                     continue; // never navigated; leave it (and its async listing) alone
                 }
                 p.location = loc;
+                p.volume_serial = None;
+                p.reconcile_volume(&self.mounted_volumes);
                 p.history = history;
                 p.history_forward = forward;
                 self.dirty_panes.insert(id);
@@ -237,6 +298,15 @@ impl App {
         self.drag_hover.active
     }
 
+    /// Check if ANY drag is currently active across GPUI internal drag,
+    /// Windows OLE external drag, drag-hover, or rubber-band selection.
+    pub(crate) fn is_drag_active(&self, has_gpui_drag: bool) -> bool {
+        has_gpui_drag
+            || self.drag_hover_maybe_active()
+            || self.active_external_drag.is_some()
+            || self.rubber.is_some()
+    }
+
     pub(crate) fn drag_hover_set_cursor(&mut self, pos: gpui::Point<gpui::Pixels>) {
         if !self.drag_hover.active && self.drag_hover_maybe_active() {
             self.begin_drag_hover();
@@ -244,7 +314,6 @@ impl App {
         self.drag_hover.cursor = Some(pos);
     }
 
-    #[cfg(windows)]
     pub(crate) fn drag_hover_external_left(&mut self) {
         // OLE calls IDropTarget::DragLeave on ESC-cancel and when the drag leaves
         // our window. A real drop calls Drop (→ mark_drag_committed) instead, so a
@@ -267,6 +336,7 @@ impl App {
         #[cfg(windows)]
         {
             dirty |= self.drain_dnd_queue();
+            self.publish_native_drop_snapshot();
         }
         // During a Windows OLE drag the modal `DoDragDrop` loop starves gpui's
         // async 60 Hz drain, so spawn_list results and scroll offsets are applied
@@ -302,8 +372,9 @@ impl App {
         let scrolled = !in_dropzone && self.tick_edge_scroll(pos, now);
 
         let Some(target) = hit else {
+            let changed = self.drag_hover.active_id.is_some();
             self.drag_hover.reset_target(None, now);
-            return scrolled;
+            return scrolled || changed;
         };
         if let DragHoverId::Tab(pane_id) = target.id {
             let is_already_active = self
@@ -323,7 +394,12 @@ impl App {
                 return scrolled;
             }
         }
+        let changed = self.drag_hover.active_id.as_ref() != Some(&target.id);
         self.drag_hover.reset_target(Some(target.id.clone()), now);
+        let scrolled = scrolled || changed;
+        if self.drag_hover.reference_drag {
+            return scrolled; // Reordering references never spring-loads a folder.
+        }
         let delay = match target.kind {
             DragHoverKind::Nav => NAV_HOVER_DELAY,
             DragHoverKind::Folder => FOLDER_HOVER_DELAY,
@@ -377,10 +453,110 @@ impl App {
         true
     }
 
+    /// The destination is visible immediately; dwell/navigation feedback is a
+    /// separate layer so the user never has to wait for spring-loading to aim.
+    pub(crate) fn render_drag_hover_blink(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let destination = self.render_drag_destination(window, cx);
+        let navigation = self.render_drag_navigation_blink(cx);
+        if destination.is_none() && navigation.is_none() {
+            return None;
+        }
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .children(destination)
+                .children(navigation)
+                .into_any_element(),
+        )
+    }
+
+    fn render_drag_destination(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.drag_hover_maybe_active() {
+            return None;
+        }
+        let pos = self.drag_hover.cursor?;
+        if self.drag_hover.reference_drag && self.bookmark_removal_at(pos) {
+            return Some(drag_badge(rust_i18n::t!("sidebar_bookmark_remove_drop").into_owned(), pos, window, cx));
+        }
+        let sidebar_viewport = self
+            .sidebar_scroll_region
+            .as_ref()
+            .map(|(bounds, _)| *bounds);
+        let (bounds, command) = if let Some(bounds) = self.dropzone_bounds.filter(|b| contains(*b, pos)) {
+            (bounds, DragHoverDropCommand::StageInSidebar)
+        } else {
+            let target = hover_target_at(
+                &self.pending_drag_hover_targets,
+                pos,
+                self.dropzone_bounds,
+                sidebar_viewport,
+            );
+            if let Some(target) = target {
+                let command = resolve_drop_command(target, |pane| self.tab_drop_command(pane))?;
+                let bounds = if matches!(target.id, DragHoverId::Sidebar(_)) {
+                    sidebar_viewport.map_or(target.bounds, |viewport| target.bounds.intersect(&viewport))
+                } else {
+                    target.bounds
+                };
+                (bounds, command)
+            } else {
+                let command = self.drag_hover_drop_command_at(f32::from(pos.x), f32::from(pos.y))?;
+                let bounds = self.pane_view_bounds.values().find(|b| contains(**b, pos)).copied()?;
+                (bounds, command)
+            }
+        };
+        if self.drag_hover.reference_drag && !matches!(command, DragHoverDropCommand::InsertBookmarks(_)) {
+            return None;
+        }
+        let mut paths = self.active_external_drag.as_ref().map(|drag| drag.paths.clone()).unwrap_or_default();
+        let (mut ctrl, mut shift) = (window.modifiers().control, window.modifiers().shift);
+        #[cfg(windows)]
+        if let Some(zones) = self.dnd.as_ref().and_then(|dnd| dnd.zones.lock().ok()) {
+            if zones.drag_active {
+                if !zones.paths.is_empty() { paths.clone_from(&zones.paths); }
+                ctrl = zones.ctrl;
+                shift = zones.shift;
+            }
+        }
+        let intent = drop_intent(&command, &paths, ctrl, shift);
+        let tag = match &command {
+            DragHoverDropCommand::AssignTag(id) => self.state.tag_cache.def(*id),
+            _ => None,
+        };
+        let color = if matches!(intent, DropIntent::Trash | DropIntent::Blocked) {
+            cx.theme().danger
+        } else if let Some(tag) = tag {
+            gpui::rgb_to_hsla(gpui::rgb((u32::from(tag.color[0]) << 16) | (u32::from(tag.color[1]) << 8) | u32::from(tag.color[2])))
+        } else { cx.theme().accent };
+        let mut fill = color;
+        fill.alpha *= 0.10;
+        let mut ring = color;
+        ring.alpha *= 0.80;
+        let mut glow = color;
+        glow.alpha = 0.0;
+        let key = match intent {
+            DropIntent::Copy => "dnd_intent_copy",
+            DropIntent::Move => "dnd_intent_move",
+            DropIntent::Trash => "dnd_intent_trash",
+            DropIntent::Tag => "dnd_intent_tag",
+            DropIntent::Bookmark => "dnd_intent_bookmark",
+            DropIntent::Stage => "dnd_intent_stage",
+            DropIntent::Blocked => "dnd_intent_blocked",
+        };
+        let label = rust_i18n::t!(key).into_owned();
+        let label = tag.map_or_else(|| label.clone(), |tag| format!("{label} «{}»", tag.name));
+        let label = if paths.len() > 1 { format!("{label} · {}", paths.len()) } else { label };
+        Some(div().absolute().inset_0()
+            .child(glow_rect(bounds, fill, ring, glow, 0.0, 1.5))
+            .child(drag_badge(label, pos, window, cx))
+            .into_any_element())
+    }
+
     /// Spring-load affordance: a rhythmically pulsing accent glow on the dwell
     /// target, plus a short confirmation pop when the navigation fires. Driven by
     /// elapsed time — the drag canvas re-renders every frame, so no `with_animation`.
-    pub(crate) fn render_drag_hover_blink(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_drag_navigation_blink(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         use crate::ui::motion::ease_out_quart;
         let accent = cx.theme().accent;
         let now = Instant::now();
@@ -456,25 +632,13 @@ impl App {
             x: gpui::px(x),
             y: gpui::px(y),
         };
-        if let Some(target) = hover_target_at(
+        resolved_command_at(
             &self.pending_drag_hover_targets,
             pos,
             self.dropzone_bounds,
             self.sidebar_scroll_region.as_ref().map(|(bounds, _)| *bounds),
-        ) {
-            if let DragHoverId::Tab(tab) = target.id {
-                let command = resolve_drop_command(target, |id| self.tab_drop_command(id));
-                tracing::info!(tab = tab.0, target_count = self.pending_drag_hover_targets.len(), accepting = command.is_some(), "dnd tab drop resolved");
-                return command;
-            }
-        }
-        drop_command_at(
-            &self.pending_drag_hover_targets,
-            pos,
-            self.dropzone_bounds,
-            self.sidebar_scroll_region.as_ref().map(|(bounds, _)| *bounds),
-        )
-        .or_else(|| {
+            |id| self.tab_drop_command(id),
+            || {
             self.pane_view_bounds
                 .iter()
                 .chain(self.pane_layout_bounds.iter())
@@ -483,6 +647,22 @@ impl App {
                     self.tab_drop_command(*pane)
                 })
         })
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn publish_native_drop_snapshot(&self) {
+        let Some(dnd) = &self.dnd else { return; };
+        if !dnd.zones.lock().ok().is_some_and(|zones| zones.drag_active) { return; }
+        let tabs = self.pending_drag_hover_targets.iter().filter_map(|target| {
+            let DragHoverId::Tab(id) = target.id else { return None; };
+            self.tab_drop_command(id).map(|command| (id, command))
+        }).collect();
+        let panes = self.pane_view_bounds.iter().chain(self.pane_layout_bounds.iter())
+            .filter(|(id, _)| self.pane_accepts_visible_drop(**id))
+            .filter_map(|(id, bounds)| self.tab_drop_command(*id).map(|command| (*bounds, command))).collect();
+        let snapshot = NativeDropSnapshot { targets: self.pending_drag_hover_targets.clone(),
+            dropzone: self.dropzone_bounds, sidebar: self.sidebar_scroll_region.as_ref().map(|(bounds, _)| *bounds), tabs, panes };
+        if let Ok(mut zones) = dnd.zones.lock() { zones.hover_snapshot = Some(snapshot); }
     }
 
     pub(crate) fn tab_drop_command(&self, pane_id: TileId) -> Option<DragHoverDropCommand> {
@@ -553,29 +733,20 @@ impl App {
         ctrl: bool,
         shift: bool,
     ) {
+        if drop_is_structurally_blocked(&command, &paths, ctrl, shift) {
+            self.toast_error(rust_i18n::t!("dnd_intent_blocked").into_owned());
+            self.cancel_dropzone_file_drag();
+            return;
+        }
         self.mark_drag_committed();
         self.rubber = None;
         match command {
-            DragHoverDropCommand::AddBookmarks => {
-                let mut actions = Vec::new();
-                for path in paths {
-                    let bookmark_path = if path.is_dir() {
-                        path
-                    } else if let Some(parent) = path.parent() {
-                        parent.to_path_buf()
-                    } else {
-                        path
-                    };
-                    let name = bookmark_path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| bookmark_path.display().to_string());
-                    actions.push(Action::AddBookmark {
-                        name,
-                        path: bookmark_path,
-                    });
-                }
-                self.process_actions(actions);
+            DragHoverDropCommand::AddBookmarks | DragHoverDropCommand::InsertBookmarks(_) => {
+                let index = match command {
+                    DragHoverDropCommand::InsertBookmarks(index) => index,
+                    _ => self.state.profiles.active().bookmarks.len(),
+                };
+                self.insert_bookmark_paths(paths, index);
             }
             DragHoverDropCommand::AssignTag(tag) => {
                 for path in &paths {
@@ -684,7 +855,17 @@ impl App {
             return false;
         };
         let base = handle.0.borrow().base_handle.clone();
-        if self.tick_pixel_edge_scroll(&base, bounds, pos, elapsed) {
+        // Column-major List scrolls horizontally: dragging to its left/right edge
+        // reveals more columns.
+        let moved = if self.list_column_step(pane).is_some() {
+            crate::ui::edge_autoscroll::activation_at_horizontal(bounds, pos)
+                .is_some_and(|activation| {
+                    crate::ui::edge_autoscroll::tick_handle(&base, activation, elapsed)
+                })
+        } else {
+            self.tick_pixel_edge_scroll(&base, bounds, pos, elapsed)
+        };
+        if moved {
             // Separate PaneSignal entity: the canvas repaints App, not the pane.
             self.dirty_panes.insert(pane);
             true
@@ -794,6 +975,13 @@ pub(crate) fn drag_hover_layer(view: Entity<App>) -> impl gpui::IntoElement {
     canvas(
         |_, _, _| {},
         move |_, (), window, cx| {
+            if v.read(cx).drag_hover.reference_drag && !cx.has_active_drag() {
+                v.update(cx, |this, cx| {
+                    this.revert_drag_nav();
+                    this.drag_hover.clear();
+                    cx.notify();
+                });
+            }
             let active = v.read(cx).drag_hover_maybe_active();
             let vm = v.clone();
             window.on_mouse_event::<MouseMoveEvent>(move |ev, phase, _win, cx| {
@@ -833,6 +1021,16 @@ pub(crate) fn drag_hover_layer(view: Entity<App>) -> impl gpui::IntoElement {
 
 /// Build one absolutely-positioned spring-load highlight: a soft fill, an accent
 /// ring, and an outer glow (box-shadow). `blur`/`border` are in logical pixels.
+fn drag_badge(label: String, pos: gpui::Point<gpui::Pixels>, window: &Window, cx: &gpui::App) -> AnyElement {
+    let zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
+    let viewport = window.viewport_size();
+    div().absolute()
+        .left(gpui::px((f32::from(pos.x) + 18.0 * zoom).min((f32::from(viewport.width) - 260.0 * zoom).max(0.0))))
+        .top(gpui::px((f32::from(pos.y) + 24.0 * zoom).min((f32::from(viewport.height) - 40.0 * zoom).max(0.0))))
+        .px_2().py_1().rounded_md().bg(cx.theme().popover)
+        .text_color(cx.theme().popover_foreground).text_sm().child(label).into_any_element()
+}
+
 fn glow_rect(
     bounds: gpui::Bounds<gpui::Pixels>,
     fill: gpui::Hsla,
@@ -903,6 +1101,23 @@ fn drop_command_at(
         .and_then(|target| target.drop_command.clone())
 }
 
+fn resolved_command_at(
+    targets: &[DragHoverTarget],
+    pos: gpui::Point<gpui::Pixels>,
+    dropzone: Option<gpui::Bounds<gpui::Pixels>>,
+    sidebar: Option<gpui::Bounds<gpui::Pixels>>,
+    tab_command: impl FnOnce(TileId) -> Option<DragHoverDropCommand>,
+    fallback: impl FnOnce() -> Option<DragHoverDropCommand>,
+) -> Option<DragHoverDropCommand> {
+    if dropzone.is_some_and(|bounds| contains(bounds, pos)) { return Some(DragHoverDropCommand::StageInSidebar); }
+    if let Some(target) = hover_target_at(targets, pos, dropzone, sidebar) {
+        let command = resolve_drop_command(target, tab_command);
+        // A blocked tab owns its region; never route through to the pane below it.
+        if command.is_some() || matches!(target.id, DragHoverId::Tab(_)) { return command; }
+    }
+    fallback()
+}
+
 /// Cached tab chrome may keep an older destination after spring navigation.
 /// Read the current tab by ID at drop time instead of using the captured path.
 fn resolve_drop_command(
@@ -940,6 +1155,49 @@ pub(crate) fn drop_transfer_request(
     drop_transfer_with_modifiers(paths, dest, from_self, false, false)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DropIntent { Copy, Move, Trash, Tag, Bookmark, Stage, Blocked }
+
+pub(crate) fn drop_is_structurally_blocked(command: &DragHoverDropCommand, paths: &[PathBuf], ctrl: bool, shift: bool) -> bool {
+    matches!(command, DragHoverDropCommand::TransferTo(_)) && drop_intent(command, paths, ctrl, shift) == DropIntent::Blocked
+}
+
+/// Cheap structural preview. Disk existence, permissions and conflicts are
+/// validated by the transfer engine at submission, never on each paint.
+fn drop_intent(command: &DragHoverDropCommand, paths: &[PathBuf], ctrl: bool, shift: bool) -> DropIntent {
+    match command {
+        DragHoverDropCommand::TransferTo(dest) => {
+            let effect = transfer_drop_effect(paths, dest, ctrl, shift);
+            let normalized = |p: &std::path::Path| {
+                if cfg!(windows) { PathBuf::from(p.to_string_lossy().to_lowercase()) } else { p.to_path_buf() }
+            };
+            let target = normalized(dest);
+            let has_valid_source = paths.iter().any(|src| {
+                let source = normalized(src);
+                !target.starts_with(&source)
+                    && !(effect.is_move() && source.parent() == Some(target.as_path()))
+                    && !atlas_core::fs::paths::is_recycle_bin_path(src)
+            });
+            if atlas_core::fs::paths::is_recycle_bin_path(dest) || (!paths.is_empty() && !has_valid_source) {
+                DropIntent::Blocked
+            } else if effect.is_move() { DropIntent::Move } else { DropIntent::Copy }
+        }
+        DragHoverDropCommand::TrashPaths => DropIntent::Trash,
+        DragHoverDropCommand::AssignTag(_) => DropIntent::Tag,
+        DragHoverDropCommand::AddBookmarks | DragHoverDropCommand::InsertBookmarks(_) => DropIntent::Bookmark,
+        DragHoverDropCommand::StageInSidebar => DropIntent::Stage,
+        DragHoverDropCommand::RejectArchive => DropIntent::Blocked,
+    }
+}
+
+fn transfer_drop_effect(paths: &[PathBuf], dest: &PathBuf, ctrl: bool, shift: bool) -> crate::dnd::DropEffect {
+    if dest.to_string_lossy().starts_with("remote:") {
+        crate::dnd::DropEffect::Copy
+    } else {
+        crate::dnd::effect_with_modifiers(crate::dnd::default_effect_for_paths(paths, dest), ctrl, shift)
+    }
+}
+
 pub(crate) fn location_drop_command(location: &Location) -> DragHoverDropCommand {
     match location {
         Location::Directory(path) => DragHoverDropCommand::TransferTo(path.clone()),
@@ -964,11 +1222,7 @@ pub(crate) fn drop_transfer_with_modifiers(
     paths: Vec<PathBuf>, dest: PathBuf, from_self: bool, ctrl: bool, shift: bool,
 ) -> atlas_model::ops::TransferRequest {
     use atlas_model::ops::{ConflictPolicy, TransferKind, TransferOrigin, TransferRequest};
-    let effect = if dest.to_string_lossy().starts_with("remote:") {
-        crate::dnd::DropEffect::Copy
-    } else {
-        crate::dnd::effect_with_modifiers(crate::dnd::default_effect_for_paths(&paths, &dest), ctrl, shift)
-    };
+    let effect = transfer_drop_effect(&paths, &dest, ctrl, shift);
     TransferRequest {
         sources: paths,
         target_names: None,
@@ -993,8 +1247,73 @@ fn consume_staged_paths(staged: &mut Vec<atlas_model::app_state::StagedDrop>, co
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn native_description_uses_child_live_tab_and_blocked_drop_routing() {
+        let pane = TileId(5);
+        let child = PathBuf::from("C:/destination/child");
+        let mut row = sidebar_row("child", rect(40.0, 30.0));
+        row.id = DragHoverId::Folder(pane, child.clone());
+        row.drop_command = Some(DragHoverDropCommand::TransferTo(child.clone()));
+        let mut snapshot = NativeDropSnapshot {
+            targets: vec![row, tab_target(pane, "C:/stale".into())], dropzone: None, sidebar: None,
+            tabs: [(pane, DragHoverDropCommand::TransferTo("C:/live".into()))].into(),
+            panes: vec![(rect(0.0, 300.0), DragHoverDropCommand::TransferTo("C:/destination".into()))],
+        };
+        let paths = [PathBuf::from("C:/source/file")];
+        assert_eq!(snapshot.transfer_at(100.0, 50.0, &paths, true, false), Some(child.clone()));
+        assert_eq!(snapshot.transfer_at(100.0, 18.0, &paths, true, false), Some("C:/live".into()));
+        assert_eq!(snapshot.transfer_at(100.0, 50.0, &[child.clone()], true, false), None);
+        snapshot.tabs.remove(&pane);
+        assert!(snapshot.command_at(100.0, 18.0).is_none());
+        assert!(snapshot.command_at(10000.0, 10000.0).is_none());
+    }
+    #[test]
+    fn drop_badge_and_request_use_the_same_modifier_policy() {
+        use super::*;
+        let paths = vec![PathBuf::from("C:/source/file.txt")];
+        let dest = PathBuf::from("C:/destination");
+        let command = DragHoverDropCommand::TransferTo(dest.clone());
+        for (ctrl, shift) in [(false, false), (true, false), (false, true), (true, true)] {
+            let request = drop_transfer_with_modifiers(paths.clone(), dest.clone(), true, ctrl, shift);
+            let intent = drop_intent(&command, &paths, ctrl, shift);
+            assert_eq!(intent == DropIntent::Move, request.kind == atlas_model::ops::TransferKind::Move);
+        }
+    }
+
+    #[test]
+    fn nested_and_noop_drops_are_rejected_but_mixed_payloads_keep_valid_items() {
+        use super::*;
+        let source = PathBuf::from("C:/parent/folder");
+        let nested = DragHoverDropCommand::TransferTo(source.join("child"));
+        assert!(drop_is_structurally_blocked(&nested, &[source.clone()], true, false));
+        assert!(!drop_is_structurally_blocked(&nested, &[source.clone(), PathBuf::from("C:/other/file")], true, false));
+        let same_parent = DragHoverDropCommand::TransferTo(PathBuf::from("C:/parent"));
+        assert!(drop_is_structurally_blocked(&same_parent, &[source.clone()], false, true));
+        assert!(!drop_is_structurally_blocked(&same_parent, &[source], true, false));
+    }
     use super::*;
     use gpui::{point, px, size, Bounds, Pixels};
+
+    #[test]
+    fn provisional_navigation_stays_frozen_across_target_changes_until_drop_or_cancel() {
+        let now = Instant::now();
+        let mut state = DragHoverState {
+            active: true,
+            ..Default::default()
+        };
+        assert!(state.navigation_is_provisional());
+        state.reset_target(Some(DragHoverId::Sidebar("recent".into())), now);
+        assert!(state.navigation_is_provisional());
+        state.reset_target(None, now);
+        assert!(state.navigation_is_provisional());
+        state.committed = true;
+        assert!(!state.navigation_is_provisional());
+        state.clear();
+        assert!(!state.navigation_is_provisional());
+        assert!(!state.committed);
+        assert!(state.nav_snapshot.is_none());
+    }
 
     fn rect(y: f32, height: f32) -> Bounds<Pixels> {
         Bounds::new(point(px(0.0), px(y)), size(px(240.0), px(height)))

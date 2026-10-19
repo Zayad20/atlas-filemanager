@@ -21,6 +21,11 @@ fn main() {
         return;
     }
 
+    #[cfg(windows)]
+    if let Err(error) = atlas_win_space::crash::install() {
+        eprintln!("failed to install crash handler: {error}");
+    }
+
     #[cfg(feature = "dhat-heap")]
     let _profiler = dhat::Profiler::new_heap();
 
@@ -34,11 +39,10 @@ fn main() {
         )
         .init();
 
-    // A file manager's async load is filesystem I/O, not CPU-bound parallelism, so a
-    // small fixed pool is plenty. The runtime lives on a parked thread for the life of
-    // the process; gpui drives the UI on the main thread.
+    // Respect the processors available to this process, including affinity limits.
+    // GPUI drives the UI on the main thread.
     let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
+        .worker_threads(std::thread::available_parallelism().map_or(1, usize::from))
         .max_blocking_threads(32)
         .thread_name("atlas-worker")
         .enable_all()

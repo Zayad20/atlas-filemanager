@@ -5,7 +5,7 @@ use std::path::PathBuf;
 pub const MULTI_PREVIEW_LIMIT: usize = 4;
 pub const DIR_PREVIEW_LIMIT: usize = 200;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DirPreviewEntry {
     pub name: String,
     pub path: PathBuf,
@@ -15,7 +15,7 @@ pub struct DirPreviewEntry {
     pub extension: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PreviewResult {
     Text {
         /// Syntax-highlighted spans as `([r, g, b, a], text)`; alpha `0` means
@@ -171,13 +171,13 @@ pub struct ImageData {
     pub height: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MultiPreviewKey {
     pub fingerprint: u64,
     pub selected_count: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PreviewRequest {
     Single(PathBuf),
     /// Preview for a file entry inside an archive.
@@ -203,6 +203,7 @@ pub struct PreviewState {
     pub paths: HashMap<TileId, PathBuf>,
     pub results: HashMap<TileId, PreviewResult>,
     pub multi: HashMap<TileId, MultiPreviewState>,
+    pub metadata: HashMap<TileId, (PathBuf, Vec<(String, String)>)>,
 }
 
 impl PreviewState {
@@ -210,11 +211,13 @@ impl PreviewState {
         self.paths.remove(&tab);
         self.results.remove(&tab);
         self.multi.remove(&tab);
+        self.metadata.remove(&tab);
     }
 
     pub fn clear_all(&mut self) {
         self.paths.clear();
         self.results.clear();
         self.multi.clear();
+        self.metadata.clear();
     }
 }

@@ -273,6 +273,10 @@ impl<E: IntoElement + 'static> Element for SpringAnimationElement<E> {
             });
 
             let elapsed = now.duration_since(state.updated_at).as_secs_f32();
+            // An idle/suspended interval is not an animation tick. Duplicate
+            // layouts at the same timestamp remain no-ops; real ticks have a
+            // one millisecond floor, including very high refresh-rate displays.
+            let elapsed = if elapsed > 0.25 || elapsed == 0.0 { 0.0 } else { elapsed.max(0.001) };
             match state.playback {
                 SpringPlayback::Running => {
                     state.spring = state.config.step(state.spring, state.target, elapsed);

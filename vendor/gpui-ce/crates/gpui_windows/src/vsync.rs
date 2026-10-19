@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::FrameDemand;
 use anyhow::{Context, Result};
 use gpui_util::ResultExt;
 use windows::Win32::{
@@ -21,6 +22,12 @@ static QPC_TICKS_PER_SECOND: LazyLock<u64> = LazyLock::new(|| {
 
 const VSYNC_INTERVAL_THRESHOLD: Duration = Duration::from_millis(1);
 const DEFAULT_VSYNC_INTERVAL: Duration = Duration::from_micros(16_666); // ~60Hz
+
+impl FrameDemand {
+    pub(crate) fn request(&self, hwnd: HWND) {
+        self.request_window(hwnd.0 as isize);
+    }
+}
 
 pub(crate) struct VSyncProvider {
     interval: Duration,

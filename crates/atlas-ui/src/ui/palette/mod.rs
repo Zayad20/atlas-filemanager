@@ -13,7 +13,8 @@
 
 mod render;
 mod specs;
-
+pub(crate) mod palette_imm;
+pub(crate) use palette_imm::PaletteImmElement;
 pub(crate) use specs::GotoSnapshot;
 
 use crate::app::App;

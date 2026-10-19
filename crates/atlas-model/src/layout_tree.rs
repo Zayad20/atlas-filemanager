@@ -175,6 +175,96 @@ pub struct Tree<Pane> {
 }
 
 impl<Pane> Tree<Pane> {
+    /// Detach a tab and wrap the surviving root in a two-child, equal split.
+    /// Prune its empty source branch without changing the tab's identity.
+    pub fn split_tab_at_root(&mut self, pane: TileId, vertical: bool, before: bool) -> Option<TileId>
+    where Pane: Clone {
+        if !matches!(self.tiles.get(pane), Some(Tile::Pane(_)))
+            || self.tiles.iter().filter(|(_, t)| matches!(t, Tile::Pane(_))).count() < 2 {
+            return None;
+        }
+        let source = self.tiles.iter().find_map(|(id, tile)| match tile {
+            Tile::Container(Container::Tabs(t)) if t.children.contains(&pane) => Some(*id),
+            Tile::Container(Container::Linear(l)) if l.children.contains(&pane) => Some(*id),
+            _ => None,
+        })?;
+        match self.tiles.get_mut(source) {
+            Some(Tile::Container(Container::Tabs(tabs))) => {
+                tabs.children.retain(|id| *id != pane);
+                if tabs.active == Some(pane) { tabs.active = tabs.children.last().copied(); }
+            }
+            Some(Tile::Container(Container::Linear(linear))) => {
+                if let Some(ix) = linear.children.iter().position(|id| *id == pane) {
+                    linear.children.remove(ix);
+                    if ix < linear.shares.len() { linear.shares.remove(ix); }
+                }
+            }
+            _ => return None,
+        }
+        let data = self.tiles.remove(pane)?;
+        self.sanitize();
+        self.tiles.map.insert(pane, data);
+        let root = self.root?;
+        let new_tabs = self.tiles.insert_tab_tile(vec![pane]);
+        let children = if before { vec![new_tabs, root] } else { vec![root, new_tabs] };
+        let split = if vertical { self.tiles.insert_vertical_tile(children) }
+            else { self.tiles.insert_horizontal_tile(children) };
+        self.root = Some(split);
+        Some(split)
+    }
+
+    /// Leaves that currently occupy screen space (inactive tabs are excluded).
+    pub fn visible_panes(&self) -> Vec<TileId> {
+        let mut result = Vec::new();
+        let mut pending: Vec<_> = self.root.into_iter().collect();
+        let mut visited = HashSet::new();
+        while let Some(id) = pending.pop() {
+            if !visited.insert(id) { continue; }
+            match self.tiles.get(id) {
+                Some(Tile::Pane(_)) => result.push(id),
+                Some(Tile::Container(Container::Tabs(tabs))) => {
+                    pending.extend(tabs.active.filter(|id| tabs.children.contains(id))
+                        .or_else(|| tabs.children.first().copied()));
+                }
+                Some(Tile::Container(Container::Linear(linear))) => {
+                    pending.extend(linear.children.iter().rev().copied());
+                }
+                None => {}
+            }
+        }
+        result
+    }
+
+    /// Equalize the nearest split containing `pane`, or every split. Returns the
+    /// changed containers so UI animation state can be reconciled as well.
+    pub fn even_panes(&mut self, pane: TileId, all: bool) -> Vec<TileId> {
+        let mut ids = Vec::new();
+        if all {
+            ids.extend(self.tiles.iter().filter_map(|(id, tile)|
+                matches!(tile, Tile::Container(Container::Linear(_))).then_some(*id)));
+        } else {
+            let mut child = pane;
+            let mut visited = HashSet::new();
+            while visited.insert(child) {
+                let parent = self.tiles.iter().find_map(|(id, tile)| match tile {
+                    Tile::Container(Container::Tabs(t)) if t.children.contains(&child) => Some((*id, false)),
+                    Tile::Container(Container::Linear(l)) if l.children.contains(&child) => Some((*id, true)),
+                    _ => None,
+                });
+                let Some((id, linear)) = parent else { break; };
+                if linear { ids.push(id); break; }
+                child = id;
+            }
+        }
+        for id in &ids {
+            if let Some(Tile::Container(Container::Linear(linear))) = self.tiles.get_mut(*id) {
+                let count = linear.children.len();
+                linear.shares = vec![1.0 / count.max(1) as f32; count];
+            }
+        }
+        ids
+    }
+
     pub fn empty() -> Self {
         Self {
             root: None,
@@ -380,6 +470,77 @@ impl<Pane> Tree<Pane> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_drop_prunes_source_and_spans_the_surviving_nested_layout() {
+        for vertical in [false, true] {
+            for before in [false, true] {
+                let mut tree = Tree::empty();
+                let a = tree.tiles.insert_pane("a");
+                let b = tree.tiles.insert_pane("b");
+                let c = tree.tiles.insert_pane("c");
+                let hidden = tree.tiles.insert_pane("inactive");
+                let ta = tree.tiles.insert_tab_tile(vec![a]);
+                let tb = tree.tiles.insert_tab_tile(vec![b, hidden]);
+                let tc = tree.tiles.insert_tab_tile(vec![c]);
+                let nested = tree.tiles.insert_vertical_tile(vec![tb, tc]);
+                tree.root = Some(tree.tiles.insert_horizontal_tile(vec![ta, nested]));
+                let split = tree.split_tab_at_root(a, vertical, before).unwrap();
+                tree.sanitize();
+                assert_eq!(tree.root, Some(split));
+                let Some(Tile::Container(Container::Linear(linear))) = tree.tiles.get(split) else { panic!() };
+                assert_eq!(linear.dir, if vertical { LinearDir::Vertical } else { LinearDir::Horizontal });
+                assert_eq!(linear.shares, [1.0, 1.0]);
+                assert_eq!(linear.children[if before { 1 } else { 0 }], nested);
+                assert_eq!(tree.tiles.get_pane(&a), Some(&"a"));
+                assert_eq!(tree.visible_panes(), if before { vec![a, b, c] } else { vec![b, c, a] });
+                assert!(tree.tiles.get(ta).is_none());
+                assert!(tree.tiles.get(hidden).is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn balancing_siblings_skips_tabs_and_all_balances_nested_splits() {
+        let mut tree = Tree::empty();
+        let a = tree.tiles.insert_pane("a");
+        let b = tree.tiles.insert_pane("b");
+        let c = tree.tiles.insert_pane("c");
+        let ta = tree.tiles.insert_tab_tile(vec![a]);
+        let nested = tree.tiles.insert_vertical_tile(vec![ta, b]);
+        let root = tree.tiles.insert_horizontal_tile(vec![nested, c]);
+        tree.root = Some(root);
+        if let Some(Tile::Container(Container::Linear(l))) = tree.tiles.get_mut(root) { l.shares = vec![0.2, 0.8]; }
+        assert_eq!(tree.even_panes(a, false), [nested]);
+        if let Some(Tile::Container(Container::Linear(l))) = tree.tiles.get(root) { assert_eq!(l.shares, [0.2, 0.8]); }
+        tree.even_panes(a, true);
+        for id in [root, nested] {
+            let Some(Tile::Container(Container::Linear(l))) = tree.tiles.get(id) else { panic!() };
+            assert_eq!(l.shares, [0.5, 0.5]);
+        }
+    }
+
+    #[test]
+    fn sole_tab_cannot_be_removed_to_make_a_root_split() {
+        let mut tree = Tree::empty();
+        let a = tree.tiles.insert_pane("a");
+        let tabs = tree.tiles.insert_tab_tile(vec![a]);
+        tree.root = Some(tabs);
+        assert_eq!(tree.split_tab_at_root(a, false, false), None);
+        assert_eq!(tree.root, Some(tabs));
+        assert_eq!(tree.visible_panes(), [a]);
+    }
+
+    #[test]
+    fn root_drop_supports_restored_bare_pane_children() {
+        let mut tree = Tree::empty();
+        let a = tree.tiles.insert_pane("a");
+        let b = tree.tiles.insert_pane("b");
+        tree.root = Some(tree.tiles.insert_horizontal_tile(vec![a, b]));
+        assert!(tree.split_tab_at_root(a, true, false).is_some());
+        assert_eq!(tree.visible_panes(), [b, a]);
+        assert_eq!(tree.tiles.get_pane(&a), Some(&"a"));
+    }
 
     #[test]
     fn ids_are_monotonic_and_ordered() {

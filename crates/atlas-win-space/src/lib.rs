@@ -1,6 +1,13 @@
 #![cfg(windows)]
 
 pub mod ntfs;
+pub mod directory;
+pub mod persistence;
+pub mod crash;
+pub mod storage;
+pub mod recycle;
+pub mod integration;
+pub mod metadata;
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
@@ -253,10 +260,19 @@ struct Node {
     is_dir: bool,
 }
 
-pub fn scan_ntfs<F, S>(root: &Path, mut cancelled: F, mut snapshot: S) -> Result<(), ScanError>
+pub fn scan_ntfs<F, S>(root: &Path, cancelled: F, snapshot: S) -> Result<(), ScanError>
 where
     F: FnMut() -> bool,
     S: FnMut(Vec<WinSpaceItem>, u64, u64, u64, bool) -> bool,
+{
+    scan_ntfs_with_files(root, cancelled, snapshot, |_| true, |_, _| {})
+}
+
+pub fn scan_ntfs_with_files<F, S, I, E>(root: &Path, mut cancelled: F, mut snapshot: S, include: I, mut file: E) -> Result<(), ScanError>
+where F: FnMut() -> bool,
+    S: FnMut(Vec<WinSpaceItem>, u64, u64, u64, bool) -> bool,
+    I: Fn(&Path) -> bool,
+    E: FnMut(PathBuf, u64),
 {
     let volume = volume_letter(root).ok_or(ScanError::Unsupported)?;
     if !is_ntfs_root(volume) {
@@ -271,6 +287,7 @@ where
     let mut scanned_entries = 0_u64;
     let mut error_count = 0_u64;
     let mut last_snapshot = Instant::now();
+    let mut directory_paths = HashMap::from([(target_id, root.to_path_buf())]);
 
     for (&id, node) in &nodes {
         if cancelled() {
@@ -282,6 +299,8 @@ where
         let Some(top) = nodes.get(&top_id) else {
             continue;
         };
+        let Some(path) = node_path(id, target_id, &nodes, &mut directory_paths) else { continue; };
+        if !include(&path) { continue; }
         let item = items.entry(top_id).or_insert_with(|| WinSpaceItem {
             path: root.join(&top.name),
             name: top.name.clone(),
@@ -292,6 +311,7 @@ where
             scanned_entries += 1;
             match file_size_by_id(volume_handle.0, id) {
                 Some(size) => {
+                    file(path, size);
                     scanned_bytes = scanned_bytes.saturating_add(size);
                     item.size = item.size.saturating_add(size);
                 }
@@ -391,7 +411,7 @@ where
                 });
                 let is_dir = record.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0;
                 let is_reparse = record.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0;
-                if !is_reparse {
+                if !is_reparse && !directory::attributes_require_hydration(record.FileAttributes) {
                     nodes.insert(
                         record.FileReferenceNumber,
                         Node {
@@ -439,6 +459,25 @@ fn top_child(
         }
         cur = node.parent;
     }
+}
+
+fn node_path(id: u64, root: u64, nodes: &HashMap<u64, Node>, cache: &mut HashMap<u64, PathBuf>) -> Option<PathBuf> {
+    if let Some(path) = cache.get(&id) { return Some(path.clone()); }
+    let mut chain = Vec::new();
+    let mut current = id;
+    let mut seen = HashSet::new();
+    let mut path = loop {
+        if let Some(path) = cache.get(&current) { break path.clone(); }
+        if current == root || !seen.insert(current) { return None; }
+        let node = nodes.get(&current)?;
+        chain.push((current, node));
+        current = node.parent;
+    };
+    for (id, node) in chain.into_iter().rev() {
+        path.push(&node.name);
+        if node.is_dir { cache.insert(id, path.clone()); }
+    }
+    Some(path)
 }
 
 fn file_size_by_id(volume: HANDLE, id: u64) -> Option<u64> {

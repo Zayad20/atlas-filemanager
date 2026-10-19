@@ -20,11 +20,10 @@ pub async fn search_names_recursive(
     let mut entries = Vec::with_capacity(paths.len());
     for path in paths {
         if let Some(mut entry) = crate::fs::list::entry_for_path(&path).await {
-            if let Ok(relative) = entry.path.strip_prefix(&root) {
+            if let Ok(relative) = entry.path().strip_prefix(&root) {
                 let label = relative.to_string_lossy().into_owned();
                 if !label.is_empty() {
-                    entry.name_lower = label.to_lowercase();
-                    entry.name = label;
+                    entry.set_display_name(label.into());
                 }
             }
             entries.push(entry);
@@ -32,9 +31,9 @@ pub async fn search_names_recursive(
     }
 
     entries.sort_by(|a, b| {
-        let a_score = fuzzy_score(&needle, &a.name_lower).unwrap_or_default();
-        let b_score = fuzzy_score(&needle, &b.name_lower).unwrap_or_default();
-        b_score.cmp(&a_score).then_with(|| a.path.cmp(&b.path))
+        let a_score = fuzzy_score(&needle, &a.name_lower()).unwrap_or_default();
+        let b_score = fuzzy_score(&needle, &b.name_lower()).unwrap_or_default();
+        b_score.cmp(&a_score).then_with(|| a.path().cmp(&b.path()))
     });
     Ok(entries)
 }
@@ -51,6 +50,8 @@ fn collect_matching_paths(root: &Path, needle: &str, show_hidden: bool) -> Vec<P
         .git_ignore(true)
         .git_global(true)
         .parents(true)
+        .filter_entry(|entry| !crate::fs::scan_policy::is_scan_excluded(entry.path())
+            && !crate::fs::preview::is_cloud_placeholder(entry.path()))
         .follow_links(false);
 
     let mut scored = Vec::<(PathBuf, i64)>::new();

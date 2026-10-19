@@ -301,16 +301,8 @@ pub(crate) fn make_entry(
     is_dir: bool,
     size: Option<u64>,
 ) -> FileEntry {
-    let ext = if is_dir {
-        None
-    } else {
-        inner_path
-            .extension()
-            .map(|e| e.to_string_lossy().to_ascii_lowercase())
-    };
-    FileEntry {
-        name_lower: name.to_ascii_lowercase(),
-        name,
+    FileEntry::from(atlas_model::file_entry::FileEntryData {
+        name: name.into(),
         path: inner_path,
         kind: if is_dir {
             FileKind::Dir
@@ -319,15 +311,11 @@ pub(crate) fn make_entry(
         },
         size,
         modified: None,
-        extension: ext,
-        display_size: String::new().into(),
-        display_date: String::new().into(),
-        display_type: String::new().into(),
         _is_hidden: false,
         _is_symlink: false,
         archive_root: Some(archive.to_path_buf()),
         recycle_info: None,
-    }
+    })
 }
 
 /// Format a breadcrumb-style display path: `archive.zip › inner › dir`.

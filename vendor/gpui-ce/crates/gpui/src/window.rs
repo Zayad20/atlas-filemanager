@@ -3370,6 +3370,10 @@ impl Window {
 
     fn draw_roots(&mut self, cx: &mut App) {
         let frame_start = crate::layout_region::frame_log_threshold().map(|_| Instant::now());
+        let mut frame_phases = crate::layout_region::FramePhases::default();
+        if frame_start.is_some() {
+            crate::layout_region::reset_layout_timings();
+        }
         self.invalidator.set_phase(DrawPhase::Prepaint);
         self.tooltip_bounds.take();
 
@@ -3401,7 +3405,15 @@ impl Window {
         // fill the window when their size is `auto`.
         let scale_factor = self.scale_factor();
         let mut root_element = self.root.as_ref().unwrap().clone().into_any_element();
+        let request_start = frame_start.map(|_| Instant::now());
         let root_layout_id = root_element.request_layout(self, cx);
+        if let Some(start) = request_start {
+            // Some elements solve/measure children during request_layout. Do not
+            // charge those solver calls again to the root request bucket.
+            frame_phases.root_request_other = start
+                .elapsed()
+                .saturating_sub(crate::layout_region::layout_timings().solve);
+        }
         self.layout_engine
             .as_mut()
             .unwrap()
@@ -3436,9 +3448,13 @@ impl Window {
             tooltip_element = self.prepaint_tooltip(cx);
         }
 
+        let hit_test_start = frame_start.map(|_| Instant::now());
         self.mouse_hit_test = self.next_frame.hit_test(self.mouse_position);
+        frame_phases.hit_test =
+            hit_test_start.map_or(std::time::Duration::ZERO, |start| start.elapsed());
 
         let prepaint_time = frame_start.map(|start| start.elapsed());
+        let paint_start = frame_start.map(|_| Instant::now());
 
         // Now actually paint the elements.
         self.invalidator.set_phase(DrawPhase::Paint);
@@ -3460,6 +3476,8 @@ impl Window {
         #[cfg(any(feature = "inspector", debug_assertions))]
         self.paint_inspector_hitbox(cx);
 
+        frame_phases.paint = paint_start.map_or(std::time::Duration::ZERO, |start| start.elapsed());
+        let a11y_start = frame_start.map(|_| Instant::now());
         // a11y may have been activated/deactivated halfway through the frame
         let a11y_active_start_of_frame = self.a11y.is_active();
         self.a11y.sync_active_flag();
@@ -3486,10 +3504,13 @@ impl Window {
                 self.platform_window.a11y_tree_update(tree_update);
             }
         }
+        frame_phases.a11y_finish =
+            a11y_start.map_or(std::time::Duration::ZERO, |start| start.elapsed());
         crate::layout_region::log_frame_regions(
             frame_start.map_or(std::time::Duration::ZERO, |start| start.elapsed()),
             prepaint_time.unwrap_or_default(),
             self.next_frame.scene.len(),
+            frame_phases,
         );
     }
 
@@ -5358,9 +5379,13 @@ impl Window {
     ) {
         self.invalidator.debug_assert_prepaint();
 
+        let solve_start = crate::layout_region::frame_log_threshold().map(|_| Instant::now());
         let mut layout_engine = self.layout_engine.take().unwrap();
         layout_engine.compute_layout(layout_id, available_space, self, cx);
         self.layout_engine = Some(layout_engine);
+        if let Some(start) = solve_start {
+            crate::layout_region::record_layout_solve(start.elapsed());
+        }
     }
 
     /// Obtain the bounds computed for the given LayoutId relative to the window. This method will usually be invoked by

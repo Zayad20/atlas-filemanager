@@ -9,6 +9,16 @@ use std::sync::OnceLock;
 use windows::core::w;
 use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
 
+pub fn cf_open_window() -> u16 {
+    static ID: OnceLock<u16> = OnceLock::new();
+    *ID.get_or_init(|| unsafe { RegisterClipboardFormatW(w!("Atlas-OpenWindowFormat")) as u16 })
+}
+
+pub fn cf_drop_description() -> u16 {
+    static ID: OnceLock<u16> = OnceLock::new();
+    *ID.get_or_init(|| unsafe { RegisterClipboardFormatW(w!("DropDescription")) as u16 })
+}
+
 /// "Preferred DropEffect" — set on our data object to announce our preference.
 pub fn cf_preferred_drop_effect() -> u16 {
     static ID: OnceLock<u16> = OnceLock::new();

@@ -15,7 +15,7 @@ use gpui::prelude::*;
 use gpui::ColorExt as _;
 use gpui::{
     div, px, AnyElement, Context, InteractiveElement, KeyDownEvent, MouseButton, ParentElement,
-    Pixels, Point, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window,
+    Pixels, Point, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, Focusable,
 };
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::StyledExt as _;
@@ -63,11 +63,13 @@ impl App {
         for icon in &icon_refs {
             self.maybe_request_file_icon(icon);
         }
-        let input = crate::ui::text_input::single_line(window, cx, "Filter files...", "");
+        let input = crate::ui::text_input::single_line(window, cx, rust_i18n::t!("breadcrumb_filter_folders").into_owned(), "");
+        window.focus(&input.read(cx).focus_handle(cx), cx);
         self.breadcrumb_menu_sub = Some(cx.subscribe(
             &input,
-            |_this, _input, ev: &gpui_component::input::InputEvent, cx| {
+            |this, _input, ev: &gpui_component::input::InputEvent, cx| {
                 if matches!(ev, gpui_component::input::InputEvent::Change) {
+                    if let Some(menu) = this.breadcrumb_menu.as_mut() { menu.selected = 0; menu.scroll_to_selected = true; }
                     cx.notify();
                 }
             },
@@ -112,10 +114,8 @@ impl App {
             .as_ref()
             .map(|input| input.read(cx).value().to_string().to_lowercase())
             .unwrap_or_default();
-        let visible = items
-            .into_iter()
-            .filter(|item| query.is_empty() || item.label.to_lowercase().contains(&query))
-            .collect::<Vec<_>>();
+        let order = self.fuzzy_scorer.rank(&query, items.iter().map(|item| item.label.as_str()));
+        let visible = order.into_iter().map(|i| items[i].clone()).collect::<Vec<_>>();
         let selected = if visible.is_empty() {
             0
         } else {
@@ -321,12 +321,8 @@ impl App {
         let Some(state) = self.breadcrumb_menu.as_mut() else {
             return false;
         };
-        let visible = state
-            .items
-            .iter()
-            .filter(|item| query.is_empty() || item.label.to_lowercase().contains(&query))
-            .cloned()
-            .collect::<Vec<_>>();
+        let order = self.fuzzy_scorer.rank(&query, state.items.iter().map(|item| item.label.as_str()));
+        let visible = order.into_iter().map(|i| state.items[i].clone()).collect::<Vec<_>>();
 
         match ev.keystroke.key.as_str() {
             "escape" => self.close_breadcrumb_menu(cx),
@@ -376,6 +372,7 @@ fn breadcrumb_items(dir: PathBuf) -> Vec<BreadcrumbMenuItem> {
             let name = path.file_name()?.to_string_lossy().into_owned();
             let file_type = entry.file_type().ok()?;
             let is_dir = file_type.is_dir();
+            if !is_dir { return None; }
             let kind = if is_dir {
                 FileKind::Dir
             } else {
@@ -430,4 +427,22 @@ fn breadcrumb_row(
                 .text_color(fg)
                 .child(SharedString::from(label)),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn chevron_menu_contains_only_immediate_subfolders() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("atlas-breadcrumbs-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(root.join("Beta/nested")).unwrap();
+        std::fs::create_dir(root.join("alpha")).unwrap();
+        std::fs::write(root.join("file.txt"), "fixture").unwrap();
+        let items = breadcrumb_items(root.clone());
+        assert_eq!(items.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(), ["alpha", "Beta"]);
+        assert!(items.iter().all(|item| item.is_dir && item.path.parent() == Some(root.as_path())));
+        std::fs::remove_file(root.join("file.txt")).unwrap();
+        for dir in ["Beta/nested", "Beta", "alpha", ""] { std::fs::remove_dir(root.join(dir)).unwrap(); }
+    }
 }

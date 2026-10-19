@@ -11,6 +11,7 @@ use windows::{
             Controls::*,
             HiDpi::*,
             Input::{Ime::*, KeyboardAndMouse::*},
+            Shell::{SHAppBarMessage, APPBARDATA, ABM_GETSTATE, ABM_GETAUTOHIDEBAREX, ABS_AUTOHIDE, ABE_LEFT, ABE_TOP, ABE_RIGHT, ABE_BOTTOM},
             WindowsAndMessaging::*,
         },
     },
@@ -31,6 +32,34 @@ pub(crate) const WM_GPUI_KEYDOWN: u32 = WM_USER + 8;
 pub(crate) const WM_GPUI_END_SESSION: u32 = WM_USER + 9;
 
 const SIZE_MOVE_LOOP_TIMER_ID: usize = 1;
+
+fn auto_hide_taskbar_edge(handle: HWND) -> Option<(u32, RECT)> {
+    unsafe {
+        let mut data = APPBARDATA { cbSize: std::mem::size_of::<APPBARDATA>() as u32, ..Default::default() };
+        if SHAppBarMessage(ABM_GETSTATE, &mut data) & ABS_AUTOHIDE as usize == 0 { return None; }
+        let monitor = MonitorFromWindow(handle, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() { return None; }
+        data.rc = info.rcMonitor;
+        for edge in [ABE_LEFT, ABE_TOP, ABE_RIGHT, ABE_BOTTOM] {
+            data.uEdge = edge;
+            if SHAppBarMessage(ABM_GETAUTOHIDEBAREX, &mut data) != 0 { return Some((edge, info.rcMonitor)); }
+        }
+        None
+    }
+}
+
+fn reserve_taskbar_activation_pixel(client: &mut RECT, edge: u32, monitor: RECT) {
+    // Clamp against the monitor, not the work area: DefWindowProc may already
+    // have reserved space, and repeated NCCALCSIZE must not keep shrinking it.
+    match edge {
+        ABE_LEFT => client.left = client.left.max(monitor.left + 1),
+        ABE_TOP => client.top = client.top.max(monitor.top + 1),
+        ABE_RIGHT => client.right = client.right.min(monitor.right - 1),
+        ABE_BOTTOM => client.bottom = client.bottom.min(monitor.bottom - 1),
+        _ => {},
+    }
+}
 
 /// Coordinates window draws on the UI thread. Owned by the platform and
 /// shared with every window (like `WindowsPlatformState::cursor_visible`),
@@ -281,6 +310,7 @@ impl WindowsWindowInner {
             self.state
                 .invalidate_devices
                 .store(true, std::sync::atomic::Ordering::Release);
+            self.state.frame_demand.request(self.hwnd);
         }
         if let Some(mut callback) = self.state.callbacks.resize.take() {
             callback(new_logical_size, scale_factor);
@@ -593,7 +623,8 @@ impl WindowsWindowInner {
         unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
         let input = PlatformInput::ScrollWheel(ScrollWheelEvent {
             position: logical_point(cursor_point.x as f32, cursor_point.y as f32, scale_factor),
-            delta: ScrollDelta::Lines(match modifiers.shift {
+            delta: {
+                let units = match modifiers.shift {
                 true => Point {
                     x: wheel_distance,
                     y: 0.0,
@@ -602,7 +633,20 @@ impl WindowsWindowInner {
                     y: wheel_distance,
                     x: 0.0,
                 },
-            }),
+                };
+                if wheel_scroll_amount == u32::MAX {
+                    let mut rect = RECT::default();
+                    let _ = unsafe { GetClientRect(handle, &mut rect) };
+                    let amount = wparam.signed_hiword() as f32 / WHEEL_DELTA as f32;
+                    if modifiers.shift {
+                        ScrollDelta::Pixels(point(px(amount * (rect.right - rect.left) as f32 / scale_factor), px(0.0)))
+                    } else {
+                        ScrollDelta::Pixels(point(px(0.0), px(amount * (rect.bottom - rect.top) as f32 / scale_factor)))
+                    }
+                }
+                else if i32::from(wparam.signed_hiword()) % WHEEL_DELTA as i32 != 0 { ScrollDelta::PreciseLines(units) }
+                else { ScrollDelta::Lines(units) }
+            },
             modifiers,
             touch_phase: TouchPhase::Moved,
         });
@@ -637,10 +681,20 @@ impl WindowsWindowInner {
         unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
         let event = PlatformInput::ScrollWheel(ScrollWheelEvent {
             position: logical_point(cursor_point.x as f32, cursor_point.y as f32, scale_factor),
-            delta: ScrollDelta::Lines(Point {
+            delta: {
+                let units = Point {
                 x: wheel_distance,
                 y: 0.0,
-            }),
+                };
+                if wheel_scroll_chars == u32::MAX {
+                    let mut rect = RECT::default();
+                    let _ = unsafe { GetClientRect(handle, &mut rect) };
+                    let amount = -wparam.signed_hiword() as f32 / WHEEL_DELTA as f32;
+                    ScrollDelta::Pixels(point(px(amount * (rect.right - rect.left) as f32 / scale_factor), px(0.0)))
+                }
+                else if i32::from(wparam.signed_hiword()) % WHEEL_DELTA as i32 != 0 { ScrollDelta::PreciseLines(units) }
+                else { ScrollDelta::Lines(units) }
+            },
             modifiers: current_modifiers(),
             touch_phase: TouchPhase::Moved,
         });
@@ -798,6 +852,9 @@ impl WindowsWindowInner {
             if self.state.is_maximized() {
                 let dpi = GetDpiForWindow(handle);
                 (*params).rgrc[0].top += get_frame_thicknessx(dpi);
+                if let Some((edge, monitor)) = auto_hide_taskbar_edge(handle) {
+                    reserve_taskbar_activation_pixel(&mut (*params).rgrc[0], edge, monitor);
+                }
             }
             Some(result.0 as isize)
         }
@@ -966,6 +1023,20 @@ impl WindowsWindowInner {
     fn handle_hit_test_msg(&self, handle: HWND, lparam: LPARAM) -> Option<isize> {
         if self.state.is_fullscreen() {
             return None;
+        }
+        if self.hide_title_bar && self.state.is_maximized() {
+            if let Some((edge, monitor)) = auto_hide_taskbar_edge(handle) {
+                let x = i32::from(lparam.signed_loword());
+                let y = i32::from(lparam.signed_hiword());
+                let activation = match edge {
+                    ABE_LEFT => x == monitor.left,
+                    ABE_TOP => y == monitor.top,
+                    ABE_RIGHT => x == monitor.right - 1,
+                    ABE_BOTTOM => y == monitor.bottom - 1,
+                    _ => false,
+                };
+                if activation { return Some(HTTRANSPARENT as isize); }
+            }
         }
 
         let callback = self.state.callbacks.hit_test_window_control.take();
@@ -1296,6 +1367,7 @@ impl WindowsWindowInner {
 
     fn handle_dm_pointer_hit_test(&self, wparam: WPARAM) -> Option<isize> {
         self.state.direct_manipulation.on_pointer_hit_test(wparam);
+        self.state.frame_demand.request(self.hwnd);
         None
     }
 
@@ -1306,13 +1378,10 @@ impl WindowsWindowInner {
             if force_render {
                 self.state.force_render_pending.set(true);
             }
-            // Validate the region so a nested message pump doesn't keep
-            // re-dispatching WM_PAINT for the still-invalid region in a busy
-            // loop until the in-progress draw unwinds. The vsync thread
-            // re-invalidates every window on each vsync (see
-            // `begin_vsync_thread`), so the deferred frame still gets drawn,
-            // at most one vsync late.
+            // Avoid a nested WM_PAINT busy loop and explicitly re-arm this
+            // window: the VSync thread parks whenever no frame is requested.
             unsafe { ValidateRect(Some(handle), None).ok().log_err() };
+            self.state.frame_demand.request(handle);
             return Some(0);
         };
         let mut request_frame = self.state.callbacks.request_frame.take()?;
@@ -1339,6 +1408,9 @@ impl WindowsWindowInner {
         });
 
         self.state.callbacks.request_frame.set(Some(request_frame));
+        if self.state.direct_manipulation.needs_frame() {
+            self.state.frame_demand.request(handle);
+        }
         self.update_ime_enabled(handle);
         unsafe { ValidateRect(Some(handle), None).ok().log_err() };
 

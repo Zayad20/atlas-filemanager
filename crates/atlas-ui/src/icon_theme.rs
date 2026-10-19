@@ -226,10 +226,10 @@ pub fn collect_keys(entries: &[atlas_model::file_entry::FileEntry]) -> Vec<Strin
     // Always pre-warm the generic file icon.
     seen.insert(String::new());
     for e in entries {
-        seen.insert(icon_key(&e.kind, e.extension.as_deref()));
+        seen.insert(icon_key(&e.kind(), e.extension().as_deref()));
     }
     // Ensure folder icon is requested if any dir is present.
-    if entries.iter().any(|e| matches!(e.kind, FileKind::Dir)) {
+    if entries.iter().any(|e| matches!(e.kind(), FileKind::Dir)) {
         seen.insert("/".to_string());
     }
     seen.into_iter().collect()

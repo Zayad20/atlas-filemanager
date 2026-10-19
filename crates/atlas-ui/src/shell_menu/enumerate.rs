@@ -21,7 +21,27 @@ use super::{NativeItemKind, NativeMenuItem, RawIcon};
 
 /// Verbs that Atlas already provides in its own section; the native duplicates
 /// are dropped so the menu shows each action once.
-const DEDUPE_VERBS: &[&str] = &["cut", "copy", "paste", "delete", "rename", "open"];
+const DEDUPE_VERBS: &[&str] = &[
+    "pintohome", "windows.share", "newfolder", "delete", "rename", "cut", "copy",
+    "paste", "pastelink", "refresh", "open",
+];
+
+fn redundant_verb(verb: Option<&str>) -> bool {
+    verb.is_some_and(|verb| DEDUPE_VERBS.iter().any(|candidate| verb.eq_ignore_ascii_case(candidate)))
+}
+
+fn trim_separators(items: &mut Vec<NativeMenuItem>) {
+    let mut previous_separator = true;
+    items.retain(|item| {
+        let separator = matches!(item.kind, NativeItemKind::Separator);
+        let retain = !separator || !previous_separator;
+        previous_separator = separator;
+        retain
+    });
+    if items.last().is_some_and(|item| matches!(item.kind, NativeItemKind::Separator)) {
+        items.pop();
+    }
+}
 
 /// Walk `hmenu` into flat items. Submenus are always left lazy
 /// (`children: None`, filled on demand via `ExpandSubmenu`) so the initial build
@@ -89,10 +109,8 @@ pub(crate) fn walk_menu(hmenu: HMENU, icm: &IContextMenu, id_first: u32) -> Vec<
 
             // Canonical verb (best-effort; many shell items have none).
             let verb = command_verb(icm, item_id);
-            if let Some(v) = &verb {
-                if DEDUPE_VERBS.contains(&v.to_ascii_lowercase().as_str()) {
-                    continue;
-                }
+            if redundant_verb(verb.as_deref()) {
+                continue;
             }
 
             let icon = bitmap_to_rgba(info.hbmpItem);
@@ -114,7 +132,39 @@ pub(crate) fn walk_menu(hmenu: HMENU, icm: &IContextMenu, id_first: u32) -> Vec<
             });
         }
     }
+    trim_separators(&mut out);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_duplicates_are_filtered_by_canonical_verb_only() {
+        for verb in ["pintohome", "windows.share", "newfolder", "delete", "rename",
+            "cut", "copy", "paste", "pastelink", "refresh", "DELETE"] {
+            assert!(redundant_verb(Some(verb)), "{verb}");
+        }
+        for verb in ["openwith", "runas", "properties", "7zip", "VSCode", "git_shell", "VLC.AddToPlaylist"] {
+            assert!(!redundant_verb(Some(verb)), "{verb}");
+        }
+        assert!(!redundant_verb(None));
+    }
+
+    #[test]
+    fn filtering_does_not_leave_empty_sections() {
+        let item = |kind| NativeMenuItem { id: 42, title: "Third party".into(),
+            verb: None, icon: None, kind, disabled: false, is_default: false };
+        let mut items = vec![item(NativeItemKind::Separator), item(NativeItemKind::Normal),
+            item(NativeItemKind::Separator), item(NativeItemKind::Separator),
+            item(NativeItemKind::Normal), item(NativeItemKind::Separator)];
+        trim_separators(&mut items);
+        assert_eq!(items.len(), 3);
+        assert!(matches!(items[0].kind, NativeItemKind::Normal));
+        assert!(matches!(items[1].kind, NativeItemKind::Separator));
+        assert!(matches!(items[2].kind, NativeItemKind::Normal));
+    }
 }
 
 /// Populate a submenu via the `WM_INITMENUPOPUP` its dynamic handler (Open with,

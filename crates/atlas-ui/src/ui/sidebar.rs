@@ -39,6 +39,7 @@ use gpui::{
 };
 use gpui_component::dock::{Panel, PanelControl, PanelEvent};
 use gpui_component::menu::{ContextMenuExt, PopupMenu};
+use crate::ui::sidebar_ink::{RowInk, RowIcon, icon_or_texture};
 use gpui_component::popover::{Popover, PopoverState};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::tooltip::Tooltip;
@@ -108,6 +109,20 @@ impl SidebarPanel {
         })
         .detach();
 
+        // Discovery workers can finish while App is otherwise idle. Poll their
+        // cached snapshots at low frequency; unchanged snapshots never repaint.
+        cx.spawn(async move |this, cx| loop {
+            smol::Timer::after(std::time::Duration::from_secs(1)).await;
+            if this.update(cx, |this, cx| {
+                let Some(app) = this.app.upgrade() else { return; };
+                let next = sidebar_fingerprint(app.read(cx));
+                if next != this.sidebar_fingerprint {
+                    this.sidebar_fingerprint = next;
+                    cx.notify();
+                }
+            }).is_err() { break; }
+        }).detach();
+
         let _ = (names, active_idx, window);
 
         Self {
@@ -133,10 +148,21 @@ fn sidebar_fingerprint(app: &AtlasApp) -> u64 {
     let state = &app.state;
 
     state.settings.sidebar_collapsed.hash(&mut hasher);
+    state.settings.global_zoom.to_bits().hash(&mut hasher);
+    state.settings.disable_animations.hash(&mut hasher);
+    state.settings.font_size.to_bits().hash(&mut hasher);
+    state.settings.font_family.hash(&mut hasher);
+    app.recycle_bin_full.hash(&mut hasher);
+    #[cfg(windows)]
+    app.shell_recycle_bin_icon().map(|texture| texture.id).hash(&mut hasher);
     state.settings.scroll_smoothness.to_bits().hash(&mut hasher);
     state.settings.glass_opacity.to_bits().hash(&mut hasher);
     dropzone_drag_over(app).hash(&mut hasher);
     app.drag_hover_maybe_active().hash(&mut hasher);
+    match app.active_drag_hover_drop_command() {
+        Some(DragHoverDropCommand::InsertBookmarks(index)) => Some(index),
+        _ => None,
+    }.hash(&mut hasher);
     state.profiles.active_idx.hash(&mut hasher);
 
     for profile in &state.profiles.profiles {
@@ -185,6 +211,51 @@ fn sidebar_fingerprint(app: &AtlasApp) -> u64 {
     recent.len().hash(&mut hasher);
     for path in recent.iter().rev().take(8) {
         path.hash(&mut hasher);
+    }
+
+    // These are sidebar resources, not the entire file-pane thumbnail cache.
+    // A delivered sidebar image/tag must invalidate its host even if navigation
+    // did not change; unrelated file thumbnails must leave the sidebar cached.
+    for tag in state.tag_cache.visible_defs(&state.profiles.active().name) {
+        tag.id.hash(&mut hasher);
+        tag.name.hash(&mut hasher);
+        tag.color.hash(&mut hasher);
+        tag.profile.hash(&mut hasher);
+    }
+    for path in state.profiles.active().bookmarks.iter().map(|b| &b.path)
+        .chain(recent.iter().rev().take(8))
+        .chain(state.sidebar_drop_zone.iter().map(|item| &item.path)) {
+        app.grid_thumbnail(path).map(|image| image.id).hash(&mut hasher);
+    }
+    for path in [dirs::home_dir(), dirs::desktop_dir(), dirs::document_dir(), dirs::download_dir(), dirs::picture_dir(), dirs::audio_dir(), dirs::video_dir()].into_iter().flatten() {
+        app.grid_thumbnail(&path).map(|image| image.id).hash(&mut hasher);
+    }
+    for path in atlas_core::fs::paths::list_wsl_roots() {
+        path.hash(&mut hasher);
+        app.grid_thumbnail(&path).map(|image| image.id).hash(&mut hasher);
+    }
+    for (name, path) in native_cloud_folders() {
+        name.hash(&mut hasher);
+        path.hash(&mut hasher);
+        app.grid_thumbnail(&path).map(|image| image.id).hash(&mut hasher);
+    }
+    for drive in atlas_core::fs::mounts::list_drives() {
+        drive.mount_point.hash(&mut hasher);
+        drive.label.hash(&mut hasher);
+        drive.total_bytes.hash(&mut hasher);
+        drive.available_bytes.hash(&mut hasher);
+        app.grid_thumbnail(&drive.mount_point).map(|image| image.id).hash(&mut hasher);
+    }
+    for remote in &state.cloud.remotes {
+        use atlas_model::cloud_model::RemoteStatus;
+        remote.id.hash(&mut hasher);
+        remote.name.hash(&mut hasher);
+        std::mem::discriminant(&remote.status).hash(&mut hasher);
+        match &remote.status {
+            RemoteStatus::Mounted(path) => path.hash(&mut hasher),
+            RemoteStatus::BrowseFallback(message) | RemoteStatus::Error(message) => message.hash(&mut hasher),
+            _ => {}
+        }
     }
 
     // Cloud is extension-driven rather than AppState-driven, but its presence
@@ -378,13 +449,7 @@ fn profile_menu_profile_row(
             s.bg(accent).font_weight(gpui::FontWeight::MEDIUM)
         })
         .when(!active, |s| s.hover(move |h| h.bg(hover)))
-        .child(
-            div()
-                .min_w(px(0.))
-                .flex_1()
-                .truncate()
-                .child(SharedString::from(name)),
-        )
+        .child(RowInk::new(name, RowIcon::None, row_text, false).into_element())
         .children(buttons)
         .on_mouse_down(MouseButton::Left, move |_ev, window, cx| {
             cx.stop_propagation();
@@ -734,20 +799,9 @@ fn atlas_launcher_row(
     } = colors;
     let row_icon = if selected { accent_fg } else { muted };
     let row_text = if selected { accent_fg } else { fg };
-    let mut label_col = v_flex().min_w(px(0.)).flex_1().child(label);
-    if let Some(detail) = detail {
-        label_col = label_col.child(
-            div()
-                .text_xs()
-                .text_color(if selected {
-                    accent_fg.opacity(0.72)
-                } else {
-                    muted
-                })
-                .truncate()
-                .child(detail),
-        );
-    }
+    let has_detail = detail.as_ref().is_some_and(|detail| !detail.is_empty());
+    let label_col = RowInk::new(label, RowIcon::Theme(glyph, row_icon), row_text, false)
+        .detail(detail.unwrap_or_default(), if selected { accent_fg.opacity(0.72) } else { muted }, true).into_element();
 
     let hover_app = app.clone();
     let click_app = app.clone();
@@ -755,6 +809,7 @@ fn atlas_launcher_row(
         .id(id)
         .w_full()
         .min_h(crate::ui::rem_px(34.))
+        .h(crate::ui::rem_px(if has_detail { 48.0 } else { 34.0 }))
         .px_2()
         .py(crate::ui::rem_px(5.))
         .gap_2()
@@ -766,7 +821,6 @@ fn atlas_launcher_row(
             s.bg(accent).font_weight(gpui::FontWeight::MEDIUM)
         })
         .when(!selected, |s| s.hover(move |h| h.bg(hover)))
-        .child(icon(glyph, 15.0, row_icon))
         .child(label_col)
         .when_some(shortcut, |s, shortcut| s.child(Kbd::new(shortcut)))
         .when(opens_profiles, |s| {
@@ -876,13 +930,8 @@ impl RenderOnce for AtlasLauncherTrigger {
             })
             .when(!self.collapsed, |s| {
                 s.justify_start()
-                    .child(
-                        div()
-                            .flex_1()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .truncate()
-                            .child(self.profile_name),
-                    )
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child(RowInk::new(self.profile_name, RowIcon::None, self.fg, false).into_element())
                     .child(icon(AtlasIcon::CaretDown, 11.0, self.muted.opacity(0.78)))
             })
     }
@@ -970,13 +1019,16 @@ impl Render for SidebarPanel {
                 app_ref.state.settings.sidebar_collapsed,
             )
         };
+
+        // Production sidebar composes direct RowInk with native gesture/focus
+        // wrappers. The old monolithic prototype is not a selectable route.
         let launcher_bg = hsla(0., 0., 1., 0.0);
         let atlas_launcher_popover = Popover::new("sidebar-atlas-launcher")
             .appearance(false)
             .anchor(Anchor::TopLeft)
             .trigger(AtlasLauncherTrigger {
                 app: app.downgrade(),
-                profile_name: active_profile_name,
+                profile_name: active_profile_name.clone(),
                 selected: false,
                 collapsed: sidebar_collapsed,
                 fg,
@@ -1032,9 +1084,10 @@ impl Render for SidebarPanel {
                 })
         };
         let atlas_header = if sidebar_collapsed {
-            h_flex()
+            v_flex()
                 .w_full()
                 .pb(crate::ui::rem_px(8.))
+                .gap(crate::ui::rem_px(4.))
                 .items_center()
                 .justify_center()
                 .child(
@@ -1042,6 +1095,7 @@ impl Render for SidebarPanel {
                         .block_mouse_except_scroll()
                         .child(atlas_launcher_popover),
                 )
+                .child(collapse_button)
                 .into_any_element()
         } else {
             h_flex()
@@ -1310,9 +1364,9 @@ impl Render for SidebarPanel {
                 hover,
                 cx,
             ));
-            if !section.collapsed {
-                col = render_section_body(
-                    col,
+            {
+                let body = render_section_body(
+                    div().w_full().flex().flex_col().gap_1(),
                     &section.kind,
                     &app,
                     style,
@@ -1320,6 +1374,11 @@ impl Render for SidebarPanel {
                     current_location.as_ref(),
                     cx,
                 );
+                col = col.child(crate::ui::reveal::DisclosureBody::new(
+                    SharedString::from(format!("sidebar-disclosure-{}-{:?}", active_profile_name, section.kind)),
+                    !section.collapsed,
+                    body,
+                ));
             }
         }
 
@@ -1445,11 +1504,7 @@ fn sidebar_drop_zone(
         .map(|item| item.path.clone())
         .collect::<Vec<_>>();
 
-    let mut grid = h_flex()
-        .w(auto())
-        .flex_none()
-        .gap(crate::ui::rem_px(if windows_theme { 14.0 } else { 12.0 }))
-        .items_center();
+    let mut reference_items = Vec::with_capacity(staged.len());
     for (index, item) in staged.iter().enumerate() {
         let (kind, extension) = staged_file_meta(&item.path);
         let (thumb_tex, icon_tex) = {
@@ -1459,7 +1514,8 @@ fn sidebar_drop_zone(
                 app_ref.icon_tex_for_entry(&kind, extension.as_deref()),
             )
         };
-        grid = grid.child(drop_zone_item(
+        let label = item.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        reference_items.push(crate::ui::sidebar_collection::ReferenceItem { path: item.path.clone(), label, content: drop_zone_item(
             app,
             item.path.clone(),
             index,
@@ -1472,8 +1528,16 @@ fn sidebar_drop_zone(
             hover,
             accent,
             selected.contains(&item.path),
-        ));
+        ).into_any_element() });
     }
+    let grid = crate::ui::sidebar_collection::ReferenceCollection {
+        id: SharedString::from(format!("shelf-reference-motion-{}", app.read(cx).state.profiles.active().name)),
+        app: app.clone(), items: reference_items, extent: 84.0, gap: if windows_theme { 14.0 } else { 12.0 },
+        horizontal: true, icon: AtlasIcon::File, color: muted, windows: windows_theme,
+        empty: Some(h_flex().w_full().h_full().items_center().justify_center().gap_2().text_xs().text_color(muted)
+            .child(icon(AtlasIcon::TrayArrowDown, 13.0, muted))
+            .child(rust_i18n::t!("sidebar_drop_zone_hint").to_string()).into_any_element()),
+    };
     let controls = control_colors(cx.theme(), is_glass);
     let drop_bg = cx.theme().foreground.opacity(0.025);
     let drag_over = dropzone_drag_over(app.read(cx));
@@ -1482,12 +1546,11 @@ fn sidebar_drop_zone(
     let app_start_rubber = app.clone();
     let app_record_bounds = app.clone();
 
-    div()
+    let content = div()
         .id("sidebar-drop-zone")
         .relative()
         .flex_shrink_0()
         .w(auto())
-        .h(crate::ui::rem_px(if count == 0 { 88.0 } else { 144.0 }))
         .mx(crate::ui::rem_px(8.))
         .my(crate::ui::rem_px(6.))
         .p(crate::ui::rem_px(10.))
@@ -1607,35 +1670,11 @@ fn sidebar_drop_zone(
                                 }),
                         ),
                 )
-                .when(count == 0, |s| {
-                    s.child(
-                        h_flex()
-                            .flex_1()
-                            .relative()
-                            .items_center()
-                            .justify_center()
-                            .gap(crate::ui::rem_px(6.))
-                            .text_xs()
-                            .text_color(muted)
-                            .child(div().flex_none().child(icon(
-                                AtlasIcon::TrayArrowDown,
-                                13.0,
-                                muted,
-                            )))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .text_center()
-                                    .child(rust_i18n::t!("sidebar_drop_zone_hint").to_string()),
-                            ),
-                    )
-                })
-                .when(count > 0, |s| {
-                    s.child(
+                .child(
                         div()
                             .w_full()
                             .flex_1()
+                            .min_h_0()
                             .relative()
                             .child(
                                 div()
@@ -1648,8 +1687,7 @@ fn sidebar_drop_zone(
                                     .child(grid),
                             )
                             .horizontal_scrollbar(scroll),
-                    )
-                }),
+                ),
         )
         .on_drop::<DraggedFiles>(move |d, _window, cx| {
             app_drop.update(cx, |this, cx| {
@@ -1672,7 +1710,13 @@ fn sidebar_drop_zone(
                 cx.notify();
             });
             cx.stop_propagation();
-        })
+        });
+    crate::ui::reveal::AnimatedHeight {
+        id: "sidebar-shelf-height".into(),
+        height: if count == 0 { 88.0 } else { 144.0 },
+        instant: app.read(cx).is_drag_active(cx.has_active_drag()),
+        content,
+    }
 }
 
 fn staged_file_meta(path: &std::path::Path) -> (FileKind, Option<String>) {
@@ -1780,15 +1824,8 @@ fn drop_zone_item(
         .child(drop_zone_preview(
             kind, extension, thumb_tex, icon_tex, accent,
         ))
-        .child(
-            div()
-                .w_full()
-                .text_xs()
-                .text_color(fg)
-                .text_center()
-                .truncate()
-                .child(SharedString::from(name)),
-        )
+        .child(div().w_full().h(crate::ui::rem_px(16.0)).flex().text_xs()
+            .child(RowInk::new(name, RowIcon::None, fg, false).into_element()))
         .on_mouse_down(MouseButton::Left, move |ev, _window, cx| {
             cx.stop_propagation();
             select_app.update(cx, |this, cx| {
@@ -1994,7 +2031,7 @@ mod dropzone_selection_tests {
     }
 }
 
-fn place_sidebar_drop_zone(app: &mut AtlasApp, dest: PathBuf) {
+pub(crate) fn place_sidebar_drop_zone(app: &mut AtlasApp, dest: PathBuf) {
     let paths = app.state.sidebar_drop_zone.iter().map(|item| item.path.clone()).collect::<Vec<_>>();
     if !paths.is_empty() {
         // One request means one conflict dialog, including mixed-origin shelves.
@@ -2008,11 +2045,11 @@ fn ph(name: &str, color: Hsla) -> impl IntoElement {
     icon(ph_icon(name), 16.0, color)
 }
 
-fn sidebar_shell_tex(
+pub(crate) fn sidebar_shell_tex(
     app: &Entity<AtlasApp>,
     path: &std::path::Path,
     windows_theme: bool,
-    cx: &mut Context<SidebarPanel>,
+    cx: &gpui::App,
 ) -> Option<Arc<gpui::RenderImage>> {
     windows_theme
         .then(|| app.read(cx).grid_thumbnail(path))
@@ -2353,7 +2390,7 @@ fn collapsed_divider() -> impl IntoElement {
         .bg(hsla(0., 0., 1., 0.08))
 }
 
-fn is_sidebar_drop_allowed(
+pub(crate) fn is_sidebar_drop_allowed(
     app: &Entity<AtlasApp>,
     pos: gpui::Point<gpui::Pixels>,
     cx: &gpui::App,
@@ -2421,13 +2458,7 @@ fn collapsed_nav_row(
         .when(active, |s| s.bg(active_bg))
         .when(!active, |s| s.hover(|h| h.bg(hover)))
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-        .child(match shell_tex {
-            Some(tex) => img(tex)
-                .size(crate::ui::rem_px(18.0))
-                .flex_none()
-                .into_any_element(),
-            None => theme_icon(ph_icon(icon_name), 17.0, icon_color, windows_theme),
-        })
+        .child(RowInk::new(String::new(), icon_or_texture(ph_icon(icon_name), shell_tex, icon_color), fg, windows_theme).centered().into_element())
         .on_prepaint_child(move |_bounds, _window, cx| {
             #[cfg(target_os = "windows")]
             if windows_theme {
@@ -2509,7 +2540,7 @@ fn collapsed_virtual_nav_row(
     let app = app.clone();
     let tooltip = label.clone();
     let hover_id = DragHoverId::Sidebar(id.to_string());
-    let request_recycle_icon = windows_theme && loc == Location::RecycleBin && shell_tex.is_none();
+    let request_recycle_icon = loc == Location::RecycleBin;
     let recycle_icon_app = app.clone();
     let icon_color = if active {
         accent
@@ -2533,14 +2564,17 @@ fn collapsed_virtual_nav_row(
         .when(active, |s| s.bg(active_bg))
         .when(!active, |s| s.hover(|h| h.bg(hover)))
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-        .child(match shell_tex {
+        .child(if loc == Location::RecycleBin {
+            crate::ui::sidebar_feedback::RecycleIcon { app: app.clone(), texture: shell_tex, color: icon_color, windows: windows_theme, size: 18.0 }.into_any_element()
+        } else { match shell_tex {
             Some(tex) => img(tex).size(px(18.0)).flex_none().into_any_element(),
             None => theme_icon(ph_icon(icon_name), 17.0, icon_color, windows_theme),
-        })
+        } })
         .when(request_recycle_icon, |row| {
             row.on_prepaint_child(move |_bounds, _window, cx| {
                 recycle_icon_app.update(cx, |this, _cx| {
-                    this.request_shell_recycle_bin_icon();
+                    this.request_recycle_bin_status(false);
+                    if windows_theme { this.request_shell_recycle_bin_icon(); }
                 });
             })
         })
@@ -2592,6 +2626,8 @@ fn collapsed_bookmark_row(
         windows_theme,
         ..
     } = style;
+    let drop_dest = path.clone();
+    let external_dest = path.clone();
     let app = app.clone();
     let tooltip = label.clone();
     let hover_id = DragHoverId::Sidebar(id.to_string());
@@ -2623,13 +2659,7 @@ fn collapsed_bookmark_row(
         .on_drag_over::<DraggedFiles>(move |s, _, _, _| s.bg(hover))
         .on_drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(hover))
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-        .child(match shell_tex {
-            Some(tex) => img(tex)
-                .size(crate::ui::rem_px(18.0))
-                .flex_none()
-                .into_any_element(),
-            None => theme_icon(ph_icon("folder"), 17.0, icon_color, windows_theme),
-        })
+        .child(RowInk::new(String::new(), icon_or_texture(AtlasIcon::Folder, shell_tex, icon_color), fg, windows_theme).centered().into_element())
         .on_prepaint_child(move |_bounds, _window, cx| {
             #[cfg(target_os = "windows")]
             if windows_theme {
@@ -2642,7 +2672,7 @@ fn collapsed_bookmark_row(
             hover_id,
             DragHoverKind::Nav,
             DragHoverCommand::NavigatePath(path.clone()),
-            DragHoverDropCommand::AddBookmarks,
+            DragHoverDropCommand::TransferTo(path.clone()),
             &app,
         ))
         .on_drop::<DraggedFiles>(move |d, window, cx| {
@@ -2652,7 +2682,7 @@ fn collapsed_bookmark_row(
             let paths = d.paths.clone();
             drop_app.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
-                    DragHoverDropCommand::AddBookmarks,
+                    DragHoverDropCommand::TransferTo(drop_dest.clone()),
                     paths,
                     true,
                 );
@@ -2666,7 +2696,7 @@ fn collapsed_bookmark_row(
             let paths = paths.paths().to_vec();
             drop_app_external.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
-                    DragHoverDropCommand::AddBookmarks,
+                    DragHoverDropCommand::TransferTo(external_dest.clone()),
                     paths,
                     false,
                 );
@@ -2714,13 +2744,7 @@ fn collapsed_tag_row(
         .on_drag_over::<DraggedFiles>(move |s, _, _, _| s.bg(hover))
         .on_drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(hover))
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-        .child(
-            div()
-                .size(crate::ui::rem_px(12.))
-                .rounded_full()
-                .bg(rgb)
-                .shadow_sm(),
-        )
+        .child(RowInk::new(String::new(), RowIcon::Swatch(gpui::rgb_to_hsla(rgb)), gpui::rgb_to_hsla(rgb), false).centered().into_element())
         .on_prepaint_child(drag_hover_recorder_with_drop(
             hover_id,
             DragHoverKind::Nav,
@@ -2900,21 +2924,7 @@ fn collapsed_cloud_remote_row(
         .when(is_mounted, |s| s.bg(active_bg))
         .when(!is_mounted, |s| s.hover(|h| h.bg(hover)))
         .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
-        .child(theme_icon(
-            AtlasIcon::Cloud,
-            17.0,
-            if is_mounted {
-                accent
-            } else {
-                hsla(
-                    (fg.hue.into_positive_degrees() / 360.0),
-                    fg.saturation,
-                    fg.lightness,
-                    0.84,
-                )
-            },
-            windows_theme,
-        ))
+        .child(RowInk::new(String::new(), RowIcon::Theme(AtlasIcon::Cloud, if is_mounted { accent } else { fg.opacity(0.84) }), fg, windows_theme).centered().into_element())
         .on_prepaint_child(drag_hover_recorder(
             hover_id,
             DragHoverKind::Nav,
@@ -3081,16 +3091,8 @@ fn render_section_body(
                             muted,
                         )),
                 );
-            } else {
-                for (idx, (name, path)) in bookmarks.into_iter().enumerate() {
-                    let id = SharedString::from(format!("bm-{}", path.display()));
-                    let active = current.is_some_and(|c| c == path.as_path());
-                    let shell_tex = sidebar_shell_tex(app, &path, windows_theme, cx);
-                    col = col.child(bookmark_row(
-                        idx, id, name, path, shell_tex, app, style, active,
-                    ));
-                }
             }
+            col = col.child(crate::ui::sidebar_bookmarks::BookmarkCollection { items: bookmarks, app: app.clone(), style, current: current.map(std::path::Path::to_path_buf) });
         }
         SectionKind::Tags => {
             let tags: Vec<(String, [u8; 3], TagId, bool)> = {
@@ -3170,31 +3172,33 @@ fn render_section_body(
                 .take(8)
                 .cloned()
                 .collect();
-            if recent.is_empty() {
-                col = col.child(empty_row(
-                    rust_i18n::t!("sidebar_no_recent").to_string(),
-                    muted,
-                ));
-            } else {
-                for path in recent {
+            let mut items = Vec::with_capacity(recent.len());
+            for path in recent {
                     let label = path
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| path.display().to_string());
                     let active = current.is_some_and(|c| c == path.as_path());
                     let shell_tex = sidebar_shell_tex(app, &path, windows_theme, cx);
-                    col = col.child(nav_row(
+                    let key = path.clone();
+                    let content = nav_row(
                         SharedString::from(format!("recent-{}", path.display())),
-                        label,
+                        label.clone(),
                         "folder",
                         path,
                         shell_tex,
                         app,
                         style,
                         active,
-                    ));
-                }
+                    ).into_any_element();
+                    items.push(crate::ui::sidebar_collection::ReferenceItem { path: key, label, content });
             }
+            col = col.child(crate::ui::sidebar_collection::ReferenceCollection {
+                id: SharedString::from(format!("recent-reference-motion-{}", app.read(cx).state.profiles.active().name)),
+                app: app.clone(), items, extent: if windows_theme { 30.0 } else { 24.0 }, gap: 4.0,
+                horizontal: false, icon: AtlasIcon::Folder, color: muted, windows: windows_theme,
+                empty: Some(empty_row(rust_i18n::t!("sidebar_no_recent").to_string(), muted).into_any_element()),
+            });
         }
         SectionKind::Cloud => {
             #[cfg(feature = "provider-host")]
@@ -3275,8 +3279,7 @@ fn tag_row(
         .hover(|s| s.bg(hover))
         .on_drag_over::<DraggedFiles>(move |s, _, _, _| s.bg(hover))
         .on_drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(hover))
-        .child(div().size(crate::ui::rem_px(11.)).rounded_full().bg(rgb))
-        .child(div().min_w(px(0.)).flex_1().truncate().child(name.clone()))
+        .child(RowInk::new(name.clone(), RowIcon::Swatch(gpui::rgb_to_hsla(rgb)), fg, windows_theme).into_element())
         .child(
             div()
                 .id(SharedString::from(format!("tag-{}-rename", id.0)))
@@ -3461,55 +3464,11 @@ fn drive_row(
         .text_color(fg)
         .when(active, |s| s.bg(active_bg))
         .when(!active, |s| s.hover(|h| h.bg(hover)))
-        .child(
-            h_flex()
-                .w_full()
-                .gap(crate::ui::rem_px(if windows_theme { 10.0 } else { 8.0 }))
-                .items_center()
-                .child(match shell_tex {
-                    Some(tex) => img(tex)
-                        .size(crate::ui::rem_px(if windows_theme { 18.0 } else { 16.0 }))
-                        .flex_none()
-                        .into_any_element(),
-                    None => theme_icon(
-                        drive_icon(&drive),
-                        if windows_theme { 18.0 } else { 16.0 },
-                        icon_color,
-                        windows_theme,
-                    ),
-                })
-                .child(
-                    div()
-                        .flex_1()
-                        .truncate()
-                        .child(SharedString::from(drive.label.clone())),
-                )
-                .when(!free_label.is_empty(), |row| {
-                    row.child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(SharedString::from(free_label)),
-                    )
-                }),
-        )
-        .when(drive.total_bytes > 0, |row| {
-            // Fullness track + filled portion (width = used fraction).
-            row.child(
-                div()
-                    .w_full()
-                    .h(crate::ui::rem_px(4.))
-                    .rounded(px(2.))
-                    .bg(crate::ui::glass::track_fill())
-                    .sunken_surface()
-                    .child(
-                        div()
-                            .h_full()
-                            .w(relative(frac))
-                            .rounded(px(2.))
-                            .bg(bar_color),
-                    ),
-            )
+        .h(crate::ui::rem_px(if windows_theme { 48.0 } else { 44.0 }))
+        .child({
+            let ink = RowInk::new(drive.label.clone(), icon_or_texture(drive_icon(&drive), shell_tex, icon_color), fg, windows_theme)
+                .detail(free_label, muted, false);
+            if drive.total_bytes > 0 { ink.progress(frac, bar_color) } else { ink }.into_element()
         })
         .on_prepaint_child(move |_bounds, _window, cx| {
             #[cfg(target_os = "windows")]
@@ -3649,33 +3608,9 @@ fn removable_device_row(
         .text_color(fg)
         .when(active, |s| s.bg(active_bg))
         .when(!active, |s| s.hover(|h| h.bg(hover)))
-        .child(
-            theme_icon(
-                AtlasIcon::Usb,
-                if windows_theme { 18.0 } else { 16.0 },
-                icon_color,
-                windows_theme,
-            ),
-        )
-        .child(
-            v_flex()
-                .flex_1()
-                .overflow_hidden()
-                .child(
-                    div()
-                        .truncate()
-                        .child(SharedString::from(device.label.clone())),
-                )
-                .when(!subtitle.is_empty(), |v| {
-                    v.child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .truncate()
-                            .child(SharedString::from(subtitle)),
-                    )
-                }),
-        )
+        .h(crate::ui::rem_px(if windows_theme { 48.0 } else { 44.0 }))
+        .child(RowInk::new(device.label.clone(), RowIcon::Theme(AtlasIcon::Usb, icon_color), fg, windows_theme)
+            .detail(subtitle, muted, true).into_element())
         .child(
             div()
                 .id(SharedString::from(format!("eject-btn-{}", dev)))
@@ -3743,11 +3678,9 @@ fn section_header(
     };
     let app_click = app.clone();
     // Disclosure chevron on the right (Figma "Section Header").
-    let chevron = if section.collapsed {
-        "caret-right"
-    } else {
-        "caret-down"
-    };
+    let chevron = crate::ui::reveal::chevron(
+        SharedString::from(format!("sidebar-chevron-{:?}", section.kind)), !section.collapsed, muted,
+    );
     let menu_kind = section.kind.clone();
     let menu_collapsed = section.collapsed;
     h_flex()
@@ -3765,8 +3698,9 @@ fn section_header(
         .cursor_pointer()
         .rounded(px(6.))
         .hover(|s| s.bg(hover))
-        .child(div().flex_1().child(SharedString::from(label.to_string())))
-        .child(ph(chevron, muted))
+        .h(crate::ui::rem_px(28.0))
+        .child(RowInk::new(label.to_string(), RowIcon::None, muted, false).into_element())
+        .child(chevron)
         .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
             app_click.update(cx, |this, cx| {
                 this.process_actions(vec![Action::ToggleSidebarSection(idx)]);
@@ -3821,7 +3755,7 @@ fn section_header(
         })
 }
 
-fn sidebar_context_menu(
+pub(crate) fn sidebar_context_menu(
     menu: PopupMenu,
     idx: usize,
     section_count: usize,
@@ -3878,7 +3812,7 @@ fn sidebar_context_menu(
     menu
 }
 
-fn sidebar_label(kind: &SectionKind) -> String {
+pub(crate) fn sidebar_label(kind: &SectionKind) -> String {
     match kind {
         SectionKind::Places => rust_i18n::t!("sidebar_places").to_string(),
         SectionKind::Bookmarks => rust_i18n::t!("sidebar_bookmarks").to_string(),
@@ -3890,15 +3824,15 @@ fn sidebar_label(kind: &SectionKind) -> String {
     }
 }
 
-fn linux_root_label(path: &std::path::Path) -> String {
+pub(crate) fn linux_root_label(path: &std::path::Path) -> String {
     atlas_core::fs::paths::wsl_distro_name(path).unwrap_or_else(|| path.display().to_string())
 }
 
 fn empty_row(label: String, muted: Hsla) -> impl IntoElement {
-    div().px_2().py_1().text_xs().text_color(muted).child(label)
+    div().px_2().h(crate::ui::rem_px(24.0)).flex().text_xs().text_color(muted).child(RowInk::new(label, RowIcon::None, muted, false).into_element())
 }
 
-fn bookmark_row(
+pub(crate) fn bookmark_row(
     index: usize,
     id: SharedString,
     label: String,
@@ -3907,6 +3841,7 @@ fn bookmark_row(
     app: &Entity<AtlasApp>,
     style: SidebarStyle,
     active: bool,
+    profile: String,
 ) -> impl IntoElement {
     let SidebarStyle {
         hover,
@@ -3916,6 +3851,10 @@ fn bookmark_row(
         windows_theme,
         ..
     } = style;
+    let drag = crate::ui::sidebar_bookmarks::BookmarkDrag { path: path.clone(), profile, label: label.clone() };
+    let drag_app = app.clone();
+    let drop_dest = path.clone();
+    let external_dest = path.clone();
     let app = app.clone();
     let remove_app = app.clone();
     let drop_app = app.clone();
@@ -3953,19 +3892,11 @@ fn bookmark_row(
         .when(!active, |s| s.hover(|h| h.bg(hover)))
         .on_drag_over::<DraggedFiles>(move |s, _, _, _| s.bg(hover))
         .on_drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(hover))
-        .child(match shell_tex {
-            Some(tex) => img(tex)
-                .size(crate::ui::rem_px(if windows_theme { 18.0 } else { 16.0 }))
-                .flex_none()
-                .into_any_element(),
-            None => theme_icon(
-                ph_icon("folder"),
-                if windows_theme { 18.0 } else { 16.0 },
-                icon_color,
-                windows_theme,
-            ),
+        .on_drag(drag, move |drag, _, _, cx| {
+            drag_app.update(cx, |app, cx| { app.begin_bookmark_drag(); cx.notify(); });
+            cx.new(|_| drag.clone())
         })
-        .child(div().min_w(px(0.)).flex_1().truncate().child(SharedString::from(label)))
+        .child(RowInk::new(label, icon_or_texture(AtlasIcon::Folder, shell_tex, icon_color), content, windows_theme).into_element())
         .child(
             div()
                 .id(SharedString::from(format!("bm-remove-{index}")))
@@ -4002,7 +3933,7 @@ fn bookmark_row(
             hover_id,
             DragHoverKind::Nav,
             DragHoverCommand::NavigatePath(path.clone()),
-            DragHoverDropCommand::AddBookmarks,
+            DragHoverDropCommand::TransferTo(path.clone()),
             &app,
         ))
         .on_drop::<DraggedFiles>(move |d, window, cx| {
@@ -4012,7 +3943,7 @@ fn bookmark_row(
             let paths = d.paths.clone();
             drop_app.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
-                    DragHoverDropCommand::AddBookmarks,
+                    DragHoverDropCommand::TransferTo(drop_dest.clone()),
                     paths,
                     true,
                 );
@@ -4026,7 +3957,7 @@ fn bookmark_row(
             let paths = paths.paths().to_vec();
             drop_app_external.update(cx, |this, cx| {
                 this.execute_drag_hover_drop_command(
-                    DragHoverDropCommand::AddBookmarks,
+                    DragHoverDropCommand::TransferTo(external_dest.clone()),
                     paths,
                     false,
                 );
@@ -4107,19 +4038,7 @@ fn nav_row(
             s.bg(active_bg).font_weight(gpui::FontWeight::MEDIUM)
         })
         .when(!active, |s| s.hover(|h| h.bg(hover)))
-        .child(match shell_tex {
-            Some(tex) => img(tex)
-                .size(crate::ui::rem_px(if windows_theme { 18.0 } else { 16.0 }))
-                .flex_none()
-                .into_any_element(),
-            None => theme_icon(
-                ph_icon(icon_name),
-                if windows_theme { 18.0 } else { 16.0 },
-                icon_color,
-                windows_theme,
-            ),
-        })
-        .child(div().flex_1().truncate().child(SharedString::from(label)))
+        .child(RowInk::new(label, icon_or_texture(ph_icon(icon_name), shell_tex, icon_color), content, windows_theme).into_element())
         .on_prepaint_child(move |_bounds, _window, cx| {
             #[cfg(target_os = "windows")]
             if windows_theme {
@@ -4203,7 +4122,7 @@ fn virtual_nav_row(
     let app = app.clone();
     let hover_id = DragHoverId::Sidebar(id.to_string());
     let recycle_icon_app = app.clone();
-    let request_recycle_icon = windows_theme && loc == Location::RecycleBin && shell_tex.is_none();
+    let request_recycle_icon = loc == Location::RecycleBin;
     let content = if active { accent } else { fg };
     let icon_color = if active {
         accent
@@ -4230,7 +4149,9 @@ fn virtual_nav_row(
             s.bg(active_bg).font_weight(gpui::FontWeight::MEDIUM)
         })
         .when(!active, |s| s.hover(|h| h.bg(hover)))
-        .child(match shell_tex {
+        .child(if loc == Location::RecycleBin {
+            crate::ui::sidebar_feedback::RecycleIcon { app: app.clone(), texture: shell_tex, color: icon_color, windows: windows_theme, size: if windows_theme { 18.0 } else { 16.0 } }.into_any_element()
+        } else { match shell_tex {
             Some(tex) => img(tex)
                 .size(px(if windows_theme { 18.0 } else { 16.0 }))
                 .flex_none()
@@ -4241,15 +4162,16 @@ fn virtual_nav_row(
                 icon_color,
                 windows_theme,
             ),
-        })
+        } })
         .when(request_recycle_icon, |row| {
             row.on_prepaint_child(move |_bounds, _window, cx| {
                 recycle_icon_app.update(cx, |this, _cx| {
-                    this.request_shell_recycle_bin_icon();
+                    this.request_recycle_bin_status(false);
+                    if windows_theme { this.request_shell_recycle_bin_icon(); }
                 });
             })
         })
-        .child(div().flex_1().truncate().child(SharedString::from(label)))
+        .child(RowInk::new(label, RowIcon::None, content, windows_theme).into_element())
         .map(|row| {
             // Recycle Bin row doubles as a drop target (drop = send to trash).
             if loc == Location::RecycleBin {
@@ -4360,17 +4282,8 @@ fn cloud_remote_row(
         .cursor_pointer()
         .text_color(fg)
         .when(!is_busy, |s| s.hover(|h| h.bg(hover)))
-        .child(ph("cloud", icon_color))
-        .child(div().flex_1().truncate().child(SharedString::from(name)))
-        .when_some(status_label, |row, label| {
-            let color = status_color.unwrap_or(muted);
-            row.child(
-                div()
-                    .text_xs()
-                    .text_color(color)
-                    .child(SharedString::from(label)),
-            )
-        })
+        .child(RowInk::new(name, RowIcon::Theme(AtlasIcon::Cloud, icon_color), fg, style.windows_theme)
+            .detail(status_label.unwrap_or_default(), status_color.unwrap_or(muted), false).into_element())
         .when_some(hover_action.clone(), |row, action| {
             match drop_dest.clone() {
                 Some(dest) => row.on_prepaint_child(drag_hover_recorder_with_drop(
@@ -4462,7 +4375,27 @@ fn cloud_remote_row(
 }
 
 #[cfg(feature = "provider-host")]
-fn native_cloud_folders() -> Vec<(String, PathBuf)> {
+pub(crate) fn native_cloud_folders() -> Vec<(String, PathBuf)> {
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    #[derive(Default)]
+    struct Snapshot { folders: Vec<(String, PathBuf)>, updated: Option<Instant>, pending: bool }
+    static CACHE: OnceLock<Mutex<Snapshot>> = OnceLock::new();
+    let mut cache = CACHE.get_or_init(|| Mutex::new(Snapshot::default())).lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !cache.pending && cache.updated.is_none_or(|last| last.elapsed() >= Duration::from_secs(10)) {
+        cache.pending = true;
+        std::thread::spawn(|| {
+            let folders = scan_native_cloud_folders();
+            let mut cache = CACHE.get().unwrap().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            cache.folders = folders;
+            cache.updated = Some(Instant::now());
+            cache.pending = false;
+        });
+    }
+    cache.folders.clone()
+}
+
+fn scan_native_cloud_folders() -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
     let mut push = |label: &str, path: Option<PathBuf>| {
         let Some(path) = path else {
@@ -4546,13 +4479,7 @@ fn add_cloud_row(app: &Entity<AtlasApp>, hover: Hsla, muted: Hsla, fg: Hsla) -> 
         .cursor_pointer()
         .text_color(muted)
         .hover(|s| s.bg(hover).text_color(fg))
-        .child(ph("cloud", icon_color))
-        .child(
-            div()
-                .flex_1()
-                .truncate()
-                .child(rust_i18n::t!("cloud_add_remote").to_string()),
-        )
+        .child(RowInk::new(rust_i18n::t!("cloud_add_remote").to_string(), RowIcon::Theme(AtlasIcon::Cloud, icon_color), muted, false).into_element())
         .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
             app.update(cx, |this, cx| {
                 this.process_actions(vec![Action::Cloud(CloudAction::ShowAddDialog(true))]);

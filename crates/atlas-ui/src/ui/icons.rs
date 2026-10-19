@@ -85,6 +85,7 @@ pub(crate) enum AtlasIcon {
     BookmarkSimple,
     X,
     Minus,
+    Funnel,
     Square,
     ArrowLeft,
     ArrowRight,
@@ -167,6 +168,7 @@ impl AtlasIcon {
             Self::BookmarkSimple => "icons/ph/bookmark-simple.svg",
             Self::X => "icons/ph/x.svg",
             Self::Minus => "icons/ph/minus.svg",
+            Self::Funnel => "icons/ph/funnel.svg",
             Self::Square => "icons/ph/square.svg",
             Self::ArrowLeft => "icons/ph/arrow-left.svg",
             Self::ArrowRight => "icons/ph/arrow-right.svg",
@@ -295,6 +297,7 @@ pub(crate) fn windows_icon_glyph(kind: AtlasIcon) -> &'static str {
         AtlasIcon::Lifebuoy => "\u{E789}",
         AtlasIcon::TerminalWindow => "\u{E756}",
         AtlasIcon::Minus => "\u{E738}",
+        AtlasIcon::Funnel => "\u{E71C}",
         AtlasIcon::Square => "\u{E739}",
         AtlasIcon::TrayArrowDown => "\u{E896}",
     }

@@ -97,13 +97,13 @@ impl App {
                     .or_insert_with(|| TypeFilterItem {
                         label,
                         count: 0,
-                        kind: entry.kind.clone(),
-                        ext: entry.extension.clone(),
+                        kind: entry.kind().clone(),
+                        ext: entry.extension().as_ref().map(ToString::to_string),
                     });
                 item.count += 1;
                 if item.ext.is_none() {
-                    item.kind = entry.kind.clone();
-                    item.ext = entry.extension.clone();
+                    item.kind = entry.kind().clone();
+                    item.ext = entry.extension().as_ref().map(ToString::to_string);
                 }
             }
         }

@@ -2,6 +2,8 @@
 
 use crate::app::App;
 use crate::input::action::Action;
+use crate::ui::imm::cut::RectCut;
+use crate::ui::drag_hover::{DragHoverCommand, DragHoverId, DragHoverKind, DragHoverTarget};
 use crate::ui::icons::AtlasIcon;
 use crate::ui::surface::{
     chrome_font_size_tabs, hit_first, line_width, paint_fill, paint_rounded, paint_rounded_corners,
@@ -12,10 +14,28 @@ use gpui::ColorExt as _;
 use gpui::{
     point, px, size, App as GpuiApp, Bounds, ContentMask, Corners, DispatchPhase, Element,
     ElementId, Font, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton,
-    MouseDownEvent, Pixels, Refineable, ShapedLine, SharedString, Style, StyleRefinement, Styled,
-    TextAlign, WeakEntity, Window,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Refineable, ShapedLine, SharedString,
+    Style, StyleRefinement, Styled, TextAlign, WeakEntity, Window,
 };
 use std::sync::Arc;
+use std::{cell::RefCell, rc::Rc};
+
+/// Resting slots from the final compressed/visible projection, without FLIP.
+/// Insertion uses these slots so animated neighbors cannot move the target.
+#[derive(Default)]
+pub(crate) struct TabDropGeometry {
+    slots: Vec<(usize, Slot)>,
+    count: usize,
+}
+
+impl TabDropGeometry {
+    pub(crate) fn boundary_at(&self, x: f32) -> usize {
+        self.slots
+            .iter()
+            .find(|(_, slot)| x < slot.x + slot.w * 0.5)
+            .map_or(self.count, |(index, _)| *index)
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct TabBarItem {
@@ -23,6 +43,7 @@ pub(crate) struct TabBarItem {
     pub label: String,
     pub is_active: bool,
     pub tag_rgb: Option<[u8; 3]>,
+    pub closing: Option<std::time::Instant>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -36,6 +57,9 @@ pub(crate) struct TabsBarElement {
     id: ElementId,
     app: WeakEntity<App>,
     tabs: Arc<Vec<TabBarItem>>,
+    drop_geometry: Rc<RefCell<TabDropGeometry>>,
+    reorder: Option<crate::ui::tab_reorder::TabReorderPreview>,
+    instant: bool,
     active: Option<TabId>,
     font: Font,
     font_size: Pixels,
@@ -57,6 +81,7 @@ struct TabGeom {
     close: Slot,
     tag: Option<Slot>,
     visible: bool,
+    opacity: f32,
 }
 
 pub(crate) struct TabsBarPrepaint {
@@ -65,6 +90,30 @@ pub(crate) struct TabsBarPrepaint {
     new_btn: Slot,
     strip_h: f32,
     radius: f32,
+    hitboxes: Arc<Vec<gpui::Hitbox>>,
+}
+
+fn tab_hover_targets(
+    tabs: &[TabBarItem],
+    geoms: &[TabGeom],
+    bounds: Bounds<Pixels>,
+    mask: Bounds<Pixels>,
+) -> Vec<DragHoverTarget> {
+    tabs.iter()
+        .zip(geoms)
+        .filter(|(tab, geom)| geom.visible && tab.closing.is_none())
+        .filter_map(|(tab, geom)| {
+            let bounds = geom.tab.to_bounds(bounds.origin).intersect(&bounds).intersect(&mask);
+            (bounds.size.width > px(0.0) && bounds.size.height > px(0.0)).then(|| DragHoverTarget {
+                id: DragHoverId::Tab(tab.pane_id),
+                bounds,
+                kind: DragHoverKind::Nav,
+                command: DragHoverCommand::Process(Action::FocusTab(tab.pane_id)),
+                // The destination is resolved from the live tab at drop time.
+                drop_command: None,
+            })
+        })
+        .collect()
 }
 
 impl TabsBarElement {
@@ -89,6 +138,9 @@ impl TabsBarElement {
             id: ElementId::Name(SharedString::from("tabs-bar-surface")),
             app,
             tabs: Arc::new(tabs),
+            drop_geometry: Rc::default(),
+            reorder: None,
+            instant: false,
             active,
             font,
             font_size,
@@ -103,6 +155,18 @@ impl TabsBarElement {
             accent,
             style: StyleRefinement::default(),
         }
+    }
+
+    pub(crate) fn interaction(
+        mut self,
+        geometry: Rc<RefCell<TabDropGeometry>>,
+        reorder: Option<crate::ui::tab_reorder::TabReorderPreview>,
+        instant: bool,
+    ) -> Self {
+        self.drop_geometry = geometry;
+        self.reorder = reorder;
+        self.instant = instant;
+        self
     }
 }
 
@@ -158,10 +222,11 @@ impl Element for TabsBarElement {
         bounds: Bounds<Pixels>,
         _request_layout: &mut Style,
         window: &mut Window,
-        _cx: &mut GpuiApp,
+        cx: &mut GpuiApp,
     ) -> Self::PrepaintState {
         let _perf = crate::perf::span("tabs.bar.prepaint");
         crate::perf::count("tabs.bar.prepaint");
+        let mut hitboxes = vec![window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal)];
 
         let zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
         // Force chrome type scale (ignore body font_size from caller).
@@ -201,7 +266,7 @@ impl Element for TabsBarElement {
             labels.push(line);
         }
 
-        let avail = (f32::from(bounds.size.width) - pad_x * 2.0 - new_sz - gap).max(40.0);
+        let avail = (f32::from(bounds.size.width) - pad_x * 2.0 - new_sz - gap).max(0.0);
 
         // Progressive Disclosure: if the space is too small for all tabs,
         // start hiding inactive ones (so inactive tabs collapse progressively).
@@ -222,57 +287,158 @@ impl Element for TabsBarElement {
             sum_visible = natural_ws.iter().sum();
         }
 
-        let scale = if sum_visible > avail && sum_visible > 0.0 {
-            avail / sum_visible
+        let visible_count = visible_tabs.iter().filter(|visible| **visible).count();
+        let tab_space = (avail - gap * visible_count.saturating_sub(1) as f32).max(0.0);
+        let scale = if sum_visible > tab_space && sum_visible > 0.0 {
+            tab_space / sum_visible
         } else {
             1.0
         };
 
         let y0 = (strip_h - tab_h) * 0.5;
-        let mut x = pad_x;
+        let mut slicer = RectCut::new(pad_x, y0, avail, tab_h);
         let mut geoms = Vec::with_capacity(self.tabs.len());
         for (i, tab) in self.tabs.iter().enumerate() {
             if !visible_tabs[i] {
                 // Invisible tabs get a zero-width slot
                 geoms.push(TabGeom {
-                    tab: Slot::new(x, y0, 0.0, 0.0),
-                    label: Slot::new(x, y0, 0.0, 0.0),
-                    close: Slot::new(x, y0, 0.0, 0.0),
+                    tab: Slot::new(slicer.x, y0, 0.0, 0.0),
+                    label: Slot::new(slicer.x, y0, 0.0, 0.0),
+                    close: Slot::new(slicer.x, y0, 0.0, 0.0),
                     tag: None,
                     visible: false,
+                    opacity: 0.0,
                 });
                 continue;
             }
 
-            let tw = (natural_ws[i] * scale).max(tab_min * 0.55);
-            let tab_slot = Slot::new(x, y0, tw, tab_h);
-            let mut inner_x = x + pad_in * scale.max(0.5);
+            let openness = tab.closing.map_or(1.0, |started| {
+                if self.instant {
+                    return 0.0;
+                }
+                let t = started.elapsed().as_secs_f32() * 1000.0 / crate::ui::motion::TAB_MS as f32;
+                if t < 1.0 {
+                    window.request_animation_frame();
+                }
+                1.0 - crate::ui::motion::ease_out_quart(t)
+            });
+            let tw = (natural_ws[i] * scale).max(tab_min * 0.55) * openness;
+            let tab_slot = slicer.cut_left(tw.min(slicer.w.max(0.0)));
+            slicer.cut_left(gap * openness);
+
+            let mut tab_cut = RectCut::new(tab_slot.x, tab_slot.y, tab_slot.w, tab_slot.h);
+            tab_cut.pad(pad_in * scale.max(0.5), 0.0);
+
             let tag = if tab.tag_rgb.is_some() {
-                let s = Slot::new(inner_x, y0 + (tab_h - tag_dot) * 0.5, tag_dot, tag_dot);
-                inner_x += tag_dot + 6.0 * zoom;
-                Some(s)
+                let tag_cut = tab_cut.cut_left(tag_dot);
+                tab_cut.cut_left(6.0 * zoom);
+                Some(Slot::new(
+                    tag_cut.x,
+                    y0 + (tab_h - tag_dot) * 0.5,
+                    tag_dot,
+                    tag_dot,
+                ))
             } else {
                 None
             };
+            let close_raw = tab_cut.cut_right(close_sz);
             let close = Slot::new(
-                x + tw - pad_in * scale.max(0.5) - close_sz,
+                close_raw.x,
                 y0 + (tab_h - close_sz) * 0.5,
                 close_sz,
                 close_sz,
             );
-            let label_w = (close.x - 4.0 * zoom - inner_x).max(0.0);
-            let label = Slot::new(inner_x, y0, label_w, tab_h);
+            tab_cut.cut_right(4.0 * zoom);
+            let label_rem = tab_cut.remaining();
+            let label = Slot::new(label_rem.x, y0, label_rem.w, tab_h);
             geoms.push(TabGeom {
                 tab: tab_slot,
                 label,
                 close,
                 tag,
                 visible: true,
+                opacity: openness,
             });
-            x += tw + gap;
         }
 
-        let new_btn = Slot::new(x, y0 + (tab_h - new_sz) * 0.5, new_sz, new_sz);
+        // Paint, drag starts, and reorder boundaries share this exact projection.
+        self.drop_geometry.replace(TabDropGeometry {
+            slots: geoms
+                .iter()
+                .enumerate()
+                .filter(|(i, g)| g.visible && self.tabs[*i].closing.is_none())
+                .map(|(i, g)| (i, g.tab))
+                .collect(),
+            count: self.tabs.len(),
+        });
+        let viewport = [f32::from(bounds.size.width), tab_max, zoom];
+        let now = std::time::Instant::now();
+        let motion = window.use_keyed_state("tabs-neighbor-motion", cx, |_, _| {
+            crate::ui::imm::motion::RowMotion::<TabId>::new(0, viewport)
+        });
+        let mut targets: Vec<_> = geoms
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.visible)
+            .map(|(i, g)| (self.tabs[i].pane_id, i, g.tab.x))
+            .collect();
+        if let Some(preview) = self.reorder.as_ref().filter(|preview| !preview.copying) {
+            let ids: Vec<_> = self.tabs.iter().map(|tab| tab.pane_id).collect();
+            let mut x = pad_x;
+            for pane in
+                crate::ui::tab_reorder::projected_order(&ids, preview.dragged, preview.boundary)
+            {
+                if let Some(target) = targets.iter_mut().find(|(id, _, _)| *id == pane) {
+                    target.2 = x;
+                    x += geoms[target.1].tab.w + gap;
+                }
+            }
+        }
+        // Closing slots already release their width on their own timeline.
+        let instant = self.instant || self.tabs.iter().any(|tab| tab.closing.is_some());
+        let (positions, animating) = motion.update(cx, |motion, _| {
+            motion.sample(&targets, 0, viewport, instant, now)
+        });
+        for (i, x, opacity) in positions {
+            let g = &mut geoms[i];
+            let offset = x - g.tab.x;
+            g.tab.x += offset;
+            g.label.x += offset;
+            g.close.x += offset;
+            if let Some(tag) = &mut g.tag {
+                tag.x += offset;
+            }
+            g.opacity *= opacity;
+        }
+        if animating {
+            window.request_animation_frame();
+        }
+
+        let new_btn = Slot::new(slicer.x, y0 + (tab_h - new_sz) * 0.5, new_sz, new_sz);
+
+        let targets = tab_hover_targets(&self.tabs, &geoms, bounds, window.content_mask().bounds);
+        // Native caption hit testing must stop at real controls, just as it did
+        // for the old tab chips. During DnD the strip's parent owns the drop, so
+        // these foreground hitboxes must not hide that parent's hitbox.
+        if !cx.has_active_drag() {
+            for control in targets.iter().map(|target| target.bounds)
+                .chain(std::iter::once(new_btn.to_bounds(bounds.origin).intersect(&bounds)))
+            {
+                hitboxes.push(window.insert_hitbox(control, gpui::HitboxBehavior::BlockMouseExceptScroll));
+            }
+        }
+        if let Some(app) = self.app.upgrade() {
+            app.update(cx, |this, _| {
+                // Replace this strip's projection: hidden/closing tabs must not
+                // keep old drop rectangles while the other panes remain cached.
+                this.pending_drag_hover_targets.retain(|target| {
+                    !matches!(target.id, DragHoverId::Tab(id) if self.tabs.iter().any(|tab| tab.pane_id == id))
+                });
+                for target in targets {
+                    this.register_drag_hover_target(target);
+                }
+            });
+        }
 
         TabsBarPrepaint {
             labels,
@@ -280,6 +446,7 @@ impl Element for TabsBarElement {
             new_btn,
             strip_h,
             radius,
+            hitboxes: Arc::new(hitboxes),
         }
     }
 
@@ -313,6 +480,13 @@ impl Element for TabsBarElement {
         let mlx = f32::from(mouse.x - origin.x);
         let mly = f32::from(mouse.y - origin.y);
         let hover_i = prepaint.geoms.iter().position(|g| g.tab.contains(mlx, mly));
+        if prepaint.hitboxes.iter().any(|hitbox| hitbox.is_hovered(window))
+            && (hover_i.is_some() || prepaint.new_btn.contains(mlx, mly))
+        {
+            if let Some(hitbox) = prepaint.hitboxes.iter().find(|hitbox| hitbox.is_hovered(window)) {
+                window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
+            }
+        }
 
         let windows_theme = self.windows_theme;
         let zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
@@ -349,70 +523,96 @@ impl Element for TabsBarElement {
                     continue;
                 }
                 let tab_b = g.tab.to_bounds(origin);
-                if tab.is_active {
-                    paint_rounded(window, tab_b, radius, active_bg);
-                } else if hover_i == Some(i) {
-                    paint_rounded(window, tab_b, radius, hover_bg);
-                }
+                window.with_content_mask(
+                    Some(ContentMask {
+                        bounds: tab_b.intersect(&bounds),
+                        fade_out: Default::default(),
+                    }),
+                    |window| {
+                        window.with_element_opacity(Some(g.opacity), |window| {
+                            if tab.is_active {
+                                paint_rounded(window, tab_b, radius, active_bg);
+                                paint_fill(
+                                    window,
+                                    Bounds {
+                                        origin: point(
+                                            tab_b.origin.x + px(radius * 0.5),
+                                            tab_b.origin.y + px(g.tab.h - 2.0 * zoom),
+                                        ),
+                                        size: size(
+                                            px((g.tab.w - radius * zoom).max(0.0)),
+                                            px(2.0 * zoom),
+                                        ),
+                                    },
+                                    accent,
+                                );
+                            } else if hover_i == Some(i) {
+                                paint_rounded(window, tab_b, radius, hover_bg);
+                            }
 
-                if let (Some(tag_slot), Some(rgb)) = (g.tag, tab.tag_rgb) {
-                    let c = gpui::rgb(
-                        (u32::from(rgb[0]) << 16) | (u32::from(rgb[1]) << 8) | u32::from(rgb[2]),
-                    );
-                    paint_rounded(
-                        window,
-                        tag_slot.to_bounds(origin),
-                        tag_slot.h * 0.5,
-                        gpui::rgb_to_hsla(c),
-                    );
-                }
+                            if let (Some(tag_slot), Some(rgb)) = (g.tag, tab.tag_rgb) {
+                                let c = gpui::rgb(
+                                    (u32::from(rgb[0]) << 16)
+                                        | (u32::from(rgb[1]) << 8)
+                                        | u32::from(rgb[2]),
+                                );
+                                paint_rounded(
+                                    window,
+                                    tag_slot.to_bounds(origin),
+                                    tag_slot.h * 0.5,
+                                    gpui::rgb_to_hsla(c),
+                                );
+                            }
 
-                if let Some(line) = prepaint.labels.get(i) {
-                    let lb = g.label.to_bounds(origin);
-                    window.with_content_mask(
-                        Some(ContentMask {
-                            bounds: lb.intersect(&bounds),
-                            fade_out: gpui::Edges {
-                                right: if line.width() > lb.size.width {
-                                    px(8.0 * zoom)
-                                } else {
-                                    px(0.0)
-                                },
-                                ..Default::default()
-                            },
-                        }),
-                        |window| {
-                            // origin = top of label slot; line_height = slot h → GPUI centers glyphs.
-                            let ty = origin.y + px(text_origin_y(g.label.y, zoom));
-                            let _ = line.paint(
-                                point(lb.origin.x, ty),
-                                px(g.label.h),
-                                TextAlign::Left,
-                                None,
+                            if let Some(line) = prepaint.labels.get(i) {
+                                let lb = g.label.to_bounds(origin);
+                                window.with_content_mask(
+                                    Some(ContentMask {
+                                        bounds: lb.intersect(&bounds),
+                                        fade_out: gpui::Edges {
+                                            right: if line.width() > lb.size.width {
+                                                px(8.0 * zoom)
+                                            } else {
+                                                px(0.0)
+                                            },
+                                            ..Default::default()
+                                        },
+                                    }),
+                                    |window| {
+                                        // origin = top of label slot; line_height = slot h → GPUI centers glyphs.
+                                        let ty = origin.y + px(text_origin_y(g.label.y, zoom));
+                                        let _ = line.paint(
+                                            point(lb.origin.x, ty),
+                                            px(g.label.h),
+                                            TextAlign::Left,
+                                            None,
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                );
+                            }
+
+                            if g.close.contains(mlx, mly) {
+                                paint_rounded(
+                                    window,
+                                    g.close.to_bounds(origin),
+                                    radius * 0.6,
+                                    border.opacity(0.45),
+                                );
+                            }
+                            paint_theme_icon(
                                 window,
                                 cx,
+                                origin,
+                                g.close,
+                                AtlasIcon::X,
+                                windows_theme,
+                                close_icon_px,
+                                muted,
                             );
-                        },
-                    );
-                }
-
-                if g.close.contains(mlx, mly) {
-                    paint_rounded(
-                        window,
-                        g.close.to_bounds(origin),
-                        radius * 0.6,
-                        border.opacity(0.45),
-                    );
-                }
-                paint_theme_icon(
-                    window,
-                    cx,
-                    origin,
-                    g.close,
-                    AtlasIcon::X,
-                    windows_theme,
-                    close_icon_px,
-                    muted,
+                        });
+                    },
                 );
             }
 
@@ -433,7 +633,22 @@ impl Element for TabsBarElement {
             // Hit table for input
             let mut hits: Vec<(Slot, TabHit)> = Vec::with_capacity(tabs.len() * 2 + 1);
             for (i, g) in prepaint.geoms.iter().enumerate() {
-                hits.push((g.close, TabHit::Close(i)));
+                if !g.visible || tabs[i].closing.is_some() {
+                    continue;
+                }
+                let close = g
+                    .close
+                    .to_bounds(origin)
+                    .intersect(&g.tab.to_bounds(origin));
+                hits.push((
+                    Slot::new(
+                        f32::from(close.origin.x - origin.x),
+                        f32::from(close.origin.y - origin.y),
+                        f32::from(close.size.width),
+                        f32::from(close.size.height),
+                    ),
+                    TabHit::Close(i),
+                ));
                 hits.push((g.tab, TabHit::Activate(i)));
             }
             hits.push((prepaint.new_btn, TabHit::NewTab));
@@ -444,12 +659,18 @@ impl Element for TabsBarElement {
             let tabs_hit = tabs.clone();
             let active_for_new = self.active;
             let hits = Arc::new(hits);
-            let hit_view = app_entity;
-            window.on_mouse_event::<MouseDownEvent>(move |ev, phase, _window, cx| {
+            let hit_view = app_entity.clone();
+            let press = window.use_keyed_state("tab-drag-press", cx, |_, _| {
+                None::<(gpui::Point<Pixels>, TabId, gpui::Point<Pixels>)>
+            });
+            let down_press = press.clone();
+            let hitboxes = prepaint.hitboxes.clone();
+            let geoms: Vec<_> = prepaint.geoms.iter().map(|g| g.tab).collect();
+            window.on_mouse_event::<MouseDownEvent>(move |ev, phase, window, cx| {
                 if phase != DispatchPhase::Bubble || ev.button != MouseButton::Left {
                     return;
                 }
-                if !bounds.contains(&ev.position) {
+                if !bounds.contains(&ev.position) || !hitboxes.iter().any(|hitbox| hitbox.is_hovered(window)) {
                     return;
                 }
                 let lx = f32::from(ev.position.x - bounds.origin.x);
@@ -468,6 +689,11 @@ impl Element for TabsBarElement {
                     }
                     TabHit::Activate(i) => {
                         if let Some(tab) = tabs_hit.get(i) {
+                            let tab_origin = origin + point(px(geoms[i].x), px(geoms[i].y));
+                            down_press.update(cx, |press, _| {
+                                *press = Some((ev.position, tab.pane_id, tab_origin))
+                            });
+                            tracing::debug!(pane = tab.pane_id.0, "dnd tab press");
                             hit_view.update(cx, |this, cx| {
                                 this.process_actions(vec![Action::FocusTab(tab.pane_id)]);
                                 cx.notify();
@@ -485,6 +711,139 @@ impl Element for TabsBarElement {
                 }
                 cx.stop_propagation();
             });
+            let move_press = press.clone();
+            let drag_view = app_entity;
+            let hover_hitboxes = prepaint.hitboxes.clone();
+            window.on_mouse_event::<MouseMoveEvent>(move |ev, phase, window, cx| {
+                if phase != DispatchPhase::Bubble {
+                    return;
+                }
+                if bounds.contains(&ev.position) && hover_hitboxes.iter().any(|hitbox| hitbox.is_hovered(window)) {
+                    window.refresh();
+                }
+                let pending = move_press.update(cx, |press, _| {
+                    if ev.pressed_button != Some(MouseButton::Left) {
+                        *press = None;
+                        return None;
+                    }
+                    if press
+                        .as_ref()
+                        .is_some_and(|(at, _, _)| (ev.position - *at).magnitude() > 2.0)
+                    {
+                        press.take()
+                    } else {
+                        None
+                    }
+                });
+                if cx.has_active_drag() {
+                    return;
+                }
+                let Some((_, pane, tab_origin)) = pending else {
+                    return;
+                };
+                let payload = drag_view.update(cx, |this, cx| {
+                    if this.tab_closing.contains_key(&pane) || this.pane_closing.contains_key(&pane)
+                    {
+                        tracing::debug!(pane = pane.0, "dnd tab start blocked by close");
+                        return None;
+                    }
+                    if !window.modifiers().control {
+                        this.animate_pane_drag(pane, true);
+                    }
+                    this.state.dragging_pane = Some(pane);
+                    this.state.drag_pending = false;
+                    let content = this.get_or_make_file_panel(pane, cx).clone().into();
+                    let size = this.pane_view_bounds.get(&pane).map(|b| b.size);
+                    cx.notify();
+                    Some(crate::ui::dock::drag::TabDrag {
+                        pane_id: pane,
+                        content,
+                        size,
+                    })
+                });
+                let Some(payload) = payload else {
+                    return;
+                };
+                let view = crate::ui::dock::drag::tab_drag_entity(
+                    pane,
+                    payload.content.clone(),
+                    payload.size,
+                    cx,
+                );
+                cx.start_drag(gpui::AnyDrag::new(payload, view).offset(ev.position - tab_origin));
+                tracing::debug!(pane = pane.0, "dnd tab started");
+                window.refresh();
+                cx.stop_propagation();
+            });
+            window.on_mouse_event::<MouseUpEvent>(move |ev, _, _, cx| {
+                if ev.button == MouseButton::Left {
+                    press.update(cx, |press, _| *press = None);
+                }
+            });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hover_targets_follow_painted_tabs_and_exclude_hidden_closing_and_clipped_tabs() {
+        use atlas_model::layout_tree::TileId;
+
+        let mut tabs: Vec<_> = (1..=5).map(|id| TabBarItem {
+            pane_id: TileId(id),
+            label: String::new(),
+            is_active: id == 1,
+            tag_rgb: None,
+            closing: None,
+        }).collect();
+        tabs[2].closing = Some(std::time::Instant::now());
+        let geom = |x, w, visible| TabGeom {
+            tab: Slot::new(x, 4.0, w, 26.0),
+            label: Slot::default(),
+            close: Slot::default(),
+            tag: None,
+            visible,
+            opacity: 1.0,
+        };
+        // Final animated slots in a moved pane, with an ancestor clipping both
+        // edges. These exact rectangles also protect tabs from native caption
+        // dragging and give them priority over the root split zones.
+        let geoms = vec![
+            geom(20.0, 90.0, true),
+            geom(10.0, 70.0, false),
+            geom(60.0, 60.0, true),
+            geom(160.0, 40.0, true),
+            geom(120.0, 80.0, true),
+        ];
+        let bounds = Bounds::new(point(px(400.0), px(120.0)), size(px(200.0), px(34.0)));
+        let mask = Bounds::new(point(px(450.0), px(120.0)), size(px(100.0), px(34.0)));
+        let targets = tab_hover_targets(&tabs, &geoms, bounds, mask);
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].id, DragHoverId::Tab(TileId(1)));
+        assert_eq!(targets[0].bounds, Bounds::new(point(px(450.0), px(124.0)), size(px(60.0), px(26.0))));
+        assert_eq!(targets[1].id, DragHoverId::Tab(TileId(5)));
+        assert_eq!(targets[1].bounds, Bounds::new(point(px(520.0), px(124.0)), size(px(30.0), px(26.0))));
+        assert!(matches!(targets[1].command, DragHoverCommand::Process(Action::FocusTab(TileId(5)))));
+        assert!(targets.iter().all(|target| target.drop_command.is_none()));
+    }
+
+    #[test]
+    fn drop_boundaries_use_compressed_slots_and_preserve_hidden_tab_indices() {
+        // A narrow pane paints only children 0 and 3, each compressed to 60 px.
+        // Reordering must return tree indices, rather than natural-width slots
+        // or indices in the visible subset.
+        let geometry = TabDropGeometry {
+            count: 4,
+            slots: vec![
+                (0, Slot::new(8.0, 0.0, 60.0, 26.0)),
+                (3, Slot::new(74.0, 0.0, 60.0, 26.0)),
+            ],
+        };
+        assert_eq!(geometry.boundary_at(20.0), 0);
+        assert_eq!(geometry.boundary_at(80.0), 3);
+        assert_eq!(geometry.boundary_at(120.0), 4);
     }
 }

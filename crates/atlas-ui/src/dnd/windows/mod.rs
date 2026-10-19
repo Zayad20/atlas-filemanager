@@ -18,20 +18,21 @@ pub mod data_object;
 pub mod drop_source;
 pub mod drop_target;
 pub mod ole_clipboard;
+mod drop_description;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::System::Ole::IDropTarget;
+use windows::Win32::System::DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener};
 use windows::Win32::System::Ole::{
     DoDragDrop, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_MOVE, DROPEFFECT_NONE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, GetCursorPos, PostMessageW, SetWindowLongPtrW, GWLP_WNDPROC, WM_LBUTTONUP,
-    WM_USER,
+    WM_USER, WM_CLIPBOARDUPDATE,
 };
 
 use crate::dnd::DropZones;
@@ -41,6 +42,9 @@ use drop_target::DropPayload;
 
 /// Events pushed by the OLE layer and drained by `App::drain_dnd_queue`.
 pub enum DndEvent {
+    DevicesChanged,
+    ClipboardChanged { cut_paths: Vec<PathBuf> },
+    TabTransferAccepted { tab: atlas_model::layout_tree::TileId },
     /// Current drag cursor position over the Atlas window.
     DragOver { x: f32, y: f32 },
     /// The external/native drag left the Atlas window.
@@ -72,8 +76,11 @@ pub type DndQueue = Arc<Mutex<Vec<DndEvent>>>;
 /// Custom Win32 message: start an OLE drag. Posted by `trigger_drag()`.
 const WM_ATLAS_START_DRAG: u32 = WM_USER + 0x0D1A;
 
-/// Original WndProc before we replaced it; chained from `atlas_wndproc`.
-static ORIGINAL_WNDPROC: AtomicIsize = AtomicIsize::new(0);
+// Per-window WndProc and queue: multiple Atlas windows must never share a hook.
+thread_local! {
+    static WINDOW_HOOKS: std::cell::RefCell<std::collections::HashMap<isize, (isize, DndQueue)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
 
 struct PendingDrag {
     hwnd: isize,
@@ -99,6 +106,21 @@ unsafe extern "system" fn atlas_wndproc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    let hook = WINDOW_HOOKS.with(|hooks| hooks.borrow().get(&(hwnd.0 as isize)).cloned());
+    // Device broadcasts reach this top-level HWND. Queue work after WndProc returns.
+    if msg == 0x0219 && matches!(wparam.0, 0x0007 | 0x8000 | 0x8004) {
+        if let Some((_, queue)) = &hook {
+            push_event(Some(queue), DndEvent::DevicesChanged);
+        }
+    }
+    if msg == WM_CLIPBOARDUPDATE {
+        if let Some((_, queue)) = &hook {
+            let cut_paths = ole_clipboard::get_clipboard_files()
+                .filter(|contents| contents.preferred_move)
+                .map(|contents| contents.paths).unwrap_or_default();
+            push_event(Some(queue), DndEvent::ClipboardChanged { cut_paths });
+        }
+    }
     if msg == WM_ATLAS_START_DRAG {
         let pending = PENDING_DRAG.with(|p| p.take());
         if let Some(pd) = pending {
@@ -119,7 +141,7 @@ unsafe extern "system" fn atlas_wndproc(
         }
         return LRESULT(0);
     }
-    let orig = ORIGINAL_WNDPROC.load(Ordering::Relaxed);
+    let orig = hook.map(|(original, _)| original).unwrap_or(0);
     if orig != 0 {
         // SAFETY: orig is a valid WNDPROC stored during setup_dnd.
         // SAFETY: orig is the valid WNDPROC isize returned by SetWindowLongPtrW.
@@ -150,10 +172,13 @@ unsafe fn inject_mouse_up(hwnd: HWND) {
 }
 
 /// Install the Atlas WndProc hook for `hwnd`. Called once from `setup_dnd`.
-fn install_wndproc_hook(hwnd: HWND) {
+fn install_wndproc_hook(hwnd: HWND, queue: DndQueue) {
     unsafe {
         let orig = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, atlas_wndproc as *const () as isize);
-        ORIGINAL_WNDPROC.store(orig, Ordering::Relaxed);
+        WINDOW_HOOKS.with(|hooks| hooks.borrow_mut().insert(hwnd.0 as isize, (orig, queue)));
+        if let Err(error) = AddClipboardFormatListener(hwnd) {
+            tracing::warn!(?error, "cannot listen for shell clipboard changes");
+        }
     }
 }
 
@@ -210,6 +235,7 @@ pub fn trigger_drag_copy_only(hwnd_raw: isize, paths: Vec<PathBuf>) {
 
 /// Per-window drag-and-drop state shared between the COM vtable and the App.
 pub struct DndState {
+    hwnd: isize,
     /// Drop target COM object — kept alive here (COM refcount).
     #[allow(dead_code)]
     target: IDropTarget,
@@ -217,6 +243,13 @@ pub struct DndState {
     pub zones: Arc<Mutex<DropZones>>,
     /// Events pushed by the OLE layer; drained by `App` each tick.
     pub action_queue: DndQueue,
+}
+
+impl Drop for DndState {
+    fn drop(&mut self) {
+        unsafe { let _ = RemoveClipboardFormatListener(HWND(self.hwnd as *mut _)); }
+        // The original procedure remains installed until GPUI destroys the HWND.
+    }
 }
 
 /// Register Atlas as the OLE drop target for `hwnd`, replacing gpui's default.
@@ -238,8 +271,13 @@ pub fn setup_dnd(hwnd_raw: isize, scale_factor: f32) -> Option<DndState> {
         action_queue.clone(),
     ) {
         Ok(target) => {
-            install_wndproc_hook(hwnd);
+            install_wndproc_hook(hwnd, action_queue.clone());
+            let cut_paths = ole_clipboard::get_clipboard_files()
+                .filter(|contents| contents.preferred_move)
+                .map(|contents| contents.paths).unwrap_or_default();
+            push_event(Some(&action_queue), DndEvent::ClipboardChanged { cut_paths });
             Some(DndState {
+                hwnd: hwnd_raw,
                 target,
                 zones,
                 action_queue,
@@ -270,7 +308,6 @@ pub fn setup_dnd(hwnd_raw: isize, scale_factor: f32) -> Option<DndState> {
 /// - WM_PAINT is serviced by DirectX/gpui's existing compositor; no re-entrant
 ///   `&mut App` access occurs (render is a separate path from event dispatch).
 pub fn start_drag_real(hwnd_raw: isize, paths: &[PathBuf], allowed: DROPEFFECT) -> DROPEFFECT {
-    let _ = hwnd_raw; // HWND not needed for DoDragDrop itself (IDropSource has no HWND field)
 
     let performed = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let Some(data_obj) = AtlasDataObject::new(paths, allowed, performed.clone()) else {
@@ -278,6 +315,14 @@ pub fn start_drag_real(hwnd_raw: isize, paths: &[PathBuf], allowed: DROPEFFECT) 
         return DROPEFFECT_NONE;
     };
     let source: windows::Win32::System::Ole::IDropSource = AtlasDropSource.into();
+    unsafe {
+        use windows::Win32::UI::Shell::{IDragSourceHelper2, CLSID_DragDropHelper, DSH_ALLOWDROPDESCRIPTIONTEXT};
+        if let Ok(helper) = windows::Win32::System::Com::CoCreateInstance::<_, IDragSourceHelper2>(
+            &CLSID_DragDropHelper, None, windows::Win32::System::Com::CLSCTX_INPROC_SERVER) {
+            let _ = helper.SetFlags(DSH_ALLOWDROPDESCRIPTIONTEXT.0 as u32);
+            let _ = helper.InitializeFromWindow(Some(HWND(hwnd_raw as *mut _)), None, &data_obj);
+        }
+    }
 
     let mut effect = DROPEFFECT_NONE;
     let hr = unsafe { DoDragDrop(&data_obj, &source, allowed, &mut effect) };
@@ -306,6 +351,7 @@ fn push_event(queue: Option<&DndQueue>, event: DndEvent) {
     if let Some(q) = queue {
         if let Ok(mut q) = q.lock() {
             q.push(event);
+            crate::ui_wake::wake();
         }
     }
 }

@@ -13,6 +13,10 @@ impl App {
             .tab_data_for(tile)
             .and_then(|td| td.location.fs_dir().map(|p| p.to_path_buf()));
         if let Some(dir) = dir {
+            if let Some(tab) = self.state.tab_states.get_mut(&tile) {
+                tab.path_edit.editing = false;
+                tab.path_edit.focus = false;
+            }
             self.goto_prefill = Some(format!("{}{}", dir.display(), std::path::MAIN_SEPARATOR));
             self.process_actions(vec![Action::OpenGotoBar]);
         } else {
@@ -55,6 +59,11 @@ impl App {
                 Action::NavigateForward(tab_id) => self.navigate_forward(tab_id),
                 Action::NavigateUp(tab_id) => self.navigate_up(tab_id),
                 Action::EditLocation(tab_id) => {
+                    if self.tab_data_for(tab_id).and_then(|pane| pane.location.fs_dir()).is_some() {
+                        self.activate_tab(tab_id);
+                        self.open_location_finder_or_editor();
+                        continue;
+                    }
                     let path = self
                         .tab_data_for(tab_id)
                         .map(|pane| pane.location.display_path());
@@ -78,6 +87,8 @@ impl App {
                 }
                 Action::NewTabWithPath { pane, path } => self.new_tab_with_path(pane, path),
                 Action::CloseTab(tab_id) => self.close_tab(tab_id),
+                Action::ReopenClosedTab => self.reopen_closed_tab(),
+                Action::DetachFocusedTab => self.detach_focused_tab(),
                 Action::CloseFocusedTab => {
                     let tile = self.state.focused_tile;
                     self.close_tab(tile);
@@ -362,15 +373,20 @@ impl App {
                     self.refresh_search_in_place(tile);
                 }
                 Action::ToggleFoldersFirst(tile) => {
+                    if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get(tile) {
+                        self.process_actions([Action::SetFolderOrder(tile, pane.folder_order.next())]);
+                    }
+                }
+                Action::SetFolderOrder(tile, order) => {
                     let sort = match self.state.pane_tree.tiles.get_mut(tile) {
                         Some(Tile::Pane(p)) => {
-                            p.folders_first = !p.folders_first;
-                            Some((p.sort_col.clone(), p.sort_dir.clone(), p.folders_first))
+                            p.folder_order = order;
+                            Some((p.sort_col.clone(), p.sort_dir.clone(), p.folder_order))
                         }
                         _ => None,
                     };
-                    if let Some((col, dir, folders_first)) = sort {
-                        self.resort_entries_in_place(tile, &col, &dir, folders_first);
+                    if let Some((col, dir, folder_order)) = sort {
+                        self.resort_entries_in_place(tile, &col, &dir, folder_order);
                     }
                 }
                 Action::ToggleShowFiles(tile) | Action::ToggleShowFolders(tile) => {
@@ -394,12 +410,13 @@ impl App {
                     if let Some((show_files, show_folders)) = toggled {
                         if let Some(ts) = self.state.tab_states.get_mut(&tile) {
                             ts.set_visibility(show_files, show_folders);
+                            ts.refresh_miller_visibility();
                             // Drop selection entries that just became invisible so
                             // keyboard/file ops can't act on hidden items.
                             let entries = &ts.entries;
                             let kind_visible = |i: usize| {
                                 entries.get(i).is_some_and(|e| {
-                                    if matches!(e.kind, FileKind::Dir) {
+                                    if matches!(e.kind(), FileKind::Dir) {
                                         show_folders
                                     } else {
                                         show_files
@@ -461,12 +478,12 @@ impl App {
                 }
                 Action::ToggleTreeExpand(path) => {
                     let tile = self.state.focused_tile;
-                    let needs_fetch = if let Some(ts) = self.state.tab_states.get_mut(&tile) {
-                        ts.tree.toggle_expand(&path);
+                    // Rows below the folder shift: keep the selection on its files
+                    // (a collapsed child hands it to the folder) and the view still.
+                    self.mutate_tab(tile, |ts| ts.tree.toggle_expand(&path));
+                    let needs_fetch = self.state.tab_states.get(&tile).is_some_and(|ts| {
                         !ts.tree.children.contains_key(&path) && ts.tree.is_expanded(&path)
-                    } else {
-                        false
-                    };
+                    });
                     if needs_fetch {
                         self.spawn_list_tree(tile, path);
                     }
@@ -493,8 +510,8 @@ impl App {
                     shift,
                     ctrl,
                 } => {
+                    let visible = self.flat_visible_indices(tile);
                     if let Some(ts) = self.state.tab_states.get_mut(&tile) {
-                        let visible: Vec<usize> = ts.visible_indices().to_vec();
                         ts.selection.select(idx, &visible, shift, ctrl);
                     }
                     self.state.focused_tile = tile;
@@ -539,8 +556,8 @@ impl App {
                                 .iter()
                                 .filter_map(|&idx| {
                                     ts.entries.get(idx).and_then(|entry| {
-                                        matches!(entry.kind, FileKind::Dir)
-                                            .then(|| entry.path.clone())
+                                        matches!(entry.kind(), FileKind::Dir)
+                                            .then(|| entry.path())
                                     })
                                 })
                                 .collect()
@@ -556,7 +573,7 @@ impl App {
                         .tab_states
                         .get(&tile)
                         .and_then(|ts| ts.entries.get(idx))
-                        .map(|e| (e.path.clone(), e.kind.clone(), e.archive_root.clone()));
+                        .map(|e| (e.path(), e.kind().clone(), e.archive_root().clone()));
                     if let Some((path, kind, archive_root)) = entry {
                         if let Some(archive) = archive_root {
                             // Virtual entry inside an archive.
@@ -601,21 +618,54 @@ impl App {
                 }
                 Action::SelectAll => {
                     let tile = self.state.focused_tile;
+                    let flat_visible = self.flat_visible_indices(tile);
                     let is_miller = self
                         .tab_data_for(tile)
                         .is_some_and(|tab| tab.view_mode == ViewMode::Miller);
                     if let Some(ts) = self.state.active_tab_state_mut() {
                         if is_miller {
+                            let visible = ts.miller_visible_indices(ts.miller.focused);
                             if let Some(col) = ts.miller.columns.get_mut(ts.miller.focused) {
-                                col.selection.selected = (0..col.entries.len()).collect();
+                                col.selection.selected = visible.iter().copied().collect();
                                 col.selection.keyboard_cursor =
-                                    col.selection.selected.iter().next().copied();
+                                    visible.first().copied();
                             }
                             continue;
                         }
-                        ts.selection.selected = ts.visible_indices().iter().copied().collect();
+                        ts.selection.selected = flat_visible.iter().copied().collect();
                         ts.selection.keyboard_cursor = ts.selection.selected.iter().next().copied();
                     }
+                }
+                Action::SetGroupBy(mode) => {
+                    let tile = self.state.focused_tile;
+                    if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tile) {
+                        pane.group_by = mode;
+                        pane.collapsed_groups.clear();
+                        if mode != atlas_model::tab::GroupBy::None && !matches!(pane.view_mode, ViewMode::Details | ViewMode::List) {
+                            pane.view_mode = ViewMode::Details;
+                        }
+                    }
+                    if let Some(ts) = self.state.tab_states.get_mut(&tile) {
+                        ts.set_grouping(mode, Default::default());
+                        ts.selection.scroll_to_selected = true;
+                    }
+                    self.dirty_panes.insert(tile);
+                }
+                Action::ToggleGroup { tab, id } => {
+                    let grouping = if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab) {
+                        if !pane.collapsed_groups.remove(&id) {
+                            pane.collapsed_groups.insert(id);
+                        }
+                        Some((pane.group_by, pane.collapsed_groups.clone()))
+                    } else { None };
+                    if let Some((mode, collapsed)) = grouping {
+                        if let Some(ts) = self.state.tab_states.get_mut(&tab) {
+                            ts.set_grouping(mode, collapsed);
+                            let visible = ts.visible_indices_shared();
+                            ts.selection.retain_visible(&visible);
+                        }
+                    }
+                    self.dirty_panes.insert(tab);
                 }
                 Action::SetSort { col, dir } => {
                     let mut folder_pref_write = None;
@@ -631,6 +681,8 @@ impl App {
                             folder_pref_write = Some((
                                 path.clone(),
                                 atlas_model::profiles::FolderViewPref {
+                        recursive: false,
+                        columns: None,
                                     view_mode: pane.view_mode.clone(),
                                     sort_col: sort_col.clone(),
                                     sort_dir: sort_dir.clone(),
@@ -649,16 +701,11 @@ impl App {
                     self.spawn_open_files(paths);
                 }
                 Action::CopyPathToClipboard(path) => {
-                    let text = path.to_string_lossy().replace('\0', "");
-                    if let Ok(mut cb) = arboard::Clipboard::new() {
-                        let _ = cb.set_text(text.clone());
-                        #[cfg(target_os = "linux")]
-                        {
-                            use arboard::{LinuxClipboardKind, SetExtLinux};
-                            let _ = cb.set().clipboard(LinuxClipboardKind::Primary).text(text);
-                        }
-                    }
+                    self.copy_paths_as_text(&[path]);
                 }
+                Action::CopyPathsToClipboard(paths) => self.copy_paths_as_text(&paths),
+                #[cfg(windows)]
+                Action::PasteShortcutFocused => self.paste_shortcuts_focused(),
                 Action::Copy(paths) => {
                     #[cfg(feature = "provider-host")]
                     if let Some((remote_id, _)) = self.focused_remote_tab() {
@@ -719,9 +766,9 @@ impl App {
                                     .state
                                     .tab_states
                                     .get(&tile)
-                                    .and_then(|ts| ts.entries.iter().find(|e| e.path == *p))
+                                    .and_then(|ts| ts.entries.iter().find(|e| e.path() == *p))
                                     .is_some_and(|e| {
-                                        matches!(e.kind, atlas_model::file_entry::FileKind::Dir)
+                                        matches!(e.kind(), atlas_model::file_entry::FileKind::Dir)
                                     });
                                 (path_str, is_dir)
                             })
@@ -786,7 +833,7 @@ impl App {
                             .state
                             .tab_states
                             .get(&tile)
-                            .map(|ts| ts.entries.iter().map(|e| e.name.clone()).collect())
+                            .map(|ts| ts.entries.iter().map(|e| e.name.to_string()).collect())
                             .unwrap_or_default();
                         let name = if !existing_names.contains(&*base_name) {
                             base_name.to_string()
@@ -869,7 +916,7 @@ impl App {
                             .state
                             .tab_states
                             .get(&tile)
-                            .map(|ts| ts.entries.iter().map(|e| e.name.clone()).collect())
+                            .map(|ts| ts.entries.iter().map(|e| e.name.to_string()).collect())
                             .unwrap_or_default();
                         let name = if !existing_names.contains(&*base_name) {
                             base_name.to_string()
@@ -926,7 +973,7 @@ impl App {
                         let idx = selection
                             .keyboard_cursor
                             .or_else(|| selection.selected.iter().copied().next())?;
-                        entries.get(idx).map(|entry| entry.path.clone())
+                        entries.get(idx).map(|entry| entry.path())
                     });
                     if let Some(path) = path {
                         self.pending_rename = Some((tile, path, false));
@@ -945,13 +992,13 @@ impl App {
                             self.state.tab_states.get_mut(&focused).and_then(|ts| {
                                 if let Some(idx) = ts.selection.keyboard_cursor {
                                     if let Some(entry) = ts.entries.get(idx) {
-                                        return Some(entry.path.clone());
+                                        return Some(entry.path());
                                     }
                                 }
                                 if ts.search.active {
                                     if let Some(&idx) = ts.visible_indices().first() {
                                         if let Some(entry) = ts.entries.get(idx) {
-                                            return Some(entry.path.clone());
+                                            return Some(entry.path());
                                         }
                                     }
                                 }
@@ -1016,14 +1063,14 @@ impl App {
                             // 1. From selected
                             let from_selected = ts.selection.selected.iter().find_map(|&idx| {
                                 ts.entries.get(idx).map(|entry| {
-                                    if entry.kind == FileKind::Dir {
-                                        entry.path.clone()
+                                    if entry.kind() == FileKind::Dir {
+                                        entry.path()
                                     } else {
                                         entry
-                                            .path
+                                            .path()
                                             .parent()
                                             .map(std::path::Path::to_path_buf)
-                                            .unwrap_or_else(|| entry.path.clone())
+                                            .unwrap_or_else(|| entry.path())
                                     }
                                 })
                             });
@@ -1033,14 +1080,14 @@ impl App {
                             // 2. From keyboard cursor
                             if let Some(idx) = ts.selection.keyboard_cursor {
                                 if let Some(entry) = ts.entries.get(idx) {
-                                    return Some(if entry.kind == FileKind::Dir {
-                                        entry.path.clone()
+                                    return Some(if entry.kind() == FileKind::Dir {
+                                        entry.path()
                                     } else {
                                         entry
-                                            .path
+                                            .path()
                                             .parent()
                                             .map(std::path::Path::to_path_buf)
-                                            .unwrap_or_else(|| entry.path.clone())
+                                            .unwrap_or_else(|| entry.path())
                                     });
                                 }
                             }
@@ -1048,14 +1095,14 @@ impl App {
                             if ts.search.active {
                                 if let Some(&idx) = ts.visible_indices().first() {
                                     if let Some(entry) = ts.entries.get(idx) {
-                                        return Some(if entry.kind == FileKind::Dir {
-                                            entry.path.clone()
+                                        return Some(if entry.kind() == FileKind::Dir {
+                                            entry.path()
                                         } else {
                                             entry
-                                                .path
+                                                .path()
                                                 .parent()
                                                 .map(std::path::Path::to_path_buf)
-                                                .unwrap_or_else(|| entry.path.clone())
+                                                .unwrap_or_else(|| entry.path())
                                         });
                                     }
                                 }
@@ -1141,7 +1188,7 @@ impl App {
                             ts.selection
                                 .selected
                                 .iter()
-                                .filter_map(|&i| ts.entries.get(i).map(|e| e.path.clone()))
+                                .filter_map(|&i| ts.entries.get(i).map(|e| e.path()))
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -1182,14 +1229,16 @@ impl App {
                 }
                 Action::InvertSelection => {
                     let tile = self.state.focused_tile;
+                    let flat_visible = self.flat_visible_indices(tile);
                     let is_miller = self
                         .tab_data_for(tile)
                         .is_some_and(|tab| tab.view_mode == ViewMode::Miller);
                     if let Some(ts) = self.state.active_tab_state_mut() {
                         if is_miller {
+                            let visible = ts.miller_visible_indices(ts.miller.focused);
                             if let Some(col) = ts.miller.columns.get_mut(ts.miller.focused) {
                                 let all: std::collections::HashSet<usize> =
-                                    (0..col.entries.len()).collect();
+                                    visible.iter().copied().collect();
                                 col.selection.selected =
                                     all.difference(&col.selection.selected).copied().collect();
                             }
@@ -1198,7 +1247,7 @@ impl App {
                         // Invert over the *visible* set (SelectAll already does),
                         // otherwise an active filter selects hidden entries.
                         let visible: std::collections::HashSet<usize> =
-                            ts.visible_indices().iter().copied().collect();
+                            flat_visible.iter().copied().collect();
                         ts.selection.selected = visible
                             .difference(&ts.selection.selected)
                             .copied()
@@ -1237,9 +1286,10 @@ impl App {
                         .state
                         .tab_states
                         .get(&tile)
+                        .filter(|state| state.miller_visible_indices(column).contains(&idx))
                         .and_then(|ts| ts.miller.columns.get(column))
                         .and_then(|c| c.entries.get(idx))
-                        .map(|e| (e.path.clone(), e.kind.clone()));
+                        .map(|e| (e.path(), e.kind().clone()));
                     if let Some((path, kind)) = info {
                         if kind == FileKind::Dir {
                             self.miller_select(tile, column, idx, false, false);
@@ -1248,8 +1298,12 @@ impl App {
                         }
                     }
                 }
+                Action::MillerToggleSelect { tile, column, idx } => {
+                    self.miller_select(tile, column, idx, false, true);
+                }
                 Action::FocusNextPane => {
-                    let panes = self.state.all_pane_tile_ids();
+                    let panes: Vec<_> = self.state.pane_tree.visible_panes().into_iter()
+                        .filter(|id| !self.pane_closing.contains_key(id) && !self.tab_closing.contains_key(id)).collect();
                     if panes.len() > 1 {
                         let cur = self.state.focused_tile;
                         let next = panes
@@ -1258,9 +1312,16 @@ impl App {
                             .nth(1)
                             .copied()
                             .unwrap_or(panes[0]);
-                        self.state.focused_tile = next;
+                        self.activate_tab(next);
                     }
                 }
+                Action::SelectLeftPanel => self.select_spatial_panel(crate::ui::tab_reorder::PanelDirection::Left),
+                Action::SelectRightPanel => self.select_spatial_panel(crate::ui::tab_reorder::PanelDirection::Right),
+                Action::SelectPanelAbove => self.select_spatial_panel(crate::ui::tab_reorder::PanelDirection::Above),
+                Action::SelectPanelBelow => self.select_spatial_panel(crate::ui::tab_reorder::PanelDirection::Below),
+                Action::EvenPanelSiblings => self.even_panels(false),
+                Action::EvenAllPanes => self.even_panels(true),
+                Action::ToggleFolderViewRecursive => self.toggle_folder_view_recursive(),
                 Action::SetViewMode(mode) => {
                     let tab = self.state.focused_tile;
                     self.set_pane_view_mode(tab, mode);
@@ -1331,8 +1392,9 @@ impl App {
                     if let Some(existing) = bookmarks.iter_mut().find(|b| b.path == path) {
                         existing.name = name;
                     } else {
-                        bookmarks.push(atlas_model::profiles::Bookmark { name, path });
+                        bookmarks.push(atlas_model::profiles::Bookmark::new(name, path));
                     }
+                    atlas_core::util::config::refresh_bookmark_volumes(&mut self.state.profiles);
                     atlas_core::util::config::save_profiles(&self.state.profiles);
                 }
                 Action::CreateTag {
@@ -1404,10 +1466,14 @@ impl App {
                         self.toast_error(rust_i18n::t!("tags_paths_blocked").into_owned());
                         continue;
                     }
-                    self.state.tag_cache.assign_local(tag, &paths);
-                    let _ = self
+                    self.operation_feedback.borrow_mut().begin_tag(tag, &paths);
+                    if self
                         .tag_db_tx
-                        .send(atlas_core::fs::tag_db::TagDbCmd::AssignTag { tag, paths });
+                        .send(atlas_core::fs::tag_db::TagDbCmd::AssignTag { tag, paths: paths.clone() }).is_err() {
+                        self.operation_feedback.borrow_mut().finish_tag(tag, &paths);
+                        for path in &paths { self.dropzone_pending_tags.remove(path); }
+                        self.toast_error(rust_i18n::t!("tags_assignment_failed").into_owned());
+                    }
                     let _ = self
                         .tag_db_tx
                         .send(atlas_core::fs::tag_db::TagDbCmd::QueryPathsForTag(tag));
@@ -1543,6 +1609,17 @@ fn unique_child_name(dir: &std::path::Path, base: &str) -> String {
 }
 
 impl App {
+    fn copy_paths_as_text(&mut self, paths: &[PathBuf]) {
+        if paths.is_empty() { return; }
+        let text = atlas_core::util::display::clipboard_path_text(paths);
+        if let Ok(mut cb) = arboard::Clipboard::new() {
+            let _ = cb.set_text(text.clone());
+            #[cfg(target_os = "linux")]
+            { use arboard::{LinuxClipboardKind, SetExtLinux};
+                let _ = cb.set().clipboard(LinuxClipboardKind::Primary).text(text); }
+        }
+    }
+
     pub(crate) fn copy_focused(&mut self) {
         if self
             .state
@@ -1597,6 +1674,63 @@ impl App {
         }
     }
 
+    pub(crate) fn detach_focused_tab(&mut self) {
+        #[cfg(windows)]
+        if let Some(data) = self.tab_data_for(self.state.focused_tile).cloned() {
+            self.transfer_tab_to_window(data, true);
+        }
+        #[cfg(not(windows))]
+        self.toast_error("Tab detach through OLE is available on Windows".to_owned());
+    }
+
+    #[cfg(windows)]
+    fn transfer_tab_to_window(&mut self, data: atlas_model::pane::TabData, close_source: bool) {
+        #[cfg(windows)]
+        {
+            let tab = self.state.focused_tile;
+            let Some(queue) = self.dnd.as_ref().map(|dnd| dnd.action_queue.clone()) else { return };
+            let token = format!("{}-{}", std::process::id(), std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+            use crate::dnd::windows::{ole_clipboard, DndEvent};
+            let result = (|| -> Result<(), String> {
+                let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+                let same_location = self.tab_data_for(tab).is_some_and(|current| current.location == data.location);
+                let runtime = self.state.tab_states.get(&tab);
+                let offset = same_location.then(|| self.scroll_handles.get(&tab)).flatten().map(|handle| handle.0.borrow().base_handle.offset())
+                    .unwrap_or_else(|| gpui::point(gpui::px(0.0), gpui::px(0.0)));
+                let miller_offsets: Vec<_> = runtime.into_iter().flat_map(|state| state.miller.columns.iter().enumerate())
+                    .map(|(index, _)| self.miller_scroll_handles.get(&(tab, index))
+                        .map(|handle| { let offset = handle.0.borrow().base_handle.offset(); [f32::from(offset.x), f32::from(offset.y)] })
+                        .unwrap_or_default()).collect();
+                ole_clipboard::publish_tab_transfer(&token, &data, runtime,
+                    [f32::from(offset.x), f32::from(offset.y)], &miller_offsets, same_location,
+                    ole_clipboard::ViewFilters { types: self.type_filters.get(&tab).cloned().unwrap_or_default(),
+                        sizes: self.size_filters.get(&tab).cloned().unwrap_or_default(),
+                        show_hidden: Some(self.state.settings.show_hidden) })?;
+                let event = ole_clipboard::prepare_transfer_ack(&token)?;
+                let mut command = std::process::Command::new(executable);
+                command.env("ATLAS_TAB_TRANSFER_TOKEN", &token);
+                command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x00000008 | 0x00000200);
+                let spawned = command.spawn().map_err(|error| error.to_string());
+                let launched = spawned.is_ok();
+                std::thread::spawn(move || {
+                    let accepted = ole_clipboard::wait_transfer_ack(event);
+                    if launched {
+                        if let Ok(mut events) = queue.lock() {
+                            if accepted && close_source { events.push(DndEvent::TabTransferAccepted { tab }); }
+                            else if !accepted { events.push(DndEvent::Error("Tab transfer was not acknowledged; the original tab remains open".into())); }
+                        }
+                        crate::ui_wake::wake();
+                    }
+                });
+                spawned.map(|_| ())
+            })();
+            if let Err(error) = result { self.toast_error(error); }
+        }
+    }
+
     pub(crate) fn spawn_new_window(&mut self, target_dir: Option<PathBuf>) {
         let target_dir = target_dir
             .map(|p| {
@@ -1607,6 +1741,14 @@ impl App {
                 }
             })
             .or_else(dirs::home_dir);
+        #[cfg(windows)]
+        {
+            if let Some(mut data) = self.tab_data_for(self.state.focused_tile).cloned() {
+                if let Some(path) = target_dir { data.location = atlas_model::location::Location::Directory(path); }
+                self.transfer_tab_to_window(data, false);
+                return;
+            }
+        }
         let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("atlas"));
         let mut cmd = std::process::Command::new(&exe);
         if let Some(ref dir) = target_dir {

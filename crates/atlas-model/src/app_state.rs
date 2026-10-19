@@ -8,10 +8,23 @@ use crate::file_entry::FileEntry;
 use crate::pane::{TabData, TabId};
 use crate::preview_cache::PreviewResult;
 use crate::profiles::{ProfileManager, ProfileUiState};
-use crate::settings::{Settings, ViewMode};
+use crate::settings::Settings;
 use crate::tab::{LoadState, TabState};
 
+/// A metadata-ready directory delta, produced off the UI thread.
+#[derive(Debug, Clone)]
+pub enum FsChange {
+    Upsert(FileEntry),
+    Remove(PathBuf),
+    Rename { from: PathBuf, entry: FileEntry },
+}
+
 pub enum BgResult {
+    WatcherDisabled(PathBuf),
+    VolumeSnapshot(Vec<(PathBuf, u32)>),
+    PreviewDelayElapsed { tab: TabId, request: crate::preview_cache::PreviewRequest, generation: u64 },
+    DirListTiming { tab: crate::pane::TabId, op_id: u64, elapsed: std::time::Duration },
+    DirListExclusions { tab: TabId, op_id: u64, has_excluded_items: bool },
     DirListPreview {
         tab: TabId,
         op_id: u64,
@@ -32,11 +45,17 @@ pub enum BgResult {
         location: crate::location::Location,
         op_id: u64,
         entries: Vec<FileEntry>,
+        has_excluded_items: bool,
     },
     TreeListed {
         tab: TabId,
         path: PathBuf,
         entries: Vec<FileEntry>,
+    },
+    PreviewMetadataReady {
+        tab: TabId,
+        path: PathBuf,
+        properties: Vec<(String, String)>,
     },
     PreviewReady {
         tab: TabId,
@@ -100,6 +119,8 @@ pub enum BgResult {
         counts: crate::tab::VisibleCounts,
     },
     FsEvent(std::path::PathBuf),
+    /// An ordered batch; `FsEvent` is reserved for overflow/recovery rescans.
+    FsChanges { directory: PathBuf, changes: Vec<FsChange> },
     OpProgress {
         id: u64,
         done: u64,
@@ -116,6 +137,9 @@ pub enum BgResult {
     },
     /// Only paths whose delete/trash operation actually succeeded.
     PathsDeleted(Vec<PathBuf>),
+    /// Successfully restored destinations; failures arrive separately via OpComplete.
+    PathsRestored(Vec<PathBuf>),
+    RecycleBinStatus(Option<bool>),
     /// A paste target wrote `Performed DropEffect` onto our clipboard data
     /// object (e.g. Explorer pasting an Atlas cut). `effect` is the raw
     /// `DROPEFFECT` value: 0 = optimized move (target moved the files itself),
@@ -136,6 +160,11 @@ pub enum BgResult {
     },
     /// Full tag-definition list pushed by the tag-db worker after any CRUD.
     TagDefinitions(Vec<crate::tag_cache::TagDef>),
+    TagAssignmentComplete {
+        tag: crate::tag_cache::TagId,
+        paths: Vec<PathBuf>,
+        result: Result<(), String>,
+    },
     /// Cached tag associations for a set of queried paths.
     TagsForPaths {
         tags: HashMap<PathBuf, Vec<crate::tag_cache::TagId>>,
@@ -257,10 +286,20 @@ pub enum BgResult {
     },
 }
 
+/// A recently closed tab retains every persisted option and its close time.
+#[derive(Clone)]
+pub struct ClosedTab {
+    pub data: TabData,
+    pub closed_at: std::time::SystemTime,
+}
+
 pub struct AppState {
     pub pane_tree: Tree<TabData>,
     /// Active Pane leaf `TileId` (the individual tab being viewed)
     pub focused_tile: TileId,
+    pub closed_tabs: std::collections::VecDeque<ClosedTab>,
+    /// Global shell cut paths, including files cut in Explorer.
+    pub system_cut_paths: std::collections::HashSet<PathBuf>,
     /// Runtime per-tab state, keyed by Pane leaf `TileId`
     pub tab_states: HashMap<TileId, TabState>,
     pub settings: Settings,
@@ -287,6 +326,16 @@ pub struct StagedDrop {
 }
 
 impl AppState {
+    pub fn remember_closed_tab(&mut self, data: TabData) {
+        if self.closed_tabs.len() == 32 {
+            self.closed_tabs.pop_front();
+        }
+        self.closed_tabs.push_back(ClosedTab {
+            data,
+            closed_at: std::time::SystemTime::now(),
+        });
+    }
+
     pub fn container_contains_pane(&self, container_id: TileId, pane_id: TileId) -> bool {
         if container_id == pane_id {
             return true;
@@ -335,21 +384,9 @@ impl AppState {
             _ => return None,
         };
         let ts = self.tab_states.get(&tab)?;
-        if view == ViewMode::Miller {
-            let col = ts.miller.columns.get(ts.miller.focused)?;
-            return col
-                .entries
-                .get(col.primary_selected()?)
-                .map(|entry| entry_to_preview_request(entry));
-        }
-
-        let mut selected: Vec<usize> = ts.selection.selected.iter().copied().collect();
-        selected.sort_unstable();
-        if selected.len() == 1 {
-            return ts
-                .entries
-                .get(selected[0])
-                .map(|entry| entry_to_preview_request(entry));
+        let selected = ts.selected_entries(&view);
+        if let [entry] = selected.as_slice() {
+            return Some(entry_to_preview_request(entry));
         }
         if selected.is_empty() {
             return None;
@@ -357,14 +394,11 @@ impl AppState {
 
         let mut hasher = DefaultHasher::new();
         let mut paths = Vec::with_capacity(MULTI_PREVIEW_LIMIT);
-        for idx in selected {
-            let Some(entry) = ts.entries.get(idx) else {
-                continue;
-            };
-            idx.hash(&mut hasher);
-            entry.path.hash(&mut hasher);
+        let selected_count = selected.len();
+        for entry in selected {
+            entry.path().hash(&mut hasher);
             let is_thumbable = entry
-                .extension
+                .extension()
                 .as_deref()
                 .is_some_and(|ext| {
                     crate::preview_cache::is_image_ext(ext)
@@ -372,14 +406,14 @@ impl AppState {
                         || crate::preview_cache::is_video_ext(ext)
                 });
             if paths.len() < MULTI_PREVIEW_LIMIT && is_thumbable {
-                paths.push(entry.path.clone());
+                paths.push(entry.path().clone());
             }
         }
 
         Some(PreviewRequest::Multiple {
             key: MultiPreviewKey {
                 fingerprint: hasher.finish(),
-                selected_count: ts.selection.selected.len(),
+                selected_count,
             },
             paths,
         })
@@ -395,27 +429,8 @@ impl AppState {
         let Some(ts) = self.active_tab_state() else {
             return Vec::new();
         };
-        let is_miller = matches!(
-            self.pane_tree.tiles.get(self.focused_tile),
-            Some(Tile::Pane(p)) if p.view_mode == ViewMode::Miller
-        );
-        if is_miller {
-            let Some(col) = ts.miller.columns.get(ts.miller.focused) else {
-                return Vec::new();
-            };
-            let mut selected: Vec<usize> = col.selection.selected.iter().copied().collect();
-            selected.sort_unstable();
-            return selected
-                .into_iter()
-                .filter_map(|i| col.entries.get(i).map(|e| e.path.clone()))
-                .collect();
-        }
-        let mut selected: Vec<usize> = ts.selection.selected.iter().copied().collect();
-        selected.sort_unstable();
-        selected
-            .into_iter()
-            .filter_map(|i| ts.entries.get(i).map(|e| e.path.clone()))
-            .collect()
+        let mode = self.active_tab_data().map(|tab| tab.view_mode.clone()).unwrap_or_default();
+        ts.selected_entries(&mode).into_iter().map(FileEntry::path).collect()
     }
 
     /// Like `selected_paths()` but returns `(archive, inner)` pairs for archive
@@ -435,7 +450,7 @@ impl AppState {
         selected.sort_unstable();
         let items = selected
             .into_iter()
-            .filter_map(|i| ts.entries.get(i).map(|e| (archive.clone(), e.path.clone())))
+            .filter_map(|i| ts.entries.get(i).map(|e| (archive.clone(), e.path().clone())))
             .collect();
         Some(items)
     }
@@ -538,6 +553,8 @@ impl AppState {
         Self {
             pane_tree,
             focused_tile,
+            closed_tabs: std::collections::VecDeque::with_capacity(32),
+            system_cut_paths: std::collections::HashSet::new(),
             tab_states,
             settings,
             ops: crate::ops::OperationManager::default(),
@@ -585,13 +602,13 @@ fn entry_to_preview_request(
     entry: &crate::file_entry::FileEntry,
 ) -> crate::preview_cache::PreviewRequest {
     use crate::preview_cache::PreviewRequest;
-    if let Some(archive) = entry.archive_root.clone() {
+    if let Some(archive) = entry.archive_root().clone() {
         PreviewRequest::ArchiveSingle {
             archive,
-            inner: entry.path.clone(),
+            inner: entry.path().clone(),
         }
     } else {
-        PreviewRequest::Single(entry.path.clone())
+        PreviewRequest::Single(entry.path().clone())
     }
 }
 
@@ -602,6 +619,28 @@ mod tests {
     use crate::preview_cache::{PreviewRequest, MULTI_PREVIEW_LIMIT};
     use crate::settings::Settings;
     use std::path::PathBuf;
+
+    #[test]
+    fn recently_closed_tabs_are_bounded_and_keep_full_data_in_lifo_order() {
+        let (mut state, _) = AppState::new(Settings::default());
+        for index in 0..40 {
+            let mut tab = state.active_tab_data().unwrap().clone();
+            tab.location = crate::location::Location::Directory(PathBuf::from(format!("folder-{index}")));
+            tab.history.push(crate::location::Location::Directory(PathBuf::from("previous")));
+            tab.view_mode = crate::settings::ViewMode::Grid;
+            tab.thumbnail_size = 224.0;
+            state.remember_closed_tab(tab);
+        }
+        assert_eq!(state.closed_tabs.len(), 32);
+        assert_eq!(state.closed_tabs.front().unwrap().data.location,
+            crate::location::Location::Directory(PathBuf::from("folder-8")));
+        let newest = state.closed_tabs.pop_back().unwrap();
+        assert_eq!(newest.data.location, crate::location::Location::Directory(PathBuf::from("folder-39")));
+        assert_eq!(newest.data.history.len(), 1);
+        assert_eq!(newest.data.view_mode, crate::settings::ViewMode::Grid);
+        assert_eq!(newest.data.thumbnail_size, 224.0);
+        assert!(newest.closed_at.elapsed().unwrap().as_secs() < 10);
+    }
 
     #[test]
     fn grid_and_miller_multi_selection_produce_complete_drag_paths() {
@@ -646,25 +685,17 @@ mod tests {
 
     fn entry(name: &str) -> FileEntry {
         let path = PathBuf::from(name);
-        FileEntry {
-            name: name.to_string(),
-            name_lower: name.to_lowercase(),
-            extension: path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(str::to_string),
+        FileEntry::from(crate::file_entry::FileEntryData {
+            name: name.into(),
             path,
             kind: FileKind::File,
             size: Some(1),
             modified: None,
-            display_size: String::new().into(),
-            display_date: String::new().into(),
-            display_type: String::new().into(),
             _is_hidden: false,
             _is_symlink: false,
             archive_root: None,
             recycle_info: None,
-        }
+        })
     }
 
     #[test]
@@ -686,6 +717,32 @@ mod tests {
                 .map(PathBuf::from)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn tree_and_miller_preview_the_displayed_selection_instead_of_the_root_index() {
+        use crate::{layout_tree::Tile, location::Location, settings::ViewMode, tab::MillerColumn};
+        let (mut state, tile) = AppState::new(Settings::default());
+        let folder = FileEntry::from(crate::file_entry::FileEntryData {
+            name: "folder".into(), path: "folder".into(), kind: FileKind::Dir,
+            size: None, modified: None, _is_hidden: false, _is_symlink: false,
+            archive_root: None, recycle_info: None,
+        });
+        let tab = state.tab_states.get_mut(&tile).unwrap();
+        tab.set_entries(vec![folder.clone(), entry("wrong-root.txt")].into());
+        tab.tree.expanded.insert(folder.path());
+        tab.tree.children.insert(folder.path(), vec![entry("nested.jpg")].into());
+        tab.selection.selected.insert(1);
+        if let Some(Tile::Pane(tab)) = state.pane_tree.tiles.get_mut(tile) { tab.view_mode = ViewMode::Tree; }
+        assert_eq!(state.active_preview_request(), Some(PreviewRequest::Single("nested.jpg".into())));
+        assert_eq!(state.selected_paths(), [PathBuf::from("nested.jpg")]);
+        let mut column = MillerColumn::new(Location::Directory("/column".into()));
+        column.entries = vec![entry("column.jpg")].into();
+        column.selection.selected.insert(0);
+        state.tab_states.get_mut(&tile).unwrap().miller.columns.push(column);
+        if let Some(Tile::Pane(tab)) = state.pane_tree.tiles.get_mut(tile) { tab.view_mode = ViewMode::Miller; }
+        assert_eq!(state.active_preview_request(), Some(PreviewRequest::Single("column.jpg".into())));
+        assert_eq!(state.selected_paths(), [PathBuf::from("column.jpg")]);
     }
 
     #[test]

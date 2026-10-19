@@ -377,11 +377,17 @@ impl Element for UniformList {
 
         let shared_scroll_offset = self.interactivity.scroll_offset.clone().unwrap();
         let item_height = longest_item_size.height;
+        let bottom_margin = self.scroll_handle.as_ref().map_or(Pixels::ZERO, |handle| {
+            let handle = handle.0.borrow();
+            handle.base_handle.set_line_scroll_height(item_height);
+            if self.item_count > 0 { bounds.size.height * handle.base_handle.bottom_scroll_margin() }
+            else { Pixels::ZERO }
+        });
         let shared_scroll_to_item = self.scroll_handle.as_mut().and_then(|handle| {
             let mut handle = handle.0.borrow_mut();
             handle.last_item_size = Some(ItemSize {
                 item: padded_bounds.size,
-                contents: content_size,
+                contents: Size { height: content_size.height + bottom_margin, ..content_size },
             });
             handle.deferred_scroll_to_item.take()
         });
@@ -402,10 +408,10 @@ impl Element for UniformList {
                 };
 
                 if self.item_count > 0 {
-                    let content_height = item_height * self.item_count;
+                    let content_height = item_height * self.item_count + bottom_margin;
 
                     let is_scrolled_vertically = !scroll_offset.y.is_zero();
-                    let max_scroll_offset = padded_bounds.size.height - content_height;
+                    let max_scroll_offset = (padded_bounds.size.height - content_height).min(Pixels::ZERO);
 
                     if is_scrolled_vertically && scroll_offset.y < max_scroll_offset {
                         shared_scroll_offset.borrow_mut().y = max_scroll_offset;

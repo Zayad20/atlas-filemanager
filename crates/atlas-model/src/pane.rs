@@ -7,6 +7,30 @@ use std::path::PathBuf;
 pub type PaneId = crate::layout_tree::TileId;
 pub type TabId = crate::layout_tree::TileId;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum FolderOrder {
+    #[default]
+    FoldersFirst,
+    FoldersLast,
+    Mixed,
+}
+
+impl FolderOrder {
+    pub const ALL: [Self; 3] = [Self::FoldersFirst, Self::FoldersLast, Self::Mixed];
+    pub const fn next(self) -> Self {
+        match self { Self::FoldersFirst => Self::FoldersLast, Self::FoldersLast => Self::Mixed, Self::Mixed => Self::FoldersFirst }
+    }
+    pub fn label(self) -> String {
+        rust_i18n::t!(match self {
+            Self::FoldersFirst => "folder_order_first", Self::FoldersLast => "folder_order_last", Self::Mixed => "folder_order_mixed",
+        }).into_owned()
+    }
+}
+
+impl From<bool> for FolderOrder {
+    fn from(first: bool) -> Self { if first { Self::FoldersFirst } else { Self::Mixed } }
+}
+
 // Kept privately for compat deserialization of sessions saved before Location migration.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
 enum TabSource {
@@ -25,6 +49,16 @@ enum TabSource {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TabData {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_serial: Option<u32>,
+    #[serde(skip)]
+    pub breadcrumb_trail: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details_columns: Option<crate::profiles::FolderColumns>,
+    #[serde(default)]
+    pub group_by: crate::grouping::GroupBy,
+    #[serde(default)]
+    pub collapsed_groups: std::collections::BTreeSet<String>,
     pub location: Location,
     pub sort_col: SortColumn,
     pub sort_dir: SortDir,
@@ -36,8 +70,8 @@ pub struct TabData {
     pub thumbnail_size: f32,
     #[serde(default)]
     pub preview_enabled: bool,
-    #[serde(default = "default_true")]
-    pub folders_first: bool,
+    #[serde(default)]
+    pub folder_order: FolderOrder,
     #[serde(default = "default_true")]
     pub show_files: bool,
     #[serde(default = "default_true")]
@@ -50,6 +84,14 @@ pub struct TabData {
 /// old format (`path + source + history: Vec<PathBuf>`).
 #[derive(serde::Deserialize)]
 struct TabDataRaw {
+    #[serde(default)]
+    volume_serial: Option<u32>,
+    #[serde(default)]
+    details_columns: Option<crate::profiles::FolderColumns>,
+    #[serde(default)]
+    group_by: crate::grouping::GroupBy,
+    #[serde(default)]
+    collapsed_groups: std::collections::BTreeSet<String>,
     location: Option<Location>,
     path: Option<PathBuf>,
     #[serde(default)]
@@ -70,6 +112,8 @@ struct TabDataRaw {
     preview_enabled: bool,
     #[serde(default = "default_true")]
     folders_first: bool,
+    #[serde(default)]
+    folder_order: Option<FolderOrder>,
     #[serde(default = "default_true")]
     show_files: bool,
     #[serde(default = "default_true")]
@@ -125,6 +169,11 @@ impl From<TabDataRaw> for TabData {
             (r.show_files, r.show_folders)
         };
         Self {
+            volume_serial: r.volume_serial,
+            breadcrumb_trail: None,
+            details_columns: r.details_columns,
+            group_by: r.group_by,
+            collapsed_groups: r.collapsed_groups,
             location,
             sort_col: r.sort_col,
             sort_dir: r.sort_dir,
@@ -133,7 +182,7 @@ impl From<TabDataRaw> for TabData {
             view_mode: r.view_mode,
             thumbnail_size: r.thumbnail_size,
             preview_enabled: r.preview_enabled,
-            folders_first: r.folders_first,
+            folder_order: r.folder_order.unwrap_or_else(|| r.folders_first.into()),
             show_files,
             show_folders,
             is_branch_view: r.is_branch_view,
@@ -148,6 +197,13 @@ impl<'de> serde::Deserialize<'de> for TabData {
 }
 
 impl TabData {
+    pub fn volume_path(&self) -> Option<&std::path::Path> {
+        match &self.location {
+            Location::Directory(path) | Location::Archive { archive: path, .. } => Some(path),
+            _ => None,
+        }
+    }
+
     pub fn with_view(
         path: PathBuf,
         view_mode: ViewMode,
@@ -155,6 +211,11 @@ impl TabData {
         preview_enabled: bool,
     ) -> Self {
         Self {
+            volume_serial: None,
+            breadcrumb_trail: None,
+            details_columns: None,
+            group_by: crate::grouping::GroupBy::None,
+            collapsed_groups: std::collections::BTreeSet::new(),
             location: Location::Directory(path),
             sort_col: SortColumn::default(),
             sort_dir: SortDir::default(),
@@ -163,11 +224,26 @@ impl TabData {
             view_mode,
             thumbnail_size,
             preview_enabled,
-            folders_first: true,
+            folder_order: FolderOrder::default(),
             show_files: true,
             show_folders: true,
             is_branch_view: false,
         }
+    }
+
+    /// Pure snapshot reconciliation; the platform queries volumes off-thread.
+    /// Archive tabs track the physical archive rather than its virtual members.
+    pub fn reconcile_volume(&mut self, volumes: &[(PathBuf, u32)]) -> bool {
+        let path = match &mut self.location {
+            Location::Directory(path) | Location::Archive { archive: path, .. } => path,
+            _ => { self.volume_serial = None; return false; }
+        };
+        let mut identity = crate::profiles::Bookmark::new(String::new(), path.clone());
+        identity.volume_serial = self.volume_serial;
+        let changed = identity.reconcile_volume(volumes);
+        self.volume_serial = identity.volume_serial;
+        *path = identity.path;
+        changed
     }
 }
 
@@ -184,14 +260,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn folder_order_migrates_legacy_booleans_and_roundtrips_all_three_states() {
+        for (old, expected) in [(true, FolderOrder::FoldersFirst), (false, FolderOrder::Mixed)] {
+            let tab: TabData = serde_json::from_str(&format!(r#"{{"path":"/files","folders_first":{old}}}"#)).unwrap();
+            assert_eq!(tab.folder_order, expected);
+        }
+        for order in FolderOrder::ALL {
+            let mut tab = TabData::with_view("/files".into(), ViewMode::Details, 128.0, false);
+            tab.folder_order = order;
+            let json = serde_json::to_value(&tab).unwrap();
+            assert!(json.get("folders_first").is_none());
+            assert_eq!(serde_json::from_value::<TabData>(json).unwrap().folder_order, order);
+        }
+        assert_eq!(FolderOrder::FoldersFirst.next(), FolderOrder::FoldersLast);
+        assert_eq!(FolderOrder::FoldersLast.next(), FolderOrder::Mixed);
+        assert_eq!(FolderOrder::Mixed.next(), FolderOrder::FoldersFirst);
+    }
+
+    #[test]
     fn persists_view_per_tab() {
-        let tab = TabData::with_view(PathBuf::from("/tmp"), ViewMode::Grid, 192.0, true);
+        let mut tab = TabData::with_view(PathBuf::from("/tmp"), ViewMode::Grid, 192.0, true);
+        tab.group_by = crate::grouping::GroupBy::Size;
+        tab.collapsed_groups.insert("size:huge".into());
         let json = serde_json::to_string(&tab).unwrap();
         let restored: TabData = serde_json::from_str(&json).unwrap();
 
         assert_eq!(restored.view_mode, ViewMode::Grid);
         assert!((restored.thumbnail_size - 192.0).abs() < f32::EPSILON);
         assert!(restored.preview_enabled);
+        assert_eq!(restored.group_by, crate::grouping::GroupBy::Size);
+        assert_eq!(restored.collapsed_groups, tab.collapsed_groups);
     }
 
     #[test]
@@ -208,7 +306,9 @@ mod tests {
         }"#;
         let restored: TabData = serde_json::from_str(json).unwrap();
         assert!(!restored.preview_enabled);
-        assert!(restored.folders_first);
+        assert_eq!(restored.group_by, crate::grouping::GroupBy::None);
+        assert!(restored.collapsed_groups.is_empty());
+        assert_eq!(restored.folder_order, FolderOrder::FoldersFirst);
         assert!(restored.show_files);
         assert!(restored.show_folders);
         assert_eq!(

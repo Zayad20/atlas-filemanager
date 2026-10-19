@@ -164,15 +164,16 @@ fn handle(
             send_defs(conn, bg_tx)?;
         }
         TagDbCmd::AssignTag { tag, paths } => {
-            let tx = conn.unchecked_transaction()?;
-            {
-                let mut stmt =
-                    tx.prepare("INSERT OR IGNORE INTO file_tags (path, tag_id) VALUES (?1, ?2)")?;
-                for p in &paths {
-                    stmt.execute(params![path_key(p), tag.0])?;
+            let result = (|| -> rusqlite::Result<()> {
+                let tx = conn.unchecked_transaction()?;
+                {
+                    let mut stmt = tx.prepare("INSERT OR IGNORE INTO file_tags (path, tag_id) VALUES (?1, ?2)")?;
+                    for p in &paths { stmt.execute(params![path_key(p), tag.0])?; }
                 }
-            }
-            tx.commit()?;
+                tx.commit()
+            })();
+            let _ = bg_tx.send(BgResult::TagAssignmentComplete { tag, paths, result: result.as_ref().map(|_| ()).map_err(ToString::to_string) });
+            result?;
         }
         TagDbCmd::UnassignTag { tag, paths } => {
             let tx = conn.unchecked_transaction()?;
@@ -257,4 +258,25 @@ fn load_defs(conn: &Connection) -> rusqlite::Result<Vec<TagDef>> {
 /// consistent between write and read.
 fn path_key(p: &Path) -> String {
     p.to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assignment_acknowledges_commit_and_failed_transactions_do_not_assign() {
+        let conn = open(Path::new(":memory:")).unwrap();
+        let (tx, rx) = flume::unbounded();
+        handle(&conn, TagDbCmd::CreateTag { name: "Test".into(), color: [1, 2, 3], profile: None }, &tx).unwrap();
+        let id: i64 = conn.query_row("SELECT id FROM tags", [], |row| row.get(0)).unwrap();
+        let paths = vec![PathBuf::from("source/one"), PathBuf::from("source/two")];
+        handle(&conn, TagDbCmd::AssignTag { tag: TagId(id), paths: paths.clone() }, &tx).unwrap();
+        assert!(rx.try_iter().any(|event| matches!(event, BgResult::TagAssignmentComplete { tag, result: Ok(()), .. } if tag == TagId(id))));
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM file_tags", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+        let invalid = TagId(id + 99);
+        assert!(handle(&conn, TagDbCmd::AssignTag { tag: invalid, paths }, &tx).is_err());
+        assert!(rx.try_iter().any(|event| matches!(event, BgResult::TagAssignmentComplete { tag, result: Err(_), .. } if tag == invalid)));
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM file_tags", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+    }
 }

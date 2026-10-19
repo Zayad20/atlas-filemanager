@@ -1,9 +1,7 @@
 use crate::app::App;
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
-use gpui::{
-    div, px, AnyElement, Entity, Hsla, MouseButton, Pixels, SharedString, TextRun, Window,
-};
+use gpui::{div, px, AnyElement, Entity, Hsla, MouseButton, Pixels, SharedString, TextRun, Window};
 use gpui_component::{input::InputState, ActiveTheme, Colorize};
 use std::path::Path;
 
@@ -21,7 +19,7 @@ pub(super) fn active_input(
                     .tab_states
                     .get(&pane_id)
                     .and_then(|ts| ts.entries.get(entry_idx))
-                    .is_some_and(|entry| entry.path == edit.path)
+                    .is_some_and(|entry| entry.path() == edit.path)
         })
         .map(|edit| edit.input.clone())
 }
@@ -38,6 +36,20 @@ pub(super) fn active_input_for_path(
 }
 
 pub(super) const DIM_OPACITY: f32 = 0.45;
+
+pub(super) fn cut_path_opacity(app: &gpui::WeakEntity<App>, path: &Path, cx: &gpui::App) -> f32 {
+    if app.upgrade().is_some_and(|entity| entity.read(cx).state.system_cut_paths.contains(path)) {
+        0.5
+    } else { 1.0 }
+}
+
+pub(super) fn cut_entry_opacity(app: &gpui::WeakEntity<App>, pane: TabId, index: usize, cx: &gpui::App) -> f32 {
+    app.upgrade().map_or(1.0, |entity| {
+        let app = entity.read(cx);
+        app.state.tab_states.get(&pane).and_then(|tab| tab.entries.get(index))
+            .map_or(1.0, |entry| if app.state.system_cut_paths.contains(&entry.path()) { 0.5 } else { 1.0 })
+    })
+}
 
 pub(super) fn dim_other_entry(app: &App, pane_id: TabId, entry_idx: usize) -> bool {
     app.rename_edit
@@ -181,5 +193,20 @@ fn input_element_aligned(
             }
             _ => {}
         })
-        .into_any_element()
+        .map(|editor| {
+            if cx.reduce_motion() {
+                editor.into_any_element()
+            } else {
+                use gpui::AnimationExt;
+                editor
+                    .with_animation(
+                        "rename-editor-enter",
+                        gpui::Animation::new(std::time::Duration::from_millis(100)),
+                        |editor, t| {
+                            editor.opacity(0.55 + 0.45 * crate::ui::motion::ease_out_quart(t))
+                        },
+                    )
+                    .into_any_element()
+            }
+        })
 }

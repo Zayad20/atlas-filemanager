@@ -12,6 +12,21 @@ use atlas_model::app_state::BgResult;
 use atlas_model::preview_cache::ImageData;
 use atlas_model::tab::LoadState;
 
+impl App {
+    /// The initial layout is frame one. Queue only the bounded startup
+    /// sequence; after frame sixty the normal demand-driven loop can park.
+    pub(crate) fn schedule_startup_frames(window: &gpui::Window, frame: u8) {
+        window.on_next_frame(move |window, _cx| {
+            if frame == 60 {
+                #[cfg(windows)]
+                atlas_win_space::integration::free_unused_com_libraries();
+            } else {
+                Self::schedule_startup_frames(window, frame + 1);
+            }
+        });
+    }
+}
+
 /// Return value from `process_bg_results`: tracks what needs re-rendering
 /// without holding a `Context` reference. Callers apply notifications after
 /// all state mutations are done and only when a Context is safely available.
@@ -154,6 +169,32 @@ impl App {
         before != self.state.overlay.op_errors.len()
     }
 
+    /// No deadline means the maintenance task can sleep until input or a worker
+    /// delivers something. Never keep an idle window on a periodic drain timer.
+    pub(crate) fn maintenance_delay(&self) -> Option<Duration> {
+        if !self.rx.is_empty() || !self.icon_rx.is_empty() {
+            return Some(Duration::ZERO);
+        }
+        if self.palette_closing.is_some() || !self.pane_closing.is_empty()
+            || !self.tab_closing.is_empty()
+            || (self.state.overlay.show_goto_bar
+                && !self.state.profiles.active().search_in_content
+                && !self.state.overlay.goto_state.query.trim().is_empty()
+                && self.goto_snapshot.is_pending())
+            || !self.pending_column_reflow.is_empty()
+        {
+            return Some(Duration::from_millis(16));
+        }
+        let mut deadline = self.state.overlay.op_errors.iter()
+            .map(|toast| toast_ttl(toast.kind).saturating_sub(toast.created_at.elapsed()))
+            .min();
+        if let Some(menu) = self.ctx_menu.as_ref().filter(|_| self.command_shortcut_capture.is_none()) {
+            let until_blink = Duration::from_millis(530 - (menu.input.blink_epoch.elapsed().as_millis() % 530) as u64);
+            deadline = Some(deadline.map_or(until_blink, |d| d.min(until_blink)));
+        }
+        deadline
+    }
+
     /// Apply every queued background result to state. Returns `true` if at least
     /// one result was processed (i.e. a repaint is warranted).
     /// Drain the Windows OLE drop-target action queue and route payloads to
@@ -178,7 +219,27 @@ impl App {
         let mut actions = Vec::with_capacity(events.len());
         for event in events {
             let p = match event {
+                DndEvent::DevicesChanged => {
+                    let _ = self.tx.send(BgResult::DevicesChanged);
+                    had = true;
+                    continue;
+                }
                 DndEvent::DropIn(p) => p,
+                DndEvent::ClipboardChanged { cut_paths } => {
+                    self.state.system_cut_paths = cut_paths.into_iter().collect();
+                    self.dirty_all_panes = true;
+                    had = true;
+                    continue;
+                }
+                DndEvent::TabTransferAccepted { tab } => {
+                    if self.state.all_pane_tile_ids().len() > 1 {
+                        actions.push(Action::CloseTab(tab));
+                    } else {
+                        self.close_after_tab_transfer = true;
+                    }
+                    had = true;
+                    continue;
+                }
                 DndEvent::DragOutMoved { paths } => {
                     // Drag out of Atlas accepted as MOVE by the target: the
                     // target copied/moved the data; remove only sources that
@@ -224,6 +285,13 @@ impl App {
             let hover_command = self.drag_hover_drop_command_at(p.x, p.y);
             if tab_target.is_some() && hover_command.is_none() {
                 tracing::warn!(tab = ?tab_target, "dnd drop ignored: tab no longer accepts files");
+                self.cancel_dropzone_file_drag();
+                self.drag_hover_external_left();
+                had = true;
+                continue;
+            }
+            if hover_command.as_ref().is_some_and(|command| crate::ui::drag_hover::drop_is_structurally_blocked(command, &p.paths, p.ctrl, p.shift)) {
+                self.toast_error(rust_i18n::t!("dnd_intent_blocked").into_owned());
                 self.cancel_dropzone_file_drag();
                 self.drag_hover_external_left();
                 had = true;
@@ -507,22 +575,41 @@ impl App {
                         if op_id == ts.last_nav_op_id
                             && (ts.load_state == LoadState::Loading || ts.entries.is_empty())
                         {
+                            self.file_filter_projections.remove(&tab);
                             ts.set_entries(entries.into());
                             info.notify_panes.push(tab);
                         }
                     }
                 }
+                BgResult::PreviewDelayElapsed { tab, request, generation } => {
+                    self.load_delayed_preview(tab, request, generation);
+                }
+                BgResult::WatcherDisabled(path) => {
+                    let affected: Vec<_> = self.watchers.iter().filter(|(_, watcher)| watcher.watched_path == path)
+                        .map(|(id, _)| *id).collect();
+                    for id in affected {
+                        self.watchers.remove(&id);
+                        info.notify_panes.push(id);
+                    }
+                }
+                BgResult::DirListExclusions { tab, op_id, has_excluded_items } => {
+                    if let Some(state) = self.state.tab_states.get_mut(&tab).filter(|state| state.last_nav_op_id == op_id) {
+                        state.has_excluded_items = has_excluded_items;
+                        info.notify_panes.push(tab);
+                    }
+                }
+                BgResult::DirListTiming { tab, op_id, elapsed } => {
+                    if let Some(state) = self.state.tab_states.get_mut(&tab).filter(|state| state.last_nav_op_id == op_id) {
+                        state.listing_elapsed = Some(elapsed);
+                        info.notify_panes.push(tab);
+                    }
+                }
                 BgResult::DirListed {
                     tab,
                     op_id,
-                    mut entries,
+                    entries,
                 } => {
-                    if entries.first().is_some_and(|e| e.display_date.is_empty()) {
-                        crate::ui::views::details::format_entries(&mut entries);
-                    }
                     crate::perf::count_by("bg.entries", entries.len() as u64);
-                    // display_* fields are pre-formatted by the producing task
-                    // (see `details::format_entries`); keep the drain allocation-free.
                     // Collect icon keys before moving `entries` so we can warm
                     // the icon cache for the new listing.
                     let icon_keys: Vec<String> = if self.icon_theme.is_some() {
@@ -535,26 +622,19 @@ impl App {
                     let is_miller = self.tab_data_for(tab).is_some_and(|pane| {
                         pane.view_mode == atlas_model::settings::ViewMode::Miller
                     });
+                    // Tree selection indexes visible tree rows, not `entries`.
+                    let is_tree = self.tab_data_for(tab).is_some_and(|pane| {
+                        pane.view_mode == atlas_model::settings::ViewMode::Tree
+                    });
                     if let Some(ts) = self.state.tab_states.get_mut(&tab) {
                         // Ignore stale results from a superseded navigation
                         if op_id == ts.last_nav_op_id {
-                            // Preserve selection across refreshes (e.g. fs-watcher
-                            // events) by remapping the previously-selected paths onto
-                            // the new listing. A real navigation already cleared the
-                            // selection via begin_navigation, so nothing is preserved
-                            // there.
-                            let prev_selected: HashSet<PathBuf> = ts
-                                .selection
-                                .selected
-                                .iter()
-                                .filter_map(|&i| ts.entries.get(i).map(|e| e.path.clone()))
-                                .collect();
-                            let prev_cursor = ts
-                                .selection
-                                .keyboard_cursor
-                                .and_then(|i| ts.entries.get(i))
-                                .map(|e| e.path.clone());
-                            ts.set_entries(entries.into());
+                            self.file_filter_projections.remove(&tab);
+                            // Selection continuity is the model invariant (tree rows or
+                            // flat listing); a real navigation cleared it beforehand.
+                            ts.mutate_preserving_selection(is_tree, |ts| {
+                                ts.set_entries(entries.into());
+                            });
                             ts.load_state = LoadState::Loaded;
                             // Fresh navigation/create load → arm the item appear anim.
                             if ts.pending_appear {
@@ -562,17 +642,7 @@ impl App {
                                 ts.pending_appear = false;
                                 armed_appear = true;
                             }
-                            ts.selection.selected = ts
-                                .entries
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, e)| prev_selected.contains(&e.path))
-                                .map(|(i, _)| i)
-                                .collect();
-                            ts.selection.keyboard_cursor = prev_cursor
-                                .and_then(|p| ts.entries.iter().position(|e| e.path == p));
-                            ts.selection.selection_anchor = ts.selection.keyboard_cursor;
-                            ts.selection.last_clicked_index = ts.selection.keyboard_cursor;
+                            let after = ts.selection_paths(is_tree);
                             if !is_miller
                                 && self
                                     .pending_select
@@ -581,7 +651,7 @@ impl App {
                             {
                                 if let Some((_, pending_path)) = self.pending_select.as_ref() {
                                     if let Some(idx) =
-                                        ts.entries.iter().position(|e| e.path == *pending_path)
+                                        after.iter().position(|path| path == pending_path)
                                     {
                                         self.pending_select = None;
                                         ts.selection.selected.clear();
@@ -609,6 +679,9 @@ impl App {
                         }
                     }
                     // Borrow of tab_states released — safe to request icons.
+                    if self.state.tab_states.get(&tab).is_some_and(|ts| op_id == ts.last_nav_op_id && ts.search.active && !ts.search.query.is_empty()) {
+                        self.refresh_search_in_place(tab);
+                    }
                     if armed_appear {
                         self.pane_items_appear
                             .insert(tab, std::time::Instant::now());
@@ -628,6 +701,7 @@ impl App {
                     location,
                     op_id,
                     entries,
+                    has_excluded_items,
                 } => {
                     if let Some(ts) = self.state.tab_states.get_mut(&tab) {
                         if let Some(c) = ts
@@ -638,6 +712,7 @@ impl App {
                             .find(|(_, c)| c.location == location && c.op_id == op_id)
                         {
                             let (column, c) = c;
+                            c.has_excluded_items = has_excluded_items;
                             c.set_entries(entries.into());
                             c.load_state = LoadState::Loaded;
                             if let Some(idx) = self
@@ -645,7 +720,7 @@ impl App {
                                 .as_ref()
                                 .filter(|(pane, _)| *pane == tab)
                                 .and_then(|(_, path)| {
-                                    c.entries.iter().position(|entry| &entry.path == path)
+                                    c.entries.iter().position(|entry| &entry.path() == path)
                                 })
                             {
                                 c.selection.clear();
@@ -656,7 +731,9 @@ impl App {
                                 self.pending_select = None;
                                 if let Some(scroll) = self.miller_scroll_handles.get(&(tab, column))
                                 {
-                                    scroll.scroll_to_item(idx, gpui::ScrollStrategy::Nearest);
+                                    if let Some(position) = c.visible_indices(&ts.filter, ts.show_files, ts.show_folders).iter().position(|i| *i == idx) {
+                                        scroll.scroll_to_item(position, gpui::ScrollStrategy::Nearest);
+                                    }
                                 }
                             }
                         }
@@ -665,9 +742,10 @@ impl App {
                 }
                 BgResult::TreeListed { tab, path, entries } => {
                     self.tree_loading.remove(&(tab, path.clone()));
-                    if let Some(ts) = self.state.tab_states.get_mut(&tab) {
+                    // Arriving children push the rows below them down.
+                    self.mutate_tab(tab, |ts| {
                         ts.tree.children.insert(path, entries.into());
-                    }
+                    });
                     info.notify_panes.push(tab);
                 }
                 BgResult::DirListError { tab, op_id, error } => {
@@ -679,7 +757,69 @@ impl App {
                     }
                     info.notify_panes.push(tab);
                 }
+                BgResult::FsChanges { directory, changes } => {
+                    for lens in self.space_lens.values_mut() { lens.apply_fs_changes(&changes); }
+                    self.nucleo.reset();
+                    self.goto_index_root = None;
+                    for change in &changes {
+                        match change {
+                            atlas_model::app_state::FsChange::Remove(path) => self.thumb_textures.remove(path),
+                            atlas_model::app_state::FsChange::Upsert(entry) => self.thumb_textures.remove(&entry.path()),
+                            atlas_model::app_state::FsChange::Rename { from, entry } => {
+                                self.thumb_textures.remove(from);
+                                self.thumb_textures.remove(&entry.path());
+                            }
+                        }
+                    }
+                    let show_hidden = self.state.settings.show_hidden;
+                    let ids: Vec<_> = self.state.tab_states.keys().copied().collect();
+                    for id in ids {
+                        let Some(Tile::Pane(tab)) = self.state.pane_tree.tiles.get(id) else { continue; };
+                        let (sort_col, sort_dir, folder_order) =
+                            (tab.sort_col.clone(), tab.sort_dir.clone(), tab.folder_order);
+                        let listing = tab.location.fs_dir() == Some(directory.as_path());
+                        let affected = listing
+                            || self.state.tab_states.get(&id).is_some_and(|ts| {
+                                ts.tree.children.contains_key(&directory)
+                                    || ts.miller.columns.iter().any(|column| {
+                                        column.location.fs_dir() == Some(directory.as_path())
+                                    })
+                            });
+                        if !affected {
+                            continue;
+                        }
+                        let apply = |entries: &mut Vec<atlas_model::file_entry::FileEntry>| {
+                            apply_directory_delta(entries, &changes);
+                            if !show_hidden { entries.retain(|entry| !entry.is_hidden()); }
+                            atlas_core::fs::list::sort_entries(entries, &sort_col, &sort_dir, folder_order);
+                        };
+                        // One structural mutation: selection follows identity (renames
+                        // included) and the first visible row stays put.
+                        self.mutate_tab_with(id, |path| renamed_path(&path, &changes), |ts| {
+                            if listing {
+                                let mut entries = ts.entries.to_vec();
+                                apply(&mut entries);
+                                ts.set_entries(entries.into());
+                            }
+                            for column in &mut ts.miller.columns {
+                                if column.location.fs_dir() == Some(directory.as_path()) {
+                                    let mut entries = column.entries.to_vec();
+                                    apply(&mut entries);
+                                    column.set_entries(entries.into());
+                                }
+                            }
+                            if let Some(children) = ts.tree.children.get_mut(&directory) {
+                                let mut entries = children.to_vec();
+                                apply(&mut entries);
+                                *children = entries.into();
+                            }
+                        });
+                        self.file_filter_projections.remove(&id);
+                        info.notify_panes.push(id);
+                    }
+                }
                 BgResult::FsEvent(changed_path) => {
+                    if atlas_core::fs::paths::is_recycle_bin_path(&changed_path) { self.refresh_recycle_bin_feedback(); }
                     self.nucleo.reset();
                     self.goto_index_root = None;
                     // Refresh any pane watching the directory containing the changed path
@@ -720,6 +860,13 @@ impl App {
                     for (tid, loc) in miller_refresh {
                         self.spawn_miller_list(tid, loc);
                     }
+                }
+                BgResult::PreviewMetadataReady { tab, path, properties } => {
+                    if self.state.preview.paths.get(&tab) != Some(&path) {
+                        continue;
+                    }
+                    self.state.preview.metadata.insert(tab, (path, properties));
+                    info.notify_panes.push(tab);
                 }
                 BgResult::PreviewReady { tab, path, result } => {
                     if self.state.preview.paths.get(&tab) != Some(&path) {
@@ -767,7 +914,14 @@ impl App {
                     // Only the panes showing this path care about the texture;
                     // notify_all here repainted every pane per decoded thumbnail.
                     let tabs = self.affected_tabs_for_path(&path);
+                    #[cfg(windows)]
+                    let recycle_icon = path == Self::shell_recycle_bin_icon_key();
                     self.apply_grid_thumbnail(path, rgba, width, height);
+                    #[cfg(windows)]
+                    if recycle_icon {
+                        if std::mem::take(&mut self.recycle_bin_icon_dirty) { self.load_shell_recycle_bin_icon(true); }
+                        info.notify_all = true;
+                    }
                     info.notify_panes.extend(tabs);
                 }
 
@@ -778,6 +932,7 @@ impl App {
                             && ts.search.recursive
                             && ts.search.is_filtering()
                         {
+                            self.file_filter_projections.remove(&tab);
                             ts.set_entries(entries.into());
                             ts.filter.clear();
                             ts.search.status = atlas_model::tab::SearchStatus::Ready;
@@ -819,6 +974,7 @@ impl App {
                     info.notify_panes.push(tab);
                 }
                 BgResult::PathsDeleted(paths) => {
+                    self.refresh_recycle_bin_feedback();
                     self.consume_completed_staged_paths(&paths);
                     info.notify_all = true;
                 }
@@ -827,7 +983,11 @@ impl App {
                     result,
                     affected_tabs,
                 } => {
-                    self.state.ops.active_ops.remove(&id);
+                    let op = self.state.ops.active_ops.remove(&id);
+                    if op.as_ref().is_some_and(|op| op.label == rust_i18n::t!("op_emptying_bin") || op.label == rust_i18n::t!("op_deleting") || op.label == rust_i18n::t!("op_restoring")) {
+                        self.refresh_recycle_bin_feedback();
+                    }
+                    self.operation_feedback.borrow_mut().finish(id);
                     if let Err(errors) = result {
                         for err in &errors {
                             tracing::error!("Background operation failed: {}", err);
@@ -868,6 +1028,19 @@ impl App {
                         }
                     }
                 }
+                BgResult::PathsRestored(paths) => {
+                    self.refresh_recycle_bin_feedback();
+                    self.operation_feedback.borrow_mut().complete(paths.iter().cloned(), Instant::now());
+                    self.toast_info(rust_i18n::t!("op_restore_complete", count = paths.len()).into_owned());
+                    info.notify_all = true;
+                }
+                BgResult::RecycleBinStatus(full) => {
+                    self.recycle_bin_status_inflight = false;
+                    self.recycle_bin_status_checked = true;
+                    if let Some(full) = full { self.recycle_bin_full = Some(full); }
+                    if std::mem::take(&mut self.recycle_bin_status_dirty) { self.refresh_recycle_bin_feedback(); }
+                    info.notify_all = true;
+                }
                 BgResult::TransferComplete {
                     id,
                     kind,
@@ -876,6 +1049,8 @@ impl App {
                     affected_tabs,
                 } => {
                     self.state.ops.active_ops.remove(&id);
+                    self.operation_feedback.borrow_mut().finish(id);
+                    self.operation_feedback.borrow_mut().complete(report.completed.iter().map(|(_, dst)| dst.clone()), Instant::now());
                     for err in &report.errors {
                         tracing::error!("transfer: {}", err);
                         self.toast_error(crate::app::ops::op_error_text(err));
@@ -908,7 +1083,9 @@ impl App {
                                 .into_owned(),
                         );
                     }
-                    if !report.cancelled && report.errors.is_empty() && !report.completed.is_empty() {
+                    if !report.cancelled && (!report.skipped.is_empty() || !report.errors.is_empty()) {
+                        self.toast_info(rust_i18n::t!("op_transfer_summary", done = report.completed.len(), skipped = report.skipped.len(), failed = report.errors.len()).into_owned());
+                    } else if !report.cancelled && !report.completed.is_empty() {
                         self.toast_info(
                             rust_i18n::t!("op_transfer_complete", count = report.completed.len())
                                 .into_owned(),
@@ -968,17 +1145,28 @@ impl App {
                         op.current_file = current_file;
                     }
                 }
+                BgResult::TagAssignmentComplete { tag, paths, result } => {
+                    self.operation_feedback.borrow_mut().finish_tag(tag, &paths);
+                    match result {
+                        Ok(()) => {
+                            self.state.tag_cache.assign_local(tag, &paths);
+                            self.operation_feedback.borrow_mut().complete(paths.iter().cloned(), Instant::now());
+                            let staged = paths.iter().filter(|path| self.dropzone_pending_tags.get(*path) == Some(&tag)).cloned().collect::<Vec<_>>();
+                            self.consume_completed_staged_paths(&staged);
+                            self.toast_info(rust_i18n::t!("tags_assignment_complete", count = paths.len()).into_owned());
+                        }
+                        Err(error) => {
+                            tracing::error!(%error, "tag assignment failed");
+                            for path in &paths { if self.dropzone_pending_tags.get(path) == Some(&tag) { self.dropzone_pending_tags.remove(path); } }
+                            self.toast_error(rust_i18n::t!("tags_assignment_failed").into_owned());
+                        }
+                    }
+                    info.notify_all = true;
+                }
                 BgResult::TagDefinitions(defs) => {
                     self.state.tag_cache.apply_definitions(defs);
                 }
                 BgResult::TagsForPaths { tags } => {
-                    let completed = self.dropzone_pending_tags.iter()
-                        .filter(|(path, tag)| tags.get(*path).is_some_and(|assigned| assigned.contains(tag)))
-                        .map(|(path, _)| path.clone()).collect::<Vec<_>>();
-                    if !completed.is_empty() {
-                        self.consume_completed_staged_paths(&completed);
-                        info.notify_all = true;
-                    }
                     // Scope the repaint to panes whose dir contains a tagged path.
                     let mut tabs = std::collections::HashSet::new();
                     for path in tags.keys() {
@@ -988,8 +1176,6 @@ impl App {
                     info.notify_panes.extend(tabs);
                 }
                 BgResult::PathsForTag { tag, paths } => {
-                    let completed = paths.iter().filter(|path| self.dropzone_pending_tags.get(*path) == Some(&tag)).cloned().collect::<Vec<_>>();
-                    self.consume_completed_staged_paths(&completed);
                     self.populate_tag_tabs(tag, paths);
                     info.notify_all = true;
                 }
@@ -1026,8 +1212,13 @@ impl App {
                 BgResult::DeviceActionFailed(error) => {
                     tracing::warn!("device action failed: {error}");
                 }
+                BgResult::VolumeSnapshot(volumes) => {
+                    self.apply_volume_snapshot(volumes);
+                    info.notify_all = true;
+                }
                 BgResult::DevicesChanged => {
                     atlas_core::fs::udisks::invalidate();
+                    self.request_volume_snapshot();
                 }
                 BgResult::ExtCommandDone {
                     ext_id,
@@ -1056,6 +1247,7 @@ impl App {
                 } => {
                     if let Some(ts) = self.state.tab_states.get_mut(&tab) {
                         if op_id == ts.last_nav_op_id {
+                            self.file_filter_projections.remove(&tab);
                             ts.set_entries(entries.into());
                             ts.load_state = LoadState::Loaded;
                         }
@@ -1115,6 +1307,8 @@ impl App {
                 other => self.handle_cloud_bg(other),
             }
         }
+        let hidden = self.update_hidden_operation_notices();
+        if !hidden.is_empty() { info.changed = true; info.notify_panes.extend(hidden); }
         // Directory refreshes can reorder or remove the edited entry. Rendering
         // follows its path; release focus if that path no longer exists here.
         if let Some(edit) = self.rename_edit.as_ref() {
@@ -1126,9 +1320,9 @@ impl App {
                     ts.miller
                         .columns
                         .iter()
-                        .any(|col| col.entries.iter().any(|entry| entry.path == edit.path))
+                        .any(|col| col.entries.iter().any(|entry| entry.path() == edit.path))
                 } else {
-                    ts.entries.iter().any(|entry| entry.path == edit.path)
+                    ts.entries.iter().any(|entry| entry.path() == edit.path)
                 }
             });
             if !present {
@@ -1137,7 +1331,77 @@ impl App {
                 info.notify_all = true;
             }
         }
+        #[cfg(windows)]
+        if self.pending_tab_restore.as_ref().is_some_and(|(id, _)| self.state.tab_states.get(id)
+            .is_some_and(|state| matches!(state.load_state, LoadState::Loaded))) {
+            if let Some((id, mut transfer)) = self.pending_tab_restore.take() {
+                let current = self.tab_data_for(id).is_some_and(|tab| tab.location == transfer.tab.location)
+                    && self.state.tab_states.get(&id).is_some_and(|state| transfer.matches_runtime_search(state));
+                if !current { return info; }
+                if !transfer.restore_initialized {
+                    if let Some(state) = self.state.tab_states.get_mut(&id) {
+                        state.tree.expanded = transfer.tree_expanded.iter().cloned().collect();
+                        if !transfer.miller_columns.is_empty() {
+                            state.miller.columns = transfer.miller_columns.iter().map(|column|
+                                atlas_model::tab::MillerColumn::new(column.location.clone())).collect();
+                            state.miller.focused = transfer.miller_focused.min(state.miller.columns.len().saturating_sub(1));
+                        }
+                    }
+                    for path in &transfer.tree_expanded { self.spawn_list_tree(id, path.clone()); }
+                    for column in &transfer.miller_columns { self.spawn_miller_list(id, column.location.clone()); }
+                    transfer.restore_initialized = true;
+                }
+                let ready = self.state.tab_states.get(&id).is_some_and(|state|
+                    transfer.search_results_ready(state) &&
+                    transfer.tree_expanded.iter().all(|path| state.tree.children.contains_key(path)) &&
+                    (transfer.miller_columns.is_empty() || state.miller.columns.iter().all(|column|
+                        matches!(column.load_state, LoadState::Loaded | LoadState::Error(_)))));
+                if !ready {
+                    self.pending_tab_restore = Some((id, transfer));
+                    info.notify_panes.push(id);
+                    return info;
+                }
+                if let Some(state) = self.state.tab_states.get_mut(&id) {
+                    transfer.restore_selection(state);
+                }
+                let offset = transfer.scroll_offset.map(|value| if value.is_finite() { value.min(0.0) } else { 0.0 });
+                self.scroll_handles.entry(id).or_default().0.borrow().base_handle.set_offset(gpui::point(gpui::px(offset[0]), gpui::px(offset[1])));
+                for (index, column) in transfer.miller_columns.iter().enumerate() {
+                    let offset = column.scroll_offset.map(|v| if v.is_finite() { v.min(0.0) } else { 0.0 });
+                    self.miller_scroll_handles.entry((id, index)).or_default().0.borrow().base_handle
+                        .set_offset(gpui::point(gpui::px(offset[0]), gpui::px(offset[1])));
+                }
+                info.notify_panes.push(id);
+            }
+        }
         info
+    }
+}
+
+fn renamed_path(path: &std::path::Path, changes: &[atlas_model::app_state::FsChange]) -> PathBuf {
+    changes.iter().fold(path.to_path_buf(), |path, change| {
+        if let atlas_model::app_state::FsChange::Rename { from, entry } = change {
+            if *from == path { return entry.path(); }
+        }
+        path
+    })
+}
+
+fn apply_directory_delta(entries: &mut Vec<atlas_model::file_entry::FileEntry>, changes: &[atlas_model::app_state::FsChange]) {
+    use atlas_model::app_state::FsChange;
+    for change in changes {
+        match change {
+            FsChange::Remove(path) => entries.retain(|entry| entry.path() != *path),
+            FsChange::Rename { from, entry } => {
+                entries.retain(|existing| existing.path() != *from && existing.path() != entry.path());
+                entries.push(entry.clone());
+            }
+            FsChange::Upsert(entry) => {
+                if let Some(existing) = entries.iter_mut().find(|existing| existing.path() == entry.path()) {
+                    *existing = entry.clone();
+                } else { entries.push(entry.clone()); }
+            }
+        }
     }
 }
 
@@ -1156,6 +1420,28 @@ fn toast_ttl(kind: ToastKind) -> Duration {
 mod tests {
     use super::{toast_alive, Toast, ToastKind};
     use std::time::{Duration, Instant};
+
+    fn entry(name: &str, bytes: u64) -> atlas_model::file_entry::FileEntry {
+        atlas_model::file_entry::FileEntry::from(atlas_model::file_entry::FileEntryData {
+            name: name.into(), path: name.into(),
+            kind: atlas_model::file_entry::FileKind::File, size: Some(bytes), modified: None,
+            _is_hidden: false, _is_symlink: false, archive_root: None, recycle_info: None,
+        })
+    }
+
+    #[test]
+    fn watcher_deltas_replace_metadata_remove_and_rename_without_duplicates() {
+        use atlas_model::app_state::FsChange;
+        let mut entries = vec![entry("a", 1), entry("b", 2), entry("c", 3)];
+        let changes = vec![FsChange::Upsert(entry("a", 10)),
+            FsChange::Rename { from: "b".into(), entry: entry("d", 2) },
+            FsChange::Remove("c".into()), FsChange::Upsert(entry("e", 5)),
+            FsChange::Upsert(entry("e", 6))];
+        super::apply_directory_delta(&mut entries, &changes);
+        assert_eq!(entries.iter().map(|entry| (entry.name.as_str(), entry.size())).collect::<Vec<_>>(),
+            vec![("a", Some(10)), ("d", Some(2)), ("e", Some(6))]);
+        assert_eq!(super::renamed_path(std::path::Path::new("b"), &changes), std::path::PathBuf::from("d"));
+    }
 
     #[test]
     fn toast_lifetimes_match_kind() {

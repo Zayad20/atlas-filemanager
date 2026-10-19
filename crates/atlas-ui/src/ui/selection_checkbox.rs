@@ -10,12 +10,159 @@ use gpui::{
     ParentElement, RenderOnce, SharedString, Styled, Window,
 };
 use gpui_component::ActiveTheme;
+use std::collections::HashMap;
+use std::hash::Hash;
+use std::time::Instant;
 
 pub const ANIM_SECS: f32 = 0.18;
+/// Checkbox size (logical px) in row views; it replaces the row's file icon.
+pub const ROW_SIZE: f32 = 15.0;
 pub const SPRING: crate::ui::motion::Spring = crate::ui::motion::Spring {
     omega: 34.0,
     zeta: 0.56,
 };
+
+/// Visible checkbox transitions, keyed by file identity instead of recycled indices.
+/// Ordinary repaints and hover never restart the selection pop.
+pub(crate) struct SelectionFeedback<K> {
+    visible: HashMap<K, Option<Instant>>,
+}
+
+impl<K: Eq + Hash + Clone> Default for SelectionFeedback<K> {
+    fn default() -> Self {
+        Self {
+            visible: HashMap::new(),
+        }
+    }
+}
+
+impl<K: Eq + Hash + Clone> SelectionFeedback<K> {
+    pub(crate) fn sample(&mut self, items: &[(K, bool)], now: Instant) -> Vec<Option<Instant>> {
+        let mut next = HashMap::with_capacity(items.len());
+        let timestamps = items
+            .iter()
+            .map(|(key, shown)| {
+                let at = shown.then(|| self.visible.get(key).copied().flatten().unwrap_or(now));
+                next.insert(key.clone(), at);
+                at
+            })
+            .collect();
+        self.visible = next;
+        timestamps
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn checkbox_feedback_follows_identity_without_restarting_on_repaint_or_sort() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(1);
+        let mut feedback = SelectionFeedback::default();
+        assert_eq!(
+            feedback.sample(&[("a", false), ("b", false)], now),
+            [None, None]
+        );
+        assert_eq!(
+            feedback.sample(&[("a", true), ("b", true)], later),
+            [Some(later), Some(later)]
+        );
+        assert_eq!(
+            feedback.sample(&[("b", true), ("a", true)], later + Duration::from_secs(1)),
+            [Some(later), Some(later)]
+        );
+        feedback.sample(&[("a", false), ("b", true)], later);
+        assert_eq!(
+            feedback.sample(&[("a", true), ("b", true)], now),
+            [Some(now), Some(later)]
+        );
+    }
+
+    #[test]
+    fn checkbox_feedback_prunes_files_that_leave_the_viewport() {
+        let now = Instant::now();
+        let mut feedback = SelectionFeedback::default();
+        feedback.sample(&[("a", true), ("b", true)], now);
+        feedback.sample(&[("b", true)], now);
+        assert_eq!(feedback.visible.len(), 1);
+        assert!(!feedback.visible.contains_key("a"));
+        feedback.sample(&[], now);
+        assert!(feedback.visible.is_empty());
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckState {
+    Empty,
+    Mixed,
+    Checked,
+}
+
+/// IMM control form, including the indeterminate state used by table headers.
+pub(crate) fn paint_control(
+    window: &mut Window,
+    cx: &mut gpui::App,
+    center: gpui::Point<gpui::Pixels>,
+    size_px: f32,
+    state: CheckState,
+    disabled: bool,
+) {
+    let theme = cx.theme();
+    let filled = state != CheckState::Empty;
+    let border = if filled {
+        theme.accent
+    } else {
+        theme
+            .muted_foreground
+            .opacity(if disabled { 0.3 } else { 0.65 })
+    };
+    let mark = theme.accent_foreground;
+    let fill = if filled {
+        theme.accent
+    } else {
+        gpui::transparent_black()
+    };
+    let bounds = Bounds {
+        origin: point(center.x - px(size_px * 0.5), center.y - px(size_px * 0.5)),
+        size: size(px(size_px), px(size_px)),
+    };
+    window.paint_quad(gpui::quad(
+        bounds,
+        gpui::Corners::all(px(size_px * 0.30)),
+        fill,
+        gpui::Edges::all(px(size_px * (1.5 / 14.0))),
+        border,
+        Default::default(),
+    ));
+    if state == CheckState::Mixed {
+        window.paint_quad(gpui::fill(
+            Bounds {
+                origin: point(center.x - px(size_px * 0.24), center.y - px(0.75)),
+                size: size(px(size_px * 0.48), px(1.5)),
+            },
+            mark,
+        ));
+    } else if state == CheckState::Checked {
+        let mark_size = size_px * 0.8;
+        let _ = window.paint_svg(
+            Bounds {
+                origin: point(
+                    center.x - px(mark_size * 0.5),
+                    center.y - px(mark_size * 0.5),
+                ),
+                size: size(px(mark_size), px(mark_size)),
+            },
+            "icons/check.svg".into(),
+            None,
+            Default::default(),
+            mark,
+            cx,
+        );
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct SelectionCheckboxColors {

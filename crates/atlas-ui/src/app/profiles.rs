@@ -4,10 +4,87 @@ use atlas_model::pane::TabData;
 use std::path::PathBuf;
 
 impl App {
+    pub(crate) fn request_volume_snapshot(&self) {
+        #[cfg(windows)]
+        {
+            let tx = self.tx.clone();
+            self.rt.spawn_blocking(move || {
+                let _ = tx.send(atlas_model::app_state::BgResult::VolumeSnapshot(
+                    atlas_win_space::storage::mounted_volume_serials()));
+            });
+        }
+    }
+
+    pub(crate) fn apply_volume_snapshot(&mut self, volumes: Vec<(PathBuf, u32)>) {
+        atlas_core::util::config::set_volume_snapshot(&volumes);
+        let mut result = self.state.profiles.reconcile_volume_paths(&volumes);
+        let mut navigations = Vec::new();
+        for (id, tile) in self.state.pane_tree.tiles.iter_mut() {
+            if let Tile::Pane(tab) = tile {
+                let old = tab.location.clone();
+                let old_path = tab.volume_path().map(std::path::Path::to_path_buf);
+                result.changed |= tab.reconcile_volume(&volumes);
+                if old != tab.location {
+                    if let (Some(old), Some(new)) = (old_path, tab.volume_path()) {
+                        result.moved.push((old, new.to_path_buf()));
+                    }
+                    navigations.push((*id, tab.location.clone()));
+                }
+            }
+        }
+        self.mounted_volumes = volumes;
+        let focused = self.state.focused_tile;
+        for (id, location) in navigations {
+            self.navigate_to(id, location, super::nav::NavKind::Push);
+        }
+        self.state.focused_tile = focused;
+        if result.changed {
+            atlas_core::util::config::save_profiles(&self.state.profiles);
+            atlas_core::util::config::save_session(&self.state.pane_tree);
+        }
+        let mut notified = std::collections::HashSet::new();
+        for (old, new) in result.moved {
+            let from = old.to_string_lossy().chars().take(2).collect::<String>();
+            let to = new.to_string_lossy().chars().take(2).collect::<String>();
+            if notified.insert((from.clone(), to.clone())) {
+                self.toast_info(rust_i18n::t!("volume_path_updated", from = from, to = to).to_string());
+            }
+        }
+    }
+
+    pub(crate) fn details_prefs_for(&self, pane: atlas_model::pane::TabId) -> crate::app::DetailsColumnPrefs {
+        let fallback = crate::app::DetailsColumnPrefs { widths: self.col_widths, order: self.details_column_order };
+        let Some(columns) = self.tab_data_for(pane).and_then(|tab| tab.details_columns.as_ref()) else { return fallback; };
+        if columns.ratios.iter().any(|v| !v.is_finite() || *v < 0.0) { return fallback; }
+        let sum: f32 = columns.ratios.iter().sum();
+        if sum <= f32::EPSILON { return fallback; }
+        let mut order = crate::app::DetailsColumn::DEFAULT_ORDER;
+        for (slot, key) in order.iter_mut().zip(&columns.order) {
+            *slot = match key.as_str() { "size" => crate::app::DetailsColumn::Size, "modified" => crate::app::DetailsColumn::Modified,
+                "type" => crate::app::DetailsColumn::Type, _ => return fallback };
+        }
+        if order[0] == order[1] || order[1] == order[2] || order[0] == order[2] { return fallback; }
+        let [name, size, modified, type_w] = columns.ratios.map(|v| v / sum * 650.0);
+        crate::app::DetailsColumnPrefs { widths: crate::app::ColWidths {
+            name, size, modified, type_w, reference_width: Some(650.0),
+        }, order }
+    }
+
+    pub(crate) fn set_details_prefs(&mut self, pane: atlas_model::pane::TabId, prefs: crate::app::DetailsColumnPrefs) {
+        let values = [prefs.widths.name, prefs.widths.size, prefs.widths.modified, prefs.widths.type_w];
+        let sum = values.iter().sum::<f32>().max(1.0);
+        if let Some(atlas_model::layout_tree::Tile::Pane(tab)) = self.state.pane_tree.tiles.get_mut(pane) {
+            tab.details_columns = Some(atlas_model::profiles::FolderColumns {
+                ratios: values.map(|v| v / sum), order: prefs.order.map(|c| c.key().to_string()),
+            });
+        }
+    }
+
     pub(crate) fn switch_profile(&mut self, idx: usize) {
         if idx == self.state.profiles.active_idx || idx >= self.state.profiles.profiles.len() {
             return;
         }
+        self.file_filter_projections.clear();
 
         // Snapshot current tree + view/layout knobs into the active profile
         // before leaving, so they restore when we come back.
@@ -73,13 +150,13 @@ impl App {
         // Kick off directory loads for every pane in the restored tree
         let show_hidden = self.state.settings.show_hidden;
         for tile_id in pane_ids {
-            let (loc, sort_col, sort_dir, folders_first) =
+            let (loc, sort_col, sort_dir, folder_order) =
                 match self.state.pane_tree.tiles.get(tile_id) {
                     Some(Tile::Pane(p)) => (
                         p.location.clone(),
                         p.sort_col.clone(),
                         p.sort_dir.clone(),
-                        p.folders_first,
+                        p.folder_order,
                     ),
                     _ => continue,
                 };
@@ -97,17 +174,22 @@ impl App {
 
             let tx_clone = self.tx.clone();
             self.rt.spawn(async move {
+                let started = std::time::Instant::now();
                 match atlas_core::fs::list::list_dir(
                     &path,
                     show_hidden,
                     sort_col,
                     sort_dir,
-                    folders_first,
+                    folder_order,
                 )
                 .await
                 {
-                    Ok(mut entries) => {
-                        crate::ui::views::details::format_entries(&mut entries);
+                    Ok(entries) => {
+                        let has_excluded_items = super::fs_sync::has_excluded_directory_items(&path, show_hidden, entries.is_empty()).await;
+                        let _ = tx_clone.send(atlas_model::app_state::BgResult::DirListExclusions { tab: tile_id, op_id, has_excluded_items });
+                        let _ = tx_clone.send(atlas_model::app_state::BgResult::DirListTiming {
+                            tab: tile_id, op_id, elapsed: started.elapsed(),
+                        });
                         let _ = tx_clone.send(atlas_model::app_state::BgResult::DirListed {
                             tab: tile_id,
                             op_id,
@@ -270,15 +352,21 @@ impl atlas_model::profiles::ProfileScoped for DetailsColumns {
 impl App {
     /// Snapshot the live column widths + order into the active profile and persist.
     /// Called on resize/reorder release (discrete events — no debounce needed).
-    pub(crate) fn persist_details_columns(&mut self) {
-        let prefs = crate::app::DetailsColumnPrefs {
-            widths: self.col_widths,
-            order: self.details_column_order,
-        };
+    pub(crate) fn persist_details_columns(&mut self, pane: atlas_model::pane::TabId) {
+        let prefs = self.details_prefs_for(pane);
+        self.col_widths = prefs.widths;
+        self.details_column_order = prefs.order;
         self.state
             .profiles
             .active_mut()
             .set_scoped::<DetailsColumns>(&prefs);
+        let folder = self.tab_data_for(pane).and_then(|tab| match &tab.location {
+            atlas_model::location::Location::Directory(path) => Some((path.clone(), atlas_model::profiles::FolderViewPref {
+                view_mode: tab.view_mode.clone(), sort_col: tab.sort_col.clone(), sort_dir: tab.sort_dir.clone(),
+                recursive: false, columns: tab.details_columns.clone(),
+            })), _ => None,
+        });
+        self.save_folder_view_pref(folder);
         atlas_core::util::config::save_profiles(&self.state.profiles);
     }
 }

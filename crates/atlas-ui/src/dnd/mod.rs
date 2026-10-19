@@ -348,6 +348,14 @@ pub struct DropZones {
     /// Last drag cursor in logical window coordinates. The OLE modal loop can
     /// starve the async queue drain, while the paint canvas still ticks.
     pub cursor: Option<(f32, f32)>,
+    /// Real-file payload cached once at DragEnter; never materialize virtual
+    /// files or touch the filesystem from the animation loop.
+    pub paths: Vec<PathBuf>,
+    pub ctrl: bool,
+    pub shift: bool,
+    /// Same ordered hover targets and live tab destinations used by drop routing.
+    #[cfg(windows)]
+    pub(crate) hover_snapshot: Option<crate::ui::drag_hover::NativeDropSnapshot>,
     zones: Vec<DropZone>,
 }
 

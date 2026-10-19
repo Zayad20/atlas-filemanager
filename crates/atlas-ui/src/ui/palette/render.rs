@@ -33,18 +33,20 @@ use gpui_component::StyledExt as _;
 use gpui_component::{h_flex, kbd::Kbd, tooltip::Tooltip, v_flex, ActiveTheme};
 use std::rc::Rc;
 
+pub const EXPERIMENTAL_IMM_PALETTE: bool = true;
+
 pub(crate) const PANEL_WIDTH: f32 = 620.0;
-const PANEL_MAX_VIEWPORT_RATIO: f32 = 0.60;
-const PANEL_TOP_VIEWPORT_RATIO: f32 = 0.20;
-const PANEL_MIN_VISIBLE_ROWS: f32 = 2.0;
-const PANEL_HEADER_HEIGHT: f32 = 26.0;
-const PANEL_ITEM_HEIGHT: f32 = 34.0;
-const PANEL_COMPACT_ITEM_HEIGHT: f32 = 26.0;
-const PANEL_ITEM_WITH_DESC_HEIGHT: f32 = 52.0;
-const PANEL_LIST_PADDING: f32 = 8.0;
-const PANEL_SEARCH_HEIGHT: f32 = 45.0;
-const PANEL_FOOTER_HEIGHT: f32 = 32.0;
-const SCROLLBAR_GUTTER: f32 = 16.0;
+pub(crate) const PANEL_MAX_VIEWPORT_RATIO: f32 = 0.60;
+pub(crate) const PANEL_TOP_VIEWPORT_RATIO: f32 = 0.20;
+pub(crate) const PANEL_MIN_VISIBLE_ROWS: f32 = 2.0;
+pub(crate) const PANEL_HEADER_HEIGHT: f32 = 26.0;
+pub(crate) const PANEL_ITEM_HEIGHT: f32 = 34.0;
+pub(crate) const PANEL_COMPACT_ITEM_HEIGHT: f32 = 26.0;
+pub(crate) const PANEL_ITEM_WITH_DESC_HEIGHT: f32 = 52.0;
+pub(crate) const PANEL_LIST_PADDING: f32 = 8.0;
+pub(crate) const PANEL_SEARCH_HEIGHT: f32 = 45.0;
+pub(crate) const PANEL_FOOTER_HEIGHT: f32 = 32.0;
+pub(crate) const SCROLLBAR_GUTTER: f32 = 16.0;
 // Open/close tween shared by every palette. gpui can't transform-scale a div, so
 // the "grow" is the panel's width going 80%→100% (centered by the scrim)
 // alongside opacity. `PALETTE_CLOSE_MS` must be ≤ `App::PALETTE_CLOSE_FINALIZE`
@@ -52,7 +54,7 @@ const SCROLLBAR_GUTTER: f32 = 16.0;
 pub(crate) const PALETTE_OPEN_MS: u64 = 150;
 pub(crate) const PALETTE_CLOSE_MS: u64 = 130;
 /// Left inset for items under a titled header (chevron + icon width).
-const SECTION_INDENT: f32 = 26.0;
+pub(crate) const SECTION_INDENT: f32 = 26.0;
 
 /// One keyboard-selectable row in the flattened, collapse-aware list.
 enum KeyRow {
@@ -323,6 +325,74 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.render_palette_panel(spec, input, window, cx)
+    }
+
+    pub(crate) fn render_palette_panel(
+        &mut self,
+        spec: PaletteSpec,
+        input: &Entity<InputState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if EXPERIMENTAL_IMM_PALETTE {
+            let colors = {
+                let t = cx.theme();
+                PaletteColors {
+                    fg: t.popover_foreground,
+                    muted: t.muted_foreground,
+                    muted_bg: t.muted,
+                    accent: t.accent,
+                    accent_fg: t.accent_foreground,
+                    border: t.border,
+                }
+            };
+            let kind = spec.kind;
+            let (smooth_ease, smooth_boost) =
+                crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
+            self.palette_scroll.set_smooth(smooth_ease, smooth_boost);
+            let closing = matches!(self.palette_closing, Some((k, _)) if k == kind);
+            let (query, selected_idx, expanded, collapsed) = {
+                let state = kind.state(self);
+                (
+                    state.query.clone(),
+                    state.selected_idx,
+                    state.expanded,
+                    state.collapsed_sections.clone(),
+                )
+            };
+            let active_theme = self.state.profiles.active().theme.clone();
+            let windows_theme = crate::ui::icons::is_windows_theme(&active_theme);
+            let zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
+            let scroll_top = (-f32::from(self.palette_scroll.offset().y)).max(0.0);
+
+            let input_element = div().child(crate::ui::text_input::flat(input)).into_any_element();
+
+            let imm_element = super::palette_imm::PaletteImmElement::new(
+                cx.entity().downgrade(),
+                kind,
+                spec.id,
+                query,
+                Some(input.clone()),
+                Some(input_element),
+                spec.search_prefix,
+                spec.search_buttons,
+                spec.sections,
+                collapsed,
+                spec.empty_text,
+                spec.footer,
+                colors,
+                selected_idx,
+                expanded,
+                scroll_top,
+                zoom,
+                windows_theme,
+                closing,
+            );
+            // Match the retained palette's overlay contract: stay outside the
+            // workspace flex layout and paint above cached panes and chrome.
+            return gpui::deferred(imm_element.absolute().inset_0()).into_any_element();
+        }
         let colors = {
             let t = cx.theme();
             PaletteColors {
@@ -517,7 +587,8 @@ impl App {
         let footer = palette_footer(&spec.footer, result_count, colors, window);
         let viewport_h = f32::from(window.bounds().size.height);
         let max_panel_h = viewport_h * PANEL_MAX_VIEWPORT_RATIO;
-        let chrome_h = PANEL_SEARCH_HEIGHT
+        let conflict = self.shortcut_conflict_message(cx);
+        let chrome_h = PANEL_SEARCH_HEIGHT + if conflict.is_some() { 32.0 } else { 0.0 }
             + if footer.is_some() {
                 PANEL_FOOTER_HEIGHT
             } else {
@@ -542,7 +613,7 @@ impl App {
         let input_for_keys = input.clone();
         let rows_for_keys = key_rows.clone();
         let input_for_tab = input.clone();
-        let panel = v_flex()
+        let panel = crate::input::shortcuts::capture_shortcut_input_actions(v_flex(), cx)
             .w(px(panel_width))
             .h(px(panel_h))
             .popover_style(cx)
@@ -609,6 +680,8 @@ impl App {
                 }
             }))
             .child(search_row)
+            .when_some(conflict, |panel, message| panel.child(div().px_3().py_1().text_sm()
+                .text_color(cx.theme().danger).child(message)))
             .child(results)
             .children(footer);
 
@@ -699,7 +772,7 @@ impl App {
             .into_any_element()
     }
 
-    fn toggle_palette_section(&mut self, kind: PaletteKind, section_id: &str) {
+    pub(crate) fn toggle_palette_section(&mut self, kind: PaletteKind, section_id: &str) {
         let state = kind.state(self);
         if !state.collapsed_sections.remove(section_id) {
             state.collapsed_sections.insert(section_id.to_string());

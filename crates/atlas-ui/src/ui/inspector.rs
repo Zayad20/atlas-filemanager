@@ -112,6 +112,9 @@ fn preview_fingerprint(app: &App) -> u64 {
         .to_bits()
         .hash(&mut hasher);
     app.preview_visible_for_focused().hash(&mut hasher);
+    if app.preview_visible_for_focused() {
+        app.state.active_preview_request().hash(&mut hasher);
+    }
 
     if let Some(tab_data) = app.state.active_tab_data() {
         tab_data.preview_enabled.hash(&mut hasher);
@@ -129,6 +132,7 @@ fn preview_fingerprint(app: &App) -> u64 {
     }
 
     hash_preview_result(app.state.preview.results.get(&tab), &mut hasher);
+    app.state.preview.metadata.get(&tab).hash(&mut hasher);
 
     if let Some(multi) = app.state.preview.multi.get(&tab) {
         1u8.hash(&mut hasher);
@@ -444,10 +448,12 @@ impl App {
     pub(crate) fn sync_active_preview_gpui(&mut self) {
         let tab = self.state.focused_tile;
         if !self.preview_visible_for_focused() {
+            self.cancel_pending_preview();
             return;
         }
         let request = self.state.active_preview_request();
         let Some(request) = request else {
+            self.cancel_pending_preview();
             self.state.clear_preview(tab);
             return;
         };
@@ -465,13 +471,24 @@ impl App {
                 .is_some_and(|multi| &multi.key == key),
         };
         if already_loaded {
+            self.cancel_pending_preview();
             return;
         }
+        self.preview_delay.schedule(tab, request, &self.rt, self.tx.clone());
+    }
 
-        // A render only happens when state changed (selection/nav already called
-        // `cx.notify()`), so we kick the load immediately. Superseded loads are
-        // discarded on arrival (`BgResult::PreviewReady` checks `preview.paths`),
-        // so fast arrow-key scrolling is still safe.
+    fn cancel_pending_preview(&mut self) {
+        self.preview_delay.cancel();
+    }
+
+    pub(crate) fn load_delayed_preview(&mut self, tab: TileId, request: PreviewRequest, generation: u64) {
+        if !self.preview_delay.accepts(tab, &request, generation) { return; }
+        if self.state.focused_tile != tab || !self.preview_visible_for_focused()
+            || self.state.active_preview_request().as_ref() != Some(&request) {
+            self.cancel_pending_preview();
+            return;
+        }
+        self.cancel_pending_preview();
         match request {
             PreviewRequest::Single(path) => self.load_preview_gpui(tab, path),
             PreviewRequest::ArchiveSingle { archive, inner } => {
@@ -507,10 +524,21 @@ impl App {
         }
         self.preview_drag = None;
         self.state.preview.paths.insert(tab, path.clone());
+        self.state.preview.metadata.remove(&tab);
         self.state.preview.results.remove(&tab);
         self.state.preview.multi.remove(&tab);
         self.preview_textures.remove(&tab);
         let tx = self.tx.clone();
+        if atlas_core::fs::preview::is_cloud_placeholder(&path) {
+            let _ = tx.send(atlas_model::app_state::BgResult::PreviewReady { tab, path,
+                result: PreviewResult::Error(rust_i18n::t!("preview_cloud_offline").to_string()) });
+            return;
+        }
+        let metadata_path = path.clone();
+        let metadata_tx = tx.clone();
+        self.rt.spawn(async move {
+            atlas_core::fs::preview::metadata::load(tab, metadata_path, metadata_tx).await;
+        });
         let previewer = path
             .extension()
             .and_then(|e| e.to_str())
@@ -714,6 +742,8 @@ impl App {
 
     // ── Rendering ────────────────────────────────────────────────────────────
 
+    pub const EXPERIMENTAL_IMM_INSPECTOR: bool = true;
+
     /// Render the inspector panel (right side of the central row). The caller in
     /// `root.rs` only invokes this when `preview_visible_for_focused()` is true.
     pub(crate) fn render_inspector(
@@ -764,6 +794,76 @@ impl App {
             .zip(self.state.active_tab_data())
             .map(|(tab, data)| selection_summary(tab, &data.view_mode))
             .unwrap_or_default();
+
+        if Self::EXPERIMENTAL_IMM_INSPECTOR {
+            let active_theme = self.state.profiles.active().theme.as_str();
+            let is_glass = active_theme.ends_with(" Glass");
+            let windows_theme = crate::ui::icons::is_windows_theme(active_theme);
+            let zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
+            let pane_id = self.state.focused_tile;
+            let titlebar_offset = if self.state.settings.show_titlebar {
+                if windows_theme { 46.0 * zoom } else { 34.0 * zoom }
+            } else {
+                0.0
+            };
+            let (panel_bg, panel_border) = {
+                let t = cx.theme();
+                (
+                    if is_glass {
+                        t.sidebar
+                    } else {
+                        backdrop_tint(t.secondary, 0.10)
+                    },
+                    t.border,
+                )
+            };
+            let colors = crate::ui::inspector_imm::InspectorImmColors {
+                fg,
+                muted,
+                bg: panel_bg,
+                surface: backdrop_tint(panel_bg, 0.16),
+                border: panel_border,
+                hover: layer_color(panel_bg, 0.08, 0.8),
+                accent: cx.theme().accent,
+                danger,
+                keyword: cx.theme().accent,
+                type_color: cx.theme().accent,
+                string_color: cx.theme().foreground,
+                number_color: cx.theme().muted_foreground,
+                comment_color: cx.theme().muted_foreground,
+            };
+
+            let texture = self.focused_preview_texture();
+            let multi_textures = self.focused_multi_textures();
+            let preview_result = self.state.preview.results.get(&pane_id).cloned().map(Arc::new);
+
+            let image_interactive = texture.is_some() && summary.count == 1;
+            let imm_element = crate::ui::inspector_imm::InspectorImmElement::new(
+                pane_id,
+                cx.entity().downgrade(),
+                summary.single.clone(),
+                summary.clone(),
+                preview_result,
+                texture,
+                multi_textures,
+                expanded,
+                zoom,
+                windows_theme,
+                is_glass,
+                titlebar_offset,
+                colors,
+            ).image_view(self.preview_view_for_focused()).disable_animations(self.state.settings.disable_animations);
+
+            let app_entity = cx.entity();
+            let mut host = div()
+                .id("inspector-imm-host")
+                .w(px(width))
+                .h_full();
+            if let Some(entry) = summary.single.as_ref().filter(|_| !image_interactive) {
+                host = host.on_file_drag_anchor(app_entity, entry.path.clone());
+            }
+            return host.child(imm_element).into_any_element();
+        }
 
         let active_theme = self.state.profiles.active().theme.as_str();
         let is_glass = active_theme.ends_with(" Glass");
@@ -837,7 +937,7 @@ impl App {
                                 div()
                                     .truncate()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child(entry.name.clone()),
+                                    .child(entry.name.to_string()),
                             )
                             .child(
                                 div()
@@ -860,6 +960,13 @@ impl App {
             }
             if let Some(ext) = &entry.extension {
                 meta = meta.child(rust_i18n::t!("inspector_type", ext = ext).to_string());
+            }
+            if let Some((path, properties)) = self.state.preview.metadata.get(&self.state.focused_tile) {
+                if path == &entry.path {
+                    for (label, value) in properties {
+                        meta = meta.child(div().child(format!("{label}: {value}")));
+                    }
+                }
             }
             col = col.child(meta);
         }
@@ -1399,7 +1506,7 @@ impl App {
                     .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _w, cx| {
                         let dy = match ev.delta {
                             ScrollDelta::Pixels(p) => f32::from(p.y),
-                            ScrollDelta::Lines(l) => l.y,
+                            ScrollDelta::Lines(l) | ScrollDelta::PreciseLines(l) => l.y,
                         };
                         if dy != 0.0 {
                             let tab = this.state.focused_tile;
@@ -2085,7 +2192,7 @@ fn floating_icon_button(
 
 // ── Selection summary (neutral; mirrors the egui inspector's SelectionSummary) ──
 
-#[derive(Default)]
+#[derive(Default, Clone, Debug)]
 pub struct SelectionSummary {
     pub count: usize,
     pub file_count: usize,
@@ -2096,6 +2203,7 @@ pub struct SelectionSummary {
     pub single: Option<SelectedEntry>,
 }
 
+#[derive(Clone, Debug)]
 pub struct SelectedEntry {
     pub name: String,
     pub path: PathBuf,
@@ -2106,38 +2214,21 @@ pub struct SelectedEntry {
 }
 
 fn selection_summary(tab_state: &TabState, view_mode: &ViewMode) -> SelectionSummary {
-    use atlas_model::file_entry::FileEntry;
-
-    let entries: Vec<&FileEntry> = if view_mode == &ViewMode::Miller {
-        tab_state
-            .miller
-            .columns
-            .get(tab_state.miller.focused)
-            .and_then(|c| c.entries.get(c.primary_selected()?))
-            .into_iter()
-            .collect()
-    } else {
-        let mut selected: Vec<usize> = tab_state.selection.selected.iter().copied().collect();
-        selected.sort_unstable();
-        selected
-            .into_iter()
-            .filter_map(|idx| tab_state.entries.get(idx))
-            .collect()
-    };
+    let entries = tab_state.selected_entries(view_mode);
 
     let mut s = SelectionSummary::default();
     for entry in &entries {
         s.count += 1;
-        match entry.kind {
+        match entry.kind() {
             FileKind::Dir => s.dir_count += 1,
             FileKind::File | FileKind::Symlink => s.file_count += 1,
         }
-        if let Some(size) = entry.size {
+        if let Some(size) = entry.size() {
             s.total_size += size;
             s.known_size_count += 1;
         }
         if entry
-            .extension
+            .extension()
             .as_deref()
             .is_some_and(atlas_model::preview_cache::is_image_ext)
         {
@@ -2146,12 +2237,12 @@ fn selection_summary(tab_state: &TabState, view_mode: &ViewMode) -> SelectionSum
     }
     if let [entry] = entries.as_slice() {
         s.single = Some(SelectedEntry {
-            name: entry.name.clone(),
-            path: entry.path.clone(),
-            kind: entry.kind.clone(),
-            size: entry.size,
+            name: entry.name.to_string(),
+            path: entry.path(),
+            kind: entry.kind().clone(),
+            size: entry.size(),
             modified: entry.modified,
-            extension: entry.extension.clone(),
+            extension: entry.extension().as_ref().map(ToString::to_string),
         });
     }
     s

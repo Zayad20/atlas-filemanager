@@ -7,6 +7,8 @@ use gpui::{
 };
 use rust_i18n::t;
 
+mod angular;
+
 use crate::{
     ActiveTheme as _, Colorize as _, Icon, Selectable, Sizable, Size, StyleSized,
     actions::Confirm,
@@ -140,6 +142,7 @@ pub struct ColorPickerState {
     needs_slider_sync: bool,
     suppress_input_change: bool,
     active_tab: usize,
+    angular: angular::AngularState,
     open: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -221,9 +224,22 @@ impl ColorPickerState {
             needs_slider_sync: false,
             suppress_input_change: false,
             active_tab: 0,
+            angular: angular::AngularState::default(),
             open: false,
             _subscriptions,
         }
+    }
+
+    /// Open the hue ring and saturation/value plane by default.
+    pub fn default_angular(mut self) -> Self {
+        self.active_tab = 2;
+        self
+    }
+
+    /// Enable or disable the angular hue marker transition.
+    pub fn angular_animation(mut self, enabled: bool) -> Self {
+        self.angular.animate = enabled;
+        self
     }
 
     /// Set default color value.
@@ -462,13 +478,15 @@ impl ColorPicker {
                         }),
                     )
                     .child(Tab::new().flex_1().label(t!("ColorPicker.Palette")))
-                    .child(Tab::new().flex_1().label(t!("ColorPicker.HSLA"))),
+                    .child(Tab::new().flex_1().label(t!("ColorPicker.HSLA")))
+                    .child(Tab::new().flex_1().label("HSV")),
             )
             .child(match active_tab {
                 0 => self.render_palette_panel(window, cx).into_any_element(),
-                _ => self
+                1 => self
                     .render_slider_tab_panel(slider_color, cx)
                     .into_any_element(),
+                _ => angular::picker(self.state.clone()).into_any_element(),
             })
             .when_some(hovered_color, |this, hovered_color| {
                 this.child(Separator::horizontal()).child(

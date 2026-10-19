@@ -247,6 +247,7 @@ impl App {
     /// Re-list a remote tab at `path` (Access-mode directory descent).
     pub(crate) fn navigate_remote(&mut self, tab_id: TileId, id: RemoteId, path: String) {
         if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id) {
+            pane.volume_serial = None;
             pane.location = Location::Remote {
                 id: id.clone(),
                 path: path.clone(),
@@ -440,8 +441,8 @@ impl App {
                     .iter()
                     .map(|e| {
                         (
-                            e.path.clone(),
-                            matches!(e.kind, atlas_model::file_entry::FileKind::Dir),
+                            e.path(),
+                            matches!(e.kind(), atlas_model::file_entry::FileKind::Dir),
                         )
                     })
                     .collect()

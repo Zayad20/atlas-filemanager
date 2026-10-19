@@ -52,6 +52,23 @@ type StackSafe<T> = T;
 
 const DRAG_THRESHOLD: f64 = 2.;
 const DEFAULT_TOOLTIP_SHOW_DELAY: Duration = Duration::from_millis(500);
+
+/// System hover timing shared by native elements and component tooltips.
+pub fn tooltip_show_delay() -> Duration {
+    #[cfg(all(target_os = "windows", not(any(test, feature = "test-support"))))]
+    {
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn SystemParametersInfoW(action: u32, param: u32, value: *mut std::ffi::c_void, flags: u32) -> i32;
+        }
+        let mut milliseconds = 0u32;
+        // SAFETY: SPI_GETMOUSEHOVERTIME writes one DWORD to this live pointer.
+        if unsafe { SystemParametersInfoW(0x0066, 0, (&mut milliseconds as *mut u32).cast(), 0) } != 0 {
+            return Duration::from_millis(u64::from(milliseconds));
+        }
+    }
+    DEFAULT_TOOLTIP_SHOW_DELAY
+}
 const HOVERABLE_TOOLTIP_HIDE_DELAY: Duration = Duration::from_millis(500);
 
 /// The styling information for a given group.
@@ -2863,7 +2880,11 @@ impl Interactivity {
             // 0.00000x pixels. As we generally don't benefit from a precision that
             // high for the maximum scroll, we round the scroll max to 2 decimal
             // places here.
-            let padded_content_size = self.content_size + padding_size;
+            let mut padded_content_size = self.content_size + padding_size;
+            if self.content_size.height > px(0.0) {
+                let ratio = tracked_scroll_handle.as_ref().map_or(0.0, |handle| handle.bottom_margin_ratio);
+                padded_content_size.height += bounds.size.height * ratio;
+            }
             let scroll_max = Point::from(padded_content_size - bounds.size)
                 .map(round_to_two_decimals)
                 .max(&Default::default());
@@ -3779,7 +3800,8 @@ impl Interactivity {
             let overflow = style.overflow;
             let allow_concurrent_scroll = style.allow_concurrent_scroll;
             let restrict_scroll_to_axis = style.restrict_scroll_to_axis;
-            let line_height = window.line_height();
+            let line_height = tracked_handle.as_ref().and_then(|handle| handle.line_scroll_height())
+                .unwrap_or_else(|| window.line_height());
             let hitbox = hitbox.clone();
             let current_view = window.current_view();
             window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
@@ -4276,7 +4298,7 @@ pub(crate) fn register_tooltip_mouse_handlers(
     window: &mut Window,
 ) {
     let current_view = window.current_view();
-    let show_delay = show_delay.unwrap_or(DEFAULT_TOOLTIP_SHOW_DELAY);
+    let show_delay = show_delay.unwrap_or_else(tooltip_show_delay);
 
     window.on_mouse_event({
         let active_tooltip = active_tooltip.clone();
@@ -4728,6 +4750,8 @@ struct ScrollHandleState {
     smooth_ease: f32,
     /// Per-notch travel multiplier for line-wheel smoothing (gives the glide body).
     smooth_boost: f32,
+    bottom_margin_ratio: f32,
+    line_scroll_height: Option<Pixels>,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -4756,6 +4780,56 @@ impl Default for ScrollHandle {
 }
 
 impl ScrollHandle {
+    /// Optional scroll space after the last item, as a fraction of the viewport.
+    /// Default is zero; capped below one viewport to keep real content visible.
+    pub fn set_bottom_scroll_margin(&self, ratio: f32) {
+        self.0.borrow_mut().bottom_margin_ratio = if ratio.is_finite() { ratio.clamp(0.0, 0.9) } else { 0.0 };
+    }
+
+    /// Configured trailing space, in viewport fractions.
+    pub fn bottom_scroll_margin(&self) -> f32 { self.0.borrow().bottom_margin_ratio }
+
+    /// Override the font-based wheel unit with the actual row pitch.
+    pub fn set_line_scroll_height(&self, height: Pixels) {
+        self.0.borrow_mut().line_scroll_height = (height > px(0.0)).then_some(height);
+    }
+
+    /// Actual row pitch when the scrollable publishes one.
+    pub fn line_scroll_height(&self) -> Option<Pixels> { self.0.borrow().line_scroll_height }
+
+    /// Publish geometry for a canvas scroller during prepaint and sample the
+    /// same easing engine used by Div. Returns whether another frame is needed.
+    pub fn update_scroll_geometry(&self, bounds: Bounds<Pixels>, content: Size<Pixels>, now: std::time::Instant) -> bool {
+        let mut state = self.0.borrow_mut();
+        let margin = if content.height > Pixels::ZERO { bounds.size.height * state.bottom_margin_ratio } else { Pixels::ZERO };
+        let max = point((content.width - bounds.size.width).max(Pixels::ZERO),
+            (content.height + margin - bounds.size.height).max(Pixels::ZERO));
+        state.bounds = bounds;
+        state.max_offset = max;
+        let offset = *state.offset.borrow();
+        let offset = point(offset.x.clamp(-max.x, Pixels::ZERO), offset.y.clamp(-max.y, Pixels::ZERO));
+        let ease = state.smooth_ease;
+        let next = state.wheel_scroll.sample([offset.x.into(), offset.y.into()], [max.x.into(), max.y.into()], ease, now)
+            .map_or(offset, |next| point(px(next[0]), px(next[1])));
+        *state.offset.borrow_mut() = next;
+        state.wheel_scroll.is_active()
+    }
+
+    /// Canvas scroll input: line wheels ease; precise input applies directly.
+    pub fn apply_scroll_delta(&self, delta: crate::ScrollDelta, now: std::time::Instant) {
+        let mut state = self.0.borrow_mut();
+        let pixels = delta.pixel_delta(state.line_scroll_height.unwrap_or(px(20.0)));
+        let offset = *state.offset.borrow();
+        let max = state.max_offset;
+        if matches!(delta, crate::ScrollDelta::Lines(_)) && state.smooth_ease > 0.0 {
+            state.wheel_scroll.push([offset.x.into(), offset.y.into()], [pixels.x.into(), pixels.y.into()], [max.x.into(), max.y.into()], now);
+        } else {
+            state.wheel_scroll.cancel();
+            *state.offset.borrow_mut() = point((offset.x + pixels.x).clamp(-max.x, Pixels::ZERO),
+                (offset.y + pixels.y).clamp(-max.y, Pixels::ZERO));
+        }
+    }
+
     /// Construct a new scroll handle.
     pub fn new() -> Self {
         Self(Rc::default())
@@ -4905,6 +4979,25 @@ impl ScrollHandle {
         let mut state = self.0.borrow_mut();
         state.wheel_scroll.cancel();
         *state.offset.borrow_mut() = position;
+    }
+
+    /// Animate an absolute programmatic target with the same time-based easing
+    /// as the wheel. Calling set_offset or receiving pixel input cancels it.
+    pub fn set_offset_smooth(&self, position: Point<Pixels>) {
+        let mut state = self.0.borrow_mut();
+        state.wheel_scroll.cancel();
+        if state.smooth_ease <= 0.0 {
+            *state.offset.borrow_mut() = position;
+            return;
+        }
+        let offset = *state.offset.borrow();
+        let max = state.max_offset;
+        state.wheel_scroll.push(
+            [offset.x.into(), offset.y.into()],
+            [(position.x - offset.x).into(), (position.y - offset.y).into()],
+            [max.x.into(), max.y.into()],
+            std::time::Instant::now(),
+        );
     }
 
     /// Configure line-wheel smooth scrolling for this handle. `ease` is the fraction

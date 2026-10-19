@@ -14,7 +14,7 @@ use crate::ui::motion::ease_out_quart;
 use crate::ui::selection_checkbox;
 use crate::ui::surface::paint_rounded;
 use crate::ui::views::grid::{
-    GRID_BUILTIN_ICON, GRID_ICON_AREA, GRID_LABEL_H, GRID_PREVIEW_MAX, GRID_TEXTURE_ICON_MAX,
+    GRID_BUILTIN_ICON, GRID_ICON_AREA, GRID_LABEL_H, GRID_TEXTURE_ICON_MAX,
 };
 use atlas_model::file_entry::FileKind;
 use atlas_model::pane::TabId;
@@ -576,16 +576,19 @@ impl Element for GridSurfaceElement {
         let font_size = self.font_size;
         let layout = self.layout;
         let model = GridHitModel {
+            presented: Vec::new(),
             bounds: Bounds {
                 origin: point(bounds.origin.x, bounds.origin.y + px(self.scroll_y)),
                 size: size(bounds.size.width, px(self.viewport_h)),
             },
             pad_x: self.pad_x,
             pad_y: self.pad_y,
+            scroll_x: 0.0,
             scroll_y: self.scroll_y,
             cell_w: self.cell_w,
             cell_h: self.cell_h,
             cols,
+            major_rows: 0,
             pitch_y: self.pitch_y,
             pitch_x: self.pitch_x,
             visible: visible.clone(),
@@ -630,16 +633,16 @@ impl Element for GridSurfaceElement {
                             .filter_map(|visible_pos| {
                                 let entry_idx = *visible.get(visible_pos)?;
                                 let entry = tab_state.entries.get(entry_idx)?;
-                                matches!(entry.kind, FileKind::Dir).then(|| DragHoverTarget {
-                                    id: DragHoverId::Folder(pane_id, entry.path.clone()),
+                                matches!(entry.kind(), FileKind::Dir).then(|| DragHoverTarget {
+                                    id: DragHoverId::Folder(pane_id, entry.path()),
                                     bounds: model.cell_bounds(visible_pos).intersect(&model.bounds).intersect(&window.content_mask().bounds),
                                     kind: DragHoverKind::Folder,
                                     command: DragHoverCommand::NavigatePathIn(
                                         pane_id,
-                                        entry.path.clone(),
+                                        entry.path(),
                                     ),
                                     drop_command: Some(DragHoverDropCommand::TransferTo(
-                                        entry.path.clone(),
+                                        entry.path(),
                                     )),
                                 })
                             })
@@ -673,9 +676,9 @@ impl Element for GridSurfaceElement {
                     GridSurfaceLayout::Thumbnail => app.grid_hover == Some((pane_id, entry_idx)),
                     GridSurfaceLayout::CompactList => app.list_hover == Some((pane_id, entry_idx)),
                 };
-                let flashing = matches!(entry.kind, FileKind::Dir)
+                let flashing = matches!(entry.kind(), FileKind::Dir)
                     && app.drag_hover.blink_id.as_ref()
-                        == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
+                        == Some(&DragHoverId::Folder(pane_id, entry.path()));
                 let name_color = if selected {
                     colors.accent_fg
                 } else {
@@ -703,7 +706,7 @@ impl Element for GridSurfaceElement {
                     name_color,
                 );
                 let icon =
-                    app.file_icon_for_entry(&entry.path, &entry.kind, entry.extension.as_deref());
+                    app.file_icon_for_entry(&entry.path(), &entry.kind(), entry.extension().as_deref());
                 let previous_selected = state
                     .slots
                     .get(state.index(row))
@@ -914,7 +917,8 @@ impl Element for GridSurfaceElement {
                     };
 
                     window.with_element_opacity(
-                        slot.dimmed.then_some(crate::ui::views::rename::DIM_OPACITY),
+                        Some(crate::ui::views::rename::cut_entry_opacity(&app, pane_id, slot.entry_idx, cx)
+                            * if slot.dimmed { crate::ui::views::rename::DIM_OPACITY } else { 1.0 }),
                         |window| {
                             let background = if slot.selected {
                                 Some(colors.accent)
@@ -952,30 +956,8 @@ impl Element for GridSurfaceElement {
                             } else {
                                 match &slot.icon {
                                     FileIcon::PreviewTexture(tex) => {
-                                        let natural = tex.size(0);
-                                        let natural_w = i32::from(natural.width).max(1) as f32;
-                                        let natural_h = i32::from(natural.height).max(1) as f32;
-                                        let scale = (icon_size / natural_w)
-                                            .min(icon_size / natural_h)
-                                            .min(1.0);
-                                        let w = (natural_w * scale).round();
-                                        let h = (natural_h * scale).round();
-                                        let half_w = (w * 0.5).round();
-                                        let half_h = (h * 0.5).round();
-                                        let cx = f32::from(icon_center.x).round();
-                                        let cy = f32::from(icon_center.y).round();
-                                        let icon_bounds = Bounds {
-                                            origin: point(px(cx - half_w), px(cy - half_h)),
-                                            size: size(px(w), px(h)),
-                                        };
-                                        let _ = window.paint_image(
-                                            icon_bounds,
-                                            icon_bounds,
-                                            Corners::default(),
-                                            tex.clone(),
-                                            0,
-                                            false,
-                                        );
+                                        crate::ui::thumbs::paint_thumbnail(window, cx, tex,
+                                            icon_center, icon_size, icon_size);
                                     }
                                     FileIcon::IconTexture(tex) => {
                                         let resolved = tex.for_size(icon_size);
@@ -1088,7 +1070,8 @@ impl Element for GridSurfaceElement {
                     };
 
                     window.with_element_opacity(
-                        slot.dimmed.then_some(crate::ui::views::rename::DIM_OPACITY),
+                        Some(crate::ui::views::rename::cut_entry_opacity(&app, pane_id, slot.entry_idx, cx)
+                            * if slot.dimmed { crate::ui::views::rename::DIM_OPACITY } else { 1.0 }),
                         |window| {
                             let background = if slot.selected {
                                 Some(colors.accent)
@@ -1134,32 +1117,8 @@ impl Element for GridSurfaceElement {
                                 match &slot.icon {
                                     FileIcon::PreviewTexture(tex) => {
                                         let item_thumb = (thumb * scale_h).max(1.0);
-                                        let natural = tex.size(0);
-                                        let natural_w = i32::from(natural.width).max(1) as f32;
-                                        let natural_h = i32::from(natural.height).max(1) as f32;
-                                        let max_h =
-                                            (item_thumb * GRID_PREVIEW_MAX).min(item_icon_area_h);
-                                        let scale = (item_thumb / natural_w)
-                                            .min(max_h / natural_h)
-                                            .min(1.0);
-                                        let w = (natural_w * scale).round();
-                                        let h = (natural_h * scale).round();
-                                        let half_w = (w * 0.5).round();
-                                        let half_h = (h * 0.5).round();
-                                        let cx = f32::from(icon_center.x).round();
-                                        let cy = f32::from(icon_center.y).round();
-                                        let icon_bounds = Bounds {
-                                            origin: point(px(cx - half_w), px(cy - half_h)),
-                                            size: size(px(w), px(h)),
-                                        };
-                                        let _ = window.paint_image(
-                                            icon_bounds,
-                                            icon_bounds,
-                                            Corners::default(),
-                                            tex.clone(),
-                                            0,
-                                            false,
-                                        );
+                                        crate::ui::thumbs::paint_thumbnail(window, cx, tex,
+                                            icon_center, item_thumb, item_icon_area_h);
                                     }
                                     FileIcon::IconTexture(tex) => {
                                         let item_thumb = (thumb * scale_h).max(1.0);

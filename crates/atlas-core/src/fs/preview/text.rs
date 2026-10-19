@@ -40,9 +40,7 @@ pub(super) async fn preview_text(path: &Path, ext: &str) -> PreviewResult {
     }
 
     if bytes.len() > super::MAX_TEXT_BYTES {
-        return PreviewResult::Binary {
-            size: meta.len(),
-        };
+        return PreviewResult::Binary { size: meta.len() };
     }
     if let Ok(text) = String::from_utf8(bytes) {
         let ext = ext.to_owned();
@@ -67,13 +65,13 @@ pub(crate) fn highlight_text(text: &str, ext: &str) -> Vec<([u8; 4], String)> {
                 continue;
             }
             let color = match kind {
-                super::syntax::TokenKind::Keyword => [0x56, 0x9c, 0xd6, 0xff],    // Blue/Cyan
-                super::syntax::TokenKind::Type => [0x4e, 0xc9, 0xb0, 0xff],       // Teal
-                super::syntax::TokenKind::String => [0xce, 0x91, 0x78, 0xff],     // Green/Tan
-                super::syntax::TokenKind::Number => [0xb5, 0xce, 0xa8, 0xff],     // Light Green/Gold
-                super::syntax::TokenKind::Comment => [0x6a, 0x99, 0x55, 0xff],    // Green/Muted
-                super::syntax::TokenKind::Preprocessor => [0xc5, 0x86, 0xc0, 0xff],// Magenta
-                super::syntax::TokenKind::Symbol => [0xd4, 0xd4, 0xd4, 0xff],     // Subtle
+                super::syntax::TokenKind::Keyword => [0x56, 0x9c, 0xd6, 0xff], // Blue/Cyan
+                super::syntax::TokenKind::Type => [0x4e, 0xc9, 0xb0, 0xff],    // Teal
+                super::syntax::TokenKind::String => [0xce, 0x91, 0x78, 0xff],  // Green/Tan
+                super::syntax::TokenKind::Number => [0xb5, 0xce, 0xa8, 0xff],  // Light Green/Gold
+                super::syntax::TokenKind::Comment => [0x6a, 0x99, 0x55, 0xff], // Green/Muted
+                super::syntax::TokenKind::Preprocessor => [0xc5, 0x86, 0xc0, 0xff], // Magenta
+                super::syntax::TokenKind::Symbol => [0xd4, 0xd4, 0xd4, 0xff],  // Subtle
                 super::syntax::TokenKind::DiffAdd => [0x34, 0xc7, 0x59, 0xff],
                 super::syntax::TokenKind::DiffRemove => [0xff, 0x3b, 0x30, 0xff],
                 super::syntax::TokenKind::DiffHeader => [0x00, 0x7a, 0xff, 0xff],
@@ -140,4 +138,3 @@ mod tests {
         }
     }
 }
-

@@ -11,12 +11,15 @@
 use crate::app::App;
 use crate::ui::inspector::rgba_to_render_image;
 use atlas_model::app_state::BgResult;
-use gpui::RenderImage;
+use gpui::{point, px, size, Bounds, Corners, Pixels, Point, RenderImage};
+use gpui::ColorExt as _;
+use gpui_component::ActiveTheme as _;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 /// UI-side cache entry for one path's grid thumbnail.
+#[derive(Clone)]
 pub enum ThumbState {
     /// A decode task is in flight; render the placeholder glyph meanwhile.
     Loading,
@@ -43,14 +46,88 @@ const MAX_EXT_THUMB_INFLIGHT: usize = 8;
 /// directory listing while preventing a burst of hundreds of simultaneous decodes.
 const MAX_NATIVE_THUMB_INFLIGHT: usize = 16;
 
+/// Aspect-fit without upscaling; leave ten percent of the slot height as air.
+pub(crate) fn thumbnail_size(natural_w: f32, natural_h: f32, slot_w: f32, slot_h: f32) -> (f32, f32) {
+    let scale = (slot_w.max(0.0) / natural_w.max(1.0))
+        .min(slot_h.max(0.0) * 0.90 / natural_h.max(1.0)).min(1.0);
+    ((natural_w * scale).round().max(1.0), (natural_h * scale).round().max(1.0))
+}
+
+/// Shared by retained and IMM surfaces: every preview texture (including PDF,
+/// video, RAW and extension previews) gets the same inner one-pixel outline.
+pub(crate) fn paint_thumbnail(
+    window: &mut gpui::Window,
+    cx: &gpui::App,
+    texture: &Arc<RenderImage>,
+    center: Point<Pixels>,
+    slot_w: f32,
+    slot_h: f32,
+) {
+    let natural = texture.size(0);
+    let (width, height) = thumbnail_size(i32::from(natural.width) as f32,
+        i32::from(natural.height) as f32, slot_w, slot_h);
+    let bounds = Bounds {
+        origin: point(px((f32::from(center.x) - width * 0.5).round()),
+            px((f32::from(center.y) - height * 0.5).round())),
+        size: size(px(width), px(height)),
+    };
+    let corners = Corners::all(px(3.0));
+    let _ = window.paint_image(bounds, bounds, corners, texture.clone(), 0, false);
+    let theme = cx.theme();
+    let border = theme.border.opacity(if theme.is_dark() { 0.25 } else { 0.18 });
+    window.paint_quad(gpui::outline(bounds, border, Default::default()).corner_radii(corners));
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::thumbnail_size;
+    #[test]
+    fn landscape_portrait_and_small_previews_keep_their_proportions() {
+        assert_eq!(thumbnail_size(400.0, 200.0, 100.0, 100.0), (100.0, 50.0));
+        assert_eq!(thumbnail_size(200.0, 400.0, 100.0, 100.0), (45.0, 90.0));
+        assert_eq!(thumbnail_size(20.0, 10.0, 100.0, 100.0), (20.0, 10.0));
+    }
+}
+
 impl App {
+    pub(crate) fn request_recycle_bin_status(&mut self, refresh: bool) {
+        if !refresh && self.recycle_bin_status_checked { return; }
+        if self.recycle_bin_status_inflight {
+            self.recycle_bin_status_dirty |= refresh;
+            return;
+        }
+        self.recycle_bin_status_inflight = true;
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let full = tokio::task::spawn_blocking(|| {
+                #[cfg(windows)]
+                { crate::shell_thumb::recycle_bin_contains_items() }
+                #[cfg(not(windows))]
+                { atlas_core::fs::recycle_bin::contains_items() }
+            }).await.ok().flatten();
+            let _ = tx.send(BgResult::RecycleBinStatus(full));
+        });
+    }
+
+    pub(crate) fn refresh_recycle_bin_feedback(&mut self) {
+        self.request_recycle_bin_status(true);
+        #[cfg(windows)]
+        {
+            let key = Self::shell_recycle_bin_icon_key();
+            if self.ext_thumb_inflight.contains(&key) {
+                self.recycle_bin_icon_dirty = true;
+            } else if crate::ui::icons::is_windows_theme(&self.state.profiles.active().theme) {
+                self.load_shell_recycle_bin_icon(true);
+            }
+        }
+    }
     #[cfg(target_os = "windows")]
     fn shell_folder_icon_key() -> PathBuf {
         PathBuf::from("__atlas_shell_folder_icon__")
     }
 
     #[cfg(target_os = "windows")]
-    fn shell_recycle_bin_icon_key() -> PathBuf {
+    pub(crate) fn shell_recycle_bin_icon_key() -> PathBuf {
         PathBuf::from("__atlas_shell_recycle_bin_icon__")
     }
 
@@ -105,13 +182,21 @@ impl App {
 
     #[cfg(target_os = "windows")]
     pub(crate) fn request_shell_recycle_bin_icon(&mut self) {
+        self.load_shell_recycle_bin_icon(false);
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn load_shell_recycle_bin_icon(&mut self, refresh: bool) {
         let key = Self::shell_recycle_bin_icon_key();
-        if self.thumb_textures.contains_key(&key)
+        if (!refresh && self.thumb_textures.contains_key(&key))
+            || self.ext_thumb_inflight.contains(&key)
             || self.ext_thumb_inflight.len() >= MAX_EXT_THUMB_INFLIGHT
         {
             return;
         }
-        self.thumb_textures.insert(key.clone(), ThumbState::Loading);
+        if !self.thumb_textures.contains_key(&key) {
+            self.thumb_textures.insert(key.clone(), ThumbState::Loading);
+        }
         self.ext_thumb_inflight.insert(key.clone());
         let tx = self.tx.clone();
         self.rt.spawn(async move {
@@ -223,6 +308,7 @@ impl App {
             }
             let wanted_check = wanted.clone();
             let result = tokio::task::spawn_blocking(move || {
+                if atlas_core::fs::preview::is_cloud_placeholder(&path) { return Ok(None); }
                 if !wanted_check
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
@@ -382,15 +468,15 @@ impl App {
             }
         };
         self.thumb_textures.insert(path, state);
-        if self.thumb_textures.len() > 1000 {
-            self.thumb_textures.clear();
-        }
     }
 }
 
 /// Decode `path` and box-resize so its longest edge is `max_edge`, returning packed
 /// RGBA8. Returns an empty vec on any failure (cached as a permanent miss).
 fn decode_thumbnail(path: &std::path::Path, max_edge: u32) -> BgResult {
+    if atlas_core::fs::preview::is_cloud_placeholder(path) {
+        return BgResult::GridThumbnailReady { path: path.to_path_buf(), rgba: Vec::new(), width: 0, height: 0 };
+    }
     if let Ok(meta) = std::fs::metadata(path) {
         if meta.len() == 0 {
             return BgResult::GridThumbnailReady {

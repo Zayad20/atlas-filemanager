@@ -16,7 +16,7 @@
 //!
 //! The worker is woken by posting `WM_ATLAS_SHELLMENU` to its message-only
 //! window (same trick as the OLE drag layer's `WM_ATLAS_START_DRAG`). The App
-//! drains [`ShellMenuHandle::drain_events`] in its 60 Hz loop.
+//! drains [`ShellMenuHandle::drain_events`] when a worker event wakes the UI.
 //!
 //! # `unsafe_code`
 //! The workspace forbids `unsafe_code`; every file here uses

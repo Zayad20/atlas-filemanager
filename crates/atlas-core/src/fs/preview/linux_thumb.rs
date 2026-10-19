@@ -8,7 +8,9 @@ pub fn freedesktop_thumbnail(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usi
     use md5::{Digest, Md5};
     use std::path::PathBuf;
 
-    let canonical = std::fs::canonicalize(path).ok().unwrap_or_else(|| path.to_path_buf());
+    let canonical = std::fs::canonicalize(path)
+        .ok()
+        .unwrap_or_else(|| path.to_path_buf());
     let url = url::Url::from_file_path(&canonical).ok()?;
     let mut hasher = Md5::new();
     hasher.update(url.as_str().as_bytes());
@@ -17,7 +19,11 @@ pub fn freedesktop_thumbnail(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usi
     let cache_home = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .or_else(|| dirs::cache_dir())
-        .unwrap_or_else(|| dirs::home_dir().map(|h| h.join(".cache")).unwrap_or_default());
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .map(|h| h.join(".cache"))
+                .unwrap_or_default()
+        });
     let thumbs_dir = cache_home.join("thumbnails");
 
     // Check size tiers from preferred to smaller
@@ -52,4 +58,3 @@ mod tests {
         assert_eq!(hash, "03223f4f10458a8b5d14327f3ae23136.png");
     }
 }
-

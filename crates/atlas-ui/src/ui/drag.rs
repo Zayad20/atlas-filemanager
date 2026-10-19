@@ -80,7 +80,7 @@ pub(crate) fn file_drag_handler_for_details_content(
                             .tab_states
                             .get(&pane)
                             .and_then(|ts| ts.entries.get(idx))
-                            .map(|entry| (idx, entry.path.clone()))
+                            .map(|entry| (idx, entry.path()))
                     })?
                 })
         };
@@ -134,7 +134,7 @@ fn file_drag_handler_for_surface_content(
                             .tab_states
                             .get(&pane)
                             .and_then(|ts| ts.entries.get(idx))
-                            .map(|entry| (idx, entry.path.clone()))
+                            .map(|entry| (idx, entry.path()))
                     })?
                 })
         };
@@ -226,6 +226,7 @@ pub(crate) fn build_file_any_drag(
         }
     }
     view.update(cx, |app, cx| {
+        app.pending_folder_click = None;
         if let Some((pane, idx)) = item {
             app.state.focused_tile = pane;
             app.ensure_drag_selection(pane, idx);
@@ -362,7 +363,7 @@ pub trait FileDragSource: gpui::StatefulInteractiveElement {
                                 .tab_states
                                 .get(&pane)
                                 .and_then(|ts| ts.entries.get(idx))
-                                .map(|entry| (idx, entry.path.clone()))
+                                .map(|entry| (idx, entry.path()))
                         })?
                     })
             };
@@ -389,7 +390,7 @@ pub trait FileDragSource: gpui::StatefulInteractiveElement {
                                 .tab_states
                                 .get(&pane)
                                 .and_then(|ts| ts.entries.get(idx))
-                                .map(|entry| (idx, entry.path.clone()))
+                                .map(|entry| (idx, entry.path()))
                         })?
                     })
             };
@@ -416,7 +417,7 @@ pub trait FileDragSource: gpui::StatefulInteractiveElement {
                                 .tab_states
                                 .get(&pane)
                                 .and_then(|ts| ts.entries.get(idx))
-                                .map(|entry| (idx, entry.path.clone()))
+                                .map(|entry| (idx, entry.path()))
                         })?
                     })
             };

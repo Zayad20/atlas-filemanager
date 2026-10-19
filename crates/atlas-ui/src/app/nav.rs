@@ -14,6 +14,23 @@ pub(crate) enum NavKind {
 }
 
 impl App {
+    pub(crate) fn toggle_folder_view_recursive(&mut self) {
+        use atlas_model::profiles::{FolderViewFeature, FolderViewPref};
+        let Some(tab) = self.tab_data_for(self.state.focused_tile) else { return; };
+        let Location::Directory(path) = &tab.location else { return; };
+        let path = path.clone();
+        let mut prefs = self.state.profiles.active().scoped::<FolderViewFeature>();
+        let recursive = !prefs.get_exact(&path).is_some_and(|pref| pref.recursive);
+        let pref = FolderViewPref { view_mode: tab.view_mode.clone(), sort_col: tab.sort_col.clone(),
+            sort_dir: tab.sort_dir.clone(), columns: tab.details_columns.clone(), recursive };
+        prefs.set(path, pref);
+        self.state.profiles.active_mut().set_scoped::<FolderViewFeature>(&prefs);
+        atlas_core::util::config::refresh_bookmark_volumes(&mut self.state.profiles);
+        atlas_core::util::config::save_profiles(&self.state.profiles);
+        self.toast_info(if recursive { rust_i18n::t!("folder_inherit_enabled").to_string() }
+            else { rust_i18n::t!("folder_inherit_disabled").to_string() });
+    }
+
     pub(crate) fn recent_folders(&self) -> Vec<PathBuf> {
         use atlas_model::profiles::RecentFoldersFeature;
         self.state
@@ -22,7 +39,10 @@ impl App {
             .scoped::<RecentFoldersFeature>()
     }
 
-    fn push_recent_folder(&mut self, path: &std::path::Path) {
+    pub(crate) fn push_recent_folder(&mut self, path: &std::path::Path) {
+        if self.drag_hover.navigation_is_provisional() {
+            return;
+        }
         use atlas_model::profiles::RecentFoldersFeature;
         let mut recent = self
             .state
@@ -38,6 +58,7 @@ impl App {
             .profiles
             .active_mut()
             .set_scoped::<RecentFoldersFeature>(&recent);
+        atlas_core::util::config::refresh_bookmark_volumes(&mut self.state.profiles);
     }
 
     /// Single entry point for all navigation. Handles history, watcher lifecycle,
@@ -48,7 +69,9 @@ impl App {
             None => return,
         };
         atlas_core::fs::paths::normalize_wsl_location_path(&mut loc);
+        self.file_filter_projections.remove(&tab_id);
         self.rubber = None;
+        self.pending_folder_click = None;
         // A glide belongs to its current listing, never to the next folder.
         if let Some(handle) = self.scroll_handles.get(&tab_id) {
             let scroll = &handle.0.borrow().base_handle;
@@ -73,10 +96,20 @@ impl App {
         } else {
             None
         };
+        let sticky_search = self.state.settings.filter_sticky
+            && self.tab_data_for(tab_id).is_some_and(|tab| tab.location.fs_dir().is_some())
+            && loc.fs_dir().is_some();
 
         // ── 1. History manipulation ──────────────────────────────────────────
         if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tab_id) {
             let old = pane.location.clone();
+            pane.breadcrumb_trail = match (old.fs_dir(), loc.fs_dir()) {
+                (Some(old), Some(new)) => {
+                    pane.breadcrumb_trail.as_ref().filter(|trail| trail.starts_with(new)).cloned()
+                        .or_else(|| (old != new && old.starts_with(new)).then(|| old.to_path_buf()))
+                }
+                _ => None,
+            };
             match kind {
                 NavKind::Push => {
                     if old != loc {
@@ -92,6 +125,9 @@ impl App {
                 }
             }
             pane.location = loc.clone();
+            pane.volume_serial = None;
+            pane.reconcile_volume(&self.mounted_volumes);
+            pane.details_columns = restored_view_pref.as_ref().and_then(|pref| pref.columns.clone());
             if let Some(pref) = restored_view_pref {
                 pane.view_mode = pref.view_mode;
                 pane.sort_col = pref.sort_col;
@@ -104,6 +140,7 @@ impl App {
         // drops any lingering watcher for this pane (fixes stale-watcher bug on back).
         match &loc {
             Location::Directory(path) => {
+                self.watchers.remove(&tab_id);
                 if let Ok(handle) = atlas_core::fs::watcher::watch_path(path, self.tx.clone()) {
                     self.watchers.insert(tab_id, handle);
                 }
@@ -125,8 +162,9 @@ impl App {
             .get(&tab_id)
             .is_some_and(|ts| !ts.entries.is_empty());
         if let Some(ts) = self.state.tab_states.get_mut(&tab_id) {
-            ts.begin_navigation();
+            ts.begin_navigation_preserving_filter(sticky_search);
         }
+        self.typed_selection = None;
         // Drop the pane's filter input so its stale text can't re-apply the old
         // filter to the new directory through the bottom-bar value sync.
         self.search_inputs.remove(&tab_id);
@@ -176,10 +214,14 @@ impl App {
         &mut self,
         pref: Option<(PathBuf, atlas_model::profiles::FolderViewPref)>,
     ) {
-        let Some((path, pref)) = pref else { return };
+        let Some((path, mut pref)) = pref else { return };
         use atlas_model::profiles::FolderViewFeature;
         let mut prefs = self.state.profiles.active().scoped::<FolderViewFeature>();
-        if prefs.get(&path).as_ref() == Some(&pref) {
+        if let Some(previous) = prefs.get_exact(&path) { pref.recursive = previous.recursive; }
+        if pref.columns.is_none() {
+            pref.columns = self.tab_data_for(self.state.focused_tile).and_then(|tab| tab.details_columns.clone());
+        }
+        if prefs.get_exact(&path).as_ref() == Some(&pref) {
             return;
         }
         prefs.set(path, pref);
@@ -187,6 +229,7 @@ impl App {
             .profiles
             .active_mut()
             .set_scoped::<FolderViewFeature>(&prefs);
+        atlas_core::util::config::refresh_bookmark_volumes(&mut self.state.profiles);
         atlas_core::util::config::save_profiles(&self.state.profiles);
     }
 

@@ -9,6 +9,35 @@ use gpui::ColorExt as _;
 use gpui::{deferred, div, px, AnyElement, Context, MouseButton, SharedString, Window};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{h_flex, v_flex, ActiveTheme};
+use std::time::{Duration, Instant};
+
+#[derive(Clone)]
+struct ToastPresentation {
+    toast: atlas_model::overlay::Toast,
+    closing: Option<Instant>,
+}
+
+#[derive(Default)]
+pub(crate) struct ToastStack { entries: Vec<ToastPresentation> }
+
+impl ToastStack {
+    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+
+    fn sync(&mut self, live: &[atlas_model::overlay::Toast], now: Instant, instant: bool) -> Vec<ToastPresentation> {
+        for entry in &mut self.entries {
+            if live.iter().any(|toast| toast.created_at == entry.toast.created_at) {
+                entry.closing = None;
+            } else { entry.closing.get_or_insert(now); }
+        }
+        self.entries.retain(|entry| entry.closing.is_none_or(|at| !instant && now.saturating_duration_since(at) < Duration::from_millis(240)));
+        for toast in live {
+            if !self.entries.iter().any(|entry| entry.toast.created_at == toast.created_at) {
+                self.entries.push(ToastPresentation { toast: toast.clone(), closing: None });
+            }
+        }
+        self.entries.clone()
+    }
+}
 
 const TOAST_MAX_W: f32 = 420.;
 const TOAST_SIDE_MARGIN: f32 = 24.;
@@ -34,6 +63,9 @@ impl App {
             )
         };
         let errors: Vec<_> = self.state.overlay.op_errors.iter().cloned().collect();
+        let now = Instant::now();
+        let instant = cx.reduce_motion();
+        let presentations = self.toast_stack.sync(&errors, now, instant);
         let view = cx.entity();
         let viewport_w = f32::from(window.bounds().size.width);
         // Chrome constants scaled explicitly: `toast_w` is combined with `viewport_w`
@@ -43,10 +75,17 @@ impl App {
         let toast_w = (TOAST_MAX_W * zoom_scale)
             .min((viewport_w - TOAST_SIDE_MARGIN * zoom_scale * 2.0).max(280. * zoom_scale));
 
-        let mut stack = v_flex().gap_2();
-        for (i, toast) in errors.iter().enumerate() {
+        let mut stack = v_flex().w(px(toast_w));
+        for entry in &presentations {
+            let toast = &entry.toast;
             let dismiss_view = view.clone();
-            let idx = i;
+            let identity = toast.created_at;
+            let id = format!("op-toast-{identity:?}");
+            let openness = if instant { 1.0 } else if let Some(at) = entry.closing {
+                1.0 - crate::ui::motion::ease_out_quart(now.saturating_duration_since(at).as_secs_f32() / 0.12)
+            } else {
+                crate::ui::motion::ease_out_quart(now.saturating_duration_since(identity).as_secs_f32() / 0.15)
+            };
             let tone = match toast.kind {
                 ToastKind::Error => destructive,
                 ToastKind::Info => accent,
@@ -69,7 +108,8 @@ impl App {
                 .line_height(crate::ui::rem_px(18.))
                 .child(body_lines);
             let card = h_flex()
-                .id(SharedString::from(format!("op-err-{i}")))
+                .id(SharedString::from(id.clone()))
+                .opacity(openness)
                 .gap_2()
                 .items_start()
                 .w(px(toast_w))
@@ -96,7 +136,7 @@ impl App {
                 .child(body)
                 .child(
                     div()
-                        .id(SharedString::from(format!("op-err-x-{i}")))
+                        .id(SharedString::from(format!("{id}-dismiss")))
                         .flex_shrink_0()
                         .size(crate::ui::rem_px(22.))
                         .rounded(px(crate::ui::RADIUS))
@@ -109,18 +149,18 @@ impl App {
                         .child(icon(AtlasIcon::X, 12., muted))
                         .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
                             dismiss_view.update(cx, |this, cx| {
-                                // Remove by index (adjust for previously removed).
-                                let mut v: Vec<_> =
-                                    this.state.overlay.op_errors.drain(..).collect();
-                                if idx < v.len() {
-                                    v.remove(idx);
-                                }
-                                this.state.overlay.op_errors = v.into_iter().collect();
+                                this.state.overlay.op_errors.retain(|toast| toast.created_at != identity);
                                 cx.notify();
                             });
                         }),
                 );
-            stack = stack.child(card);
+            stack = stack.child(crate::ui::reveal::DisclosureBody::new(
+                SharedString::from(format!("{id}-presence")), entry.closing.is_none(), div().pb_2().child(card),
+            ).animate_entry());
+        }
+        let animating = presentations.iter().any(|entry| entry.closing.is_some() || now.saturating_duration_since(entry.toast.created_at) < Duration::from_millis(180));
+        if animating && !instant {
+            stack = stack.child(gpui::canvas(|_, _, _| {}, |_, _, window, _| window.request_animation_frame()).size(px(0.0)));
         }
 
         let dismiss_all_view = view.clone();

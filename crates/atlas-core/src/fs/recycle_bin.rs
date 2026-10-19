@@ -15,7 +15,26 @@ pub fn read_recycle_bin(sort_col: &SortColumn, sort_dir: &SortDir) -> Vec<FileEn
     list_sync(sort_col, sort_dir)
 }
 
+/// Lightweight status for sidebar feedback. Called on a blocking worker.
+#[cfg(not(windows))]
+pub fn contains_items() -> Option<bool> {
+    for dir in accessible_bin_dirs() {
+        match std::fs::read_dir(dir.join("files")) {
+            Ok(mut entries) => match entries.next() {
+                Some(Ok(_)) => return Some(true),
+                Some(Err(_)) => return None,
+                None => {},
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(_) => return None,
+        }
+    }
+    Some(false)
+}
+
 fn list_sync(sort_col: &SortColumn, sort_dir: &SortDir) -> Vec<FileEntry> {
+    #[cfg(windows)]
+    let shell_metadata = atlas_win_space::recycle::metadata().unwrap_or_default();
     let mut entries = Vec::new();
     for rb_dir in accessible_bin_dirs() {
         #[cfg(windows)]
@@ -39,9 +58,15 @@ fn list_sync(sort_col: &SortColumn, sort_dir: &SortDir) -> Vec<FileEntry> {
                 let Ok(bytes) = std::fs::read(&i_path) else {
                     continue;
                 };
-                let Some(meta) = parse_i_file(&bytes) else {
+                let Some(mut meta) = parse_i_file(&bytes) else {
                     continue;
                 };
+                if let Some(native) = shell_metadata.get(&r_path) {
+                    if let Some(name) = meta.original_path.file_name() {
+                        meta.original_path = native.deleted_from.join(name);
+                    }
+                    meta.deleted_at = native.deleted_at;
+                }
                 let original_name = meta
                     .original_path
                     .file_name()
@@ -52,22 +77,12 @@ fn list_sync(sort_col: &SortColumn, sort_dir: &SortDir) -> Vec<FileEntry> {
                 } else {
                     FileKind::File
                 };
-                let extension = meta
-                    .original_path
-                    .extension()
-                    .map(|e| e.to_string_lossy().to_lowercase());
-                let name_lower = original_name.to_lowercase();
-                entries.push(FileEntry {
-                    name: original_name,
-                    name_lower,
+                entries.push(FileEntry::from(atlas_model::file_entry::FileEntryData {
+                    name: original_name.into(),
                     path: r_path,
                     kind,
                     size: Some(meta.original_size),
                     modified: Some(meta.deleted_at),
-                    extension,
-                    display_size: String::new().into(),
-                    display_date: String::new().into(),
-                    display_type: String::new().into(),
                     _is_hidden: false,
                     _is_symlink: false,
                     archive_root: None,
@@ -76,7 +91,7 @@ fn list_sync(sort_col: &SortColumn, sort_dir: &SortDir) -> Vec<FileEntry> {
                         deleted_at: meta.deleted_at,
                         i_file: i_path,
                     }),
-                });
+                }));
             }
         }
         #[cfg(not(windows))]
@@ -119,22 +134,12 @@ fn list_sync(sort_col: &SortColumn, sort_dir: &SortDir) -> Vec<FileEntry> {
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| base_name.to_string());
-                let extension = meta
-                    .original_path
-                    .extension()
-                    .map(|e| e.to_string_lossy().to_lowercase());
-                let name_lower = original_name.to_lowercase();
-                entries.push(FileEntry {
-                    name: original_name,
-                    name_lower,
+                entries.push(FileEntry::from(atlas_model::file_entry::FileEntryData {
+                    name: original_name.into(),
                     path: r_path,
                     kind,
                     size: Some(meta.original_size),
                     modified: Some(meta.deleted_at),
-                    extension,
-                    display_size: String::new().into(),
-                    display_date: String::new().into(),
-                    display_type: String::new().into(),
                     _is_hidden: false,
                     _is_symlink: false,
                     archive_root: None,
@@ -143,7 +148,7 @@ fn list_sync(sort_col: &SortColumn, sort_dir: &SortDir) -> Vec<FileEntry> {
                         deleted_at: meta.deleted_at,
                         i_file: i_path,
                     }),
-                });
+                }));
             }
         }
     }
@@ -338,6 +343,7 @@ pub async fn restore_items(
     affected_tabs: Vec<TabId>,
 ) {
     let mut errors: Vec<OpError> = Vec::new();
+    let mut restored = Vec::new();
     for (r_path, i_path, original_path) in items {
         if original_path.exists() {
             errors.push(OpError {
@@ -355,7 +361,12 @@ pub async fn restore_items(
                 path: original_path,
                 kind,
             });
+        } else {
+            restored.push(original_path);
         }
+    }
+    if !restored.is_empty() {
+        let _ = tx.send(BgResult::PathsRestored(restored));
     }
     let result = if errors.is_empty() {
         Ok(())
@@ -525,6 +536,33 @@ fn accessible_bin_dirs() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn restore_reports_only_successful_destinations_and_keeps_conflicts() {
+        let root = tempfile::tempdir().unwrap();
+        let payload = root.path().join("payload");
+        let metadata = root.path().join("metadata");
+        let restored = root.path().join("original/file.txt");
+        let conflict_payload = root.path().join("conflict-payload");
+        let conflict = root.path().join("existing.txt");
+        std::fs::write(&payload, b"restored").unwrap();
+        std::fs::write(&metadata, b"metadata").unwrap();
+        std::fs::write(&conflict_payload, b"keep in bin").unwrap();
+        std::fs::write(&conflict, b"keep original").unwrap();
+        let (tx, rx) = flume::unbounded();
+        restore_items(vec![
+            (payload.clone(), metadata.clone(), restored.clone()),
+            (conflict_payload.clone(), root.path().join("other-metadata"), conflict.clone()),
+        ], 42, tx, vec![]).await;
+        let events: Vec<_> = rx.try_iter().collect();
+        assert!(events.iter().any(|event| matches!(event, BgResult::PathsRestored(paths) if paths == &vec![restored.clone()])));
+        assert!(events.iter().any(|event| matches!(event, BgResult::OpComplete { id: 42, result: Err(errors), .. } if errors.len() == 1 && errors[0].kind == OpErrorKind::AlreadyExists)));
+        assert_eq!(std::fs::read(restored).unwrap(), b"restored");
+        assert_eq!(std::fs::read(conflict).unwrap(), b"keep original");
+        assert!(conflict_payload.exists());
+        assert!(!payload.exists());
+        assert!(!metadata.exists());
+    }
 
     #[test]
     fn test_percent_decode() {

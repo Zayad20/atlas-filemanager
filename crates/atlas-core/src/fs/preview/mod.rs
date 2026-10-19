@@ -10,6 +10,7 @@ mod dir;
 mod image;
 mod linux_thumb;
 mod markdown;
+pub mod metadata;
 mod pdf;
 pub mod syntax;
 mod text;
@@ -22,6 +23,26 @@ pub use linux_thumb::freedesktop_thumbnail;
 pub use pdf::{preview_pdf_public, preview_pdf_with_pdftoppm};
 
 use std::path::PathBuf;
+
+/// Metadata-only guard for automatic reads. A failed attribute query is treated
+/// conservatively: automatic previews must never hydrate an offline cloud file.
+pub fn is_cloud_placeholder(path: &std::path::Path) -> bool {
+    #[cfg(windows)]
+    {
+        atlas_win_space::directory::is_cloud_placeholder(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+fn offline_preview() -> PreviewResult {
+    PreviewResult::Error(
+        "Archivo disponible solo en la nube. Descárgalo para previsualizarlo.".into(),
+    )
+}
 
 use atlas_model::app_state::BgResult;
 use atlas_model::pane::TabId;
@@ -36,6 +57,14 @@ pub(crate) const MAX_PDF_PREVIEW_EDGE: &str = "1024";
 const MULTI_BUTTERFLY_ANGLES: [f32; 4] = [-8.0, -3.0, 3.0, 8.0];
 
 pub async fn load_preview(tab: TabId, path: PathBuf, tx: flume::Sender<BgResult>) {
+    if is_cloud_placeholder(&path) {
+        let _ = tx.send(BgResult::PreviewReady {
+            tab,
+            path,
+            result: offline_preview(),
+        });
+        return;
+    }
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -87,6 +116,9 @@ pub async fn load_multi_thumbnail(
 ) {
     let thumbnail_path = path.clone();
     let thumbnail = tokio::task::spawn_blocking(move || {
+        if is_cloud_placeholder(&thumbnail_path) {
+            return None;
+        }
         let ext = thumbnail_path
             .extension()
             .and_then(|e| e.to_str())

@@ -1,4 +1,40 @@
 app_name: "Atlas"
+group_by: "Agrupar por"
+folder_order_first: Carpetas primero
+folder_order_last: Carpetas al final
+folder_order_mixed: Mezclar carpetas y archivos
+folder_order_choose: Elegir orden de carpetas
+settings_single_click_folders: Abrir carpetas con un clic (los archivos requieren doble clic)
+settings_scroll_beyond_last: Margen de desplazamiento tras el último elemento
+group_none: "Ninguno"
+group_date: "Fecha"
+group_size: "Tamaño"
+group_type: "Tipo"
+group_name: "Nombre"
+group_unknown: "Desconocido"
+group_future: "Futuro"
+group_today: "Hoy"
+group_yesterday: "Ayer"
+group_week: "A principios de esta semana"
+group_last_week: "La semana pasada"
+group_month: "A principios de este mes"
+group_last_month: "El mes pasado"
+group_year: "A principios de este año"
+group_last_year: "El año pasado"
+group_older: "Hace mucho tiempo"
+group_other: "Otros"
+group_empty: "Vacío"
+group_tiny: "Diminuto (< 16 KiB)"
+group_small: "Pequeño (16 KiB–1 MiB)"
+group_medium: "Mediano (1–128 MiB)"
+group_large: "Grande (128 MiB–1 GiB)"
+group_huge: "Enorme (1–4 GiB)"
+group_gigantic: "Gigantesco (≥ 4 GiB)"
+cmd_group_none: "Agrupar por: Ninguno^desagrupar,secciones,grupos"
+cmd_group_date: "Agrupar por: Fecha^secciones,grupos,hoy,ayer"
+cmd_group_size: "Agrupar por: Tamaño^secciones,grupos,grande,gigante"
+cmd_group_type: "Agrupar por: Tipo^secciones,grupos,categoría"
+cmd_group_name: "Agrupar por: Nombre^secciones,grupos,alfabeto"
 menu_file: "Archivo"
 menu_quit: "Salir"
 sidebar_tags: "Etiquetas"
@@ -591,6 +627,11 @@ cmd_files_open_right_split_desc: "Abre la carpeta seleccionada en una división 
 cmd_files_open_bottom_split_title: "Abrir en división inferior"
 cmd_files_open_bottom_split_desc: "Abre la carpeta seleccionada en una división abajo."
 cmd_files_copy_path_title: "Copiar ruta"
+cmd_files_copy_desc: "Copia los elementos seleccionados al portapapeles."
+cmd_files_cut_desc: "Corta los elementos seleccionados para moverlos."
+cmd_files_paste_desc: "Pega los elementos del portapapeles en esta carpeta."
+cmd_files_open_terminal_title: "Abrir terminal"
+cmd_files_open_terminal_desc: "Abre una terminal en esta carpeta."
 cmd_files_copy_path_desc: "Copia la ruta completa del elemento seleccionado al portapapeles."
 cmd_files_properties_title: "Propiedades"
 cmd_files_properties_desc: "Abre el diálogo de propiedades del elemento seleccionado."
@@ -713,3 +754,74 @@ op_compressing: "Comprimiendo"
 cmd_files_compress_title: "Comprimir a zip"
 cmd_files_compress_desc: "Crear un archivo zip con los elementos seleccionados"
 open_with: "Abrir con"
+
+sidebar_bookmark_folders_only: Solo se pueden agregar carpetas a los favoritos del sidebar.
+dnd_intent_copy: Copiar aquí
+dnd_intent_move: Mover aquí
+dnd_intent_trash: Enviar a la Papelera
+dnd_intent_tag: Asignar etiqueta
+dnd_intent_bookmark: Añadir a Favoritos
+dnd_intent_stage: Dejar aquí
+dnd_intent_blocked: No se puede soltar aquí
+op_transfer_summary: "%{done} completados · %{skipped} omitidos · %{failed} fallidos"
+op_restore_complete: "%{count} elementos restaurados"
+tags_assignment_complete: "Etiqueta asignada a %{count} elementos"
+tags_assignment_failed: No se pudo guardar la etiqueta. Vuelve a intentarlo.
+sidebar_bookmark_remove_drop: Quitar de favoritos
+sidebar_bookmark_removed: Se quitó de Favoritos. La carpeta sigue en su ubicación.
+op_results_hidden: "%{count} elementos completados están ocultos por filtros"
+op_results_reveal: Mostrar
+theme_fork: "Duplicar tema"
+theme_active: "Tema: %{name}"
+theme_editing: "Editando: %{name}"
+theme_fork_description: "Crea una copia editable del tema activo."
+theme_fork_unavailable: "El tema activo no está disponible. Elige otro tema e inténtalo de nuevo."
+theme_save_error: "No se pudo guardar el tema: %{error}"
+theme_editor_description: "Tu copia está guardada. Los cambios de color se aplican al guardarlos."
+theme_color_accent: "Acento"
+theme_color_background: "Fondo de la ventana"
+theme_color_foreground: "Texto"
+theme_save: "Guardar tema"
+theme_discard: "Descartar cambios"
+theme_close_editor: "Cerrar editor"
+cmd_pane_left_title: Enfocar panel a la izquierda
+cmd_pane_right_title: Enfocar panel a la derecha
+cmd_pane_above_title: Enfocar panel de arriba
+cmd_pane_below_title: Enfocar panel de abajo
+cmd_pane_spatial_desc: Seleccionar el panel visible más cercano en esta dirección
+cmd_pane_even_siblings_title: Equilibrar paneles hermanos
+cmd_pane_even_siblings_desc: Repartir el espacio por igual en la división actual
+cmd_pane_even_all_title: Equilibrar todos los paneles
+cmd_pane_even_all_desc: Repartir por igual los hijos de todas las divisiones
+cmd_folder_inherit_title: Alternar herencia de vista de carpeta
+cmd_folder_inherit_desc: Aplicar la vista, columnas y orden de esta carpeta a sus subcarpetas
+folder_inherit_enabled: Las subcarpetas heredarán la vista de esta carpeta
+folder_inherit_disabled: Las subcarpetas conservarán sus propias vistas
+settings_character_keys: Al teclear en un panel de archivos
+settings_type_filter: Escribir en el filtro
+settings_type_select: Seleccionar coincidencia
+settings_type_hotkey: Ejecutar atajo
+settings_filter_sticky: Mantener el filtro al cambiar de carpeta
+breadcrumb_filter_folders: Filtrar carpetas...
+footer_dirs_visible: Carpetas listadas. Haz clic para ocultar.
+footer_dirs_hidden: Carpetas ocultas por filtro de vista. Haz clic para mostrar.
+footer_files_visible: Archivos listados. Haz clic para ocultar.
+footer_files_hidden: Archivos ocultos por filtro de vista. Haz clic para mostrar.
+volume_path_updated: "Ruta actualizada automáticamente de %{from} a %{to}"
+shortcut_filename_suffix: Acceso directo
+shortcut_conflict: "En conflicto con: %{command}"
+footer_dirs: "%{shown}/%{total} Carpetas"
+footer_files: "%{shown}/%{total} Archivos"
+cmd_paste_shortcut_title: Pegar acceso directo
+cmd_paste_shortcut_desc: Crear enlaces a los archivos del portapapeles
+op_creating_shortcuts: Creando accesos directos
+drop_description_move: "Mover a %1"
+drop_description_copy: "Copiar a %1"
+preview_cloud_offline: Descarga este archivo de la nube para previsualizarlo
+settings_win_e: "Abrir Atlas con Win+E"
+settings_win_e_error: "No se pudo cambiar Win+E: %{error}"
+view_all_items_hidden: "Todos los elementos están ocultos por los ajustes de vista"
+watcher_auto_refresh_disabled: "(Actualización automática desactivada)"
+watcher_auto_refresh_disabled_help: "No se pudo vigilar esta carpeta. Usa Actualizar para ver los cambios."
+footer_hidden_excluded: "Se excluyen los elementos ocultos y de sistema."
+footer_hidden_included: "Se incluyen los elementos ocultos y de sistema."

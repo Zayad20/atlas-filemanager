@@ -1,6 +1,7 @@
 #![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
 use crate::file_entry::{FileEntry, FileKind};
 use crate::location::Location;
+pub use crate::grouping::{GroupBy, GroupRow};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -11,9 +12,21 @@ pub struct MillerColumn {
     pub entries: std::sync::Arc<[FileEntry]>,
     pub load_state: LoadState,
     pub op_id: u64,
+    pub has_excluded_items: bool,
     /// Multi-selection state for this column (single-select for navigation,
     /// ctrl/shift for multi, rubber band populates `selected` set).
     pub selection: SelectionState,
+    visibility: Option<ColumnVisibility>,
+}
+
+#[derive(Clone)]
+struct ColumnVisibility {
+    entries: Arc<[FileEntry]>,
+    filter: String,
+    files: bool,
+    folders: bool,
+    indices: Arc<Vec<usize>>,
+    counts: VisibleCounts,
 }
 
 impl MillerColumn {
@@ -23,7 +36,9 @@ impl MillerColumn {
             entries: std::sync::Arc::new([]),
             load_state: LoadState::NotLoaded,
             op_id: 0,
+            has_excluded_items: false,
             selection: SelectionState::default(),
+            visibility: None,
         }
     }
 
@@ -33,23 +48,24 @@ impl MillerColumn {
             .selection
             .selected
             .iter()
-            .filter_map(|&idx| self.entries.get(idx).map(|entry| entry.path.clone()))
+            .filter_map(|&idx| self.entries.get(idx).map(|entry| entry.path().clone()))
             .collect();
         let cursor = self
             .selection
             .keyboard_cursor
             .and_then(|idx| self.entries.get(idx))
-            .map(|entry| entry.path.clone());
+            .map(|entry| entry.path().clone());
         self.entries = entries;
+        self.visibility = None;
         self.selection.selected = self
             .entries
             .iter()
             .enumerate()
-            .filter(|(_, entry)| selected.contains(&entry.path))
+            .filter(|(_, entry)| selected.contains(&entry.path()))
             .map(|(idx, _)| idx)
             .collect();
         self.selection.keyboard_cursor =
-            cursor.and_then(|path| self.entries.iter().position(|entry| entry.path == path));
+            cursor.and_then(|path| self.entries.iter().position(|entry| entry.path() == path));
         self.selection.selection_anchor = self.selection.keyboard_cursor;
         self.selection.last_clicked_index = self.selection.keyboard_cursor;
     }
@@ -59,6 +75,32 @@ impl MillerColumn {
         self.selection
             .keyboard_cursor
             .or_else(|| self.selection.selected.iter().copied().next())
+    }
+
+    fn cached_visibility(&self, filter: &str, files: bool, folders: bool) -> Option<&ColumnVisibility> {
+        self.visibility.as_ref().filter(|cache| Arc::ptr_eq(&cache.entries, &self.entries)
+            && cache.filter == filter && cache.files == files && cache.folders == folders)
+    }
+
+    pub fn visible_indices(&self, filter: &str, files: bool, folders: bool) -> Arc<Vec<usize>> {
+        self.cached_visibility(filter, files, folders).map_or_else(
+            || Arc::new(filter_visible_entries(&self.entries, filter, files, folders).0),
+            |cache| cache.indices.clone())
+    }
+
+    pub fn visible_counts(&self, filter: &str, files: bool, folders: bool) -> VisibleCounts {
+        self.cached_visibility(filter, files, folders).map_or_else(
+            || filter_visible_entries(&self.entries, filter, files, folders).1, |cache| cache.counts)
+    }
+
+    /// Keep original entry indices in selection/operations. Only display
+    /// positions are compressed, and only a changed projection drops selection.
+    pub fn refresh_visibility(&mut self, filter: &str, files: bool, folders: bool) {
+        if self.cached_visibility(filter, files, folders).is_some() { return; }
+        let (indices, counts) = filter_visible_entries(&self.entries, filter, files, folders);
+        self.selection.retain_visible(&indices);
+        self.visibility = Some(ColumnVisibility { entries: self.entries.clone(), filter: filter.into(),
+            files, folders, indices: Arc::new(indices), counts });
     }
 }
 
@@ -102,9 +144,71 @@ pub struct SelectionState<T = usize> {
     pub keyboard_cursor: Option<T>,
     pub selection_anchor: Option<T>,
     pub scroll_to_selected: bool,
+    pub last_pointer_click: Option<(T, std::time::Instant)>,
+}
+
+impl SelectionState<usize> {
+    /// Re-attach an index selection to file identity after its index space
+    /// changed (`old[i]` was the item at index `i`, `new[j]` is the item at `j`).
+    ///
+    /// Selected items that vanished hand their selection to their nearest
+    /// surviving ancestor, so collapsing a folder selects that folder (Finder).
+    /// In a flat listing a deleted file has no listed ancestor and simply drops.
+    pub fn remap_by_path(&self, old: &[std::path::PathBuf], new: &[std::path::PathBuf]) -> Self {
+        let position: std::collections::HashMap<&std::path::Path, usize> =
+            new.iter().enumerate().map(|(i, path)| (path.as_path(), i)).collect();
+        let locate = |idx: usize| -> Option<usize> {
+            let path = old.get(idx)?;
+            path.ancestors().find_map(|candidate| position.get(candidate).copied())
+        };
+        let exact = |idx: usize| -> Option<usize> {
+            old.get(idx).and_then(|path| position.get(path.as_path()).copied())
+        };
+        let cursor = self.keyboard_cursor.and_then(locate);
+        let moved = self.keyboard_cursor.is_some() && self.keyboard_cursor.and_then(exact).is_none();
+        Self {
+            selected: self.selected.iter().filter_map(|&idx| locate(idx)).collect(),
+            keyboard_cursor: cursor,
+            selection_anchor: self.selection_anchor.and_then(exact).or(cursor),
+            last_clicked_index: self.last_clicked_index.and_then(exact).or(cursor),
+            // A cursor handed to an ancestor must be revealed; otherwise keep the
+            // pending request as it was.
+            scroll_to_selected: self.scroll_to_selected || (moved && cursor.is_some()),
+            last_pointer_click: None,
+        }
+    }
 }
 
 impl<T: Clone + Eq + std::hash::Hash> SelectionState<T> {
+    /// A slow second click is distinct from the platform's double-click open.
+    pub fn slow_rename_click(&mut self, item: T, now: std::time::Instant, eligible: bool) -> bool {
+        let rename = eligible && self.last_pointer_click.as_ref().is_some_and(|(previous, at)| {
+            let elapsed = now.saturating_duration_since(*at);
+            previous == &item && (std::time::Duration::from_millis(500)..=std::time::Duration::from_millis(1200)).contains(&elapsed)
+        });
+        self.last_pointer_click = if eligible { Some((item, now)) } else { None };
+        rename
+    }
+
+    pub fn all_visible_selected(&self, visible: &[T]) -> bool {
+        !visible.is_empty() && visible.iter().all(|item| self.selected.contains(item))
+    }
+
+    /// Select exactly the displayed set, or clear it when the set is fully selected.
+    pub fn toggle_all_visible(&mut self, visible: &[T]) {
+        if visible.is_empty() {
+            return;
+        }
+        if self.all_visible_selected(visible) {
+            self.clear();
+        } else {
+            self.selected = visible.iter().cloned().collect();
+            self.keyboard_cursor = visible.first().cloned();
+            self.selection_anchor = self.keyboard_cursor.clone();
+            self.last_clicked_index = self.keyboard_cursor.clone();
+        }
+    }
+
     /// Apply pointer selection in display order, shared by panes, Miller and the shelf.
     pub fn select(&mut self, item: T, visible: &[T], shift: bool, ctrl: bool) {
         self.retain_visible(visible);
@@ -153,6 +257,7 @@ impl<T: Clone + Eq + std::hash::Hash> SelectionState<T> {
     }
 
     pub fn clear(&mut self) {
+        self.last_pointer_click = None;
         self.selected.clear();
         self.last_clicked_index = None;
         self.keyboard_cursor = None;
@@ -193,8 +298,10 @@ pub struct SearchInPlaceState {
 impl SearchInPlaceState {
     pub fn reset(&mut self) {
         let recursive = self.recursive;
+        let generation = self.generation.wrapping_add(1);
         *self = Self {
             recursive,
+            generation,
             ..Self::default()
         };
     }
@@ -212,16 +319,26 @@ pub struct VisibleCounts {
     pub folders_total: usize,
     pub files_shown: usize,
     pub files_total: usize,
+    pub bytes_shown: u128,
 }
 
 #[derive(Clone)]
 pub struct TabState {
+    pub listing_elapsed: Option<std::time::Duration>,
+    pub group_by: GroupBy,
+    pub collapsed_groups: std::collections::BTreeSet<String>,
+    grouped_rows: Arc<Vec<GroupRow>>,
+    grouped_visible: Arc<Vec<usize>>,
+    group_cache: Option<(u64, String, bool, bool, GroupBy, chrono::NaiveDate, u64)>,
+    group_revision: u64,
     pub entries: std::sync::Arc<[FileEntry]>,
     pub filter: String,
     /// Per-pane visibility toggles, mirrored from `TabData` so the cached
     /// filtering below doesn't need access to the pane tree.
     pub show_files: bool,
     pub show_folders: bool,
+    /// A metadata-only listing found entries omitted by hidden/system settings.
+    pub has_excluded_items: bool,
     pub load_state: LoadState,
     pub last_nav_op_id: u64,
     pub grid_columns: usize,
@@ -266,10 +383,18 @@ pub struct TabState {
 impl Default for TabState {
     fn default() -> Self {
         Self {
+            listing_elapsed: None,
+            group_by: GroupBy::None,
+            collapsed_groups: std::collections::BTreeSet::new(),
+            grouped_rows: Arc::default(),
+            grouped_visible: Arc::default(),
+            group_cache: None,
+            group_revision: 0,
             entries: std::sync::Arc::new([]),
             filter: String::new(),
             show_files: true,
             show_folders: true,
+            has_excluded_items: false,
             load_state: LoadState::NotLoaded,
             last_nav_op_id: 0,
             grid_columns: 1,
@@ -298,6 +423,147 @@ impl Default for TabState {
 }
 
 impl TabState {
+    /// Paths of the index space `self.selection` lives in: the visible tree rows
+    /// in Tree view, the flat listing everywhere else (Miller columns own their
+    /// own selection and remap themselves in `set_entries`).
+    pub fn selection_paths(&self, tree: bool) -> Vec<std::path::PathBuf> {
+        if tree {
+            self.visible_tree_rows_snapshot().into_iter().map(|row| row.0.path()).collect()
+        } else {
+            self.entries.iter().map(|entry| entry.path()).collect()
+        }
+    }
+
+    /// Path of one index of the selection's index space (see `selection_paths`).
+    pub fn selection_path(&self, tree: bool, idx: usize) -> Option<std::path::PathBuf> {
+        if tree {
+            self.visible_tree_rows_snapshot().get(idx).map(|row| row.0.path())
+        } else {
+            self.entries.get(idx).map(|entry| entry.path())
+        }
+    }
+
+    /// The one entry point for structural changes (new listing, re-sort, tree
+    /// expand/collapse, children arriving, watcher deltas). The selection stays
+    /// on the same files by construction, so no caller can forget to remap.
+    pub fn mutate_preserving_selection(&mut self, tree: bool, mutate: impl FnOnce(&mut Self)) {
+        self.mutate_preserving_selection_with(tree, |path| path, mutate);
+    }
+
+    /// Like [`Self::mutate_preserving_selection`], with a rename map applied to
+    /// the old identities (watcher renames keep their item selected).
+    pub fn mutate_preserving_selection_with(
+        &mut self,
+        tree: bool,
+        rename: impl Fn(std::path::PathBuf) -> std::path::PathBuf,
+        mutate: impl FnOnce(&mut Self),
+    ) {
+        let before: Vec<_> = self.selection_paths(tree).into_iter().map(rename).collect();
+        let selection = self.selection.clone();
+        mutate(self);
+        let after = self.selection_paths(tree);
+        self.selection = selection.remap_by_path(&before, &after);
+    }
+
+    pub fn refresh_miller_visibility(&mut self) {
+        for column in &mut self.miller.columns {
+            column.refresh_visibility(&self.filter, self.show_files, self.show_folders);
+        }
+    }
+
+    pub fn miller_visible_indices(&self, column: usize) -> Arc<Vec<usize>> {
+        self.miller.columns.get(column).map_or_else(|| Arc::new(Vec::new()), |column|
+            column.visible_indices(&self.filter, self.show_files, self.show_folders))
+    }
+
+    pub fn selected_entries(&self, mode: &crate::settings::ViewMode) -> Vec<&FileEntry> {
+        use crate::settings::ViewMode;
+        let (selection, entries) = if *mode == ViewMode::Miller {
+            let Some(column) = self.miller.columns.get(self.miller.focused) else { return Vec::new(); };
+            (&column.selection, &column.entries)
+        } else { (&self.selection, &self.entries) };
+        let mut selected: Vec<_> = selection.selected.iter().copied().collect();
+        selected.sort_unstable();
+        if *mode == ViewMode::Tree {
+            let rows = self.visible_tree_rows_snapshot();
+            selected.into_iter().filter_map(|i| rows.get(i).map(|row| row.0)).collect()
+        } else if *mode == ViewMode::Miller {
+            let visible = self.miller_visible_indices(self.miller.focused);
+            selected.into_iter().filter(|i| visible.binary_search(i).is_ok()).filter_map(|i| entries.get(i)).collect()
+        } else {
+            selected.into_iter().filter_map(|i| entries.get(i)).collect()
+        }
+    }
+
+    /// Type-to-select uses the actual index space of the displayed view. It
+    /// leaves the filter and listing untouched, including expanded tree rows.
+    pub fn select_typed_prefix(&mut self, mode: &crate::settings::ViewMode, prefix: &str, cycle: bool) -> bool {
+        self.select_typed_prefix_with_indices(mode, prefix, cycle, None)
+    }
+
+    pub fn select_typed_prefix_with_indices(&mut self, mode: &crate::settings::ViewMode, prefix: &str,
+        cycle: bool, visible_override: Option<&[usize]>) -> bool {
+        use crate::settings::ViewMode;
+        let prefix = prefix.to_lowercase();
+        let find = |entries: &mut dyn Iterator<Item = (usize, &FileEntry)>, cursor: Option<usize>| {
+            let cursor = cycle.then_some(cursor).flatten();
+            let mut after_cursor = cursor.is_none();
+            let mut first = None;
+            for (index, entry) in entries {
+                if entry.name_lower().starts_with(&prefix) {
+                    if after_cursor { return Some(index); }
+                    first.get_or_insert(index);
+                }
+                if cursor == Some(index) { after_cursor = true; }
+            }
+            first
+        };
+        let cursor = self.selection.keyboard_cursor;
+        let (selection, found) = match mode {
+            ViewMode::Miller => {
+                let Some(column) = self.miller.columns.get_mut(self.miller.focused) else { return false; };
+                let visible = column.visible_indices(&self.filter, self.show_files, self.show_folders);
+                let found = find(&mut visible.iter().map(|i| (*i, &column.entries[*i])), column.selection.keyboard_cursor);
+                (&mut column.selection, found)
+            }
+            ViewMode::Tree => {
+                let rows = self.visible_tree_rows();
+                let found = find(&mut rows.iter().enumerate().map(|(i, row)| (i, row.0)), cursor);
+                (&mut self.selection, found)
+            }
+            _ => {
+                let visible = self.visible_indices_shared();
+                let visible = visible_override.unwrap_or(&visible);
+                let found = find(&mut visible.iter().map(|i| (*i, &self.entries[*i])), cursor);
+                (&mut self.selection, found)
+            }
+        };
+        if let Some(index) = found {
+            selection.select(index, &[], false, false);
+            selection.scroll_to_selected = true;
+            true
+        } else { false }
+    }
+
+    /// Translate an entry selection position to the sectioned virtual-list row.
+    pub fn grouped_row_for_entry(&mut self, entry: usize) -> Option<usize> {
+        self.visible_indices();
+        self.grouped_rows.iter().position(|row| *row == GroupRow::Entry(entry))
+    }
+    pub fn set_grouping(&mut self, mode: GroupBy, collapsed: std::collections::BTreeSet<String>) {
+        if self.group_by != mode || self.collapsed_groups != collapsed {
+            self.group_by = mode;
+            self.collapsed_groups = collapsed;
+            self.group_cache = None;
+            self.group_revision = self.group_revision.wrapping_add(1);
+        }
+    }
+
+    pub fn grouped_rows_shared(&mut self) -> Arc<Vec<GroupRow>> {
+        self.visible_indices();
+        self.grouped_rows.clone()
+    }
+
     /// Replace the directory listing, invalidating the cached visible set.
     pub fn set_entries(&mut self, entries: std::sync::Arc<[FileEntry]>) {
         self.entries = entries;
@@ -322,6 +588,12 @@ impl TabState {
     }
 
     pub fn begin_navigation(&mut self) {
+        self.begin_navigation_preserving_filter(false);
+    }
+
+    pub fn begin_navigation_preserving_filter(&mut self, sticky: bool) {
+        let query = (sticky && self.search.active).then(|| self.search.query.clone());
+        self.listing_elapsed = None;
         // A real navigation (not a watch refresh) — the next completed load should
         // play the item appear animation.
         self.pending_appear = true;
@@ -332,12 +604,18 @@ impl TabState {
         self.filter.clear();
         self.show_files = true;
         self.show_folders = true;
+        self.has_excluded_items = false;
         self.search.reset();
         self.path_edit.editing = false;
         self.path_edit.error = None;
         // The Miller view lazily re-initialises its first column from the pane path.
         self.miller = MillerState::default();
         self.tree = TreeState::default();
+        if let Some(query) = query {
+            self.search.active = true;
+            self.search.query.clone_from(&query);
+            self.filter = query;
+        }
     }
 
     /// Flip the per-kind visibility toggles, invalidating the cached visible set.
@@ -374,14 +652,14 @@ impl TabState {
             visible.clear();
             let mut counts = VisibleCounts::default();
             for entry in entries.iter() {
-                if matches!(entry.kind, FileKind::Dir) {
+                if matches!(entry.kind(), FileKind::Dir) {
                     counts.folders_total += 1;
                 } else {
                     counts.files_total += 1;
                 }
             }
             let kind_visible = |entry: &FileEntry| {
-                if matches!(entry.kind, FileKind::Dir) {
+                if matches!(entry.kind(), FileKind::Dir) {
                     show_folders
                 } else {
                     show_files
@@ -396,21 +674,18 @@ impl TabState {
                         .map(|(idx, _)| idx),
                 );
             } else {
-                let mut matches: Vec<(usize, i64)> = entries
+                visible.extend(entries
                     .iter()
                     .enumerate()
                     .filter(|(_, e)| kind_visible(e))
                     .filter_map(|(idx, entry)| {
-                        fuzzy_score(&needle, &entry.name_lower).map(|score| (idx, score))
+                        fuzzy_score(&needle, &entry.name_lower()).map(|_| idx)
                     })
-                    .collect();
-                matches.sort_by(|(ai, ascore), (bi, bscore)| {
-                    bscore.cmp(ascore).then_with(|| ai.cmp(bi))
-                });
-                visible.extend(matches.into_iter().map(|(idx, _)| idx));
+                );
             }
             for &idx in visible.iter() {
-                if matches!(entries[idx].kind, FileKind::Dir) {
+                counts.bytes_shown += u128::from(entries[idx].size().unwrap_or(0));
+                if matches!(entries[idx].kind(), FileKind::Dir) {
                     counts.folders_shown += 1;
                 } else {
                     counts.files_shown += 1;
@@ -423,15 +698,31 @@ impl TabState {
             self.visible_show_files = self.show_files;
             self.visible_show_folders = self.show_folders;
             self.visible_valid = true;
+            self.group_cache = None;
         }
-        &self.visible
+        if self.group_by == GroupBy::None {
+            return &self.visible;
+        }
+        let today = chrono::Local::now().date_naive();
+        let valid = self.group_cache.as_ref().is_some_and(|(version, filter, files, folders, mode, day, revision)| {
+            *version == self.entries_version && filter == &self.filter
+                && *files == self.show_files && *folders == self.show_folders
+                && *mode == self.group_by && *day == today && *revision == self.group_revision
+        });
+        if !valid {
+            let (rows, order) = crate::grouping::build_groups(&self.entries, &self.visible, self.group_by, &self.collapsed_groups, today);
+            self.grouped_rows = Arc::new(rows);
+            self.grouped_visible = Arc::new(order);
+            self.group_cache = Some((self.entries_version, self.filter.clone(), self.show_files, self.show_folders, self.group_by, today, self.group_revision));
+        }
+        &self.grouped_visible
     }
 
     /// Cheap render snapshot of the cached visible indices. Keeping this behind an
     /// `Arc` avoids copying the full directory index every frame in virtualized views.
     pub fn visible_indices_shared(&mut self) -> Arc<Vec<usize>> {
         self.visible_indices();
-        self.visible.clone()
+        if self.group_by == GroupBy::None { self.visible.clone() } else { self.grouped_visible.clone() }
     }
 
     /// Publish a completed off-thread folder filter without making the next UI
@@ -449,22 +740,37 @@ impl TabState {
         self.visible_show_folders = self.show_folders;
         self.counts = counts;
         self.visible_valid = true;
+        self.group_cache = None;
     }
 
     /// Flattened list of visible nodes `(entry: &FileEntry, depth: usize, is_expanded: bool, has_children: bool)`
     /// respecting expanded folders and search filters, ideal for `uniform_list`.
     pub fn visible_tree_rows(&mut self) -> Vec<(&FileEntry, usize, bool, bool)> {
         self.visible_indices();
-        let visible_idxs = self.visible.clone();
+        self.visible_tree_rows_snapshot()
+    }
+
+    /// Read-only projection for selection/preview queries between render passes.
+    /// Recompute only when the cached root filter no longer describes this state.
+    pub fn visible_tree_rows_snapshot(&self) -> Vec<(&FileEntry, usize, bool, bool)> {
+        let fresh;
+        let indices = if self.visible_valid && self.visible_version == self.entries_version
+            && self.visible_filter == self.filter && self.visible_show_files == self.show_files
+            && self.visible_show_folders == self.show_folders {
+            &*self.visible
+        } else {
+            fresh = filter_visible_entries(&self.entries, &self.filter, self.show_files, self.show_folders).0;
+            &fresh
+        };
         let mut rows = Vec::new();
         let mut visited = HashSet::new();
 
-        for &idx in visible_idxs.iter() {
+        for &idx in indices {
             let entry = &self.entries[idx];
-            let is_dir = matches!(entry.kind, FileKind::Dir);
-            let is_expanded = is_dir && self.tree.is_expanded(&entry.path);
+            let is_dir = matches!(entry.kind(), FileKind::Dir);
+            let is_expanded = is_dir && self.tree.is_expanded(&entry.path());
             let has_children = if is_dir {
-                match self.tree.children.get(&entry.path) {
+                match self.tree.children.get(&entry.path()) {
                     Some(children) => !children.is_empty(),
                     None => true,
                 }
@@ -473,9 +779,9 @@ impl TabState {
             };
             rows.push((entry, 0, is_expanded, has_children));
 
-            if is_expanded && visited.insert(entry.path.clone()) {
-                self.push_visible_tree_children(&entry.path, 1, &mut visited, &mut rows);
-                visited.remove(&entry.path);
+            if is_expanded && visited.insert(entry.path().clone()) {
+                self.push_visible_tree_children(&entry.path(), 1, &mut visited, &mut rows);
+                visited.remove(&entry.path());
             }
         }
 
@@ -495,7 +801,7 @@ impl TabState {
         let needle = self.filter.to_lowercase();
         let (show_files, show_folders) = (self.show_files, self.show_folders);
         let kind_visible = |entry: &FileEntry| {
-            if matches!(entry.kind, FileKind::Dir) {
+            if matches!(entry.kind(), FileKind::Dir) {
                 show_folders
             } else {
                 show_files
@@ -506,13 +812,13 @@ impl TabState {
             if !kind_visible(child) {
                 continue;
             }
-            if !needle.is_empty() && fuzzy_score(&needle, &child.name_lower).is_none() {
+            if !needle.is_empty() && fuzzy_score(&needle, &child.name_lower()).is_none() {
                 continue;
             }
-            let is_dir = matches!(child.kind, FileKind::Dir);
-            let is_expanded = is_dir && self.tree.is_expanded(&child.path);
+            let is_dir = matches!(child.kind(), FileKind::Dir);
+            let is_expanded = is_dir && self.tree.is_expanded(&child.path());
             let has_children = if is_dir {
-                match self.tree.children.get(&child.path) {
+                match self.tree.children.get(&child.path()) {
                     Some(c) => !c.is_empty(),
                     None => true,
                 }
@@ -521,16 +827,16 @@ impl TabState {
             };
             rows.push((child, depth, is_expanded, has_children));
 
-            if is_expanded && visited.insert(child.path.clone()) {
-                self.push_visible_tree_children(&child.path, depth + 1, visited, rows);
-                visited.remove(&child.path);
+            if is_expanded && visited.insert(child.path().clone()) {
+                self.push_visible_tree_children(&child.path(), depth + 1, visited, rows);
+                visited.remove(&child.path());
             }
         }
     }
 }
 
 /// CPU-only folder filtering used by the UI worker. Keeping it in the model
-/// makes the background and synchronous paths use identical matching/ranking.
+/// makes the background and synchronous paths preserve the same folder order.
 pub fn filter_visible_entries(
     entries: &[FileEntry],
     filter: &str,
@@ -540,14 +846,14 @@ pub fn filter_visible_entries(
     let needle = filter.to_lowercase();
     let mut counts = VisibleCounts::default();
     let kind_visible = |entry: &FileEntry| {
-        if matches!(entry.kind, FileKind::Dir) {
+        if matches!(entry.kind(), FileKind::Dir) {
             show_folders
         } else {
             show_files
         }
     };
     for entry in entries {
-        if matches!(entry.kind, FileKind::Dir) {
+        if matches!(entry.kind(), FileKind::Dir) {
             counts.folders_total += 1;
         } else {
             counts.files_total += 1;
@@ -562,20 +868,19 @@ pub fn filter_visible_entries(
             .map(|(idx, _)| idx)
             .collect()
     } else {
-        let mut matches: Vec<(usize, i64)> = entries
+        entries
             .iter()
             .enumerate()
             .filter(|(_, entry)| kind_visible(entry))
             .filter_map(|(idx, entry)| {
-                fuzzy_score(&needle, &entry.name_lower).map(|score| (idx, score))
+                fuzzy_score(&needle, &entry.name_lower()).map(|_| idx)
             })
-            .collect();
-        matches.sort_by(|(ai, ascore), (bi, bscore)| bscore.cmp(ascore).then_with(|| ai.cmp(bi)));
-        matches.into_iter().map(|(idx, _)| idx).collect()
+            .collect()
     };
 
     for &idx in &visible {
-        if matches!(entries[idx].kind, FileKind::Dir) {
+        counts.bytes_shown += u128::from(entries[idx].size().unwrap_or(0));
+        if matches!(entries[idx].kind(), FileKind::Dir) {
             counts.folders_shown += 1;
         } else {
             counts.files_shown += 1;
@@ -586,8 +891,100 @@ pub fn filter_visible_entries(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn grouping_collapsed_buckets_are_excluded_from_keyboard_and_shift_selection() {
+        let mut tab = super::TabState::default();
+        tab.set_entries(vec![entry("zeta", FileKind::File), entry("alpha", FileKind::File), entry("aardvark", FileKind::File)].into());
+        tab.set_grouping(super::GroupBy::Name, Default::default());
+        assert_eq!(tab.visible_indices(), &[1, 2, 0]);
+        assert_eq!(tab.grouped_row_for_entry(0), Some(4));
+        let original = tab.grouped_rows_shared();
+        assert!(std::sync::Arc::ptr_eq(&original, &tab.grouped_rows_shared()));
+        tab.set_grouping(super::GroupBy::Name, ["name:A-H".to_owned()].into());
+        assert_eq!(tab.visible_indices(), &[0]);
+        let visible = tab.visible_indices_shared();
+        tab.selection.select(0, &visible, true, false);
+        assert_eq!(tab.selection.selected, [0].into());
+        assert_eq!(tab.grouped_row_for_entry(1), None);
+        assert_eq!(tab.grouped_rows_shared().len(), 3);
+        tab.filter = "alpha".into();
+        assert!(tab.visible_indices().is_empty());
+        assert_eq!(tab.grouped_rows_shared().len(), 1);
+        tab.set_grouping(super::GroupBy::None, Default::default());
+        assert_eq!(tab.visible_indices(), &[1]);
+    }
+    #[test]
+    fn slow_click_obeys_timing_identity_and_modifier_boundaries() {
+        use std::time::{Duration, Instant};
+        for (delay, expected) in [(499, false), (500, true), (750, true), (1200, true), (1201, false)] {
+            let mut selection = super::SelectionState::<usize>::default();
+            let start = Instant::now();
+            assert!(!selection.slow_rename_click(7, start, true));
+            assert_eq!(selection.slow_rename_click(7, start + Duration::from_millis(delay), true), expected);
+        }
+        let mut selection = super::SelectionState::<usize>::default();
+        let start = Instant::now();
+        selection.slow_rename_click(7, start, true);
+        assert!(!selection.slow_rename_click(8, start + Duration::from_millis(750), true));
+        assert!(!selection.slow_rename_click(8, start + Duration::from_millis(1500), false));
+        assert!(selection.last_pointer_click.is_none());
+    }
+    #[test]
+    fn header_select_all_uses_only_filtered_visible_items_and_toggles_off() {
+        let mut selection = super::SelectionState::<usize>::default();
+        selection.selected.extend([1, 9]);
+        let visible = [7, 1, 4];
+        assert!(!selection.all_visible_selected(&visible));
+        selection.toggle_all_visible(&visible);
+        assert_eq!(
+            selection.selected,
+            std::collections::HashSet::from([7, 1, 4])
+        );
+        assert_eq!(selection.keyboard_cursor, Some(7));
+        assert!(selection.all_visible_selected(&visible));
+        selection.toggle_all_visible(&visible);
+        assert!(selection.selected.is_empty());
+        assert!(!selection.all_visible_selected(&[]));
+        selection.selected.insert(9);
+        selection.toggle_all_visible(&[]);
+        assert!(selection.selected.contains(&9));
+    }
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn selection_follows_identity_and_collapsing_hands_it_to_the_folder() {
+        let paths = |names: &[&str]| names.iter().map(PathBuf::from).collect::<Vec<_>>();
+        let old = paths(&["a", "dir", "dir/x", "dir/y", "z"]);
+        let mut selection = SelectionState::default();
+        selection.selected = [2, 4].into_iter().collect();
+        selection.keyboard_cursor = Some(2);
+        selection.selection_anchor = Some(4);
+
+        // Re-sort: same files, new positions.
+        let resorted = paths(&["z", "dir", "dir/y", "dir/x", "a"]);
+        let next = selection.remap_by_path(&old, &resorted);
+        assert_eq!(next.selected, [3, 0].into_iter().collect());
+        assert_eq!(next.keyboard_cursor, Some(3));
+        assert_eq!(next.selection_anchor, Some(0));
+        assert!(!next.scroll_to_selected);
+
+        // Collapse `dir`: its selected child hands the selection to `dir`.
+        let collapsed = paths(&["a", "dir", "z"]);
+        let next = selection.remap_by_path(&old, &collapsed);
+        assert_eq!(next.selected, [1, 2].into_iter().collect());
+        assert_eq!(next.keyboard_cursor, Some(1));
+        assert!(next.scroll_to_selected);
+
+        // Flat delete: no listed ancestor, the item just drops.
+        let deleted = paths(&["a", "dir", "z"]);
+        let flat_old = paths(&["a", "dir", "gone", "z"]);
+        let mut flat = SelectionState::default();
+        flat.selected = [2].into_iter().collect();
+        let next = flat.remap_by_path(&flat_old, &deleted);
+        assert!(next.selected.is_empty());
+        assert_eq!(next.keyboard_cursor, None);
+    }
 
     #[test]
     fn selection_shift_keeps_anchor_and_follows_display_order() {
@@ -640,22 +1037,17 @@ mod tests {
     }
 
     fn entry(name: &str, kind: FileKind) -> FileEntry {
-        FileEntry {
-            name: name.to_string(),
-            name_lower: name.to_lowercase(),
+        FileEntry::from(crate::file_entry::FileEntryData {
+            name: name.into(),
             path: std::path::PathBuf::from(name),
             kind,
             size: None,
             modified: None,
-            extension: None,
-            display_size: String::new().into(),
-            display_date: String::new().into(),
-            display_type: String::new().into(),
             _is_hidden: false,
             _is_symlink: false,
             archive_root: None,
             recycle_info: None,
-        }
+        })
     }
 
     #[test]
@@ -678,6 +1070,68 @@ mod tests {
         assert_eq!(col.selection.selected, HashSet::from([0]));
         assert_eq!(col.selection.keyboard_cursor, None);
         assert_eq!(col.selection.selection_anchor, None);
+    }
+
+    #[test]
+    fn miller_filter_keeps_storage_order_indices_counts_and_cached_frames_in_sync() {
+        let mut column = MillerColumn::new(Location::Directory("/".into()));
+        column.set_entries(vec![entry("zphoto.txt", FileKind::File), entry("photo-dir", FileKind::Dir),
+            entry("photo.txt", FileKind::File), entry("unmatched.txt", FileKind::File)].into());
+        column.selection.selected = HashSet::from([0, 1, 2, 3]);
+        column.selection.keyboard_cursor = Some(1);
+        column.refresh_visibility("photo", true, false);
+        let first = column.visible_indices("photo", true, false);
+        assert_eq!(*first, vec![0, 2]);
+        assert_eq!(column.selection.selected, HashSet::from([0, 2]));
+        assert_eq!(column.selection.keyboard_cursor, None);
+        let counts = column.visible_counts("photo", true, false);
+        assert_eq!((counts.files_shown, counts.files_total, counts.folders_shown, counts.folders_total), (2, 3, 0, 1));
+        for _ in 0..100 {
+            column.refresh_visibility("photo", true, false);
+            assert!(Arc::ptr_eq(&first, &column.visible_indices("photo", true, false)));
+        }
+        column.set_entries(vec![entry("photo.txt", FileKind::File), entry("photo-dir", FileKind::Dir),
+            entry("zphoto.txt", FileKind::File)].into());
+        column.refresh_visibility("photo", true, false);
+        assert_eq!(*column.visible_indices("photo", true, false), vec![0, 2]);
+        assert!(!Arc::ptr_eq(&first, &column.visible_indices("photo", true, false)));
+        column.refresh_visibility("photo", false, true);
+        assert_eq!(*column.visible_indices("photo", false, true), vec![1]);
+        assert!(column.selection.selected.is_empty());
+    }
+
+    #[test]
+    fn miller_operations_and_prefix_selection_never_use_filtered_out_rows() {
+        use crate::settings::ViewMode;
+        let mut state = TabState::default();
+        let mut column = MillerColumn::new(Location::Directory("/".into()));
+        column.set_entries(vec![entry("alpha-dir", FileKind::Dir), entry("alpha.txt", FileKind::File),
+            entry("another.txt", FileKind::File)].into());
+        column.selection.selected = HashSet::from([0, 1, 2]);
+        state.miller.columns.push(column);
+        state.filter = "alpha".into();
+        state.show_folders = false;
+        // Even before a render refresh, operation queries must use the latest
+        // filter instead of an earlier frame's selection.
+        assert_eq!(state.selected_entries(&ViewMode::Miller).iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), vec!["alpha.txt"]);
+        assert!(state.select_typed_prefix(&ViewMode::Miller, "a", false));
+        assert_eq!(state.miller.columns[0].selection.keyboard_cursor, Some(1));
+        state.refresh_miller_visibility();
+        state.filter = "no match".into();
+        state.refresh_miller_visibility();
+        assert!(state.miller_visible_indices(0).is_empty());
+        assert!(state.selected_entries(&ViewMode::Miller).is_empty());
+        assert!(!state.select_typed_prefix(&ViewMode::Miller, "a", false));
+    }
+
+    #[test]
+    fn typed_selection_respects_the_same_metadata_projection_as_the_details_view() {
+        use crate::settings::ViewMode;
+        let mut state = TabState::default();
+        state.set_entries(vec![entry("alpha-hidden.txt", FileKind::File), entry("alpha-visible.txt", FileKind::File)].into());
+        assert!(state.select_typed_prefix_with_indices(&ViewMode::Details, "a", false, Some(&[1])));
+        assert_eq!(state.selection.keyboard_cursor, Some(1));
+        assert!(!state.select_typed_prefix_with_indices(&ViewMode::Details, "a", false, Some(&[])));
     }
 
     #[test]
@@ -731,6 +1185,19 @@ mod tests {
     }
 
     #[test]
+    fn quick_filter_preserves_folder_sort_order_in_foreground_and_worker() {
+        let mut ts = TabState::default();
+        ts.set_entries(vec![entry("holiday-photo.jpg", FileKind::File), entry("notes.txt", FileKind::File),
+            entry("photo.jpg", FileKind::File)].into());
+        ts.filter = "photo".into();
+        // A prefix scores higher, but filtering must not move it above the
+        // earlier file in the directory's existing date/size/name sort order.
+        assert_eq!(ts.visible_indices(), &[0, 2]);
+        let (visible, _) = super::filter_visible_entries(&ts.entries, "photo", true, true);
+        assert_eq!(visible, [0, 2]);
+    }
+
+    #[test]
     fn navigation_resets_kind_visibility() {
         let mut ts = TabState::default();
         ts.set_visibility(true, false);
@@ -739,6 +1206,60 @@ mod tests {
 
         ts.set_entries(vec![entry("docs", FileKind::Dir), entry("a.txt", FileKind::File)].into());
         assert_eq!(ts.visible_indices(), &[0, 1]);
+    }
+
+    #[test]
+    fn sticky_filter_applies_to_the_new_directory_and_invalidates_old_search_results() {
+        let mut ts = TabState::default();
+        ts.search.active = true;
+        ts.search.query = ".rs".into();
+        ts.search.recursive = true;
+        ts.search.generation = 17;
+        ts.filter = ".rs".into();
+        ts.begin_navigation_preserving_filter(true);
+        ts.set_entries(vec![entry("main.rs", FileKind::File), entry("README.md", FileKind::File)].into());
+        assert_eq!(ts.search.query, ".rs");
+        assert_eq!(ts.visible_indices(), &[0]);
+        assert!(ts.search.active && ts.search.recursive);
+        assert_ne!(ts.search.generation, 17);
+        let previous = ts.search.generation;
+        ts.begin_navigation();
+        assert!(ts.filter.is_empty() && ts.search.query.is_empty() && !ts.search.active);
+        assert_ne!(ts.search.generation, previous);
+    }
+
+    #[test]
+    fn typed_selection_cycles_visible_items_without_filtering_the_listing() {
+        use crate::settings::ViewMode;
+        let mut ts = TabState::default();
+        ts.set_entries(vec![entry("alpha", FileKind::File), entry("beta", FileKind::File), entry("alpine", FileKind::File)].into());
+        assert!(ts.select_typed_prefix(&ViewMode::Details, "AL", false));
+        assert_eq!(ts.selection.keyboard_cursor, Some(0));
+        assert!(ts.select_typed_prefix(&ViewMode::Details, "al", true));
+        assert_eq!(ts.selection.keyboard_cursor, Some(2));
+        assert!(ts.select_typed_prefix(&ViewMode::Details, "al", true));
+        assert_eq!(ts.selection.keyboard_cursor, Some(0));
+        assert!(!ts.select_typed_prefix(&ViewMode::Details, "missing", false));
+        assert_eq!(ts.visible_indices(), &[0, 1, 2]);
+        assert!(ts.filter.is_empty() && !ts.search.active);
+    }
+
+    #[test]
+    fn typed_selection_uses_expanded_tree_rows_and_the_focused_miller_column() {
+        use crate::settings::ViewMode;
+        let mut ts = TabState::default();
+        let folder = entry("folder", FileKind::Dir);
+        ts.set_entries(vec![folder.clone()].into());
+        ts.tree.expanded.insert(folder.path());
+        ts.tree.children.insert(folder.path(), vec![entry("needle.txt", FileKind::File)].into());
+        assert!(ts.select_typed_prefix(&ViewMode::Tree, "needle", false));
+        assert_eq!(ts.selection.keyboard_cursor, Some(1));
+        let mut column = super::MillerColumn::new(crate::location::Location::Directory("/other".into()));
+        column.entries = vec![entry("other", FileKind::Dir), entry("needle.txt", FileKind::File)].into();
+        ts.miller.columns.push(column);
+        assert!(ts.select_typed_prefix(&ViewMode::Miller, "needle", false));
+        assert_eq!(ts.miller.columns[0].selection.keyboard_cursor, Some(1));
+        assert_eq!(ts.miller.columns[0].selection.selected, [1].into());
     }
 
     #[test]
@@ -757,45 +1278,36 @@ mod tests {
         let mut ts = TabState::default();
         let docs = entry("docs", FileKind::Dir);
         let file1 = entry("file1.txt", FileKind::File);
-        let docs_path = docs.path.clone();
+        let docs_path = docs.path().clone();
 
-        let child1 = FileEntry {
-            name: "subfolder".to_string(),
-            name_lower: "subfolder".to_string(),
+        let child1 = FileEntry::from(crate::file_entry::FileEntryData {
+            name: "subfolder".into(),
             path: docs_path.join("subfolder"),
             kind: FileKind::Dir,
             size: None,
             modified: None,
-            extension: None,
-            display_size: "".into(),
-            display_date: "".into(),
-            display_type: "".into(),
             _is_hidden: false,
             _is_symlink: false,
             archive_root: None,
             recycle_info: None,
-        };
-        let child2 = FileEntry {
-            name: "inner.md".to_string(),
-            name_lower: "inner.md".to_string(),
+        });
+        let child2 = FileEntry::from(crate::file_entry::FileEntryData {
+            name: "inner.md".into(),
             path: docs_path.join("inner.md"),
             kind: FileKind::File,
             size: Some(10),
             modified: None,
-            extension: Some("md".into()),
-            display_size: "10 B".into(),
-            display_date: "".into(),
-            display_type: "".into(),
             _is_hidden: false,
             _is_symlink: false,
             archive_root: None,
             recycle_info: None,
-        };
+        });
 
         ts.set_entries(vec![docs.clone(), file1.clone()].into());
-        ts.tree
-            .children
-            .insert(docs_path.clone(), vec![child1.clone(), child2.clone()].into());
+        ts.tree.children.insert(
+            docs_path.clone(),
+            vec![child1.clone(), child2.clone()].into(),
+        );
 
         // Collapsed docs folder:
         let rows = ts.visible_tree_rows();

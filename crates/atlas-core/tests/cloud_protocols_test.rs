@@ -54,8 +54,8 @@ fn spawn_server(proto: &str, port: u16, user: &str, pass: &str) -> (ServerGuard,
 
 #[tokio::test]
 async fn test_cloud_ftp_webdav_sftp_navigation_and_operations() {
-    let home = std::env::var("HOME").unwrap();
-    let ext_dir = PathBuf::from(home).join(".local/share/atlas/extensions/cloud");
+    let home = dirs::home_dir().expect("resolve home directory on this platform");
+    let ext_dir = home.join(".local/share/atlas/extensions/cloud");
     if !ext_dir.join("extension.toml").exists() {
         eprintln!("Skipping test: cloud extension not installed in ~/.local/share/atlas/extensions/cloud");
         return;

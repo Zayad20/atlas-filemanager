@@ -15,6 +15,7 @@ pub mod cloud_state;
 pub mod ext_model;
 pub mod ext_state;
 pub mod file_entry;
+pub mod grouping;
 pub mod layout_tree;
 pub mod location;
 pub mod ops;

@@ -47,7 +47,7 @@ pub fn build_index_scoped(root: PathBuf, injector: nucleo::Injector<IndexEntry>)
             .max_depth(SCOPED_MAX_DEPTH)
             .follow_links(false)
             .into_iter()
-            .filter_entry(|entry| entry.depth() == 0 || !is_hidden(entry.path()))
+            .filter_entry(|entry| !super::scan_policy::is_scan_excluded(entry.path()) && !super::preview::is_cloud_placeholder(entry.path()) && (entry.depth() == 0 || !is_hidden(entry.path())))
             .flatten()
         {
             if entry.depth() == 0 {
@@ -110,6 +110,7 @@ fn index_tree(
         if depth >= max_depth {
             continue;
         }
+        if super::scan_policy::is_scan_excluded(&directory) || super::preview::is_cloud_placeholder(&directory) { continue; }
         let Ok(children) = std::fs::read_dir(&directory) else {
             continue;
         };
@@ -138,7 +139,7 @@ fn index_files(
         .max_depth(max_depth)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !is_hidden(e.path()))
+        .filter_entry(|e| !super::scan_policy::is_scan_excluded(e.path()) && !super::preview::is_cloud_placeholder(e.path()) && (e.depth() == 0 || !is_hidden(e.path())))
         .flatten()
     {
         if entry.depth() == 0 || entry.file_type().is_dir() {

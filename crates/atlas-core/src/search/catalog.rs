@@ -178,6 +178,8 @@ impl LocalSearchBackend {
         let entries = walkdir::WalkDir::new(root)
             .follow_links(false)
             .into_iter()
+            .filter_entry(|entry| !crate::fs::scan_policy::is_scan_excluded(entry.path())
+                && !crate::fs::preview::is_cloud_placeholder(entry.path()))
             .filter_map(Result::ok)
             .skip(1)
             .take(max_entries)

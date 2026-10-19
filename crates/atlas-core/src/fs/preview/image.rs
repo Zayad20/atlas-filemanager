@@ -2,12 +2,16 @@
 // reason: image ops run on blocking workers, sync fs is intentional.
 
 use std::path::Path;
+use image::ImageDecoder as _;
 
 use atlas_model::preview_cache::{ImageData, PreviewResult};
 
 use super::{MAX_IMAGE_PREVIEW_EDGE, MAX_MULTI_THUMBNAIL_EDGE};
 
 pub fn decode_svg(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, usize)> {
+    if super::is_cloud_placeholder(path) {
+        return None;
+    }
     let data = std::fs::read(path).ok()?;
     let opts = resvg::usvg::Options::default();
     let tree = resvg::usvg::Tree::from_data(&data, &opts).ok()?;
@@ -29,6 +33,9 @@ pub fn decode_svg(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, usize)>
 }
 
 pub(super) fn preview_image(path: &Path) -> PreviewResult {
+    if super::is_cloud_placeholder(path) {
+        return super::offline_preview();
+    }
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
         Err(e) => return PreviewResult::Error(e.to_string()),
@@ -57,7 +64,7 @@ pub(super) fn preview_image(path: &Path) -> PreviewResult {
         };
     }
 
-    let img = match image::open(path) {
+    let img = match oriented_image(path) {
         Ok(i) => i,
         Err(e) => return PreviewResult::Error(e.to_string()),
     };
@@ -78,6 +85,11 @@ pub(super) fn preview_image(path: &Path) -> PreviewResult {
 }
 
 pub(super) fn preview_thumbnail(path: &Path) -> Result<(Vec<u8>, usize, usize), image::ImageError> {
+    if super::is_cloud_placeholder(path) {
+        return Err(
+            std::io::Error::new(std::io::ErrorKind::WouldBlock, "Cloud placeholder").into(),
+        );
+    }
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -88,10 +100,20 @@ pub(super) fn preview_thumbnail(path: &Path) -> Result<(Vec<u8>, usize, usize), 
             return Ok(res);
         }
     }
-    let img = image::open(path)?.thumbnail(MAX_MULTI_THUMBNAIL_EDGE, MAX_MULTI_THUMBNAIL_EDGE);
+    let img = oriented_image(path)?.thumbnail(MAX_MULTI_THUMBNAIL_EDGE, MAX_MULTI_THUMBNAIL_EDGE);
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     Ok((rgba.into_raw(), width as usize, height as usize))
+}
+
+fn oriented_image(path: &Path) -> Result<image::DynamicImage, image::ImageError> {
+    // Decoder metadata includes EXIF tag 274 for JPEG/TIFF and orientation in
+    // other supported containers. Apply it exactly once, before sizing/upload.
+    let mut decoder = image::ImageReader::open(path)?.with_guessed_format()?.into_decoder()?;
+    let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut image = image::DynamicImage::from_decoder(decoder)?;
+    image.apply_orientation(orientation);
+    Ok(image)
 }
 
 pub(super) fn decode_cover(data: &[u8]) -> Option<ImageData> {
@@ -180,6 +202,33 @@ pub(super) fn rotate_rgba(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jpeg_exif_rotation_and_mirroring_are_applied_once_before_sizing() {
+        use image::GenericImageView as _;
+        let pixels = image::RgbImage::from_fn(40, 20, |x, y| image::Rgb([(x * 6) as u8, (y * 12) as u8, 80]));
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 95).encode_image(&pixels).unwrap();
+        let original = image::load_from_memory(&jpeg).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        for orientation in [2u8, 6] {
+            let mut exif = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0".to_vec();
+            exif.extend_from_slice(&[orientation, 0, 0, 0, 0, 0, 0, 0]);
+            let mut fixture = jpeg[..2].to_vec();
+            fixture.extend_from_slice(&[0xff, 0xe1]);
+            fixture.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
+            fixture.extend_from_slice(&exif);
+            fixture.extend_from_slice(&jpeg[2..]);
+            let path = dir.path().join(format!("orientation-{orientation}.jpg"));
+            std::fs::write(&path, fixture).unwrap();
+            let decoded = oriented_image(&path).unwrap();
+            let expected = if orientation == 2 { original.fliph() } else { original.rotate90() };
+            assert_eq!(decoded.dimensions(), expected.dimensions());
+            assert_eq!(decoded.to_rgba8(), expected.to_rgba8());
+            let PreviewResult::Image { original_width, original_height, .. } = preview_image(&path) else { panic!("image preview"); };
+            assert_eq!((original_width, original_height), (expected.width() as usize, expected.height() as usize));
+        }
+    }
 
     #[test]
     fn test_decode_svg_valid() {

@@ -16,6 +16,10 @@ pub enum UndoEntry {
         from: PathBuf,
         to: PathBuf,
     },
+    /// Trashed paths sent to recycle bin; undo restores them back to original location.
+    Trash {
+        paths: Vec<PathBuf>,
+    },
 }
 
 #[derive(Default)]

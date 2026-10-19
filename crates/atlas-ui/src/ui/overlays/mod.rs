@@ -102,7 +102,7 @@ impl App {
         if has_local_transfers || has_visible_cloud_transfers {
             layers.push(self.render_transfer_center(window, cx));
         }
-        if !self.state.overlay.op_errors.is_empty() {
+        if !self.state.overlay.op_errors.is_empty() || !self.toast_stack.is_empty() {
             layers.push(self.render_op_errors(window, cx));
         }
         // Details type-filter overlay. Painted below the right-click menu.
@@ -197,6 +197,7 @@ mod rename_profile;
 mod rename_remote;
 mod scrim;
 mod settings;
-mod toasts;
+pub(crate) mod settings_imm;
+pub(crate) mod toasts;
 mod transfer_conflict;
 mod transfers_bar;

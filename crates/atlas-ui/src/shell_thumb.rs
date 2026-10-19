@@ -45,6 +45,15 @@ fn ensure_com_init() {
     });
 }
 
+/// Query the current user's aggregate bin state without enumerating its files.
+pub(crate) fn recycle_bin_contains_items() -> Option<bool> {
+    use windows::Win32::UI::Shell::{SHQueryRecycleBinW, SHQUERYRBINFO};
+    ensure_com_init();
+    let mut info = SHQUERYRBINFO { cbSize: size_of::<SHQUERYRBINFO>() as u32, ..Default::default() };
+    unsafe { SHQueryRecycleBinW(PCWSTR::null(), &mut info).ok()?; }
+    Some(info.i64NumItems > 0)
+}
+
 /// Extract a thumbnail for `path` from the Windows Shell thumbnail cache.
 ///
 /// Returns `(RGBA pixels, width, height)` where `width * height * 4 == pixels.len()`.
@@ -65,6 +74,7 @@ pub fn shell_thumbnail(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, us
 /// Extract the best Shell image for a folder: thumbnail/custom icon when Windows
 /// has one, otherwise the Shell icon.
 pub fn shell_thumbnail_or_icon(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, usize)> {
+    if atlas_core::fs::preview::is_cloud_placeholder(path) { return None; }
     let (pixels, w, h) = shell_image_from_parsing_name(&path.to_string_lossy(), max_edge, 0)?;
     Some(clean_shell_image(pixels, w, h, &path.display().to_string()))
 }
@@ -273,6 +283,7 @@ fn crop_rgba(pixels: &[u8], w: usize, x: usize, y: usize, crop_w: usize, crop_h:
 }
 
 fn shell_image(path: &Path, max_edge: u32, flags: i32) -> Option<(Vec<u8>, usize, usize)> {
+    if atlas_core::fs::preview::is_cloud_placeholder(path) { return None; }
     shell_image_from_parsing_name(&path.to_string_lossy(), max_edge, flags)
 }
 

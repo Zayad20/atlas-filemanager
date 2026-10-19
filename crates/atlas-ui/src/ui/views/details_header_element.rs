@@ -6,7 +6,11 @@
 use crate::app::{App, ColResizeState, DetailsColumn};
 use crate::input::action::Action;
 use crate::ui::icons::AtlasIcon;
-use crate::ui::surface::{chrome_font_size_header, paint_theme_icon, shape_text, Slot};
+use crate::ui::selection_checkbox::{self, CheckState};
+use crate::ui::surface::{
+    chrome_font_size_header, hit_first, paint_rounded, paint_theme_icon, shape_text,
+    shape_text_truncated, Slot,
+};
 use crate::ui::views::details::{
     DetailsColors, DetailsContentLod, DetailsRowLayout, CELL_PAD, DETAILS_ROW_H, ROW_TEXT_Y_NUDGE,
 };
@@ -14,18 +18,22 @@ use atlas_model::file_entry::{SortColumn, SortDir};
 use atlas_model::pane::TabId;
 use gpui::ColorExt as _;
 use gpui::{
-    point, px, size, App as GpuiApp, Bounds, ContentMask, DispatchPhase, Element, ElementId, Font,
-    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Refineable, ShapedLine,
-    SharedString, Style, StyleRefinement, Styled, TextAlign, WeakEntity, Window,
+    point, px, size, App as GpuiApp, Bounds, ContentMask, CursorStyle, DispatchPhase, Element,
+    ElementId, Font, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
+    IntoElement, KeyDownEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, Refineable, ShapedLine, SharedString, Style, StyleRefinement, Styled, TextAlign,
+    WeakEntity, Window,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 
-const RESIZE_HALF: f32 = 5.0;
+const RESIZE_HALF: f32 = 6.0;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HeaderHit {
+    SelectAll,
+    FilterType,
     ResizeName,
     ResizeMeta(DetailsColumn),
     SortName,
@@ -36,6 +44,8 @@ struct HeaderPress {
     hit: HeaderHit,
     start_screen_x: f32,
     moved: bool,
+    start_order: [DetailsColumn; 3],
+    grab_x: f32,
 }
 
 pub(crate) struct DetailsHeaderElement {
@@ -43,6 +53,7 @@ pub(crate) struct DetailsHeaderElement {
     pane_id: TabId,
     app: WeakEntity<App>,
     layout: DetailsRowLayout,
+    visible: Arc<Vec<usize>>,
     colors: DetailsColors,
     font: Font,
     font_size: Pixels,
@@ -52,7 +63,6 @@ pub(crate) struct DetailsHeaderElement {
     /// Snapshot for right-click type filter menu (avoid mut borrow in paint).
     type_labels: Vec<String>,
     dragging: Option<DetailsColumn>,
-    drag_x: f32,
     content_lod: DetailsContentLod,
     style: StyleRefinement,
 }
@@ -63,6 +73,9 @@ pub(crate) struct DetailsHeaderPrepaint {
     layout: DetailsRowLayout,
     header_h: f32,
     hitbox: Hitbox,
+    targets: Vec<(Slot, HeaderHit)>,
+    control_hitboxes: Vec<(HeaderHit, Hitbox)>,
+    check_state: CheckState,
 }
 
 impl DetailsHeaderElement {
@@ -71,6 +84,7 @@ impl DetailsHeaderElement {
         pane_id: TabId,
         app: WeakEntity<App>,
         layout: DetailsRowLayout,
+        visible: Arc<Vec<usize>>,
         colors: DetailsColors,
         font: Font,
         font_size: Pixels,
@@ -79,7 +93,7 @@ impl DetailsHeaderElement {
         has_type_filter: bool,
         type_labels: Vec<String>,
         dragging: Option<DetailsColumn>,
-        drag_x: f32,
+        _drag_x: f32,
         content_lod: DetailsContentLod,
     ) -> Self {
         Self {
@@ -90,6 +104,7 @@ impl DetailsHeaderElement {
             pane_id,
             app,
             layout,
+            visible,
             colors,
             font,
             font_size,
@@ -98,7 +113,6 @@ impl DetailsHeaderElement {
             has_type_filter,
             type_labels,
             dragging,
-            drag_x,
             content_lod,
             style: StyleRefinement::default(),
         }
@@ -144,28 +158,118 @@ fn sort_for_column(column: DetailsColumn) -> SortColumn {
     }
 }
 
-fn hit_test(layout: &DetailsRowLayout, local_x: f32, width: f32) -> Option<HeaderHit> {
-    if local_x < 0.0 || local_x > width {
-        return None;
+fn header_targets(
+    layout: &DetailsRowLayout,
+    width: f32,
+    height: f32,
+    zoom: f32,
+) -> Vec<(Slot, HeaderHit)> {
+    let mut targets = Vec::new();
+    if layout.name_right >= 30.0 * zoom {
+        targets.push((
+            Slot::new(4.0 * zoom, 0.0, 24.0 * zoom, height),
+            HeaderHit::SelectAll,
+        ));
     }
-    if (local_x - layout.name_right).abs() <= RESIZE_HALF {
-        return Some(HeaderHit::ResizeName);
+    if !layout.columns.is_empty() {
+        targets.push((
+            Slot::new(
+                layout.name_right - RESIZE_HALF * zoom,
+                0.0,
+                2.0 * RESIZE_HALF * zoom,
+                height,
+            ),
+            HeaderHit::ResizeName,
+        ));
     }
     for col in &layout.columns {
         let edge = col.x + col.w;
-        if (local_x - edge).abs() <= RESIZE_HALF {
-            return Some(HeaderHit::ResizeMeta(col.column));
+        if col.w >= 16.0 * zoom {
+            targets.push((
+                Slot::new(
+                    edge - RESIZE_HALF * zoom,
+                    0.0,
+                    2.0 * RESIZE_HALF * zoom,
+                    height,
+                ),
+                HeaderHit::ResizeMeta(col.column),
+            ));
         }
-    }
-    if local_x >= layout.name_x && local_x < layout.name_right {
-        return Some(HeaderHit::SortName);
     }
     for col in &layout.columns {
-        if local_x >= col.x && local_x < col.x + col.w {
-            return Some(HeaderHit::SortMeta(col.column));
+        if col.column == DetailsColumn::Type && col.w >= 52.0 * zoom {
+            targets.push((
+                Slot::new(col.x + col.w - 30.0 * zoom, 0.0, 22.0 * zoom, height),
+                HeaderHit::FilterType,
+            ));
         }
     }
-    None
+    targets.push((
+        Slot::new(
+            layout.name_x,
+            0.0,
+            (layout.name_right - layout.name_x).max(0.0),
+            height,
+        ),
+        HeaderHit::SortName,
+    ));
+    for col in &layout.columns {
+        targets.push((
+            Slot::new(col.x, 0.0, col.w, height),
+            HeaderHit::SortMeta(col.column),
+        ));
+    }
+    for (slot, _) in &mut targets {
+        slot.x = slot.x.max(0.0);
+        slot.w = slot.w.min((width - slot.x).max(0.0));
+    }
+    targets
+}
+
+fn hit_test(targets: &[(Slot, HeaderHit)], x: f32, y: f32) -> Option<HeaderHit> {
+    hit_first(targets, x, y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn controls_and_resize_grips_win_over_sorting_at_every_zoom() {
+        for zoom in [0.75, 1.0, 1.5, 2.0] {
+            let layout = DetailsRowLayout {
+                name_x: 34.0 * zoom,
+                name_col_w: 155.0 * zoom,
+                name_right: 200.0 * zoom,
+                columns: vec![crate::ui::views::details::DetailsColumnLayout {
+                    column: DetailsColumn::Type,
+                    x: 200.0 * zoom,
+                    w: 120.0 * zoom,
+                }],
+            };
+            let targets = header_targets(&layout, 340.0 * zoom, 24.0 * zoom, zoom);
+            assert_eq!(
+                hit_test(&targets, 16.0 * zoom, 12.0 * zoom),
+                Some(HeaderHit::SelectAll)
+            );
+            assert_eq!(
+                hit_test(&targets, 200.0 * zoom, 12.0 * zoom),
+                Some(HeaderHit::ResizeName)
+            );
+            assert_eq!(
+                hit_test(&targets, 318.0 * zoom, 12.0 * zoom),
+                Some(HeaderHit::ResizeMeta(DetailsColumn::Type))
+            );
+            assert_eq!(
+                hit_test(&targets, 300.0 * zoom, 12.0 * zoom),
+                Some(HeaderHit::FilterType)
+            );
+            assert_eq!(
+                hit_test(&targets, 245.0 * zoom, 12.0 * zoom),
+                Some(HeaderHit::SortMeta(DetailsColumn::Type))
+            );
+            assert_eq!(hit_test(&targets, 300.0 * zoom, 26.0 * zoom), None);
+        }
+    }
 }
 
 impl Element for DetailsHeaderElement {
@@ -208,7 +312,7 @@ impl Element for DetailsHeaderElement {
         bounds: Bounds<Pixels>,
         _request_layout: &mut Style,
         window: &mut Window,
-        _cx: &mut GpuiApp,
+        cx: &mut GpuiApp,
     ) -> Self::PrepaintState {
         let _perf = crate::perf::span("details.header.prepaint");
         crate::perf::count("details.header.prepaint");
@@ -222,6 +326,49 @@ impl Element for DetailsHeaderElement {
         // Header input is registered on the window from paint; this makes it
         // respect popup/modal occlusion instead of only checking raw bounds.
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        let targets = header_targets(
+            &self.layout,
+            f32::from(bounds.size.width),
+            header_h,
+            zoom_scale,
+        );
+        let control_hitboxes = targets
+            .iter()
+            .filter(|(_, hit)| {
+                matches!(
+                    hit,
+                    HeaderHit::SelectAll
+                        | HeaderHit::FilterType
+                        | HeaderHit::ResizeName
+                        | HeaderHit::ResizeMeta(_)
+                )
+            })
+            .map(|(slot, hit)| {
+                (
+                    *hit,
+                    window.insert_hitbox(slot.to_bounds(bounds.origin), HitboxBehavior::Normal),
+                )
+            })
+            .collect();
+        let check_state = self
+            .app
+            .upgrade()
+            .and_then(|app| {
+                let app = app.read(cx);
+                let selection = &app.state.tab_states.get(&self.pane_id)?.selection;
+                Some(if selection.all_visible_selected(&self.visible) {
+                    CheckState::Checked
+                } else if self
+                    .visible
+                    .iter()
+                    .any(|idx| selection.selected.contains(idx))
+                {
+                    CheckState::Mixed
+                } else {
+                    CheckState::Empty
+                })
+            })
+            .unwrap_or(CheckState::Empty);
 
         let name_active = self.sort_col == SortColumn::Name;
         let name_color = if name_active {
@@ -250,7 +397,19 @@ impl Element for DetailsHeaderElement {
                 } else {
                     self.colors.muted
                 };
-                let line = shape_label(&column_label(col.column), font, font_size, color, window);
+                let reserve = if col.column == DetailsColumn::Type && col.w >= 52.0 * zoom_scale {
+                    42.0
+                } else {
+                    18.0
+                };
+                let line = shape_text_truncated(
+                    &column_label(col.column),
+                    font,
+                    font_size,
+                    color,
+                    (col.w - (CELL_PAD + reserve) * zoom_scale).max(0.0),
+                    window,
+                );
                 meta_lines.push((col.column, line));
             }
         }
@@ -261,6 +420,9 @@ impl Element for DetailsHeaderElement {
             layout: self.layout.clone(),
             header_h,
             hitbox,
+            targets,
+            control_hitboxes,
+            check_state,
         }
     }
 
@@ -284,19 +446,38 @@ impl Element for DetailsHeaderElement {
         let has_type_filter = self.has_type_filter;
         let type_labels = self.type_labels.clone();
         let dragging = self.dragging;
-        let drag_x = self.drag_x;
         let accent = self.colors.accent;
         let header_bg = self.colors.header_bg;
         let border = self.colors.border;
         let layout_snap = prepaint.layout.clone();
         let header_h = prepaint.header_h;
-        let press: Rc<RefCell<Option<HeaderPress>>> = Rc::new(RefCell::new(None));
+        // A paint closure is rebuilt every frame; the gesture must survive it.
+        let press_state = window.use_keyed_state(
+            SharedString::from(format!("details-header-press-{}", pane_id.0)),
+            cx,
+            |_, _| Rc::new(RefCell::new(None::<HeaderPress>)),
+        );
+        let press = press_state.read(cx).clone();
+        let hover_state = window.use_keyed_state(
+            SharedString::from(format!("details-header-hover-{}", pane_id.0)),
+            cx,
+            |_, _| Rc::new(Cell::new(None::<HeaderHit>)),
+        );
+        let last_hover = hover_state.read(cx).clone();
 
         style.paint(bounds, window, cx, |window, cx| {
             let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
             let cell_pad = CELL_PAD * zoom_scale;
             let text_y = bounds.origin.y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
-            let width = f32::from(bounds.size.width);
+            let hover_hit = if prepaint.hitbox.is_hovered(window) {
+                hit_test(&prepaint.targets, f32::from(window.mouse_position().x - bounds.origin.x), f32::from(window.mouse_position().y - bounds.origin.y))
+            } else { None };
+            window.set_cursor_style(CursorStyle::PointingHand, &prepaint.hitbox);
+            for (hit, hitbox) in &prepaint.control_hitboxes {
+                // Register the cursor against fixed geometry; pointer movement
+                // then changes it even when the header has no reason to repaint.
+                window.set_cursor_style(if matches!(hit, HeaderHit::ResizeName | HeaderHit::ResizeMeta(_)) { CursorStyle::ResizeColumn } else { CursorStyle::PointingHand }, hitbox);
+            }
 
             window.paint_quad(gpui::fill(bounds, header_bg));
             window.paint_quad(gpui::fill(
@@ -306,6 +487,13 @@ impl Element for DetailsHeaderElement {
                 },
                 border.opacity(0.45),
             ));
+
+            if let Some((slot, _)) = prepaint.targets.iter().find(|(_, hit)| *hit == HeaderHit::SelectAll) {
+                if hover_hit == Some(HeaderHit::SelectAll) && !self.visible.is_empty() {
+                    paint_rounded(window, Slot::new(slot.x, 3.0 * zoom_scale, slot.w, header_h - 6.0 * zoom_scale).to_bounds(bounds.origin), 4.0 * zoom_scale, accent.opacity(0.08));
+                }
+                selection_checkbox::paint_control(window, cx, point(bounds.left() + px(slot.x + slot.w * 0.5), bounds.top() + px(header_h * 0.5)), 14.0 * zoom_scale, prepaint.check_state, self.visible.is_empty());
+            }
 
             let paint_sort_glyph = |window: &mut Window,
                                     cx: &mut GpuiApp,
@@ -367,7 +555,9 @@ impl Element for DetailsHeaderElement {
                         },
                     );
                 }
-                if self.content_lod.paints_name_header() {
+                if self.content_lod.paints_name_header()
+                    && layout_snap.name_col_w > 24.0 * zoom_scale
+                {
                     paint_sort_glyph(
                         window,
                         cx,
@@ -379,10 +569,10 @@ impl Element for DetailsHeaderElement {
                 }
             }
 
-            for col in &layout_snap.columns {
-                if dragging == Some(col.column) {
-                    continue;
-                }
+            // The attached column is painted last, using the very same x as its cells.
+            let mut painted_columns = layout_snap.columns.clone();
+            painted_columns.sort_by_key(|c| dragging == Some(c.column));
+            for col in &painted_columns {
                 let sort = sort_for_column(col.column);
                 let active = sort_col == sort;
                 let Some((_, line)) = prepaint.meta_lines.iter().find(|(c, _)| *c == col.column)
@@ -395,6 +585,10 @@ impl Element for DetailsHeaderElement {
                     origin: point(col_x, bounds.origin.y),
                     size: size(px(col.w.max(0.0)), px(header_h)),
                 };
+                if dragging == Some(col.column) {
+                    window.paint_quad(gpui::fill(clip, header_bg));
+                    window.paint_quad(gpui::fill(clip, accent.opacity(0.10)));
+                }
                 if col.w > 15.0 * zoom_scale {
                     window.with_content_mask(
                         Some(ContentMask {
@@ -413,72 +607,46 @@ impl Element for DetailsHeaderElement {
                         },
                     );
                 }
-                if self.content_lod.paints_metadata()
-                    && col.column == DetailsColumn::Type
-                    && has_type_filter
-                {
-                    let dot = 5.0 * zoom_scale;
-                    window.paint_quad(gpui::fill(
-                        Bounds {
-                            origin: point(
-                                col_x + px(col.w - 14.0 * zoom_scale),
-                                bounds.origin.y + px((header_h - dot) * 0.5),
-                            ),
-                            size: size(px(dot), px(dot)),
-                        },
-                        accent,
-                    ));
+                let filter_slot = prepaint.targets.iter().find(|(_, hit)| *hit == HeaderHit::FilterType).map(|(slot, _)| *slot);
+                if col.column == DetailsColumn::Type {
+                    if let Some(slot) = filter_slot {
+                        if has_type_filter || hover_hit == Some(HeaderHit::FilterType) {
+                            paint_rounded(window, Slot::new(slot.x, 4.0 * zoom_scale, slot.w, header_h - 8.0 * zoom_scale).to_bounds(bounds.origin), 4.0 * zoom_scale, accent.opacity(if has_type_filter { 0.16 } else { 0.08 }));
+                        }
+                        paint_theme_icon(window, cx, bounds.origin, Slot::new(slot.x + 4.0 * zoom_scale, (header_h - 14.0 * zoom_scale) * 0.5, 14.0 * zoom_scale, 14.0 * zoom_scale), AtlasIcon::Funnel, false, 14.0 * zoom_scale, if has_type_filter { accent } else { self.colors.muted });
+                    }
                 }
-                if self.content_lod.paints_metadata() {
+                if self.content_lod.paints_metadata() && col.w > 28.0 * zoom_scale {
                     paint_sort_glyph(
                         window,
                         cx,
                         active,
                         &sort_dir,
-                        f32::from(col_x) + col.w - 4.0 * zoom_scale,
+                        f32::from(col_x) + col.w - if col.column == DetailsColumn::Type && filter_slot.is_some() { 32.0 * zoom_scale } else { 8.0 * zoom_scale },
                         f32::from(bounds.origin.y) + header_h * 0.5,
                     );
                 }
             }
 
-            let paint_grip = |window: &mut Window, edge_x: f32| {
+            let paint_grip = |window: &mut Window, edge_x: f32, hovered: bool| {
                 window.paint_quad(gpui::fill(
                     Bounds {
                         origin: point(
-                            bounds.origin.x + px(edge_x),
-                            bounds.origin.y + px(4.0 * zoom_scale),
+                            bounds.origin.x + px(edge_x - if hovered { zoom_scale } else { zoom_scale * 0.5 }),
+                            bounds.origin.y + px(3.0 * zoom_scale),
                         ),
-                        size: size(px(1.0), px((header_h - 8.0 * zoom_scale).max(1.0))),
+                        size: size(px(if hovered { 2.0 * zoom_scale } else { zoom_scale }), px((header_h - 6.0 * zoom_scale).max(1.0))),
                     },
-                    border.opacity(0.55),
+                    if hovered { accent.opacity(0.85) } else { self.colors.muted.opacity(0.42) },
                 ));
             };
-            paint_grip(window, layout_snap.name_right);
-            for col in &layout_snap.columns {
-                paint_grip(window, col.x + col.w);
+            if !layout_snap.columns.is_empty() {
+                paint_grip(window, layout_snap.name_right, matches!(hover_hit, Some(HeaderHit::ResizeName)));
             }
-
-            if let Some(col) =
-                dragging.and_then(|d| layout_snap.columns.iter().find(|c| c.column == d).copied())
-            {
-                let w = col.w;
-                let left = (drag_x - w * 0.5).max(0.0);
-                let ghost = Bounds {
-                    origin: point(bounds.origin.x + px(left), bounds.origin.y),
-                    size: size(px(w), px(header_h)),
-                };
-                window.paint_quad(gpui::fill(ghost, header_bg));
-                window.paint_quad(gpui::outline(ghost, accent, Default::default()));
-                if let Some((_, line)) = prepaint.meta_lines.iter().find(|(c, _)| *c == col.column)
-                {
-                    let _ = line.paint(
-                        point(ghost.origin.x + px(cell_pad), text_y),
-                        px(header_h),
-                        TextAlign::Left,
-                        None,
-                        window,
-                        cx,
-                    );
+            for col in &layout_snap.columns {
+                if col.w >= 16.0 {
+                    paint_grip(window, col.x + col.w,
+                        matches!(hover_hit, Some(HeaderHit::ResizeMeta(column)) if column == col.column));
                 }
             }
 
@@ -491,6 +659,9 @@ impl Element for DetailsHeaderElement {
             let layout_dn = layout_snap.clone();
             let down_view = app_entity.clone();
             let down_hitbox = prepaint.hitbox.clone();
+            let down_targets = prepaint.targets.clone();
+            let visible = self.visible.clone();
+            let labels_down = type_labels.clone();
             window.on_mouse_event::<MouseDownEvent>(move |ev, phase, window, cx| {
                 if phase != DispatchPhase::Bubble {
                     return;
@@ -503,10 +674,11 @@ impl Element for DetailsHeaderElement {
                     return;
                 }
                 let local_x = f32::from(pos.x - bounds.origin.x);
+                let local_y = f32::from(pos.y - bounds.origin.y);
 
                 if ev.button == MouseButton::Right {
                     if matches!(
-                        hit_test(&layout_dn, local_x, width),
+                        hit_test(&down_targets, local_x, local_y),
                         Some(HeaderHit::SortMeta(DetailsColumn::Type))
                     ) {
                         // Opened in a separate handler that has `window`.
@@ -517,11 +689,24 @@ impl Element for DetailsHeaderElement {
                 if ev.button != MouseButton::Left {
                     return;
                 }
-                let Some(hit) = hit_test(&layout_dn, local_x, width) else {
+                let Some(hit) = hit_test(&down_targets, local_x, local_y) else {
                     cx.stop_propagation();
                     return;
                 };
+                down_view.update(cx, |this, cx| {
+                    if this.state.focused_tile != pane_id {
+                        this.activate_tab(pane_id);
+                        cx.notify();
+                    }
+                });
                 match hit {
+                    HeaderHit::SelectAll => down_view.update(cx, |this, cx| {
+                        if let Some(tab) = this.state.tab_states.get_mut(&pane_id) { tab.selection.toggle_all_visible(&visible); }
+                        this.notify_pane(pane_id, cx);
+                    }),
+                    HeaderHit::FilterType => down_view.update(cx, |this, cx| {
+                        this.open_type_filter_menu(pane_id, point(pos.x, bounds.bottom()), labels_down.clone(), window, cx);
+                    }),
                     HeaderHit::ResizeName => {
                         let start_width = layout_dn.name_right;
                         down_view.update(cx, move |this, _| {
@@ -554,6 +739,9 @@ impl Element for DetailsHeaderElement {
                             hit,
                             start_screen_x: f32::from(pos.x),
                             moved: false,
+                            start_order: down_view.read(cx).details_prefs_for(pane_id).order,
+                            grab_x: layout_dn.columns.iter().find(|c| matches!(hit, HeaderHit::SortMeta(column) if column == c.column))
+                                .map_or(0.0, |c| local_x - c.x),
                         });
                     }
                 }
@@ -561,7 +749,7 @@ impl Element for DetailsHeaderElement {
             });
 
             // Right-click Type filter (needs Window)
-            let layout_rt = layout_snap.clone();
+            let right_targets = prepaint.targets.clone();
             let right_view = app_entity.clone();
             let right_hitbox = prepaint.hitbox.clone();
             window.on_mouse_event::<MouseDownEvent>(move |ev, phase, window, cx| {
@@ -577,8 +765,8 @@ impl Element for DetailsHeaderElement {
                 }
                 let local_x = f32::from(pos.x - bounds.origin.x);
                 if !matches!(
-                    hit_test(&layout_rt, local_x, width),
-                    Some(HeaderHit::SortMeta(DetailsColumn::Type))
+                    hit_test(&right_targets, local_x, f32::from(pos.y - bounds.origin.y)),
+                    Some(HeaderHit::SortMeta(DetailsColumn::Type) | HeaderHit::FilterType)
                 ) {
                     return;
                 }
@@ -592,10 +780,14 @@ impl Element for DetailsHeaderElement {
             // Move: live column reorder
             let press_mv = press.clone();
             let move_view = app_entity.clone();
+            let move_targets = prepaint.targets.clone();
+            let move_hitbox = prepaint.hitbox.clone();
             window.on_mouse_event::<MouseMoveEvent>(move |ev, phase, window, cx| {
                 if phase != DispatchPhase::Bubble {
                     return;
                 }
+                let hover = if move_hitbox.is_hovered(window) { hit_test(&move_targets, f32::from(ev.position.x - bounds.left()), f32::from(ev.position.y - bounds.top())) } else { None };
+                if last_hover.replace(hover) != hover { window.refresh(); }
                 let mut press = press_mv.borrow_mut();
                 if let Some(p) = press.as_mut() {
                     let dx = (f32::from(ev.position.x) - p.start_screen_x).abs();
@@ -605,24 +797,19 @@ impl Element for DetailsHeaderElement {
                             let local_x = f32::from(ev.position.x - bounds.origin.x);
                             let zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
                             move_view.update(cx, |this, cx| {
+                                this.col_drag_grab_x = p.grab_x;
+                                this.col_drag_pane = Some(pane_id);
                                 this.reorder_details_live(pane_id, column, local_x, zoom);
                                 this.notify_pane(pane_id, cx);
                             });
                         }
                     }
-                } else if let Some(column) = move_view.read(cx).col_dragging {
-                    let local_x = f32::from(ev.position.x - bounds.origin.x);
-                    let zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
-                    move_view.update(cx, |this, cx| {
-                        this.reorder_details_live(pane_id, column, local_x, zoom);
-                        this.notify_pane(pane_id, cx);
-                    });
                 }
             });
 
             // Up: sort click or finish reorder
-            let press_up = press;
-            let up_view = app_entity;
+            let press_up = press.clone();
+            let up_view = app_entity.clone();
             let sort_col_up = sort_col.clone();
             let sort_dir_up = sort_dir.clone();
             window.on_mouse_event::<MouseUpEvent>(move |ev, phase, _window, cx| {
@@ -663,9 +850,32 @@ impl Element for DetailsHeaderElement {
                     _ => return,
                 };
                 up_view.update(cx, |this, cx| {
+                    this.activate_tab(pane_id);
                     this.process_actions(vec![Action::SetSort { col, dir: next_dir }]);
                     cx.notify();
                 });
+            });
+
+            window.on_key_event::<KeyDownEvent>(move |ev, phase, _window, cx| {
+                if phase != DispatchPhase::Bubble || ev.keystroke.key != "escape" {
+                    return;
+                }
+                let mut gesture = press.borrow_mut();
+                if !gesture.as_ref().is_some_and(|p| p.moved) {
+                    return;
+                }
+                let Some(gesture) = gesture.take() else {
+                    return;
+                };
+                app_entity.update(cx, |this, cx| {
+                    let mut prefs = this.details_prefs_for(pane_id);
+                    prefs.order = gesture.start_order;
+                    this.set_details_prefs(pane_id, prefs);
+                    this.col_dragging = None;
+                    this.col_drag_pane = None;
+                    this.notify_all_panes(cx);
+                });
+                cx.stop_propagation();
             });
         });
     }

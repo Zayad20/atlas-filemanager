@@ -232,6 +232,9 @@ impl TaffyLayoutEngine {
             transform(available_space.height),
         );
 
+        let time_measure = crate::layout_region::frame_log_threshold().is_some();
+        let mut measure_time = std::time::Duration::ZERO;
+        let mut measure_calls = 0;
         self.taffy
             .compute_layout_with_measure(
                 id.into(),
@@ -259,12 +262,21 @@ impl TaffyLayoutEngine {
                         untransform(available_space.height),
                     );
 
+                    let measure_start = time_measure.then(std::time::Instant::now);
                     let measured_size: Size<Pixels> =
                         (node_context.measure)(known_dimensions, available_space, window, cx);
+                    if let Some(start) = measure_start {
+                        measure_time += start.elapsed();
+                        measure_calls += 1;
+                    }
                     snap_measured_size_to_device_pixels(measured_size, scale_factor).into()
                 },
             )
             .expect(EXPECT_MESSAGE);
+        if time_measure {
+            // One accumulator update per solve, no locks or logs per leaf.
+            crate::layout_region::record_layout_measure(measure_time, measure_calls);
+        }
     }
 
     // Pixel snapping

@@ -9,7 +9,7 @@ use gpui::{div, px, AnyElement, Context, MouseButton, Pixels, Point, SharedStrin
 use gpui_component::StyledExt as _;
 use gpui_component::{v_flex, ActiveTheme, Sizable as _};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum SizeFilter {
     Folders,
     Unknown,
@@ -48,10 +48,10 @@ impl SizeFilter {
 
     #[allow(dead_code)]
     pub(crate) fn matches(self, entry: &FileEntry) -> bool {
-        if matches!(entry.kind, FileKind::Dir) {
+        if matches!(entry.kind(), FileKind::Dir) {
             return self == Self::Folders;
         }
-        match (self, entry.size) {
+        match (self, entry.size()) {
             (Self::Unknown, None) => true,
             (Self::Empty, Some(0)) => true,
             (Self::Tiny, Some(1..=10_239)) => true,

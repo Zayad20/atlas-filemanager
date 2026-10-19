@@ -79,7 +79,7 @@ impl App {
                 },
             )
         };
-        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border, header_bg);
+        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border, header_bg, cx);
 
         // Snapshot each column's rows up-front; Miller dirs are browsed one level at a
         // time, so a column is rarely huge — a scrollable v_flex per column is enough.
@@ -91,6 +91,7 @@ impl App {
             .map(|ts| ts.miller.columns.len())
             .unwrap_or_default();
         for ci in 0..column_count {
+            let visible = self.state.tab_states.get(&pane_id).map(|ts| ts.miller_visible_indices(ci)).unwrap_or_default();
             if let Some(col) = self
                 .state
                 .tab_states
@@ -98,7 +99,7 @@ impl App {
                 .and_then(|ts| ts.miller.columns.get(ci))
             {
                 let title = display_name(&col.location.display_path());
-                let body: AnyElement = if col.entries.is_empty() {
+                let body: AnyElement = if visible.is_empty() {
                     let msg = match &col.load_state {
                         LoadState::Loading if should_suppress_loading(&col.location) => None,
                         LoadState::Loading => Some(rust_i18n::t!("miller_loading")),
@@ -106,6 +107,7 @@ impl App {
                             Some(rust_i18n::t!("miller_error"))
                         }
                         LoadState::Error(error) => Some(error.clone().into()),
+                        _ if col.has_excluded_items || !col.entries.is_empty() => Some(rust_i18n::t!("view_all_items_hidden")),
                         _ => Some(rust_i18n::t!("miller_empty")),
                     };
                     v_flex()
@@ -116,13 +118,14 @@ impl App {
                         .children(msg)
                         .into_any_element()
                 } else {
-                    let count = col.entries.len();
+                    let count = visible.len();
                     let list_view = view.clone();
                     let scroll = self
                         .miller_scroll_handles
                         .entry((pane_id, ci))
                         .or_default()
                         .clone();
+                    self.configure_file_scroll(&scroll);
                     uniform_list(
                         SharedString::from(format!("mcol-{}-{}", pane_id.0, ci)),
                         count,
@@ -149,6 +152,7 @@ impl App {
                                     };
                                     range
                                         .filter_map(|i| {
+                                            let i = *visible.get(i)?;
                                             let entry = col.entries.get(i)?;
                                             let selected = col.selection.selected.contains(&i);
                                             let cursor = col.selection.keyboard_cursor == Some(i);
@@ -166,26 +170,26 @@ impl App {
                                     .into_iter()
                                     .map(|(i, entry, selected, cursor, show_checkbox)| {
                                         let file_ref = crate::ui::file_icons::FileIconRef {
-                                            path: entry.path.clone(),
-                                            kind: entry.kind.clone(),
+                                            path: entry.path(),
+                                            kind: entry.kind().clone(),
                                             extension: entry
-                                                .extension
+                                                .extension()
                                                 .as_ref()
                                                 .map(|s| gpui::SharedString::from(s.to_string())),
                                         };
                                         app.maybe_request_file_icon(&file_ref);
                                         let file_icon = app.file_icon(&file_ref);
-                                        let flashing = matches!(entry.kind, FileKind::Dir)
+                                        let flashing = matches!(entry.kind(), FileKind::Dir)
                                             && app.drag_hover.blink_id.as_ref()
                                                 == Some(&DragHoverId::Folder(
                                                     pane_id,
-                                                    entry.path.clone(),
+                                                    entry.path(),
                                                 ));
                                         let rename_input =
                                             crate::ui::views::rename::active_input_for_path(
                                                 app,
                                                 pane_id,
-                                                &entry.path,
+                                                &entry.path(),
                                             );
                                         render_miller_row(MillerRowProps {
                                             entry: &entry,
@@ -202,10 +206,11 @@ impl App {
                                             flashing,
                                             file_icon,
                                             rename_input,
+                                            cut: app.state.system_cut_paths.contains(&entry.path()),
                                             dimmed: crate::ui::views::rename::dim_other_path(
                                                 app,
                                                 pane_id,
-                                                &entry.path,
+                                                &entry.path(),
                                             ),
                                             window,
                                         }, cx)
@@ -236,15 +241,13 @@ impl App {
                     .border_color(header_bg)
                     .when(column_flashing, |s| s.border_color(accent))
                     .on_mouse_down(MouseButton::Left, move |ev, _window, cx| {
-                        let (pos, additive) = (
-                            ev.position,
-                            ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift,
-                        );
+                        let pos = ev.position;
                         rubber_view.update(cx, |this, cx| {
                             if this.rename_edit.is_some() {
                                 this.commit_rename(cx);
                             }
-                            this.begin_miller_rubber(pane_id, ci, pos, additive);
+                            this.selection_left_mouse_down(crate::app::RubberTarget::MillerColumn(pane_id, ci), None,
+                                pos, ev.modifiers.shift, ev.modifiers.control || ev.modifiers.platform, ev.click_count, cx);
                             cx.notify();
                         });
                         cx.stop_propagation();
@@ -380,6 +383,7 @@ struct MillerRowProps<'a> {
     file_icon: FileIcon,
     rename_input: Option<Entity<InputState>>,
     dimmed: bool,
+    cut: bool,
     window: &'a mut Window,
 }
 
@@ -402,9 +406,10 @@ fn render_miller_row(props: MillerRowProps, cx: &gpui::App) -> AnyElement {
         file_icon,
         rename_input,
         dimmed,
+        cut,
         window,
     } = props;
-    let is_dir = matches!(entry.kind, FileKind::Dir);
+    let is_dir = matches!(entry.kind(), FileKind::Dir);
     let trailing = if is_dir {
         icon(
             AtlasIcon::CaretRight,
@@ -417,10 +422,10 @@ fn render_miller_row(props: MillerRowProps, cx: &gpui::App) -> AnyElement {
             .flex_none()
             .into_any_element()
     };
-    let name = entry.name.clone();
-    let dest = entry.path.clone();
-    let tip_name = entry.name.clone();
-    let tip_path = entry.path.clone();
+    let name = entry.name.to_string();
+    let dest = entry.path();
+    let tip_name = entry.name.to_string();
+    let tip_path = entry.path();
     let v = view.clone();
     let font_size: Pixels = window.text_style().font_size.to_pixels(window.rem_size());
     let mut row = h_flex()
@@ -438,7 +443,7 @@ fn render_miller_row(props: MillerRowProps, cx: &gpui::App) -> AnyElement {
         } else {
             gpui::transparent_black()
         })
-        .when(dimmed, |s| s.opacity(0.45))
+        .opacity((if cut { 0.5 } else { 1.0 }) * if dimmed { 0.45 } else { 1.0 })
         .cursor_pointer()
         .when(selected, |s| {
             s.bg(accent).text_color(accent_fg)
@@ -572,7 +577,7 @@ fn render_miller_row(props: MillerRowProps, cx: &gpui::App) -> AnyElement {
     if rename_input.is_none() {
         let drag_view = view.clone();
         let anchor = dest.clone();
-        let in_archive = entry.archive_root.is_some();
+        let in_archive = entry.archive_root().is_some();
         row = row.on_drag_alt(move |_cursor_offset, cursor_style, _window, cx| {
             if drag_view.read(&*cx).rubber.is_some() {
                 return crate::ui::drag::empty_any_drag(cx);
@@ -651,7 +656,7 @@ fn render_miller_row(props: MillerRowProps, cx: &gpui::App) -> AnyElement {
             }
         });
     }
-    let entry_size = entry.size;
+    let entry_size = entry.size();
     let entry_modified = entry.modified;
     row = row.tooltip(move |window, cx| {
         crate::ui::tooltips::entry_hover_tooltip(

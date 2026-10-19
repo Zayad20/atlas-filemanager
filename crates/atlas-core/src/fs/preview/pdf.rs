@@ -17,6 +17,9 @@ pub fn preview_pdf_with_pdftoppm(path: &Path, pdftoppm: &Path) -> PreviewResult 
 }
 
 fn preview_pdf(path: &Path, pdftoppm: &Path) -> PreviewResult {
+    if super::is_cloud_placeholder(path) {
+        return super::offline_preview();
+    }
     let output_prefix =
         std::env::temp_dir().join(format!("atlas-pdf-preview-{}", uuid::Uuid::new_v4()));
     let png_path = output_prefix.with_extension("png");

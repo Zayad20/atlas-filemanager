@@ -48,12 +48,16 @@ impl WheelScroll {
             .saturating_duration_since(self.sampled_at.unwrap_or(now))
             .as_secs_f32();
         self.sampled_at = Some(now);
+        // A suspended/occluded window resumes from its visible position. Time
+        // spent asleep is not an animation frame and must not consume the glide.
+        let elapsed = if elapsed > 0.25 || elapsed == 0.0 { 0.0 } else { elapsed.max(0.001) };
         // `ease` retains its public meaning at 60 Hz. The exponential's time
         // constant makes extra layout passes and faster displays travel identically.
         let alpha = if ease <= 0.0 || ease >= 1.0 {
             1.0
         } else {
-            1.0 - (1.0 - ease).powf(elapsed * 60.0)
+            let lambda = -(1.0 - ease).log2() * 60.0;
+            1.0 - (-lambda * elapsed).exp2()
         };
         if (0..2).all(|axis| (target[axis] - offset[axis]).abs() < 0.5) {
             self.cancel();
@@ -76,7 +80,7 @@ mod tests {
     fn equal_elapsed_time_gives_equal_travel_at_any_refresh_rate() {
         let now = Instant::now();
         let mut results = Vec::new();
-        for hz in [60, 120, 144] {
+        for hz in [60, 120, 144, 240] {
             let mut scroll = WheelScroll::default();
             let mut offset = [0.0; 2];
             scroll.push(offset, [0.0, -240.0], [1000.0; 2], now);
@@ -147,5 +151,38 @@ mod tests {
             Some([0.0, -100.0])
         );
         assert!(!scroll.is_active());
+    }
+
+    #[test]
+    fn resuming_after_idle_has_zero_delta_then_continues() {
+        let now = Instant::now();
+        let mut scroll = WheelScroll::default();
+        scroll.push([0.0; 2], [0.0, -240.0], [1000.0; 2], now);
+        let resumed = now + Duration::from_secs(10);
+        assert_eq!(
+            scroll.sample([0.0; 2], [1000.0; 2], 0.32, resumed),
+            Some([0.0; 2])
+        );
+        let next = scroll
+            .sample(
+                [0.0; 2],
+                [1000.0; 2],
+                0.32,
+                resumed + Duration::from_millis(16),
+            )
+            .unwrap();
+        assert!(next[1] < 0.0 && next[1] > -240.0);
+    }
+
+    #[test]
+    fn positive_submillisecond_ticks_use_the_minimum_timestep() {
+        let now = Instant::now();
+        let sample = |dt| {
+            let mut scroll = WheelScroll::default();
+            scroll.push([0.0; 2], [0.0, -240.0], [1000.0; 2], now);
+            scroll.sample([0.0; 2], [1000.0; 2], 0.32, now + dt).unwrap()
+        };
+        assert_eq!(sample(Duration::from_micros(100)), sample(Duration::from_millis(1)));
+        assert_eq!(sample(Duration::ZERO), [0.0; 2]);
     }
 }

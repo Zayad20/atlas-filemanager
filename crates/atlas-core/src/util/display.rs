@@ -1,5 +1,24 @@
 #![allow(dead_code)] // reason: retained API surface not exercised by every GPUI flow yet
 use std::path::Path;
+
+pub fn format_exact_bytes(bytes: u128, separator: char) -> String {
+    let digits = bytes.to_string();
+    let mut result = String::with_capacity(digits.len() + digits.len() / 3 + 6);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 { result.push(separator); }
+        result.push(ch);
+    }
+    result.push_str(" bytes");
+    result
+}
+
+pub fn clipboard_path_text(paths: &[std::path::PathBuf]) -> String {
+    paths.iter().map(|path| {
+        let text = path.to_string_lossy().replace('\0', "");
+        if text.chars().any(char::is_whitespace) { format!("\"{}\"", text.replace('"', "\\\"")) }
+        else { text }
+    }).collect::<Vec<_>>().join("\r\n")
+}
 use std::time::SystemTime;
 
 /// Consistent color for folder/directory icons across all views, as neutral RGB.

@@ -31,6 +31,13 @@ fn migrated_theme_name(name: &str) -> &str {
     }
 }
 
+fn persisted_theme_name<'a>(stored: &str, wanted: &'a str, resolved: &'a str, custom_themes_loaded: bool) -> Option<&'a str> {
+    // Migrations are authoritative immediately. Unknown custom themes are only
+    // normalized after the asynchronous user-theme directory has been loaded.
+    let permanent = custom_themes_loaded || wanted == resolved || wanted != stored;
+    (permanent && resolved != stored).then_some(resolved)
+}
+
 /// Assign alpha once, after loading a pristine palette. Multiplying the JSON's
 /// existing alpha makes materials vary by preset and compounds on each update.
 fn material_color(mut color: gpui::Hsla, alpha: f32) -> gpui::Hsla {
@@ -128,12 +135,13 @@ impl App {
     pub(crate) fn apply_active_theme(&mut self, window: &mut Window, cx: &mut GpuiApp) {
         let wanted = migrated_theme_name(&self.state.profiles.active().theme).to_string();
         let registry = ThemeRegistry::global(cx);
+        let custom_themes_loaded = registry.custom_themes_loaded();
 
         // Try to look up the (possibly redirected) name, falling back to DEFAULT_THEME
         // when the stored name isn't registered (legacy enum values, removed theme, …).
         let (resolved_name, config) =
             if let Some(cfg) = registry.themes().get(&SharedString::from(wanted.as_str())) {
-                (wanted, cfg.clone())
+                (wanted.clone(), cfg.clone())
             } else if let Some(cfg) = registry.themes().get(&SharedString::from(DEFAULT_THEME)) {
                 (DEFAULT_THEME.to_string(), cfg.clone())
             } else {
@@ -152,8 +160,8 @@ impl App {
         });
 
         // Persist the normalized name so the migration is one-time and sticky.
-        if resolved_name != self.state.profiles.active().theme {
-            self.state.profiles.active_mut().theme = resolved_name;
+        if let Some(name) = persisted_theme_name(&self.state.profiles.active().theme, &wanted, &resolved_name, custom_themes_loaded) {
+            self.state.profiles.active_mut().theme = name.to_string();
             self.save();
         }
 
@@ -197,6 +205,17 @@ impl App {
 mod gpui_ce_tests {
     use super::{apply_frosted_material, migrated_theme_name, theme_is_available};
     use gpui_component::{Colorize, ThemeSet};
+
+    #[test]
+    fn delayed_custom_theme_loading_does_not_overwrite_the_saved_selection() {
+        use super::persisted_theme_name;
+        let custom = "Atlas Graphite Copy Glass";
+        let fallback = atlas_model::profiles::DEFAULT_THEME;
+        assert_eq!(persisted_theme_name(custom, custom, fallback, false), None);
+        assert_eq!(persisted_theme_name(custom, custom, custom, true), None);
+        assert_eq!(persisted_theme_name(custom, custom, fallback, true), Some(fallback));
+        assert_eq!(persisted_theme_name("Default Dark", "Atlas Graphite Glass", "Atlas Graphite Glass", false), Some("Atlas Graphite Glass"));
+    }
 
     #[test]
     fn retired_presets_are_hidden_and_saved_names_migrate() {

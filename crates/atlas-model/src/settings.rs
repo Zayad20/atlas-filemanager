@@ -1,4 +1,13 @@
 use std::path::PathBuf;
+const fn default_thumbnail_cache_mb() -> usize { 256 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+pub enum CharacterKeyAction {
+    #[default]
+    TypeInFilter,
+    SelectTypedItem,
+    TriggerHotkey,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum ViewMode {
@@ -66,6 +75,12 @@ impl Default for Workspace {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    pub single_click_folders_only: bool,
+    pub scroll_overscroll: f32,
+    pub character_key_action: CharacterKeyAction,
+    pub filter_sticky: bool,
+    #[serde(default = "default_thumbnail_cache_mb")]
+    pub thumbnail_cache_mb: usize,
     pub show_hidden: bool,
     pub show_sidebar: bool,
     pub sidebar_collapsed: bool,
@@ -120,6 +135,12 @@ pub fn default_grid_spacing() -> f32 {
 }
 
 impl Settings {
+    pub fn scroll_overscroll_fraction(&self) -> f32 {
+        if self.scroll_overscroll.is_finite() { self.scroll_overscroll.clamp(0.0, 0.9) } else { 0.4 }
+    }
+    pub fn single_click_opens_folder(&self, is_dir: bool, clicks: usize, modified: bool) -> bool {
+        self.single_click_folders_only && is_dir && clicks == 1 && !modified
+    }
     /// Snapshot the per-profile view/layout knobs out of the live settings.
     pub fn workspace(&self) -> Workspace {
         Workspace {
@@ -163,6 +184,11 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            single_click_folders_only: false,
+            scroll_overscroll: 0.4,
+            character_key_action: CharacterKeyAction::TypeInFilter,
+            filter_sticky: false,
+            thumbnail_cache_mb: default_thumbnail_cache_mb(),
             show_hidden: false,
             show_sidebar: true,
             sidebar_collapsed: false,
@@ -194,6 +220,28 @@ impl Default for Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scroll_margin_defaults_to_forty_percent_and_rejects_invalid_extents() {
+        let mut settings: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.scroll_overscroll_fraction(), 0.4);
+        for (value, expected) in [(-1.0, 0.0), (0.0, 0.0), (0.4, 0.4), (5.0, 0.9), (f32::NAN, 0.4)] {
+            settings.scroll_overscroll = value;
+            assert_eq!(settings.scroll_overscroll_fraction(), expected);
+        }
+    }
+
+    #[test]
+    fn single_click_never_launches_files_or_modified_folder_clicks() {
+        let mut settings: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.single_click_opens_folder(true, 1, false));
+        settings.single_click_folders_only = true;
+        assert!(settings.single_click_opens_folder(true, 1, false));
+        assert!(!settings.single_click_opens_folder(false, 1, false));
+        assert!(!settings.single_click_opens_folder(true, 1, true));
+        assert!(!settings.single_click_opens_folder(true, 2, false));
+        let saved = serde_json::to_string(&settings).unwrap();
+        assert!(serde_json::from_str::<Settings>(&saved).unwrap().single_click_folders_only);
+    }
 
     #[test]
     fn settings_defaults_glass_opacity_when_absent() {

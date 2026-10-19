@@ -71,6 +71,37 @@ pub(crate) fn rename_target_error(from: &std::path::Path, to: &std::path::Path) 
 }
 
 impl App {
+    #[cfg(windows)]
+    pub(crate) fn paste_shortcuts_focused(&mut self) {
+        let Some(dest) = self.tab_data_for(self.state.focused_tile).and_then(|tab| tab.location.fs_dir()).map(std::path::Path::to_path_buf) else { return; };
+        let Some(files) = crate::dnd::windows::ole_clipboard::get_clipboard_files() else { return; };
+        if files.paths.is_empty() { return; }
+        let affected_tabs = self.affected_tabs_for_path(&dest);
+        let (id, cancel) = self.state.ops.start_op_labeled(files.paths.len(), rust_i18n::t!("op_creating_shortcuts").to_string());
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let total = files.paths.len() as u64;
+            let mut errors = Vec::new();
+            for (index, source) in files.paths.into_iter().enumerate() {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    errors.push(atlas_model::ops::OpError { path: source, kind: atlas_model::ops::OpErrorKind::Cancelled });
+                    break;
+                }
+                let _ = tx.send(atlas_model::app_state::BgResult::OpProgress { id, done: index as u64,
+                    total, bytes_done: 0, bytes_total: 0, current_file: source.clone() });
+                let target = dest.clone();
+                let error_path = source.clone();
+                match tokio::task::spawn_blocking(move || crate::shell_file_operation::create_shortcut(source, target)).await {
+                    Ok(Ok(_)) => {},
+                    Ok(Err(error)) => errors.push(error),
+                    Err(error) => errors.push(atlas_model::ops::OpError { path: error_path, kind: atlas_model::ops::OpErrorKind::Msg(error.to_string()) }),
+                }
+            }
+            let _ = tx.send(atlas_model::app_state::BgResult::OpComplete { id,
+                result: if errors.is_empty() { Ok(()) } else { Err(errors) }, affected_tabs });
+        });
+    }
+
     pub(crate) fn affected_tabs_for_path(&self, path: &PathBuf) -> Vec<TileId> {
         self.state
             .pane_tree
@@ -239,7 +270,13 @@ impl App {
             .start_op_labeled(pairs.len(), label.to_string());
         let tx = self.tx.clone();
         let affected: Vec<_> = affected.into_iter().collect();
+        self.operation_feedback.borrow_mut().begin(op_id, pairs.iter().flat_map(|pair| [pair.src.clone(), pair.dst.clone()]));
+        #[cfg(windows)]
+        let owner = self.hwnd;
         self.rt.spawn(async move {
+            #[cfg(windows)]
+            crate::shell_file_operation::transfer_with_fallback(pairs, kind, origin, op_id, tx, cancel, affected, owner).await;
+            #[cfg(not(windows))]
             transfer::execute(pairs, kind, origin, op_id, tx, cancel, affected).await;
         });
     }
@@ -500,6 +537,20 @@ impl App {
     // -----------------------------------------------------------------------
 
     pub(crate) fn delete_files(&mut self, paths: Vec<PathBuf>, to_trash: bool) {
+        self.delete_files_opts(paths, to_trash, to_trash);
+    }
+
+    pub(crate) fn delete_files_opts(
+        &mut self,
+        paths: Vec<PathBuf>,
+        to_trash: bool,
+        record_undo: bool,
+    ) {
+        if record_undo && to_trash && !paths.is_empty() {
+            self.state.ops.undo_stack.push(UndoEntry::Trash {
+                paths: paths.clone(),
+            });
+        }
         let mut affected: Vec<_> = paths
             .iter()
             .flat_map(|p| self.affected_tabs_for_path(p))
@@ -512,7 +563,12 @@ impl App {
             .ops
             .start_op_labeled(paths.len(), rust_i18n::t!("op_deleting").to_string());
         let tx = self.tx.clone();
+        #[cfg(windows)]
+        let owner = self.hwnd;
         self.rt.spawn(async move {
+            #[cfg(windows)]
+            crate::shell_file_operation::delete_files(paths, to_trash, op_id, tx, cancel, affected, owner).await;
+            #[cfg(not(windows))]
             atlas_core::fs::ops::delete_files(paths, to_trash, op_id, tx, cancel, affected).await;
         });
     }
@@ -574,9 +630,9 @@ impl App {
             .iter()
             .filter_map(|&i| ts.entries.get(i))
             .filter_map(|e| {
-                e.recycle_info.as_ref().map(|info| {
+                e.recycle_info().as_ref().map(|info| {
                     (
-                        e.path.clone(),
+                        e.path(),
                         info.i_file.clone(),
                         info.original_path.clone(),
                     )
@@ -657,7 +713,12 @@ impl App {
         let op_id = self.state.next_op_id();
         let affected = self.affected_tabs_for_path(&from);
         let tx = self.tx.clone();
+        #[cfg(windows)]
+        let owner = self.hwnd;
         self.rt.spawn(async move {
+            #[cfg(windows)]
+            crate::shell_file_operation::rename_file(from, to, op_id, tx, affected, owner).await;
+            #[cfg(not(windows))]
             atlas_core::fs::ops::rename_file(from, to, op_id, tx, affected).await;
         });
     }
@@ -726,7 +787,12 @@ impl App {
                     let affected = self.affected_tabs_for_path(&to);
                     let tx = self.tx.clone();
                     // Reverse: rename 'to' back to 'from'
+                    #[cfg(windows)]
+                    let owner = self.hwnd;
                     self.rt.spawn(async move {
+                        #[cfg(windows)]
+                        crate::shell_file_operation::rename_file(to, from, op_id, tx, affected, owner).await;
+                        #[cfg(not(windows))]
                         atlas_core::fs::ops::rename_file(to, from, op_id, tx, affected).await;
                     });
                 }
@@ -737,7 +803,40 @@ impl App {
                 }
                 UndoEntry::Copy { pairs } => {
                     let created: Vec<PathBuf> = pairs.iter().map(|(_, dst)| dst.clone()).collect();
-                    self.delete_files(created, true);
+                    self.delete_files_opts(created, true, false);
+                }
+                UndoEntry::Trash { paths } => {
+                    let paths_set: std::collections::HashSet<PathBuf> =
+                        paths.iter().cloned().collect();
+                    let recycled = atlas_core::fs::recycle_bin::read_recycle_bin(
+                        &atlas_model::file_entry::SortColumn::Modified,
+                        &atlas_model::file_entry::SortDir::Desc,
+                    );
+                    let mut items = Vec::new();
+                    let mut affected = self.recycle_bin_tabs();
+                    for entry in recycled {
+                        if let Some(info) = &entry.recycle_info() {
+                            if paths_set.contains(&info.original_path) {
+                                affected.extend(self.affected_tabs_for_path(&info.original_path));
+                                items.push((
+                                    entry.path(),
+                                    info.i_file.clone(),
+                                    info.original_path.clone(),
+                                ));
+                            }
+                        }
+                    }
+                    if !items.is_empty() {
+                        let (op_id, _cancel) = self
+                            .state
+                            .ops
+                            .start_op_labeled(items.len(), rust_i18n::t!("op_restoring").to_string());
+                        let tx = self.tx.clone();
+                        self.rt.spawn(async move {
+                            atlas_core::fs::recycle_bin::restore_items(items, op_id, tx, affected)
+                                .await;
+                        });
+                    }
                 }
             }
             self.state.ops.undo_stack.redo.push_back(entry);
@@ -759,9 +858,17 @@ impl App {
                     let tx = self.tx.clone();
                     let from = from.clone();
                     let to = to.clone();
+                    #[cfg(windows)]
+                    let owner = self.hwnd;
                     self.rt.spawn(async move {
+                        #[cfg(windows)]
+                        crate::shell_file_operation::rename_file(from, to, op_id, tx, affected, owner).await;
+                        #[cfg(not(windows))]
                         atlas_core::fs::ops::rename_file(from, to, op_id, tx, affected).await;
                     });
+                }
+                UndoEntry::Trash { paths } => {
+                    self.delete_files_opts(paths.clone(), true, false);
                 }
             }
             self.state.ops.undo_stack.undo.push_back(entry);

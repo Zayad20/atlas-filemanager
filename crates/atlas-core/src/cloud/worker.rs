@@ -853,33 +853,21 @@ fn remote_to_file_entry(e: RemoteEntry) -> FileEntry {
     } else {
         FileKind::File
     };
-    let extension = if e.is_dir {
-        None
-    } else {
-        e.name
-            .rsplit_once('.')
-            .map(|(_, ext)| ext.to_ascii_lowercase())
-    };
     let modified = e
         .modified
         .and_then(|secs| u64::try_from(secs).ok())
         .map(|secs| UNIX_EPOCH + Duration::from_secs(secs));
-    FileEntry {
-        name_lower: e.name.to_ascii_lowercase(),
-        name: e.name,
+    FileEntry::from(atlas_model::file_entry::FileEntryData {
+        name: e.name.into(),
         path: PathBuf::from(e.path),
         kind,
         size: (!e.is_dir).then_some(e.size),
         modified,
-        extension,
-        display_size: String::new().into(),
-        display_date: String::new().into(),
-        display_type: String::new().into(),
         _is_hidden: false,
         _is_symlink: false,
         archive_root: None,
         recycle_info: None,
-    }
+    })
 }
 
 #[cfg(windows)]

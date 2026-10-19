@@ -78,6 +78,7 @@ pub struct ThemeRegistry {
     default_themes: HashMap<ThemeMode, Rc<ThemeConfig>>,
     themes: HashMap<SharedString, Rc<ThemeConfig>>,
     has_custom_themes: bool,
+    custom_themes_loaded: bool,
 }
 
 impl Global for ThemeRegistry {}
@@ -122,6 +123,12 @@ impl ThemeRegistry {
         &self.themes
     }
 
+    /// False until the first filesystem load completes. A caller can display a
+    /// temporary fallback while keeping a saved custom-theme selection intact.
+    pub fn custom_themes_loaded(&self) -> bool {
+        self.custom_themes_loaded
+    }
+
     /// Returns a sorted list of themes.
     pub fn sorted_themes(&self) -> Vec<&Rc<ThemeConfig>> {
         let mut themes = self.themes.values().collect::<Vec<_>>();
@@ -158,6 +165,14 @@ impl ThemeRegistry {
             }
         }
         Ok(())
+    }
+
+    /// Register or replace a user-edited theme immediately after a successful
+    /// save, without waiting for a filesystem watcher round trip.
+    pub fn register_custom_theme(&mut self, mut theme: ThemeConfig) {
+        theme.is_default = false;
+        self.themes.insert(theme.name.clone(), Rc::new(theme));
+        self.has_custom_themes = true;
     }
 
     fn init_default_themes(&mut self) {
@@ -282,6 +297,7 @@ impl ThemeRegistry {
                 .insert(theme.name.clone(), Rc::new(theme.clone()));
         }
 
+        self.custom_themes_loaded = true;
         Ok(())
     }
 }

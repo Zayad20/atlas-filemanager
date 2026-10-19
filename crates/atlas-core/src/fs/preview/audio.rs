@@ -5,6 +5,9 @@ use atlas_model::preview_cache::PreviewResult;
 use super::image::decode_cover;
 
 pub(super) fn preview_audio(path: &Path) -> PreviewResult {
+    if super::is_cloud_placeholder(path) {
+        return super::offline_preview();
+    }
     use lofty::prelude::{Accessor, AudioFile, TaggedFileExt};
 
     let tagged = match lofty::read_from_path(path) {
@@ -47,6 +50,9 @@ pub(super) fn preview_audio(path: &Path) -> PreviewResult {
 }
 
 pub fn extract_audio_thumbnail(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, usize)> {
+    if super::is_cloud_placeholder(path) {
+        return None;
+    }
     use lofty::prelude::TaggedFileExt;
 
     if let Ok(tagged) = lofty::read_from_path(path) {
@@ -63,9 +69,19 @@ pub fn extract_audio_thumbnail(path: &Path, max_edge: u32) -> Option<(Vec<u8>, u
 
     // Fallback: look for album cover file in the same directory
     let parent = path.parent()?;
-    for name in &["cover.jpg", "cover.png", "folder.jpg", "folder.png", "album.jpg", "front.jpg"] {
+    for name in &[
+        "cover.jpg",
+        "cover.png",
+        "folder.jpg",
+        "folder.png",
+        "album.jpg",
+        "front.jpg",
+    ] {
         let candidate = parent.join(name);
         if candidate.is_file() {
+            if super::is_cloud_placeholder(&candidate) {
+                continue;
+            }
             if let Ok(img) = image::open(&candidate) {
                 let thumb = img.thumbnail(max_edge, max_edge).to_rgba8();
                 let (w, h) = (thumb.width() as usize, thumb.height() as usize);
@@ -78,12 +94,25 @@ pub fn extract_audio_thumbnail(path: &Path, max_edge: u32) -> Option<(Vec<u8>, u
 
 fn find_folder_cover(path: &Path) -> Option<atlas_model::preview_cache::ImageData> {
     let parent = path.parent()?;
-    for name in &["cover.jpg", "cover.png", "folder.jpg", "folder.png", "album.jpg", "front.jpg"] {
+    for name in &[
+        "cover.jpg",
+        "cover.png",
+        "folder.jpg",
+        "folder.png",
+        "album.jpg",
+        "front.jpg",
+    ] {
         let candidate = parent.join(name);
         if candidate.is_file() {
+            if super::is_cloud_placeholder(&candidate) {
+                continue;
+            }
             if let Ok(img) = image::open(&candidate) {
                 let thumb = img
-                    .thumbnail(super::MAX_MULTI_THUMBNAIL_EDGE, super::MAX_MULTI_THUMBNAIL_EDGE)
+                    .thumbnail(
+                        super::MAX_MULTI_THUMBNAIL_EDGE,
+                        super::MAX_MULTI_THUMBNAIL_EDGE,
+                    )
                     .to_rgba8();
                 let (w, h) = (thumb.width() as usize, thumb.height() as usize);
                 return Some(atlas_model::preview_cache::ImageData {
@@ -120,4 +149,3 @@ mod tests {
         assert_eq!(rgba.len(), 32 * 32 * 4);
     }
 }
-

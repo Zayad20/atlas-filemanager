@@ -52,7 +52,7 @@ impl App {
         };
         let font_size = window.text_style().font_size.to_pixels(window.rem_size());
         let row_font = window.text_style().font();
-        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border, _header_bg);
+        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border, _header_bg, cx);
         let count = self
             .state
             .tab_states
@@ -121,9 +121,10 @@ impl App {
             let cell_h_px =
                 f32::from(window.line_height()).max(16.0 * zoom_scale) + 4.0 * zoom_scale;
             let pitch = cell_h_px;
+            base_scroll.set_line_scroll_height(px(pitch));
             let rows = count.div_ceil(cols);
             let content_h = if rows == 0 { 0.0 } else { rows as f32 * pitch };
-            let max_scroll = (content_h - viewport_h).max(0.0);
+            let max_scroll = self.file_scroll_max(content_h, viewport_h);
             if scroll_y > max_scroll {
                 let offset = base_scroll.offset();
                 base_scroll.set_offset(gpui::point(offset.x, gpui::px(-max_scroll)));
@@ -142,10 +143,10 @@ impl App {
                         if let Some(&idx) = ts.visible.get(i) {
                             if let Some(e) = ts.entries.get(idx) {
                                 let fref = crate::ui::file_icons::FileIconRef {
-                                    path: e.path.clone(),
-                                    kind: e.kind.clone(),
+                                    path: e.path(),
+                                    kind: e.kind().clone(),
                                     extension: e
-                                        .extension
+                                        .extension()
                                         .as_ref()
                                         .map(|s| gpui::SharedString::from(s.to_string())),
                                 };
@@ -237,13 +238,13 @@ impl App {
                             return div().into_any_element();
                         };
                         let file_icon = app.file_icon_for_entry(
-                            &entry.path,
-                            &entry.kind,
-                            entry.extension.as_deref(),
+                            &entry.path(),
+                            &entry.kind(),
+                            entry.extension().as_deref(),
                         );
-                        let flashing = matches!(entry.kind, FileKind::Dir)
+                        let flashing = matches!(entry.kind(), FileKind::Dir)
                             && app.drag_hover.blink_id.as_ref()
-                                == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
+                                == Some(&DragHoverId::Folder(pane_id, entry.path()));
                         let rename_input =
                             crate::ui::views::rename::active_input(app, pane_id, entry_idx);
                         let selected = ts.selection.selected.contains(&entry_idx);
@@ -262,6 +263,7 @@ impl App {
                             record_rects: true,
                             file_icon,
                             rename_input,
+                            cut: app.state.system_cut_paths.contains(&entry.path()),
                             dimmed: crate::ui::views::rename::dim_other_entry(
                                 app, pane_id, entry_idx,
                             ),
@@ -340,10 +342,10 @@ impl App {
                         .and_then(|ts| ts.entries.get(entry_idx))
                         .map(|entry| {
                             (
-                                entry.name.clone(),
-                                entry.path.clone(),
-                                matches!(entry.kind, FileKind::Dir),
-                                entry.size,
+                                entry.name.to_string(),
+                                entry.path(),
+                                matches!(entry.kind(), FileKind::Dir),
+                                entry.size(),
                                 entry.modified,
                             )
                         })
@@ -500,6 +502,7 @@ struct ListCellProps<'a> {
     file_icon: FileIcon,
     rename_input: Option<gpui::Entity<gpui_component::input::InputState>>,
     dimmed: bool,
+    cut: bool,
     window: &'a mut Window,
 }
 
@@ -521,9 +524,10 @@ fn render_cell_compact(props: ListCellProps, cx: &gpui::App) -> AnyElement {
         file_icon,
         rename_input,
         dimmed,
+        cut,
         window,
     } = props;
-    let name = entry.name.clone();
+    let name = entry.name.to_string();
     let font_size = window.text_style().font_size.to_pixels(window.rem_size());
     h_flex()
         .id(("lc", entry_idx))
@@ -536,7 +540,7 @@ fn render_cell_compact(props: ListCellProps, cx: &gpui::App) -> AnyElement {
         .gap_1()
         .items_center()
         .rounded_sm()
-        .when(dimmed, |s| s.opacity(0.45))
+        .opacity((if cut { 0.5 } else { 1.0 }) * if dimmed { 0.45 } else { 1.0 })
         .cursor_pointer()
         .when(selected, |s| s.bg(accent).text_color(accent_fg))
         .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
@@ -617,14 +621,14 @@ fn render_cell_compact(props: ListCellProps, cx: &gpui::App) -> AnyElement {
                 view.clone(),
                 pane_id,
                 entry_idx,
-                entry.path.clone(),
+                entry.path(),
             )
         })
         .tooltip({
-            let tip_name = entry.name.clone();
-            let tip_path = entry.path.clone();
-            let is_dir = matches!(entry.kind, FileKind::Dir);
-            let size = entry.size;
+            let tip_name = entry.name.to_string();
+            let tip_path = entry.path();
+            let is_dir = matches!(entry.kind(), FileKind::Dir);
+            let size = entry.size();
             let modified = entry.modified;
             move |window, cx| {
                 crate::ui::tooltips::entry_hover_tooltip(
@@ -638,8 +642,8 @@ fn render_cell_compact(props: ListCellProps, cx: &gpui::App) -> AnyElement {
                 )
             }
         })
-        .when(matches!(entry.kind, FileKind::Dir), |s| {
-            crate::ui::views::folder_drop_target(s, view, pane_id, entry.path.clone())
+        .when(matches!(entry.kind(), FileKind::Dir), |s| {
+            crate::ui::views::folder_drop_target(s, view, pane_id, entry.path())
         })
         .into_any_element()
 }

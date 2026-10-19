@@ -58,6 +58,8 @@ pub fn search_content(
         WalkBuilder::new(&root)
             .hidden(true)
             .git_ignore(true)
+            .filter_entry(|entry| !crate::fs::scan_policy::is_scan_excluded(entry.path())
+                && !crate::fs::preview::is_cloud_placeholder(entry.path()))
             .build_parallel()
             .run(|| {
                 let matcher = matcher.clone();
@@ -71,6 +73,10 @@ pub fn search_content(
                     let Ok(entry) = entry else {
                         return WalkState::Continue;
                     };
+                    if crate::fs::scan_policy::is_scan_excluded(entry.path())
+                        || crate::fs::preview::is_cloud_placeholder(entry.path()) {
+                        return WalkState::Skip;
+                    }
                     if !entry.file_type().is_some_and(|t| t.is_file()) {
                         return WalkState::Continue;
                     }

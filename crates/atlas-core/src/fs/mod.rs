@@ -1,5 +1,7 @@
 pub mod index;
 pub mod list;
+pub mod scan_policy;
+pub mod dir_stats;
 pub mod mounts;
 pub mod paths;
 pub mod tag_db;

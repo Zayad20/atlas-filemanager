@@ -15,6 +15,25 @@ const MAX_FRAME_SECONDS: f32 = 1.0 / 30.0;
 pub(crate) enum EdgeDirection {
     Up,
     Down,
+    /// Horizontal scrollers (column-major List).
+    Left,
+    Right,
+}
+
+impl EdgeDirection {
+    pub(crate) fn is_horizontal(self) -> bool {
+        matches!(self, Self::Left | Self::Right)
+    }
+
+    /// Pointer travel towards this edge between two points (positive = outward).
+    pub(crate) fn outward(self, from: Point<Pixels>, to: Point<Pixels>) -> f32 {
+        match self {
+            Self::Up => f32::from(from.y - to.y),
+            Self::Down => f32::from(to.y - from.y),
+            Self::Left => f32::from(from.x - to.x),
+            Self::Right => f32::from(to.x - from.x),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,6 +71,34 @@ pub(crate) fn activation_at(bounds: Bounds<Pixels>, pos: Point<Pixels>) -> Optio
     }
 }
 
+/// Horizontal counterpart of [`activation_at`]: active left/right edge while the
+/// pointer stays inside the viewport vertically.
+pub(crate) fn activation_at_horizontal(
+    bounds: Bounds<Pixels>,
+    pos: Point<Pixels>,
+) -> Option<EdgeActivation> {
+    let y = f32::from(pos.y);
+    if y < f32::from(bounds.top()) || y > f32::from(bounds.bottom()) {
+        return None;
+    }
+    let x = f32::from(pos.x);
+    let left = f32::from(bounds.left());
+    let right = f32::from(bounds.right());
+    if x < left + EDGE_ZONE {
+        Some(EdgeActivation {
+            direction: EdgeDirection::Left,
+            strength: ((left + EDGE_ZONE - x) / EDGE_ZONE).clamp(0.0, 1.0),
+        })
+    } else if x > right - EDGE_ZONE {
+        Some(EdgeActivation {
+            direction: EdgeDirection::Right,
+            strength: ((x - (right - EDGE_ZONE)) / EDGE_ZONE).clamp(0.0, 1.0),
+        })
+    } else {
+        None
+    }
+}
+
 pub(crate) fn velocity(strength: f32) -> f32 {
     let t = strength.clamp(0.0, 1.0);
     // Smoothstep avoids the perceptible speed kink at the activation boundary.
@@ -69,8 +116,10 @@ pub(crate) fn next_offset(
     let dt = elapsed_seconds.clamp(0.0, MAX_FRAME_SECONDS);
     let distance = velocity(strength) * dt;
     match direction {
-        EdgeDirection::Up => (current + distance).min(0.0),
-        EdgeDirection::Down => (current - distance).max(-max_offset.max(0.0)),
+        EdgeDirection::Up | EdgeDirection::Left => (current + distance).min(0.0),
+        EdgeDirection::Down | EdgeDirection::Right => {
+            (current - distance).max(-max_offset.max(0.0))
+        }
     }
 }
 
@@ -82,10 +131,15 @@ pub(crate) fn tick_handle(
     elapsed_seconds: f32,
 ) -> bool {
     let offset = handle.offset();
-    let current = f32::from(offset.y);
+    let horizontal = activation.direction.is_horizontal();
+    let (current, max) = if horizontal {
+        (f32::from(offset.x), f32::from(handle.max_offset().x))
+    } else {
+        (f32::from(offset.y), f32::from(handle.max_offset().y))
+    };
     let next = next_offset(
         current,
-        f32::from(handle.max_offset().y),
+        max,
         activation.direction,
         activation.strength,
         elapsed_seconds,
@@ -93,7 +147,11 @@ pub(crate) fn tick_handle(
     if (next - current).abs() < 0.01 {
         return false;
     }
-    handle.set_offset(point(offset.x, px(next)));
+    handle.set_offset(if horizontal {
+        point(px(next), offset.y)
+    } else {
+        point(offset.x, px(next))
+    });
     true
 }
 

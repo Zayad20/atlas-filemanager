@@ -152,8 +152,11 @@ impl Render for Tooltip {
 
 /// Grace period: if a tooltip was hidden within this time, skip delay for next show.
 const GRACE_PERIOD: Duration = Duration::from_millis(300);
-/// Delay before showing a tooltip when no tooltip is currently active.
-const SHOW_DELAY: Duration = Duration::from_millis(500);
+fn same_hot_box(active: Bounds<Pixels>, next: Bounds<Pixels>, pointer: Point<Pixels>) -> bool {
+    active == next || (active.contains(&pointer)
+        && next.left() >= active.left() && next.right() <= active.right()
+        && next.top() >= active.top() && next.bottom() <= active.bottom())
+}
 /// Duration of the slide-down enter animation.
 const ENTER_DURATION: Duration = Duration::from_millis(150);
 /// Duration of the position-slide animation when switching tooltips.
@@ -370,6 +373,7 @@ pub(crate) struct TooltipContent {
 /// via [`ManagedTooltipExt::managed_tooltip`] which calls into this overlay.
 pub struct TooltipOverlay {
     content: Option<TooltipContent>,
+    pending_bounds: Option<Bounds<Pixels>>,
     prev_trigger_bounds: Option<Bounds<Pixels>>,
     epoch: usize,
     had_recent_tooltip: bool,
@@ -384,6 +388,7 @@ impl TooltipOverlay {
     pub fn new() -> Self {
         Self {
             content: None,
+            pending_bounds: None,
             prev_trigger_bounds: None,
             epoch: 0,
             had_recent_tooltip: false,
@@ -410,6 +415,13 @@ impl TooltipOverlay {
         // Cancel any pending hide
         self._hide_task = None;
 
+        // Child hover transitions and rerenders stay in the parent's hot box.
+        // Keep the original timer/animation until the pointer really leaves it.
+        let active_bounds = self.content.as_ref().map(|content| content.trigger_bounds).or(self.pending_bounds);
+        if active_bounds.is_some_and(|bounds| same_hot_box(bounds, content.trigger_bounds, window.mouse_position())) {
+            return;
+        }
+
         let was_visible = self.content.is_some();
         let in_grace = self.had_recent_tooltip;
 
@@ -417,6 +429,7 @@ impl TooltipOverlay {
             // Switch: show immediately with slide animation
             self.prev_trigger_bounds = self.content.as_ref().map(|c| c.trigger_bounds);
             self.content = Some(content);
+            self.pending_bounds = None;
             self._show_task = None;
             self.is_switching = was_visible;
             self.animation_epoch += 1;
@@ -425,14 +438,16 @@ impl TooltipOverlay {
             // New: delay then show with slideDown
             let epoch = self.next_epoch();
             let content = content.clone();
+            self.pending_bounds = Some(content.trigger_bounds);
             self._show_task = Some(cx.spawn_in(window, async move |this, cx| {
-                cx.background_executor().timer(SHOW_DELAY).await;
+                cx.background_executor().timer(gpui::tooltip_show_delay()).await;
                 let _ = this.update_in(cx, |this, _, cx| {
                     if this.epoch != epoch {
                         return;
                     }
 
                     this.content = Some(content);
+                    this.pending_bounds = None;
                     this.prev_trigger_bounds = None;
                     this.is_switching = false;
                     this.animation_epoch += 1;
@@ -445,8 +460,13 @@ impl TooltipOverlay {
     /// Request hiding the current tooltip. Starts a brief grace period so that
     /// moving to another tooltip-bearing element feels instant.
     pub(crate) fn request_hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let bounds = self.content.as_ref().map(|content| content.trigger_bounds).or(self.pending_bounds);
+        if bounds.is_some_and(|bounds| bounds.contains(&window.mouse_position())) {
+            return;
+        }
         // Cancel any pending show
         self._show_task = None;
+        self.pending_bounds = None;
 
         if self.content.is_none() {
             return;
@@ -477,6 +497,7 @@ impl TooltipOverlay {
 
     fn clear_state(&mut self) -> bool {
         let changed = self.content.is_some()
+            || self.pending_bounds.is_some()
             || self.prev_trigger_bounds.is_some()
             || self.had_recent_tooltip
             || self.is_switching
@@ -484,6 +505,7 @@ impl TooltipOverlay {
             || self._hide_task.is_some();
 
         self.content = None;
+        self.pending_bounds = None;
         self.prev_trigger_bounds = None;
         self.had_recent_tooltip = false;
         self.is_switching = false;
@@ -646,6 +668,16 @@ mod tests {
     use super::*;
     use gpui::size;
 
+    #[test]
+    fn child_transitions_share_hot_box_but_siblings_do_not() {
+        let parent = test_bounds(10., 10., 100., 40.);
+        let child = test_bounds(20., 15., 20., 20.);
+        assert!(same_hot_box(parent, parent, point(px(25.), px(20.))));
+        assert!(same_hot_box(parent, child, point(px(25.), px(20.))));
+        assert!(!same_hot_box(parent, child, point(px(200.), px(20.))));
+        assert!(!same_hot_box(parent, test_bounds(120., 10., 100., 40.), point(px(125.), px(20.))));
+    }
+
     fn test_content(bounds: Bounds<Pixels>) -> TooltipContent {
         TooltipContent {
             build: Rc::new(|window, cx| Tooltip::new("Test tooltip").build(window, cx)),
@@ -666,6 +698,7 @@ mod tests {
         let mut overlay = TooltipOverlay::new();
 
         overlay.content = Some(test_content(test_bounds(10., 10., 40., 20.)));
+        overlay.pending_bounds = Some(test_bounds(10., 10., 40., 20.));
         overlay.prev_trigger_bounds = Some(test_bounds(0., 0., 40., 20.));
         overlay.had_recent_tooltip = true;
         overlay.is_switching = true;
@@ -673,6 +706,7 @@ mod tests {
 
         assert!(overlay.clear_state());
         assert!(overlay.content.is_none());
+        assert!(overlay.pending_bounds.is_none());
         assert!(overlay.prev_trigger_bounds.is_none());
         assert!(!overlay.had_recent_tooltip);
         assert!(!overlay.is_switching);

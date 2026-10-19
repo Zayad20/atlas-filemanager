@@ -66,6 +66,9 @@ impl DetailsRowTextCache {
 /// One virtualized row's GPU-ready text/icons.
 #[derive(Clone)]
 pub(crate) struct DetailsRowSlot {
+    pub size: Option<u64>,
+    pub interactive: bool,
+    pub path: std::path::PathBuf,
     /// Visible-list index (`start_idx..end_idx`).
     pub row: usize,
     /// Hash of everything that changes the immutable row payload.
@@ -203,7 +206,7 @@ impl DetailsRowRing {
     }
 
     /// Collect a dense, contiguous paint snapshot. Heavy payloads remain shared;
-    /// each clone copies only scalars and Arc handles.
+    /// each clone copies scalars/Arc handles and clones the owned PathBuf buffer.
     pub fn collect_rows(&self, start: usize, end: usize) -> Vec<DetailsRowSlot> {
         let mut out = Vec::with_capacity(end.saturating_sub(start));
         for row in start..end {
@@ -219,11 +222,7 @@ impl DetailsRowRing {
 /// excluded: truncation and color are applied while painting.
 pub(crate) fn details_row_shape_key(
     entry_idx: usize,
-    name: &str,
-    display_size: &str,
-    display_date: &str,
-    display_type: &str,
-    kind_disc: u8,
+    entry: &atlas_model::file_entry::FileEntry,
     extension: Option<&str>,
     font: &Font,
     font_size: Pixels,
@@ -231,11 +230,11 @@ pub(crate) fn details_row_shape_key(
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     entry_idx.hash(&mut h);
-    name.hash(&mut h);
-    display_size.hash(&mut h);
-    display_date.hash(&mut h);
-    display_type.hash(&mut h);
-    kind_disc.hash(&mut h);
+    entry.name.hash(&mut h);
+    entry.size().hash(&mut h);
+    entry.modified.hash(&mut h);
+    rust_i18n::locale().hash(&mut h);
+    entry.kind().hash(&mut h);
     extension.hash(&mut h);
     font.hash(&mut h);
     f32::from(font_size).to_bits().hash(&mut h);
@@ -246,12 +245,32 @@ pub(crate) fn details_row_shape_key(
 mod tests {
     use super::*;
 
+    #[test]
+    fn text_cache_identity_tracks_raw_size_date_and_file_kind() {
+        use atlas_model::file_entry::{FileEntry, FileEntryData, FileKind};
+        let make = |kind, size, modified| FileEntry::from(FileEntryData {
+            name: "same.txt".into(), path: "same.txt".into(), kind, size, modified,
+            _is_hidden: false, _is_symlink: false, archive_root: None, recycle_info: None,
+        });
+        let font = gpui::font("Test");
+        let key = |entry: &FileEntry| details_row_shape_key(0, entry, Some("txt"), &font, gpui::px(14.0));
+        let original = make(FileKind::File, Some(1), Some(std::time::UNIX_EPOCH));
+        assert_eq!(key(&original), key(&original.clone()));
+        assert_ne!(key(&original), key(&make(FileKind::Symlink, Some(1), original.modified)));
+        assert_ne!(key(&original), key(&make(FileKind::File, Some(2), original.modified)));
+        assert_ne!(key(&original), key(&make(FileKind::File, None, original.modified)));
+        assert_ne!(key(&original), key(&make(FileKind::File, Some(1), None)));
+    }
+
     fn dummy_line() -> ShapedLine {
         ShapedLine::default()
     }
 
     fn slot(row: usize, key: u64) -> DetailsRowSlot {
         DetailsRowSlot {
+            size: None,
+            interactive: true,
+            path: Default::default(),
             row,
             shape_key: key,
             selected_at: None,

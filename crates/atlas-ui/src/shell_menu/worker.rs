@@ -73,6 +73,7 @@ fn push_event(ev: ShellMenuEvent) {
         if let Some(ws) = w.borrow().as_ref() {
             if let Ok(mut q) = ws.events.lock() {
                 q.push(ev);
+                crate::ui_wake::wake();
             }
         }
     });

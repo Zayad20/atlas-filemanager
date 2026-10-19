@@ -53,6 +53,12 @@ impl Render for DetailsColumnDrag {
 }
 
 impl App {
+    pub const EXPERIMENTAL_IMM_TREE: bool = true;
+    pub const EXPERIMENTAL_IMM_DETAILS: bool = true;
+    pub const EXPERIMENTAL_IMM_LIST: bool = true;
+    pub const EXPERIMENTAL_IMM_GRID: bool = true;
+    pub const EXPERIMENTAL_IMM_MILLER: bool = true;
+
     /// Render the file view for a pane (Details/Grid/List/Miller). Public to the
     /// crate so `ui::pane_panel::FilePanel` (a Dock `Panel`) can delegate here.
     pub(crate) fn render_pane(
@@ -61,6 +67,19 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if let Some(tab) = self.tab_data_for(pane_id) {
+            let mode = if matches!(tab.view_mode, ViewMode::Details | ViewMode::List) { tab.group_by } else { atlas_model::tab::GroupBy::None };
+            let collapsed = tab.collapsed_groups.clone();
+            let visibility = (tab.show_files, tab.show_folders);
+            let is_branch = tab.is_branch_view;
+            if let Some(state) = self.state.tab_states.get_mut(&pane_id) {
+                state.is_branch_view = is_branch;
+                state.set_visibility(visibility.0, visibility.1);
+                state.set_grouping(mode, collapsed);
+                state.refresh_miller_visibility();
+            }
+        }
+        self.restore_view_selection(pane_id);
         self.pending_drag_hover_targets.retain(|target| !matches!(target.id,
             crate::ui::drag_hover::DragHoverId::Folder(tab, _) | crate::ui::drag_hover::DragHoverId::Column(tab, _) | crate::ui::drag_hover::DragHoverId::Breadcrumb(tab, _) | crate::ui::drag_hover::DragHoverId::Chrome(_, tab) if tab == pane_id));
         if self.space_lens.contains_key(&pane_id) {
@@ -86,7 +105,7 @@ impl App {
             .get(&pane_id)
             .is_some_and(|ts| ts.selection.scroll_to_selected);
         if should_scroll_selected
-            && self.scroll_selected_into_view(pane_id, gpui::ScrollStrategy::Center)
+            && self.scroll_keyboard_selection(pane_id)
         {
             if let Some(ts) = self.state.tab_states.get_mut(&pane_id) {
                 ts.selection.scroll_to_selected = false;
@@ -117,13 +136,52 @@ impl App {
                 pane_id.0
             )
         });
-        match view_mode {
-            ViewMode::Grid => return self.render_grid(pane_id, window, cx),
-            ViewMode::List => return self.render_list_compact(pane_id, window, cx),
-            ViewMode::Miller => return self.render_miller(pane_id, window, cx),
-            ViewMode::Tree => return self.render_tree_view(pane_id, window, cx),
-            ViewMode::Details => {}
+        if matches!(view_mode, ViewMode::Details | ViewMode::List)
+            && self.tab_data_for(pane_id).is_some_and(|tab| tab.group_by != atlas_model::tab::GroupBy::None)
+        {
+            return self.render_grouped(pane_id, window, cx);
         }
+        match view_mode {
+            ViewMode::Grid => {
+                if Self::EXPERIMENTAL_IMM_GRID {
+                    return self.render_grid_view_imm(pane_id, window, cx);
+                }
+                return self.render_grid(pane_id, window, cx);
+            }
+            ViewMode::List => {
+                if Self::EXPERIMENTAL_IMM_LIST {
+                    return self.render_list_view_imm(pane_id, window, cx);
+                }
+                return self.render_list_compact(pane_id, window, cx);
+            }
+            ViewMode::Miller => {
+                if Self::EXPERIMENTAL_IMM_MILLER {
+                    return self.render_miller_imm(pane_id, window, cx);
+                }
+                return self.render_miller(pane_id, window, cx);
+            }
+            ViewMode::Tree => {
+                if Self::EXPERIMENTAL_IMM_TREE {
+                    return self.render_tree_view_imm(pane_id, window, cx);
+                }
+                return self.render_tree_view(pane_id, window, cx);
+            }
+            ViewMode::Details => {
+                if Self::EXPERIMENTAL_IMM_DETAILS {
+                    return self.render_details_view_imm(pane_id, window, cx);
+                }
+            }
+        }
+        self.render_details_canvas(pane_id, window, cx)
+    }
+
+    pub(crate) fn render_details_canvas(
+        &mut self,
+        pane_id: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let _perf = crate::perf::span("details.render");
         let view = cx.entity();
         let active_theme = self.state.profiles.active().theme.as_str();
         let is_glass = active_theme.ends_with(" Glass");
@@ -141,9 +199,9 @@ impl App {
                     backdrop_tint(t.secondary, 0.18)
                 },
                 if is_glass {
-                    t.list_even
+                    t.list_even.opacity(0.35)
                 } else {
-                    backdrop_tint(t.list_even, 0.08)
+                    backdrop_tint(t.list_even, 0.04)
                 },
                 if is_glass {
                     gpui::transparent_black()
@@ -155,7 +213,7 @@ impl App {
         let font_size = window.text_style().font_size.to_pixels(window.rem_size());
         let row_font = window.text_style().font();
 
-        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border, header_bg);
+        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border, header_bg, cx);
         let (sort_col, sort_dir) = self
             .tab_data_for(pane_id)
             .map(|t| (t.sort_col.clone(), t.sort_dir.clone()))
@@ -164,67 +222,45 @@ impl App {
         // Zoom-scaled once here; threaded as already-real-px through the row/header
         // geometry below so every consumption site can stay a plain `px(...)`.
         let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
-        let col_widths = self.details_widths_for_pane(pane_id, zoom_scale);
         let pane_width = self
             .state
             .tab_states
             .get(&pane_id)
             .map(|state| state.last_pane_width)
             .filter(|width| width.is_finite() && *width > 1.0)
-            .unwrap_or(f32::INFINITY);
+            .unwrap_or(800.0);
         let content_lod = details_content_lod(pane_width, zoom_scale);
-        let column_order = self.details_column_order;
-        // Single source of geometry for header AND rows → pixel-perfect alignment.
-        // Left-anchored widths (Explorer-style); they stay fixed when there is room
-        // and shrink proportionally only until readability minimums in narrow splits.
-        // While a reorder slide is running, blend from the pre-swap order so columns
-        // glide; request_animation_frame here re-renders only THIS pane (scoped).
-        let to_layout = details_row_layout(col_widths, &column_order, zoom_scale);
-        let layout = Arc::new(match self.details_reorder_anim() {
-            Some(anim) => {
-                crate::perf::event(|| format!("details.reorder_anim pane={}", pane_id.0));
-                window.request_animation_frame();
-                blend_layouts(
-                    anim.from_positions.as_ref(),
-                    &details_row_layout(col_widths, &anim.from_order, zoom_scale),
-                    &to_layout,
-                    anim.progress(),
-                )
-            }
-            None => to_layout,
-        });
+        // One priority projection and retained presentation for header and rows.
+        // The scroll gutter is reserved in both, so their right edges also agree.
+        let layout = Arc::new(crate::ui::views::details_imm::presented_layout(
+            self,
+            pane_id,
+            (pane_width - 16.0 * zoom_scale).max(0.0),
+            zoom_scale,
+            window,
+            cx,
+        ));
         let row_h = DETAILS_ROW_H * zoom_scale;
-        let dragging = self.col_dragging;
+        // Retain this above the hover-card subtree, whose id changes per row.
+        let row_motion = window.use_keyed_state(
+            SharedString::from(format!("details-row-motion-{}", pane_id.0)),
+            cx,
+            |_, _| crate::ui::imm::motion::RowMotion::new(0, [0.0; 3]),
+        );
+        let dragging = self
+            .col_dragging
+            .filter(|_| self.col_drag_pane == Some(pane_id));
         let drag_x = self.col_drag_x;
         let type_filter_set = self.type_filters.get(&pane_id).cloned().unwrap_or_default();
         let has_type_filter = !type_filter_set.is_empty();
 
         // type_labels: rebuilt only when entries change (entries_version gate in TabState).
         // filtered_visible: Arc::clone in the common no-filter case (O(1), no alloc).
-        let (type_labels, filtered_visible) =
-            if let Some(ts) = self.state.tab_states.get_mut(&pane_id) {
-                let labels = ts.type_labels_cached(entry_type_label).to_vec();
-                ts.visible_indices(); // ensure visible cache is fresh before we borrow .visible
-                let fv = if type_filter_set.is_empty() {
-                    Arc::clone(&ts.visible)
-                } else {
-                    let vis = Arc::clone(&ts.visible);
-                    let entries = &ts.entries;
-                    Arc::new(
-                        vis.iter()
-                            .filter(|&&idx| {
-                                entries
-                                    .get(idx)
-                                    .is_some_and(|e| type_filter_set.contains(&entry_type_label(e)))
-                            })
-                            .copied()
-                            .collect(),
-                    )
-                };
-                (labels, fv)
-            } else {
-                (vec![], Arc::new(vec![]))
-            };
+        let filter_perf = crate::perf::span("details.render.filter_projection");
+        let type_labels = self.state.tab_states.get_mut(&pane_id)
+            .map(|ts| ts.type_labels_cached(entry_type_label).to_vec()).unwrap_or_default();
+        let filtered_visible = self.flat_visible_indices(pane_id);
+        drop(filter_perf);
         let count = filtered_visible.len();
 
         let colors = DetailsColors {
@@ -240,6 +276,7 @@ impl App {
 
         let header = details_header(
             &layout,
+            filtered_visible.clone(),
             &view,
             pane_id,
             &sort_col,
@@ -271,6 +308,7 @@ impl App {
         } else {
             let scroll = self.scroll_handle_for(pane_id);
             let base_scroll = scroll.0.borrow().base_handle.clone();
+            base_scroll.set_line_scroll_height(px(row_h));
             let scroll_view = view.clone();
 
             // First frames after a split often report 0-height scroll bounds (layout
@@ -306,7 +344,9 @@ impl App {
                 ((scroll_y / row_h).floor().max(0.0) as usize).saturating_sub(overscan_rows);
             let end_idx = ((scroll_y + viewport_h) / row_h).ceil() as usize + overscan_rows;
             let end_idx = end_idx.min(count);
+            let icons_perf = crate::perf::span("details.render.prime_icons");
             prime_details_file_icons_range(self, pane_id, &filtered_visible, start_idx, end_idx);
+            drop(icons_perf);
 
             let mut overlays = Vec::new();
 
@@ -316,6 +356,7 @@ impl App {
             let record_rects =
                 self.dock_split_animations.is_empty() && self.pane_layout_animations.is_empty();
 
+            let rename_scan_perf = crate::perf::span("details.render.rename_scan");
             for i in start_idx..end_idx {
                 let Some(&entry_idx) = fv.get(i) else {
                     continue;
@@ -326,12 +367,12 @@ impl App {
 
                 let rename_input = crate::ui::views::rename::active_input(self, pane_id, entry_idx);
                 let selected = ts.selection.selected.contains(&entry_idx);
-                let flashing = matches!(entry.kind, FileKind::Dir)
+                let flashing = matches!(entry.kind(), FileKind::Dir)
                     && self.drag_hover.blink_id.as_ref()
-                        == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
+                        == Some(&DragHoverId::Folder(pane_id, entry.path()));
                 let odd = i % 2 == 1;
                 let icon_tex = self
-                    .file_icon_for_entry(&entry.path, &entry.kind, entry.extension.as_deref())
+                    .file_icon_for_entry(&entry.path(), &entry.kind(), entry.extension().as_deref())
                     .texture();
 
                 if let Some(input) = rename_input {
@@ -363,6 +404,7 @@ impl App {
                     );
                 }
             }
+            drop(rename_scan_perf);
 
             // Body: custom Element (ring + paint + input).
             let body_el = if USE_DETAILS_BODY_ELEMENT {
@@ -381,6 +423,7 @@ impl App {
                     row_font.clone(),
                     font_size,
                     dragging,
+                    row_motion,
                 )
                 .absolute()
                 .inset_0()
@@ -410,48 +453,31 @@ impl App {
                 })
                 .map(|entry| {
                     (
-                        entry.name.clone(),
-                        entry.path.clone(),
-                        matches!(entry.kind, FileKind::Dir),
-                        entry.size,
+                        entry.name.to_string(),
+                        entry.path(),
+                        matches!(entry.kind(), FileKind::Dir),
+                        entry.size(),
                         entry.modified,
                     )
                 });
 
-            let tooltip_target_id = self
+            let tooltip_target = self
                 .details_hover
                 .filter(|(hover_pane, _)| *hover_pane == pane_id)
-                .map(|(_, entry_idx)| entry_idx as u64)
-                .unwrap_or(u64::MAX);
+                .map(|(_, entry_idx)| entry_idx);
+            // Stable id: the per-row tooltip lives in a sibling overlay so hover
+            // changes never reset the body's keyed state (checkbox pop, FLIP).
+            let tooltip_overlay = tooltip_target.zip(details_tooltip).map(|(target, data)| {
+                crate::ui::views::hover_tooltip_overlay("details", pane_id, target, data)
+            });
 
             div()
-                // Re-key only the viewport-level hover target when the hit-tested row
-                // changes. The scroll child keeps its stable id and external scroll state.
-                .id(SharedString::from(format!(
-                    "details-tooltip-target-{}-{tooltip_target_id}",
-                    pane_id.0
-                )))
+                .id(SharedString::from(format!("details-viewport-{}", pane_id.0)))
                 .size_full()
                 .relative()
                 .overflow_hidden()
                 .min_w(px(0.))
                 .min_h(px(0.))
-                .when_some(
-                    details_tooltip,
-                    |el, (name, path, is_dir, size, modified)| {
-                        el.tooltip(move |window, cx| {
-                            crate::ui::tooltips::entry_hover_tooltip(
-                                name.clone(),
-                                path.clone(),
-                                is_dir,
-                                size,
-                                modified,
-                                window,
-                                cx,
-                            )
-                        })
-                    },
-                )
                 .child(
                     div()
                         .id(SharedString::from(format!("details-scroll-{}", pane_id.0)))
@@ -476,6 +502,7 @@ impl App {
                         )
                         .pr(crate::ui::rem_px(16.)),
                 )
+                .children(tooltip_overlay)
                 .vertical_scrollbar(&base_scroll)
                 .into_any_element()
         };
@@ -515,7 +542,7 @@ impl App {
                 let (width_changed, height_changed) = {
                     if let Some(ts) = v.read(cx).state.tab_states.get(&pane_id) {
                         (
-                            (ts.last_pane_width - new_w).abs() > 1.5,
+                            (ts.last_pane_width - new_w).abs() > 0.01,
                             (ts.last_pane_height - new_h).abs() > 1.5,
                         )
                     } else {
@@ -527,13 +554,9 @@ impl App {
                         if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
                             ts.last_pane_width = new_w;
                             ts.last_pane_height = new_h;
-                            // Width changes are absorbed directly by GPU overflow clipping
-                            // without invalidating the GPUI tree (eliminates 1-frame lag).
-                            // Only vertical height changes (which affect virtual scroll runway)
-                            // trigger notification.
-                            if height_changed && !this.is_pane_or_dock_animating() {
-                                cx.notify();
-                            }
+                            // Recompute the projection in this pane only, including
+                            // fractional resize motion. Clipping handles this frame.
+                            this.notify_pane(pane_id, cx);
                         }
                     });
                 }
@@ -549,58 +572,24 @@ impl App {
 
 /// Semantic category label for the Type column and filter overlay.
 pub fn entry_type_label(entry: &FileEntry) -> String {
-    if !entry.display_type.is_empty() {
-        return entry.display_type.to_string();
-    }
-    atlas_model::file_entry::file_category(&entry.kind, entry.extension.as_deref())
+    atlas_model::file_entry::file_category(&entry.kind(), entry.extension().as_deref())
 }
 
-/// Fill the `display_*` fields of a fresh listing. Called on the background
-/// worker (inside the producing task), never on the UI thread: formatting a
-/// 500-entry listing during `App::render` cost 5-14ms per drain.
-pub(crate) fn format_entries(entries: &mut [FileEntry]) {
-    for e in entries.iter_mut() {
-        e.display_size = if matches!(e.kind, FileKind::Dir) {
-            "".into()
-        } else {
-            e.size
-                .map(atlas_core::util::display::format_size)
-                .unwrap_or_default()
-                .into()
-        };
-        e.display_date = e
-            .modified
-            .map(atlas_core::util::display::format_date)
-            .unwrap_or_default()
-            .into();
-        e.display_type = entry_type_label(e).into();
-    }
+pub(crate) fn entry_display_size(entry: &FileEntry) -> String {
+    if entry.kind() == FileKind::Dir { return String::new(); }
+    entry.size().map(atlas_core::util::display::format_size).unwrap_or_default()
+}
+
+pub(crate) fn entry_display_date(entry: &FileEntry) -> String {
+    entry.modified.map(atlas_core::util::display::format_date).unwrap_or_default()
 }
 
 impl App {
-    fn details_widths_for_pane(&self, _pane_id: TabId, zoom_scale: f32) -> crate::app::ColWidths {
-        // Atlas / Explorer architecture: column widths are stable, legible, and unconstrained
-        // by the fluctuating pane width. They do not compress aggressively on split/resize;
-        // overflowing columns clip naturally at the pane boundary with subpixel GPU scissor.
-        let mins = [
-            ROW_NAME_MIN_W * zoom_scale,
-            DETAILS_SIZE_MIN_W,
-            DETAILS_MODIFIED_MIN_W,
-            DETAILS_TYPE_MIN_W,
-        ];
-        crate::app::ColWidths {
-            name: self.col_widths.name.max(mins[0]),
-            size: self.col_widths.size.max(mins[1]),
-            modified: self.col_widths.modified.max(mins[2]),
-            type_w: self.col_widths.type_w.max(mins[3]),
-        }
-    }
-
     /// Live drag-reorder: place `dragged` at the slot the cursor is over (`local_x`
     /// is header-relative). Every position is reachable, including the last.
     /// Hysteresis prevents rapid jitter around midpoints. On a real change we snapshot
-    /// the previous visual layout so the columns smoothly glide to their new slots
-    /// without teleporting or cutting off in-flight animation.
+    /// the destination order. Presentation springs retain their own positions and
+    /// velocities; their moving slots never influence the insertion decision.
     pub(crate) fn reorder_details_live(
         &mut self,
         pane_id: TabId,
@@ -610,81 +599,62 @@ impl App {
     ) {
         self.col_dragging = Some(dragged);
         self.col_drag_x = local_x;
-        let old = self.details_column_order;
+        let mut prefs = self.details_prefs_for(pane_id);
+        let old = prefs.order;
 
         // Insertion index: check against each column's midpoint with hysteresis
-        let widths = self.details_widths_for_pane(pane_id, zoom_scale);
-        let mut x = widths.name.max(ROW_NAME_MIN_W * zoom_scale);
-        let mut passed = 0usize;
+        let available = self
+            .state
+            .tab_states
+            .get(&pane_id)
+            .map_or(800.0, |ts| ts.last_pane_width)
+            - 16.0 * zoom_scale;
+        let target = crate::ui::views::details_imm::responsive_layout(
+            available,
+            zoom_scale,
+            prefs.widths,
+            &old,
+        );
         let dragged_idx = old.iter().position(|c| *c == dragged).unwrap_or(0);
+        let mut destination = dragged_idx;
         let hysteresis = 14.0 * zoom_scale;
 
         for (i, column) in old.iter().enumerate() {
-            let w = details_column_width_raw(*column, widths.size, widths.modified, widths.type_w);
+            let Some(slot) = target.columns.iter().find(|c| c.column == *column) else {
+                continue;
+            };
+            let x = slot.x;
+            let w = slot.w;
             if *column != dragged {
                 let threshold = if dragged_idx < i {
                     x + w * 0.5 + hysteresis
                 } else {
                     x + w * 0.5 - hysteresis
                 };
-                if local_x > threshold {
-                    passed += 1;
+                if dragged_idx < i && local_x > threshold {
+                    destination = destination.max(i);
+                } else if dragged_idx > i && local_x < threshold {
+                    destination = destination.min(i);
                 }
             }
-            x += w;
         }
 
         let mut order: Vec<DetailsColumn> = old.iter().copied().filter(|c| *c != dragged).collect();
-        order.insert(passed.min(order.len()), dragged);
+        order.insert(destination.min(order.len()), dragged);
         if let Ok(order) = <[DetailsColumn; 3]>::try_from(order) {
             if order != old {
-                let new_anim = if let Some(prev) = self.details_reorder.filter(|a| a.is_alive()) {
-                    let prev_from = details_row_layout(widths, &prev.from_order, zoom_scale);
-                    let prev_to = details_row_layout(widths, &old, zoom_scale);
-                    let t = prev.progress();
-                    let lerp = |a: f32, b: f32| a + (b - a) * t;
-                    let mut current_positions = [(DetailsColumn::Size, 0.0); 3];
-                    for (slot_idx, col) in old.iter().enumerate() {
-                        let from_x = if let Some(positions) = &prev.from_positions {
-                            positions
-                                .iter()
-                                .find(|(c, _)| c == col)
-                                .map(|(_, x)| *x)
-                                .unwrap_or_else(|| {
-                                    prev_from
-                                        .columns
-                                        .iter()
-                                        .find(|f| f.column == *col)
-                                        .map_or(0.0, |f| f.x)
-                                })
-                        } else {
-                            prev_from
-                                .columns
-                                .iter()
-                                .find(|f| f.column == *col)
-                                .map_or(0.0, |f| f.x)
-                        };
-                        let to_x = prev_to
-                            .columns
-                            .iter()
-                            .find(|f| f.column == *col)
-                            .map_or(0.0, |f| f.x);
-                        current_positions[slot_idx] = (*col, lerp(from_x, to_x));
-                    }
-                    crate::app::DetailsReorderAnim::with_positions(old, current_positions)
-                } else {
-                    crate::app::DetailsReorderAnim::new(old)
-                };
-                self.details_column_order = order;
-                self.details_reorder = Some(new_anim);
+                prefs.order = order;
+                self.set_details_prefs(pane_id, prefs);
             }
         }
     }
 
     /// End a drag-reorder: drop the floating state and persist the final order.
     pub(crate) fn finish_details_reorder(&mut self) {
+        let pane = self.col_drag_pane.unwrap_or(self.state.focused_tile);
+        self.col_drag_pane = None;
         if self.col_dragging.take().is_some() {
-            self.persist_details_columns();
+            self.persist_details_columns(pane);
         }
     }
 }
@@ -694,6 +664,7 @@ impl App {
 /// continuous collapse hides the same columns in lockstep.
 fn details_header(
     layout: &DetailsRowLayout,
+    visible: Arc<Vec<usize>>,
     view: &Entity<App>,
     pane_id: TabId,
     sort_col: &SortColumn,
@@ -711,6 +682,7 @@ fn details_header(
         pane_id,
         view.downgrade(),
         layout.clone(),
+        visible,
         colors.clone(),
         font,
         font_size,
@@ -985,7 +957,7 @@ pub(crate) const ROW_PAD_X: f32 = 8.0;
 const ROW_ICON_W: f32 = 20.0;
 pub(crate) const ROW_ICON_SIZE: f32 = 16.0;
 const ROW_GAP: f32 = 8.0;
-const ROW_NAME_X: f32 = ROW_PAD_X + ROW_ICON_W + ROW_GAP;
+pub(crate) const ROW_NAME_X: f32 = ROW_PAD_X + ROW_ICON_W + ROW_GAP;
 const ROW_NAME_MIN_W: f32 = 88.0;
 pub(crate) const ROW_TEXT_Y_NUDGE: f32 = -1.0;
 /// Left inset of metadata text from its column's left edge (separator), so text
@@ -994,8 +966,11 @@ pub(crate) const ROW_TEXT_Y_NUDGE: f32 = -1.0;
 pub(crate) const CELL_PAD: f32 = 11.0;
 /// Practical minimums for responsive Details columns. Values are real pixels,
 /// like the persisted user widths.
+#[cfg(test)]
 const DETAILS_SIZE_MIN_W: f32 = 46.0;
+#[cfg(test)]
 const DETAILS_MODIFIED_MIN_W: f32 = 92.0;
+#[cfg(test)]
 const DETAILS_TYPE_MIN_W: f32 = 56.0;
 
 /// Extra virtualized rows retained on either side of the current Details viewport.
@@ -1128,10 +1103,10 @@ fn prime_details_file_icons_range(
             .filter_map(|i| {
                 let entry = ts.entries.get(*visible.get(i)?)?;
                 Some(crate::ui::file_icons::FileIconRef {
-                    path: entry.path.clone(),
-                    kind: entry.kind.clone(),
+                    path: entry.path(),
+                    kind: entry.kind().clone(),
                     extension: entry
-                        .extension
+                        .extension()
                         .as_ref()
                         .map(|s| gpui::SharedString::from(s.to_string())),
                 })
@@ -1143,6 +1118,7 @@ fn prime_details_file_icons_range(
     }
 }
 
+#[cfg(test)]
 fn details_column_width_raw(
     column: DetailsColumn,
     size_w: f32,
@@ -1162,6 +1138,7 @@ fn details_column_width_raw(
 /// to each column's flexible surplus above its minimum; below the minimum total,
 /// clipping is intentional and stable.
 #[allow(dead_code)]
+#[cfg(test)]
 fn fit_details_widths(
     widths: crate::app::ColWidths,
     available_width: Option<f32>,
@@ -1191,6 +1168,7 @@ fn fit_details_widths(
             size: values[1],
             modified: values[2],
             type_w: values[3],
+            reference_width: None,
         };
     };
 
@@ -1201,6 +1179,7 @@ fn fit_details_widths(
             size: values[1],
             modified: values[2],
             type_w: values[3],
+            reference_width: None,
         };
     }
 
@@ -1225,6 +1204,7 @@ fn fit_details_widths(
         size: values[1],
         modified: values[2],
         type_w: values[3],
+        reference_width: None,
     }
 }
 
@@ -1237,6 +1217,7 @@ fn fit_details_widths(
 /// `ROW_NAME_MIN_W`) to real pixels before combining them with `widths` — which
 /// are already real, zoom-independent pixels (user drag-resize state, like a
 /// Zed panel width). Everything in the returned layout is real pixels.
+#[cfg(test)]
 fn details_row_layout(
     widths: crate::app::ColWidths,
     order: &[DetailsColumn; 3],
@@ -1267,6 +1248,7 @@ fn details_row_layout(
 /// Interpolate column x-positions from `from` (pre-swap order or in-flight positions)
 /// to `to` (current order) by `t`, keeping `to`'s widths/order. Drives the reorder
 /// slide so headers and rows glide seamlessly to their new slots.
+#[cfg(test)]
 fn blend_layouts(
     from_positions: Option<&[(DetailsColumn, f32); 3]>,
     from: &DetailsRowLayout,
@@ -1341,19 +1323,19 @@ fn render_rename_row(
     let row_name_min_w = ROW_NAME_MIN_W * zoom_scale;
     let cell_pad = CELL_PAD * zoom_scale;
 
-    let name = entry.name.clone();
+    let name = entry.name.to_string();
     let fallback_icon = FileIcon::Builtin {
-        kind: entry.kind.clone(),
+        kind: entry.kind().clone(),
         extension: entry
-            .extension
+            .extension()
             .as_ref()
             .map(|s| gpui::SharedString::from(s.to_string())),
     };
     let meta_cells = layout.columns.iter().map(|col| {
         let text = match col.column {
-            DetailsColumn::Size => entry.display_size.clone(),
-            DetailsColumn::Modified => entry.display_date.clone(),
-            DetailsColumn::Type => entry.display_type.clone(),
+            DetailsColumn::Size => crate::ui::views::details::entry_display_size(&entry).clone(),
+            DetailsColumn::Modified => crate::ui::views::details::entry_display_date(&entry).clone(),
+            DetailsColumn::Type => crate::ui::views::details::entry_type_label(&entry).clone(),
         };
         div()
             .absolute()
@@ -1365,7 +1347,11 @@ fn render_rename_row(
             .items_center()
             .pl(px(cell_pad))
             .overflow_hidden()
-            .text_color(if selected { colors.accent_fg } else { colors.muted })
+            .text_color(if selected {
+                colors.accent_fg
+            } else {
+                colors.muted
+            })
             .child(SharedString::from(text))
     });
 
@@ -1380,7 +1366,9 @@ fn render_rename_row(
         .overflow_hidden()
         .rounded_sm()
         .cursor_pointer()
-        .when(selected, |s| s.bg(colors.accent).text_color(colors.accent_fg))
+        .when(selected, |s| {
+            s.bg(colors.accent).text_color(colors.accent_fg)
+        })
         .when(!selected && flashing, |s| s.bg(colors.accent.opacity(0.38)))
         .when(!selected && !flashing && odd, |s| s.bg(colors.stripe_bg))
         .child(
@@ -1434,6 +1422,7 @@ mod tests {
 
     fn hit_model() -> DetailsHitModel {
         DetailsHitModel {
+            presented_rows: Vec::new(),
             bounds: gpui::Bounds {
                 origin: point(px(10.0), px(100.0)),
                 size: size(px(300.0), px(96.0)),
@@ -1499,6 +1488,21 @@ mod tests {
             model.hit_entry_at_content_offset(point(px(30.0), px(200.0))),
             None
         );
+    }
+
+    #[test]
+    fn sorting_hits_the_presented_file_including_drag_and_folder_bounds() {
+        let mut model = hit_model();
+        model.presented_rows = vec![(2, 72.0), (3, 48.0), (4, 96.0), (5, 120.0)];
+        assert_eq!(model.hit_entry(point(px(24.0), px(101.0))), Some(13));
+        assert_eq!(
+            model.hit_entry_at_content_offset(point(px(24.0), px(49.0))),
+            Some(13)
+        );
+        assert_eq!(model.row_bounds(3).origin.y, px(100.0));
+        // The last painted row owns overlap, matching GPU painter order.
+        model.presented_rows = vec![(2, 48.0), (3, 50.0)];
+        assert_eq!(model.hit_entry(point(px(24.0), px(105.0))), Some(13));
     }
 
     #[test]

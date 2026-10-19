@@ -22,7 +22,10 @@ pub(crate) mod shell_menu;
 /// Windows Shell thumbnail cache access via IShellItemImageFactory.
 #[cfg(target_os = "windows")]
 pub(crate) mod shell_thumb;
+#[cfg(windows)]
+pub(crate) mod shell_file_operation;
 pub mod ui;
+pub(crate) mod ui_wake;
 
 use gpui::{px, size, App as GpuiApp, AppContext as _, KeyBinding, WindowBounds, WindowOptions};
 use gpui_component::{Root, ThemeRegistry, TitleBar};
@@ -262,8 +265,6 @@ pub fn run(
             KeyBinding::new("end", NavEnd, Some("Atlas")),
             KeyBinding::new("pageup", NavPageUp, Some("Atlas")),
             KeyBinding::new("pagedown", NavPageDown, Some("Atlas")),
-            KeyBinding::new("enter", OpenSelected, Some("Atlas")),
-            KeyBinding::new("f2", RenameSelected, Some("Atlas")),
             KeyBinding::new("ctrl-tab", NextTab, Some("Atlas")),
             KeyBinding::new("ctrl-shift-tab", PrevTab, Some("Atlas")),
             // Phase D: overlays / panels / toggles.
@@ -273,14 +274,12 @@ pub fn run(
             // Phase D: pane structure.
             KeyBinding::new("alt-tab", FocusNextPane, Some("Atlas")),
             // Phase D: history / location / refresh.
-            KeyBinding::new("f5", RefreshTab, Some("Atlas")),
             KeyBinding::new("ctrl-r", RefreshTab, Some("Atlas")),
             KeyBinding::new("ctrl-l", EditLocation, Some("Atlas")),
             KeyBinding::new("alt-up", NavParent, Some("Atlas")),
-            // Phase D: clipboard / delete.
-            KeyBinding::new("ctrl-c", gpui_component::input::Copy, Some("Atlas")),
-            KeyBinding::new("ctrl-x", gpui_component::input::Cut, Some("Atlas")),
-            KeyBinding::new("ctrl-v", gpui_component::input::Paste, Some("Atlas")),
+            // Open/rename/refresh and file clipboard keys resolve through the
+            // profile command registry, so remapping removes the old binding.
+            // Text input clipboard bindings remain owned by Input context.
         ]);
         cx.on_action(|_: &Quit, cx: &mut GpuiApp| {
             // Keep copied files available to other apps after Atlas exits.
@@ -290,6 +289,9 @@ pub fn run(
         });
 
         let window_options = WindowOptions {
+            // Windows delivers demand-driven frames through WM_PAINT. A hidden
+            // window may never receive it, so visibility cannot wait for a frame.
+            show: true,
             titlebar: Some(TitleBar::title_bar_options()),
             window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
             window_min_size: Some(size(px(900.), px(560.))),
@@ -310,6 +312,7 @@ pub fn run(
             let view = cx.new(|cx| {
                 app::App::new(handle, app_settings, app_started, initial_paths, window, cx)
             });
+            app::App::schedule_startup_frames(window, 2);
             // Autosave: persist settings/session/profiles when the app is
             // about to quit, gated by the user's autosave-session setting.
             let weak_app = view.downgrade();

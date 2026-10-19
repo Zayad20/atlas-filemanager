@@ -64,6 +64,7 @@ fn app_icon(path: &str) -> Option<&'static [u8]> {
 }
 
 phosphor_icons!(
+    "funnel",
     "house",
     "monitor",
     "file",

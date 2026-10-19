@@ -314,19 +314,21 @@ impl Render for App {
             let sidebar_visible = self.state.settings.show_sidebar && !crate::perf::skip_sidebar();
             let inspector_visible = self.state.settings.show_inspector && self.preview_visible_for_focused();
             let breadcrumb_menu_visible = self.breadcrumb_menu.is_some();
-            let visible_panes: std::collections::HashSet<_> = tree.tiles.iter().filter_map(|(_, tile)| {
-                match tile {
-                    atlas_model::layout_tree::Tile::Container(atlas_model::layout_tree::Container::Tabs(tabs)) => tabs.active,
-                    _ => None,
-                }
-            }).collect();
-            crate::ui::drag_hover::retain_visible_drop_targets(
-                &mut self.pending_drag_hover_targets,
-                |tab| matches!(tree.tiles.get(tab), Some(atlas_model::layout_tree::Tile::Pane(_)))
-                    && !closing.contains_key(&tab) && !pane_closing.contains_key(&tab),
-                |tab| visible_panes.contains(&tab),
-                sidebar_visible, inspector_visible, breadcrumb_menu_visible,
-            );
+            if !self.pending_drag_hover_targets.is_empty() {
+                let visible_panes: std::collections::HashSet<_> = tree.tiles.iter().filter_map(|(_, tile)| {
+                    match tile {
+                        atlas_model::layout_tree::Tile::Container(atlas_model::layout_tree::Container::Tabs(tabs)) => tabs.active,
+                        _ => None,
+                    }
+                }).collect();
+                crate::ui::drag_hover::retain_visible_drop_targets(
+                    &mut self.pending_drag_hover_targets,
+                    |tab| matches!(tree.tiles.get(tab), Some(atlas_model::layout_tree::Tile::Pane(_)))
+                        && !closing.contains_key(&tab) && !pane_closing.contains_key(&tab),
+                    |tab| visible_panes.contains(&tab),
+                    sidebar_visible, inspector_visible, breadcrumb_menu_visible,
+                );
+            }
         }
         self.prune_pane_animations();
         self.prune_pane_layout_animations();
@@ -340,6 +342,8 @@ impl Render for App {
         // Phase F (Windows): publish last frame's pane drop-zones to the OLE drop
         // target, then clear the vec so this frame re-populates it via on_prepaint.
         // One frame of lag is harmless — layout is stable between frames.
+        #[cfg(windows)]
+        self.publish_native_drop_snapshot();
         #[cfg(windows)]
         if let Some(dnd) = &self.dnd {
             if let Ok(mut z) = dnd.zones.lock() {
@@ -371,7 +375,7 @@ impl Render for App {
                 .tab_states
                 .get(&pane)
                 .is_some_and(|ts| ts.selection.scroll_to_selected);
-            if needs_scroll && self.scroll_selected_into_view(pane, gpui::ScrollStrategy::Center) {
+            if needs_scroll && self.scroll_selected_into_view(pane, gpui::ScrollStrategy::Nearest) {
                 if let Some(ts) = self.state.tab_states.get_mut(&pane) {
                     ts.selection.scroll_to_selected = false;
                 }
@@ -391,15 +395,15 @@ impl Render for App {
                                 .or_else(|| col.selection.selected.iter().copied().next())
                                 .and_then(|idx| col.entries.get(idx))
                         })
-                        .is_some_and(|entry| entry.path == path);
+                        .is_some_and(|entry| entry.path() == path);
                 }
-                !ts.selection.scroll_to_selected
-                    && ts
-                        .selection
-                        .keyboard_cursor
-                        .or_else(|| ts.selection.selected.iter().copied().next())
-                        .and_then(|idx| ts.entries.get(idx))
-                        .is_some_and(|entry| entry.path == path)
+                let cursor = ts
+                    .selection
+                    .keyboard_cursor
+                    .or_else(|| ts.selection.selected.iter().copied().next());
+                let tree = self.selection_is_tree(pane);
+                let cursor_path = cursor.and_then(|idx| ts.selection_path(tree, idx));
+                !ts.selection.scroll_to_selected && cursor_path.is_some_and(|p| p == path)
             });
             if ready {
                 self.pending_rename = None;
@@ -828,6 +832,7 @@ impl Render for App {
             // window root because keyboard focus often rests on untracked handles
             // (Dock panels), so per-pane listeners never see these keys.
             .capture_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
+                let editing_shortcut = this.command_shortcut_capture.is_some();
                 if this.handle_global_command_shortcut_key(ev, window, cx) {
                     cx.stop_propagation();
                     // Command shortcuts (selection.next/previous/etc.) mutate a pane's
@@ -835,7 +840,9 @@ impl Render for App {
                     // focused pane's `.cached()` file view never lands in `dirty_views`,
                     // so keyboard nav appears to "lag" until an unrelated repaint catches
                     // the accumulated cursor moves up.
-                    this.notify_pane(this.state.focused_tile, cx);
+                    if !editing_shortcut && this.ctx_menu.is_none() {
+                        this.notify_pane(this.state.focused_tile, cx);
+                    }
                     cx.notify();
                     return;
                 }
@@ -1002,6 +1009,10 @@ impl Render for App {
                     cx.notify();
                 }),
             )
+            .on_drop::<crate::ui::sidebar_bookmarks::BookmarkDrag>(cx.listener(|this, drag, window, cx| {
+                this.remove_bookmark_reference(drag, window.mouse_position());
+                cx.notify();
+            }))
             // Behind the workspace: foreground controls block caption hit testing,
             // while padding and gaps stay draggable even in very narrow splits.
             .children(
@@ -1033,6 +1044,7 @@ impl Render for App {
                     .children(inspector_container),
             )
             // Phase5: overlay layers (goto bar, palette, settings, paste conflict, …).
+            .children(self.render_hidden_operation_notices(cx))
             .children(overlays)
             // Phase C: the rubber-band selection rectangle, painted over the panes.
             .children(marquee)
@@ -1040,7 +1052,15 @@ impl Render for App {
             // mouse move/up listeners that fire even outside the pane hitbox).
             .child(rubber_layer(cx.entity()))
             .child(ctrl_scroll_layer(cx.entity()))
-            .children(self.render_drag_hover_blink(cx))
+            .child({
+                let view = cx.entity();
+                gpui::canvas(|_, _, _| {}, move |_, _, _, cx| {
+                    if !view.read(cx).view_scroll_pending.is_empty() {
+                        view.update(cx, |this, cx| this.apply_view_scroll(cx));
+                    }
+                }).absolute().size(px(0.0))
+            })
+            .children(self.render_drag_hover_blink(window, cx))
             .child(drag_hover_layer(cx.entity()))
             // Floating glass search pill (Figma "Window/Search Global"), bottom-center.
             .children(search_pill)
@@ -1071,7 +1091,7 @@ pub(crate) fn ctrl_scroll(
     cx.stop_propagation();
     let dy = match ev.delta {
         gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
-        gpui::ScrollDelta::Lines(l) => l.y,
+        gpui::ScrollDelta::Lines(l) | gpui::ScrollDelta::PreciseLines(l) => l.y,
     };
     if dy == 0.0 {
         return;

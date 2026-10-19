@@ -17,17 +17,23 @@ use std::path::PathBuf;
 
 pub mod crumb_strip_element;
 pub mod details;
+pub mod details_imm;
 pub mod details_element;
 pub mod details_header_element;
 pub mod details_ring;
 pub mod grid;
+pub mod grid_imm;
 pub mod grid_surface_element;
+pub mod grouped;
 pub mod list;
+pub mod list_imm;
 pub mod miller;
+pub mod miller_imm;
 mod rename;
 pub mod space_lens;
 pub mod tabs_bar_element;
 pub mod tree;
+pub mod tree_imm;
 pub mod virtual_grid;
 
 /// Shared entry click handler: double-click activates, single click selects
@@ -44,10 +50,28 @@ pub(super) fn on_entry_click(
         let (shift, ctrl) = (m.shift, m.control || m.platform);
         let activate = ev.click_count() >= 2;
         v.update(cx, |this, cx| {
+            if this.suppress_navigation_double_click(pane_id, ev.position(), ev.click_count()) { return; }
+            let activate = activate || this.state.settings.single_click_opens_folder(
+                this.state.tab_states.get(&pane_id).and_then(|tab| tab.entries.get(entry_idx))
+                    .is_some_and(|entry| entry.kind() == atlas_model::file_entry::FileKind::Dir), ev.click_count(), shift || ctrl);
             if this.rename_edit.is_some() {
                 this.commit_rename(cx);
             }
+            if let Some(state) = this.state.tab_states.get_mut(&pane_id) {
+                let selected = state.selection.selected.contains(&entry_idx) && state.selection.selected.len() == 1;
+                let slow = state.selection.slow_rename_click(entry_idx, std::time::Instant::now(), !activate && !shift && !ctrl);
+                if slow && selected {
+                    if let Some(entry) = state.entries.get(entry_idx) {
+                        this.pending_rename = Some((pane_id, entry.path(), false));
+                    }
+                }
+            }
             if activate {
+                if ev.click_count() == 1 {
+                    this.recent_folder_navigation = Some(crate::ui::click_navigation::NavigationClick {
+                        pane: pane_id, origin: ev.position(), at: std::time::Instant::now(),
+                    });
+                }
                 this.process_actions(vec![Action::Activate {
                     tile: pane_id,
                     idx: entry_idx,
@@ -76,8 +100,17 @@ pub(super) fn on_pane_rubber_mouse_down(
             ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift,
         );
         rubber_view.update(cx, |this, cx| {
+            if this.suppress_navigation_double_click(pane_id, ev.position, ev.click_count) { return; }
             if this.rename_edit.is_some() {
                 this.commit_rename(cx);
+            }
+            if ev.click_count >= 2 && !additive {
+                this.rubber = None;
+                this.pending_folder_click = None;
+                this.activate_tab(pane_id);
+                this.process_actions([Action::NavigateUp(pane_id)]);
+                this.notify_pane(pane_id, cx);
+                return;
             }
             this.begin_rubber(pane_id, pos, additive);
             cx.notify();
@@ -216,6 +249,46 @@ pub(super) fn pane_background_interactions(
         .on_scroll_wheel(move |ev, window, cx| ctrl_scroll(ev, pane_id, &scroll_view, window, cx))
 }
 
+/// Data shown by the per-item hover tooltip.
+pub(super) type EntryTooltip = (
+    String,
+    PathBuf,
+    bool,
+    Option<u64>,
+    Option<std::time::SystemTime>,
+);
+
+/// Hover tooltip for a canvas row/cell, hosted in a transparent sibling overlay
+/// keyed by the hovered item. gpui only retargets a tooltip when its element id
+/// changes; re-keying the *content's* ancestor instead changes the global id of
+/// every element beneath it and resets all their `use_keyed_state` (checkbox pop,
+/// FLIP, presence, disclosure) on each hover change — the selection checkboxes
+/// then restart their pop animation every time the mouse crosses a row.
+pub(super) fn hover_tooltip_overlay(
+    scope: &'static str,
+    pane_id: TabId,
+    target: usize,
+    data: EntryTooltip,
+) -> gpui::AnyElement {
+    let (name, path, is_dir, size, modified) = data;
+    gpui::div()
+        .id(gpui::SharedString::from(format!("{scope}-tip-{}-{target}", pane_id.0)))
+        .absolute()
+        .inset_0()
+        .tooltip(move |window, cx| {
+            crate::ui::tooltips::entry_hover_tooltip(
+                name.clone(),
+                path.clone(),
+                is_dir,
+                size,
+                modified,
+                window,
+                cx,
+            )
+        })
+        .into_any_element()
+}
+
 pub(super) fn should_suppress_loading(location: &Location) -> bool {
     matches!(location, Location::Directory(_))
 }
@@ -248,7 +321,10 @@ impl App {
             } else {
                 error.clone()
             }),
-            _ => Some(empty_message),
+            _ => Some(if self.state.tab_states.get(&pane_id).is_some_and(|state|
+                !state.entries.is_empty() || state.has_excluded_items) {
+                rust_i18n::t!("view_all_items_hidden").into_owned()
+            } else { empty_message }),
         }
     }
 }

@@ -28,7 +28,6 @@ use std::ops::Range;
 pub(crate) const GRID_GAP: f32 = 16.0;
 pub(crate) const GRID_PAD: f32 = 12.0;
 pub(crate) const GRID_ICON_AREA: f32 = 0.72;
-pub(crate) const GRID_PREVIEW_MAX: f32 = 0.70;
 pub(crate) const GRID_TEXTURE_ICON_MAX: f32 = 0.66;
 pub(crate) const GRID_BUILTIN_ICON: f32 = 0.54;
 pub(crate) const GRID_LABEL_H: f32 = 32.0;
@@ -66,7 +65,7 @@ impl App {
         };
         let font_size = window.text_style().font_size.to_pixels(window.rem_size());
         let row_font = window.text_style().font();
-        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border, _header_bg);
+        let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border, _header_bg, cx);
         // `thumb` stays in rem units (same meaning as before the zoom refactor) —
         // it flows into `render_cell`/`FileIcon::element`, which resolve it via
         // `rem_px()`. The virtualization math below runs against real measured
@@ -151,13 +150,14 @@ impl App {
             };
             let cell_h_px = thumb_px * GRID_ICON_AREA + GRID_LABEL_H * zoom_scale;
             let pitch = cell_h_px + grid_gap_px;
+            base_scroll.set_line_scroll_height(px(pitch));
             let rows = count.div_ceil(cols);
             let content_h = if rows == 0 {
                 0.0
             } else {
                 grid_pad_px * 2.0 + rows as f32 * pitch - grid_gap_px
             };
-            let max_scroll = (content_h - viewport_h).max(0.0);
+            let max_scroll = self.file_scroll_max(content_h, viewport_h);
             if scroll_y > max_scroll {
                 let offset = base_scroll.offset();
                 base_scroll.set_offset(gpui::point(offset.x, gpui::px(-max_scroll)));
@@ -242,13 +242,13 @@ impl App {
                             return div().into_any_element();
                         };
                         let file_icon = app.file_icon_for_entry(
-                            &entry.path,
-                            &entry.kind,
-                            entry.extension.as_deref(),
+                            &entry.path(),
+                            &entry.kind(),
+                            entry.extension().as_deref(),
                         );
-                        let flashing = matches!(entry.kind, FileKind::Dir)
+                        let flashing = matches!(entry.kind(), FileKind::Dir)
                             && app.drag_hover.blink_id.as_ref()
-                                == Some(&DragHoverId::Folder(pane_id, entry.path.clone()));
+                                == Some(&DragHoverId::Folder(pane_id, entry.path()));
                         let rename_input =
                             crate::ui::views::rename::active_input(app, pane_id, entry_idx);
                         let selected = ts.selection.selected.contains(&entry_idx);
@@ -269,6 +269,7 @@ impl App {
                             flashing,
                             record_rects: true,
                             rename_input,
+                            cut: app.state.system_cut_paths.contains(&entry.path()),
                             is_animating,
                             dimmed: crate::ui::views::rename::dim_other_entry(
                                 app, pane_id, entry_idx,
@@ -349,10 +350,10 @@ impl App {
                         .and_then(|ts| ts.entries.get(entry_idx))
                         .map(|entry| {
                             (
-                                entry.name.clone(),
-                                entry.path.clone(),
-                                matches!(entry.kind, FileKind::Dir),
-                                entry.size,
+                                entry.name.to_string(),
+                                entry.path(),
+                                matches!(entry.kind(), FileKind::Dir),
+                                entry.size(),
                                 entry.modified,
                             )
                         })
@@ -463,7 +464,7 @@ impl App {
         .into_any_element()
     }
 
-    fn prepare_grid_visible(&mut self, pane_id: TabId, range: Range<usize>) {
+    pub(crate) fn prepare_grid_visible(&mut self, pane_id: TabId, range: Range<usize>) {
         let windows_theme = crate::ui::icons::is_windows_theme(&self.state.profiles.active().theme);
         let (to_request, to_request_ext, to_request_shell, request_folder_icon, all_visible) = {
             let Some(ts) = self.state.tab_states.get(&pane_id) else {
@@ -486,12 +487,12 @@ impl App {
                 let Some(entry) = ts.entries.get(entry_idx) else {
                     continue;
                 };
-                if entry.kind == FileKind::Dir {
+                if entry.kind() == FileKind::Dir {
                     request_folder_icon |= windows_theme;
                     continue;
                 }
 
-                if entry.kind != FileKind::File {
+                if entry.kind() != FileKind::File {
                     continue;
                 }
 
@@ -499,33 +500,33 @@ impl App {
                 #[cfg(target_os = "windows")]
                 let shell_thumbable = !thumbable
                     && entry
-                        .extension
+                        .extension()
                         .as_deref()
                         .is_some_and(is_windows_shell_thumbnail_ext);
                 #[cfg(not(target_os = "windows"))]
                 let shell_thumbable = false;
 
                 if thumbable {
-                    all_visible.push(entry.path.clone());
-                    if !self.thumb_textures.contains_key(&entry.path) {
-                        imgs.push(entry.path.clone());
+                    all_visible.push(entry.path());
+                    if !self.thumb_textures.contains_key(&entry.path()) {
+                        imgs.push(entry.path());
                     }
                 } else if shell_thumbable {
-                    all_visible.push(entry.path.clone());
-                    if !self.thumb_textures.contains_key(&entry.path) {
-                        shell_paths.push((entry.path.clone(), false));
+                    all_visible.push(entry.path());
+                    if !self.thumb_textures.contains_key(&entry.path()) {
+                        shell_paths.push((entry.path(), false));
                     }
-                } else if self.thumb_textures.contains_key(&entry.path) {
-                    all_visible.push(entry.path.clone());
+                } else if self.thumb_textures.contains_key(&entry.path()) {
+                    all_visible.push(entry.path());
                 } else {
-                    let ext_cmd = entry.extension.as_deref().and_then(|ext| {
+                    let ext_cmd = entry.extension().as_deref().and_then(|ext| {
                         self.ext_registry
                             .thumbnailer_for(ext)
                             .map(|cmd| (cmd.command.run.clone(), cmd.tools))
                     });
                     if let Some((run, tools)) = ext_cmd {
-                        all_visible.push(entry.path.clone());
-                        exts.push((entry.path.clone(), run, tools));
+                        all_visible.push(entry.path());
+                        exts.push((entry.path(), run, tools));
                     }
                 }
             }
@@ -588,37 +589,10 @@ mod tests {
     }
 }
 
-/// Extensions worth decoding into a grid thumbnail.
-fn is_image_ext(ext: &str) -> bool {
-    atlas_model::preview_cache::is_image_ext(ext)
-}
-
-fn is_video_ext(ext: &str) -> bool {
-    matches!(
-        ext.to_ascii_lowercase().as_str(),
-        "3gp"
-            | "asf"
-            | "avi"
-            | "flv"
-            | "m2ts"
-            | "m4v"
-            | "mkv"
-            | "mov"
-            | "mp4"
-            | "mpeg"
-            | "mpg"
-            | "mts"
-            | "ts"
-            | "vob"
-            | "webm"
-            | "wmv"
-    )
-}
-
 /// Whether this entry should get a downscaled thumbnail (an image or audio file).
 fn is_thumbnailable(entry: &FileEntry) -> bool {
-    matches!(entry.kind, FileKind::File)
-        && entry.extension.as_deref().is_some_and(|e| {
+    matches!(entry.kind(), FileKind::File)
+        && entry.extension().as_deref().is_some_and(|e| {
             atlas_model::preview_cache::is_image_ext(e)
                 || atlas_model::preview_cache::is_audio_ext(e)
         })
@@ -686,6 +660,7 @@ struct GridCellProps<'a> {
     rename_input: Option<gpui::Entity<gpui_component::input::InputState>>,
     is_animating: bool,
     dimmed: bool,
+    cut: bool,
     window: &'a mut Window,
 }
 
@@ -712,9 +687,10 @@ fn render_cell(props: GridCellProps, cx: &gpui::App) -> AnyElement {
         rename_input,
         is_animating,
         dimmed,
+        cut,
         window,
     } = props;
-    let name = entry.name.clone();
+    let name = entry.name.to_string();
     let font_size = window.rem_size() * 0.75;
     v_flex()
         .id(("cell", entry_idx))
@@ -727,7 +703,7 @@ fn render_cell(props: GridCellProps, cx: &gpui::App) -> AnyElement {
         .items_center()
         .relative()
         .rounded_md()
-        .when(dimmed, |s| s.opacity(0.45))
+        .opacity((if cut { 0.5 } else { 1.0 }) * if dimmed { 0.45 } else { 1.0 })
         .cursor_pointer()
         .when(selected, |s| s.bg(accent).text_color(accent_fg))
         .when(flashing && !selected, |s| s.bg(accent.opacity(0.38)))
@@ -754,28 +730,21 @@ fn render_cell(props: GridCellProps, cx: &gpui::App) -> AnyElement {
                 .justify_center();
             match file_icon {
                 FileIcon::PreviewTexture(tex) => {
-                    let has_media_border = entry
-                        .extension
-                        .as_deref()
-                        .is_some_and(|ext| is_image_ext(ext) || is_video_ext(ext));
                     let natural = tex.size(0);
                     let natural_w = (i32::from(natural.width).max(1)) as f32;
                     let natural_h = (i32::from(natural.height).max(1)) as f32;
-                    let scale = (thumb / natural_w)
-                        .min((thumb * GRID_PREVIEW_MAX) / natural_h)
-                        .min(1.0);
-                    let render_w = natural_w * scale;
-                    let render_h = natural_h * scale;
+                    let (render_w, render_h) = crate::ui::thumbs::thumbnail_size(
+                        natural_w, natural_h, thumb, thumb * GRID_ICON_AREA);
+                    let outline = border.opacity(if cx.theme().is_dark() { 0.25 } else { 0.18 });
                     area.child(
                         div()
+                            .relative()
                             .w(crate::ui::rem_px(render_w))
                             .h(crate::ui::rem_px(render_h))
-                            .rounded(px(crate::ui::RADIUS))
-                            .when(has_media_border, |s| {
-                                s.border_1().border_color(border.opacity(0.55))
-                            })
+                            .rounded(px(3.0))
                             .overflow_hidden()
-                            .child(img(tex).size_full()),
+                            .child(img(tex).size_full())
+                            .child(div().absolute().inset_0().border_1().border_color(outline).rounded(px(3.0))),
                     )
                 }
                 FileIcon::IconTexture(tex) => {
@@ -846,14 +815,14 @@ fn render_cell(props: GridCellProps, cx: &gpui::App) -> AnyElement {
                 view.clone(),
                 pane_id,
                 entry_idx,
-                entry.path.clone(),
+                entry.path(),
             )
         })
         .tooltip({
-            let tip_name = entry.name.clone();
-            let tip_path = entry.path.clone();
-            let is_dir = matches!(entry.kind, FileKind::Dir);
-            let size = entry.size;
+            let tip_name = entry.name.to_string();
+            let tip_path = entry.path();
+            let is_dir = matches!(entry.kind(), FileKind::Dir);
+            let size = entry.size();
             let modified = entry.modified;
             move |window, cx| {
                 crate::ui::tooltips::entry_hover_tooltip(
@@ -867,8 +836,8 @@ fn render_cell(props: GridCellProps, cx: &gpui::App) -> AnyElement {
                 )
             }
         })
-        .when(matches!(entry.kind, FileKind::Dir) && !is_animating, |s| {
-            crate::ui::views::folder_drop_target(s, view, pane_id, entry.path.clone())
+        .when(matches!(entry.kind(), FileKind::Dir) && !is_animating, |s| {
+            crate::ui::views::folder_drop_target(s, view, pane_id, entry.path())
         })
         .into_any_element()
 }

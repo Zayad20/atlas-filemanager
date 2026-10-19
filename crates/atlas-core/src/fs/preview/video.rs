@@ -9,6 +9,7 @@ use atlas_model::preview_cache::PreviewResult;
 use super::MAX_IMAGE_PREVIEW_EDGE;
 
 pub(super) fn preview_video(path: &Path) -> PreviewResult {
+    if super::is_cloud_placeholder(path) { return super::offline_preview(); }
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
         Err(e) => return PreviewResult::Error(e.to_string()),
@@ -22,36 +23,7 @@ pub(super) fn preview_video(path: &Path) -> PreviewResult {
     let png_path = output_prefix.with_extension("png");
 
     let mut cmd = Command::new("ffmpeg");
-    cmd.args([
-        "-y",
-        "-ss",
-        "0.5",
-        "-i",
-    ])
-    .arg(path)
-    .args([
-        "-frames:v",
-        "1",
-        "-vf",
-        "scale=min(1600\\,iw):-1",
-        "-update",
-        "1",
-    ])
-    .arg(&png_path);
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
-    }
-
-    let mut ok = cmd.output().map(|out| out.status.success()).unwrap_or(false);
-    if !ok {
-        let mut retry = Command::new("ffmpeg");
-        retry.args([
-            "-y",
-            "-i",
-        ])
+    cmd.args(["-y", "-ss", "0.5", "-i"])
         .arg(path)
         .args([
             "-frames:v",
@@ -63,12 +35,40 @@ pub(super) fn preview_video(path: &Path) -> PreviewResult {
         ])
         .arg(&png_path);
 
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+
+    let mut ok = cmd
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false);
+    if !ok {
+        let mut retry = Command::new("ffmpeg");
+        retry
+            .args(["-y", "-i"])
+            .arg(path)
+            .args([
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=min(1600\\,iw):-1",
+                "-update",
+                "1",
+            ])
+            .arg(&png_path);
+
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
             retry.creation_flags(0x0800_0000);
         }
-        ok = retry.output().map(|out| out.status.success()).unwrap_or(false);
+        ok = retry
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false);
     }
     if ok {
         if let Ok(img) = image::open(&png_path) {
