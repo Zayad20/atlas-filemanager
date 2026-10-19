@@ -133,8 +133,17 @@ impl App {
                 .catalog
                 .get(session.selected)
                 .is_some_and(|option| !option.available());
-        let available_height =
-            f32::from(viewport.height) - if package_detail { 370. } else { 265. };
+        let video_detail = session.catalog.get(session.selected).is_some_and(|option| {
+            option.target.extension == "mp4" && option.engines.contains(&"Windows")
+        });
+        let available_height = f32::from(viewport.height)
+            - if package_detail {
+                370.
+            } else if video_detail {
+                320.
+            } else {
+                265.
+            };
         let diameter = available_height
             .min(f32::from(viewport.width) - 64.)
             .clamp(190., 360.);
@@ -695,6 +704,8 @@ impl App {
             };
             let note = if extension == "flac" && option.engines.contains(&"Atlas") {
                 Some("convert_flac_note")
+            } else if extension == "mp4" && option.engines.contains(&"Windows") {
+                Some("convert_windows_video_note")
             } else if option.engines.contains(&"Windows") {
                 Some("convert_windows_audio_note")
             } else if has_source(&["srt", "vtt", "ass", "ssa", "lrc", "smi", "ttml", "dfxp"]) {

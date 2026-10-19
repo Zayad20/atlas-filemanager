@@ -1,11 +1,13 @@
 //! Atlas's own local transcoder over the Windows Media Foundation APIs.
 //! There is no FFmpeg code or binary. MF DLLs are loaded from System32 on demand
 //! so Windows N / missing media components never prevent Atlas from starting.
+mod video;
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, Ordering};
+pub use video::convert_video;
 use windows::core::{Error, Interface, GUID, HRESULT, PCWSTR};
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::{
@@ -21,6 +23,7 @@ pub struct AudioCapabilities {
     pub wave: bool,
     pub mp3: bool,
     pub aac: bool,
+    pub h264: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -117,15 +120,23 @@ impl Api {
         }
     }
     fn encoder(&self, subtype: GUID) -> windows::core::Result<bool> {
+        self.encoder_for(MFMediaType_Audio, subtype)
+    }
+
+    fn encoder_for(&self, major: GUID, subtype: GUID) -> windows::core::Result<bool> {
         let output = MFT_REGISTER_TYPE_INFO {
-            guidMajorType: MFMediaType_Audio,
+            guidMajorType: major,
             guidSubtype: subtype,
         };
         let mut activations: *mut *mut c_void = null_mut();
         let mut count = 0;
         unsafe {
             (self.enum_mft)(
-                MFT_CATEGORY_AUDIO_ENCODER,
+                if major == MFMediaType_Audio {
+                    MFT_CATEGORY_AUDIO_ENCODER
+                } else {
+                    MFT_CATEGORY_VIDEO_ENCODER
+                },
                 (MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_SORTANDFILTER.0) as u32,
                 std::ptr::null(),
                 &output,
@@ -195,6 +206,10 @@ pub fn audio_capabilities() -> AudioCapabilities {
         wave: true,
         mp3: session.api.encoder(MFAudioFormat_MP3).unwrap_or(false),
         aac: session.api.encoder(MFAudioFormat_AAC).unwrap_or(false),
+        h264: session
+            .api
+            .encoder_for(MFMediaType_Video, MFVideoFormat_H264)
+            .unwrap_or(false),
     }
 }
 

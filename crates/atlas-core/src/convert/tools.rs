@@ -62,6 +62,7 @@ pub struct SystemAudio {
     pub wave: bool,
     pub mp3: bool,
     pub aac: bool,
+    pub h264: bool,
 }
 
 impl SystemAudio {
@@ -148,6 +149,7 @@ impl Tools {
                 wave: audio.wave,
                 mp3: audio.mp3,
                 aac: audio.aac,
+                h264: audio.h264,
             };
         }
         for tool in Tool::ALL {

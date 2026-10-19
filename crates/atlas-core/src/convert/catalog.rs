@@ -39,6 +39,7 @@ pub enum Backend {
     Contacts,
     Book,
     SystemAudio,
+    SystemVideo,
     External(Tool),
 }
 impl Backend {
@@ -46,13 +47,14 @@ impl Backend {
         match self {
             Self::External(t) => tools.has(t),
             Self::SystemAudio => tools.1.wave,
+            Self::SystemVideo => tools.1.h264,
             _ => true,
         }
     }
     pub fn name(self) -> &'static str {
         match self {
             Self::External(t) => t.name(),
-            Self::SystemAudio => "Windows",
+            Self::SystemAudio | Self::SystemVideo => "Windows",
             _ => "Atlas",
         }
     }
@@ -180,6 +182,9 @@ pub fn route(source: &Path, target: &Format, tools: &Tools) -> Option<Backend> {
         "zip", "7z", "rar", "tar", "tar.gz", "tar.bz2", "tar.xz", "gz", "bz2", "xz", "cab", "iso",
     ];
     let external = |t| Some(Backend::External(t));
+    if tools.1.h264 && ["mov", "m4v", "avi", "wmv", "3gp"].contains(&src) && dst == "mp4" {
+        return Some(Backend::SystemVideo);
+    }
     if ["wav", "aiff", "aifc", "au"].contains(&src) && dst == "flac" {
         return Some(Backend::Flac);
     }

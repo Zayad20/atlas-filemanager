@@ -10,14 +10,19 @@ pub(crate) fn install(view: &Entity<App>, window: &mut Window, cx: &mut gpui::Ap
     std::fs::create_dir_all(&directory).unwrap();
     let audio = std::env::var_os("ATLAS_CONVERSION_LAB_AUDIO").is_some();
     let package = std::env::var_os("ATLAS_CONVERSION_LAB_PACKAGE").is_some();
+    let video = std::env::var_os("ATLAS_CONVERSION_LAB_VIDEO").map(PathBuf::from);
     let source = directory.join(if package {
         "Documento.rst"
+    } else if video.is_some() {
+        "Clip.mov"
     } else if audio {
         "Tone.wav"
     } else {
         "Sample.png"
     });
-    if package {
+    if let Some(video) = video {
+        std::fs::copy(video, &source).unwrap();
+    } else if package {
         std::fs::write(&source, "Documento\n=========\n\nTexto para convertir.\n").unwrap();
     } else if audio {
         // Explicit 16-bit PCM WAV fixture; keep the validation encoder unrelated
@@ -84,6 +89,12 @@ fn frame(
         return package_frame(view, directory, step, window, cx);
     }
     if step == 12 {
+        if std::env::var_os("ATLAS_CONVERSION_LAB_VIDEO").is_some() {
+            let session = view.read(cx).converter.as_ref().unwrap();
+            assert!(matches!(session.phase, super::Phase::Choosing));
+            assert_eq!(session.options()[0].engines, ["Windows"]);
+            assert_eq!(session.options()[0].target.extension, "mp4");
+        }
         if std::env::var_os("ATLAS_CONVERSION_LAB_AUDIO").is_some() {
             let session = view.read(cx).converter.as_ref().unwrap();
             if matches!(session.phase, super::Phase::Choosing) {
@@ -167,7 +178,12 @@ fn frame(
         if let super::Phase::Finished(report) = &session.phase {
             assert!(report.errors().is_empty(), "{:?}", report.errors());
             assert_eq!(report.outputs().len(), 1);
-            let message = if std::env::var_os("ATLAS_CONVERSION_LAB_AUDIO").is_some() {
+            let message = if std::env::var_os("ATLAS_CONVERSION_LAB_VIDEO").is_some() {
+                let bytes = std::fs::read(&report.outputs()[0]).unwrap();
+                assert_eq!(&bytes[4..8], b"ftyp");
+                assert!(bytes.len() > 1000);
+                "Native window rendered at 1280x800 and 900x560. MOV to MP4 completed through Windows; no external engine was selected.\n"
+            } else if std::env::var_os("ATLAS_CONVERSION_LAB_AUDIO").is_some() {
                 assert!(std::fs::metadata(&report.outputs()[0]).unwrap().len() > 500);
                 "Native window rendered at 1280x800 and 900x560. WAV to MP3 completed through Windows; no external engine was selected.\n"
             } else {

@@ -10,6 +10,8 @@ mod process;
 mod subtitles;
 mod tools;
 mod vector;
+#[cfg(all(test, target_os = "windows"))]
+mod video_tests;
 
 pub use catalog::{options, Backend, ConversionOption, Format, FORMATS};
 pub use tools::{Tool, Tools};
@@ -222,6 +224,19 @@ fn execute_one(command: &Command, plan: &Plan, cancel: &AtomicBool) -> Result<Pa
         Backend::Vector => vector::convert(command, &plan.settings, &output)?,
         Backend::Contacts => contacts::convert(command, &output)?,
         Backend::Book => books::convert(command, &output)?,
+        Backend::SystemVideo => {
+            #[cfg(target_os = "windows")]
+            atlas_win_space::media::convert_video(
+                &command.source,
+                &output,
+                plan.settings.quality,
+                plan.settings.max_edge,
+                cancel,
+            )
+            .map_err(anyhow::Error::msg)?;
+            #[cfg(not(target_os = "windows"))]
+            bail!("Windows video conversion is unavailable on this platform");
+        }
         Backend::SystemAudio => {
             #[cfg(target_os = "windows")]
             {
