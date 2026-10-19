@@ -280,6 +280,30 @@ fn plan_rejects_directories_missing_engines_and_no_op_batches() {
 use std::fs::File;
 
 #[test]
+fn catalog_does_not_offer_unsupported_legacy_doc_or_calibre_html_routes() {
+    let mut tools = Tools::default();
+    for tool in Tool::ALL {
+        tools.0.insert(tool, PathBuf::from(tool.executable()));
+    }
+    let legacy = options(&[PathBuf::from("legacy.doc")], &tools);
+    assert!(!legacy
+        .iter()
+        .any(|o| ["md", "epub"].contains(&o.target.extension)));
+    assert!(legacy.iter().any(|o| o.target.extension == "pdf"));
+    assert!(!options(&[PathBuf::from("book.mobi")], &tools)
+        .iter()
+        .any(|o| o.target.extension == "html"));
+    let epub = options(&[PathBuf::from("book.epub")], &tools);
+    assert_eq!(
+        epub.iter()
+            .find(|o| o.target.extension == "html")
+            .unwrap()
+            .engines,
+        ["Pandoc"]
+    );
+}
+
+#[test]
 fn native_pdf_has_valid_cross_references_and_a_lossless_rgb_image_stream() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("photo.png");

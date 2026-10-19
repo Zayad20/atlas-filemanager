@@ -217,7 +217,7 @@ pub fn route(source: &Path, target: &Format, tools: &Tools) -> Option<Backend> {
         return external(Tool::Office);
     }
     if ["mobi", "azw", "azw3", "fb2", "epub"].contains(&src)
-        && ["mobi", "azw3", "fb2", "epub", "pdf", "docx", "txt", "html"].contains(&dst)
+        && ["mobi", "azw3", "fb2", "epub", "pdf", "docx", "txt"].contains(&dst)
     {
         if tools.has(Tool::Calibre)
             || !["epub", "fb2"].contains(&src)
@@ -229,6 +229,10 @@ pub fn route(source: &Path, target: &Format, tools: &Tools) -> Option<Backend> {
     if documents.contains(&src)
         && ["pdf", "docx", "odt", "rtf", "txt", "html", "md", "epub"].contains(&dst)
     {
+        // Pandoc cannot read legacy DOC; those files stay on Office's exports.
+        if src == "doc" && !["pdf", "docx", "odt", "rtf", "txt", "html"].contains(&dst) {
+            return None;
+        }
         if dst == "pdf" && src == "md" {
             return external(Tool::Office);
         }
