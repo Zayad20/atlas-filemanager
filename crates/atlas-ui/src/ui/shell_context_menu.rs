@@ -85,6 +85,7 @@ pub(crate) struct CtxMenuState {
 /// the root `Atlas` key context handles against the current selection.
 #[derive(Clone, Copy, PartialEq)]
 enum AtlasCmd {
+    Convert,
     Open,
     Rename,
     Copy,
@@ -106,6 +107,7 @@ enum AtlasCmd {
 impl AtlasCmd {
     fn label(self) -> String {
         match self {
+            Self::Convert => rust_i18n::t!("convert_title").to_string(),
             Self::Open => rust_i18n::t!("root_open").to_string(),
             Self::Rename => rust_i18n::t!("root_rename").to_string(),
             Self::Copy => rust_i18n::t!("root_copy").to_string(),
@@ -126,6 +128,7 @@ impl AtlasCmd {
     }
     fn icon(self) -> Option<AtlasIcon> {
         match self {
+            Self::Convert => Some(AtlasIcon::ArrowClockwise),
             Self::Open => Some(AtlasIcon::Eye),
             Self::Rename => Some(AtlasIcon::PencilSimple),
             Self::Copy => Some(AtlasIcon::Copy),
@@ -147,6 +150,7 @@ impl AtlasCmd {
 
     fn command_id(self) -> &'static str {
         match self {
+            Self::Convert => "files.convert",
             Self::Open => "selection.open",
             Self::Rename => "files.rename",
             Self::Copy => "files.copy",
@@ -170,6 +174,7 @@ impl AtlasCmd {
 /// Atlas items for normal directory views. `true` = separator follows the item.
 const ATLAS_ITEMS: &[(AtlasCmd, bool)] = &[
     (AtlasCmd::Open, false),
+    (AtlasCmd::Convert, false),
     (AtlasCmd::Rename, true),
     (AtlasCmd::Copy, false),
     (AtlasCmd::Cut, false),
@@ -1075,6 +1080,10 @@ impl App {
             .unwrap_or_default();
         self.close_ctx_menu(cx);
         match cmd {
+            AtlasCmd::Convert => {
+                if !is_archive { self.open_converter_for(menu_paths); }
+                else { self.toast_error(rust_i18n::t!("convert_local_only").into_owned()); }
+            }
             AtlasCmd::Open => self.open_cursor(),
             AtlasCmd::Rename => self.process_actions(vec![Action::RenameFocused]),
             AtlasCmd::Copy => {

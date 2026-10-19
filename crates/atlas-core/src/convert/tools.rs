@@ -1,0 +1,126 @@
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Tool {
+    Magick,
+    Ffmpeg,
+    Pandoc,
+    Office,
+    PdfText,
+    SevenZip,
+    Calibre,
+}
+
+impl Tool {
+    pub const ALL: [Self; 7] = [
+        Self::Magick,
+        Self::Ffmpeg,
+        Self::Pandoc,
+        Self::Office,
+        Self::PdfText,
+        Self::SevenZip,
+        Self::Calibre,
+    ];
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Magick => "ImageMagick",
+            Self::Ffmpeg => "FFmpeg",
+            Self::Pandoc => "Pandoc",
+            Self::Office => "LibreOffice",
+            Self::PdfText => "Poppler",
+            Self::SevenZip => "7-Zip",
+            Self::Calibre => "Calibre",
+        }
+    }
+    pub const fn executable(self) -> &'static str {
+        match self {
+            Self::Magick => "magick",
+            Self::Ffmpeg => "ffmpeg",
+            Self::Pandoc => "pandoc",
+            Self::Office => "soffice",
+            Self::PdfText => "pdftotext",
+            Self::SevenZip => "7z",
+            Self::Calibre => "ebook-convert",
+        }
+    }
+    pub const fn url(self) -> &'static str {
+        match self {
+            Self::Magick => "https://imagemagick.org/script/download.php",
+            Self::Ffmpeg => "https://ffmpeg.org/download.html",
+            Self::Pandoc => "https://pandoc.org/installing.html",
+            Self::Office => "https://www.libreoffice.org/download/download-libreoffice/",
+            Self::PdfText => "https://poppler.freedesktop.org/",
+            Self::SevenZip => "https://www.7-zip.org/",
+            Self::Calibre => "https://calibre-ebook.com/download",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Tools(pub BTreeMap<Tool, PathBuf>);
+
+impl Tools {
+    pub fn has(&self, tool: Tool) -> bool {
+        self.0.contains_key(&tool)
+    }
+    pub fn get(&self, tool: Tool) -> Option<&Path> {
+        self.0.get(&tool).map(PathBuf::as_path)
+    }
+
+    /// Filesystem-only discovery. Never launch an engine, download a payload or
+    /// enumerate recursively. The caller runs this outside the interactive lane.
+    pub fn discover() -> Self {
+        let mut directories: Vec<PathBuf> = std::env::var_os("PATH")
+            .map(|p| {
+                std::env::split_paths(&p)
+                    .filter(|p| p.is_absolute())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for root in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+            if let Some(base) = std::env::var_os(root).map(PathBuf::from) {
+                for suffix in [
+                    "LibreOffice/program",
+                    "7-Zip",
+                    "Calibre2",
+                    "Pandoc",
+                    "Programs/Pandoc",
+                    "Microsoft/WinGet/Links",
+                    "Atlas/tools",
+                ] {
+                    directories.push(base.join(suffix));
+                }
+                if let Ok(entries) = std::fs::read_dir(&base) {
+                    for entry in entries.flatten().take(512) {
+                        if entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("ImageMagick-")
+                        {
+                            directories.push(entry.path());
+                        }
+                    }
+                }
+            }
+        }
+        #[cfg(target_os = "macos")]
+        directories.extend([
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/Applications/LibreOffice.app/Contents/MacOS"),
+            PathBuf::from("/Applications/calibre.app/Contents/MacOS"),
+        ]);
+        let mut tools = Self::default();
+        for tool in Tool::ALL {
+            let executable = format!("{}{}", tool.executable(), std::env::consts::EXE_SUFFIX);
+            if let Some(path) = directories
+                .iter()
+                .map(|p| p.join(&executable))
+                .find(|p| p.is_file())
+            {
+                tools.0.insert(tool, path);
+            }
+        }
+        tools
+    }
+}

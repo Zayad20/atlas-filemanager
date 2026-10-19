@@ -21,7 +21,7 @@ fn main() {
         return;
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, not(feature = "conversion-lab")))]
     if let Err(error) = atlas_win_space::crash::install() {
         eprintln!("failed to install crash handler: {error}");
     }

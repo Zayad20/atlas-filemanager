@@ -1178,6 +1178,7 @@ impl App {
                 }
                 Action::Undo => self.undo(),
                 Action::Redo => self.redo(),
+                Action::OpenConverter => self.open_converter(),
                 Action::OpenBatchRename => {
                     let tile = self.state.focused_tile;
                     let paths: Vec<PathBuf> = self

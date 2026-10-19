@@ -210,6 +210,7 @@ pub enum Action {
     ToggleSidebar,
     ToggleSidebarCollapsed,
     OpenBatchRename,
+    OpenConverter,
     OpenSettings,
     OpenSettingsAbout,
     OpenGettingStarted,

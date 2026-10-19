@@ -29,6 +29,7 @@ mod startup;
 pub mod theme;
 
 pub struct App {
+    pub(crate) converter: Option<crate::ui::converter::Session>,
     pub(crate) mounted_volumes: Vec<(PathBuf, u32)>,
     pub(crate) preview_delay: crate::ui::preview_delay::PreviewDelay,
     pub(crate) state: AppState,

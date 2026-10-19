@@ -91,6 +91,10 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.handle_converter_key(ev) {
+            cx.notify();
+            return true;
+        }
         if self.command_shortcut_capture.is_some() {
             return self.handle_command_shortcut_key(ev);
         }
@@ -540,6 +544,7 @@ impl App {
             "edit.undo" => Some(Action::Undo),
             "edit.redo" => Some(Action::Redo),
             "edit.batch-rename" => Some(Action::OpenBatchRename),
+            "files.convert" if !archive_focused && !recycle_focused => Some(Action::OpenConverter),
             "files.rename" if !archive_focused => Some(Action::RenameFocused),
             "files.copy" | "files.cut" if !archive_focused && !recycle_focused => {
                 let paths = self.selected_paths();

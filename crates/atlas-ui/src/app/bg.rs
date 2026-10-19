@@ -566,6 +566,7 @@ impl App {
         };
         for result in results {
             match result {
+                BgResult::ConversionWake => self.drain_converter(),
                 BgResult::DirListPreview {
                     tab,
                     op_id,

@@ -25,6 +25,7 @@ pub mod breadcrumb_menu;
 pub mod chrome;
 pub mod chrome_imm;
 pub mod imm;
+pub(crate) mod converter;
 pub mod dock;
 pub mod dock_host;
 pub mod drag;

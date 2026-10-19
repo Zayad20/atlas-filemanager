@@ -82,6 +82,7 @@ icon = ["packaging/icons/atlas.ico", "packaging/icons/atlas.png"]
 ignored = ["kamadak-exif"]
 
 [features]
+conversion-lab = ["atlas-ui/conversion-lab"]
 default = ["provider-host", "rar", "sevenz"]
 dhat-heap = ["dhat"]
 # Host support for optional virtual-file-provider extensions. The rclone backend

@@ -30,6 +30,10 @@ impl App {
         // focus handle, and an active inline rename focuses its row input.
         self.sync_overlay_focus(window, cx);
 
+        if self.converter.is_some() {
+            layers.push(self.render_converter(window, cx));
+        }
+
         if self.state.overlay.show_settings {
             layers.push(self.render_settings(window, cx));
         }

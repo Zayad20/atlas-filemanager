@@ -5,6 +5,7 @@ edition = "2021"
 license = "AGPL-3.0-or-later"
 
 [features]
+conversion-lab = ["gpui/test-support", "gpui_platform/test-support"]
 default = ["provider-host"]
 # Generic host UI for optional out-of-process virtual-file providers.
 provider-host = ["atlas-core/provider-host", "atlas-model/provider-host"]

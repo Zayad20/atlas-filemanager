@@ -43,7 +43,7 @@ grep-matcher = "0.1"
 regex = "1"
 unicode-casefold = "0.2"
 jwalk = "0.8.1"
-pulldown-cmark = { version = "0.12", default-features = false }
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
 lofty = "0.22"
 resvg = "0.45"
 md-5 = "0.10"
@@ -74,6 +74,8 @@ futures-util = { version = "0.3", default-features = false, optional = true }
 sevenz-rust2 = { version = "0.21.0", optional = true }
 tempfile = "3"
 calamine = "0.26"
+# Already linked by resvg; reuse its XML parser for bounded OOXML text extraction.
+roxmltree = "0.20"
 
 [target.'cfg(windows)'.dependencies]
 atlas-win-space = { path = "../atlas-win-space" }

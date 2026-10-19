@@ -20,6 +20,8 @@ pub enum FsChange {
 }
 
 pub enum BgResult {
+    /// Payload stays in the isolated conversion session; this wakes the UI drain.
+    ConversionWake,
     WatcherDisabled(PathBuf),
     VolumeSnapshot(Vec<(PathBuf, u32)>),
     PreviewDelayElapsed { tab: TabId, request: crate::preview_cache::PreviewRequest, generation: u64 },

@@ -1,0 +1,253 @@
+use super::{Tool, Tools};
+use std::path::{Path, PathBuf};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Format {
+    pub extension: &'static str,
+    pub label: &'static str,
+}
+
+macro_rules! formats { ($($ext:literal => $label:literal),* $(,)?) => { pub const FORMATS: &[Format] = &[$(Format { extension: $ext, label: $label }),*]; }; }
+formats! {
+    "png" => "PNG", "jpg" => "JPG", "webp" => "WebP", "pdf" => "PDF",
+    "docx" => "DOCX", "txt" => "TXT", "md" => "Markdown", "html" => "HTML",
+    "epub" => "EPUB", "odt" => "ODT", "rtf" => "RTF", "pptx" => "PPTX", "odp" => "ODP",
+    "xlsx" => "XLSX", "ods" => "ODS", "csv" => "CSV", "tsv" => "TSV",
+    "json" => "JSON", "jsonl" => "JSONL", "toml" => "TOML",
+    "bmp" => "BMP", "tiff" => "TIFF", "gif" => "GIF", "ico" => "ICO", "avif" => "AVIF", "heic" => "HEIC", "jxl" => "JXL",
+    "mp3" => "MP3", "wav" => "WAV", "flac" => "FLAC", "m4a" => "M4A", "ogg" => "OGG", "opus" => "Opus", "aac" => "AAC", "aiff" => "AIFF",
+    "mp4" => "MP4", "webm" => "WebM", "mkv" => "MKV", "mov" => "MOV", "avi" => "AVI",
+    "srt" => "SRT", "vtt" => "VTT", "ass" => "ASS",
+    "zip" => "ZIP", "7z" => "7Z", "tar" => "TAR", "tar.gz" => "TAR.GZ",
+    "mobi" => "MOBI", "azw3" => "AZW3", "fb2" => "FB2",
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backend {
+    Image,
+    Data,
+    Sheet,
+    Markdown,
+    Text,
+    Archive,
+    External(Tool),
+}
+impl Backend {
+    pub fn available(self, tools: &Tools) -> bool {
+        match self {
+            Self::External(t) => tools.has(t),
+            _ => true,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::External(t) => t.name(),
+            _ => "Atlas",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ConversionOption {
+    pub target: &'static Format,
+    pub missing: Vec<Tool>,
+    pub engines: Vec<&'static str>,
+}
+impl ConversionOption {
+    pub fn available(&self) -> bool {
+        self.missing.is_empty()
+    }
+}
+
+pub fn extension(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    for extension in ["tar.gz", "tar.bz2", "tar.xz"] {
+        if name.ends_with(&format!(".{extension}")) {
+            return extension.to_owned();
+        }
+    }
+    match path
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpeg" => "jpg".into(),
+        "tif" => "tiff".into(),
+        "markdown" => "md".into(),
+        "htm" => "html".into(),
+        "ndjson" => "jsonl".into(),
+        e => e.to_owned(),
+    }
+}
+
+pub fn options(paths: &[PathBuf], tools: &Tools) -> Vec<ConversionOption> {
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    let mut result: Vec<_> = FORMATS
+        .iter()
+        .filter_map(|target| {
+            let mut missing = Vec::new();
+            let mut engines = Vec::new();
+            let mut changed = false;
+            for path in paths {
+                if extension(path) == target.extension {
+                    continue;
+                }
+                let backend = route(path, target, tools)?;
+                changed = true;
+                if !engines.contains(&backend.name()) {
+                    engines.push(backend.name());
+                }
+                if let Backend::External(tool) = backend {
+                    if !tools.has(tool) && !missing.contains(&tool) {
+                        missing.push(tool);
+                    }
+                }
+            }
+            changed.then_some(ConversionOption {
+                target,
+                missing,
+                engines,
+            })
+        })
+        .collect();
+    let source = extension(&paths[0]);
+    let preferred: &[&str] = match source.as_str() {
+        "pdf" => &["docx", "jpg", "png", "txt", "md", "html", "tiff"],
+        "mp4" | "mov" | "webm" | "mkv" | "avi" => &["mp4", "webm", "gif", "mp3"],
+        "mp3" | "wav" | "m4a" | "flac" | "ogg" | "opus" => &["mp3", "wav", "flac", "m4a"],
+        "xlsx" | "xls" | "ods" => &["xlsx", "csv", "json", "pdf"],
+        "docx" | "doc" | "odt" | "md" | "txt" | "rtf" | "epub" => &["pdf", "docx", "txt", "html"],
+        _ => &[],
+    };
+    result.sort_by_key(|option| {
+        preferred
+            .iter()
+            .position(|extension| *extension == option.target.extension)
+            .unwrap_or(preferred.len())
+    });
+    result
+}
+
+pub fn route(source: &Path, target: &Format, tools: &Tools) -> Option<Backend> {
+    let input = extension(source);
+    let src = input.as_str();
+    let dst = target.extension;
+    let images = ["png", "jpg", "webp", "bmp", "tiff", "gif", "ico"];
+    let all_images = [
+        "png", "jpg", "webp", "bmp", "tiff", "gif", "ico", "avif", "heic", "heif", "jxl", "svg",
+        "svgz", "psd", "psb", "tga", "dds", "ppm", "pgm", "pbm", "exr", "hdr", "cr2", "cr3", "nef",
+        "arw", "dng", "orf", "raf", "rw2", "xcf", "jp2", "j2k", "pcx",
+    ];
+    let audio = [
+        "mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "aiff", "aif", "wma", "amr", "ape",
+        "ac3", "alac", "wv",
+    ];
+    let video = [
+        "mp4", "webm", "mkv", "mov", "avi", "wmv", "flv", "mpeg", "mpg", "m4v", "ts", "m2ts",
+        "3gp", "ogv", "vob",
+    ];
+    let documents = [
+        "doc", "docx", "docm", "dotx", "odt", "rtf", "txt", "html", "md", "epub", "rst", "tex",
+        "org", "fb2",
+    ];
+    let office_docs = ["doc", "docx", "docm", "dotx", "odt", "rtf", "txt", "html"];
+    let sheets = ["xlsx", "xlsm", "xls", "xlsb", "ods", "csv", "tsv"];
+    let slides = ["ppt", "pptx", "pptm", "ppsx", "odp"];
+    let archives = [
+        "zip", "7z", "rar", "tar", "tar.gz", "tar.bz2", "tar.xz", "gz", "bz2", "xz", "cab", "iso",
+    ];
+    let external = |t| Some(Backend::External(t));
+    if images.contains(&src) && (images.contains(&dst) || dst == "pdf") {
+        // Native still-image conversion is tiny; animated/multi-page inputs go
+        // through ImageMagick so frames/pages aren't silently discarded.
+        if matches!(src, "gif" | "tiff") {
+            return external(Tool::Magick);
+        }
+        return Some(Backend::Image);
+    }
+    if all_images.contains(&src) && (all_images.contains(&dst) || dst == "pdf") {
+        return external(Tool::Magick);
+    }
+    if (audio.contains(&src) && audio.contains(&dst))
+        || (video.contains(&src) && (video.contains(&dst) || audio.contains(&dst) || dst == "gif"))
+    {
+        return external(Tool::Ffmpeg);
+    }
+    if ["srt", "vtt", "ass", "ssa", "smi", "lrc"].contains(&src)
+        && ["srt", "vtt", "ass"].contains(&dst)
+    {
+        return external(Tool::Ffmpeg);
+    }
+    if ["json", "jsonl", "toml", "csv", "tsv"].contains(&src)
+        && ["json", "jsonl", "toml", "csv", "tsv"].contains(&dst)
+    {
+        return Some(Backend::Data);
+    }
+    if ["xlsx", "xlsm", "xls", "xlsb", "ods"].contains(&src)
+        && ["csv", "tsv", "json"].contains(&dst)
+    {
+        return Some(Backend::Sheet);
+    }
+    if src == "md" && ["html", "txt"].contains(&dst) {
+        return Some(Backend::Markdown);
+    }
+    if ["txt", "docx", "docm", "dotx"].contains(&src)
+        && ["txt", "md", "html", "docx"].contains(&dst)
+    {
+        return Some(Backend::Text);
+    }
+    if src == "pdf" && ["docx", "txt", "md", "html"].contains(&dst) {
+        return external(Tool::PdfText);
+    }
+    if src == "pdf" && ["png", "jpg", "tiff"].contains(&dst) {
+        return external(Tool::Magick);
+    }
+    if sheets.contains(&src) && ["xlsx", "ods", "pdf", "html", "csv", "tsv"].contains(&dst) {
+        return external(Tool::Office);
+    }
+    if slides.contains(&src) && ["pptx", "odp", "pdf"].contains(&dst) {
+        return external(Tool::Office);
+    }
+    if ["mobi", "azw", "azw3", "fb2", "epub"].contains(&src)
+        && ["mobi", "azw3", "fb2", "epub", "pdf", "docx", "txt", "html"].contains(&dst)
+    {
+        if tools.has(Tool::Calibre)
+            || !["epub", "fb2"].contains(&src)
+            || ["mobi", "azw3", "pdf"].contains(&dst)
+        {
+            return external(Tool::Calibre);
+        }
+    }
+    if documents.contains(&src)
+        && ["pdf", "docx", "odt", "rtf", "txt", "html", "md", "epub"].contains(&dst)
+    {
+        if dst == "pdf" && src == "md" {
+            return external(Tool::Office);
+        }
+        if dst == "pdf" && !office_docs.contains(&src) {
+            return None;
+        }
+        if office_docs.contains(&src)
+            && ["pdf", "docx", "odt", "rtf", "txt", "html"].contains(&dst)
+            && (tools.has(Tool::Office) || src == "doc" || dst == "pdf")
+        {
+            return external(Tool::Office);
+        }
+        return external(Tool::Pandoc);
+    }
+    if archives.contains(&src) && ["zip", "7z", "tar", "tar.gz"].contains(&dst) {
+        if ["zip", "tar", "tar.gz", "tar.bz2", "tar.xz"].contains(&src) && dst != "7z" {
+            return Some(Backend::Archive);
+        }
+        return external(Tool::SevenZip);
+    }
+    None
+}

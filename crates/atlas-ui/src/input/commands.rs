@@ -16,6 +16,7 @@ impl CommandMeta {
 }
 
 pub(crate) const COMMANDS: &[CommandMeta] = &[
+    CommandMeta::remappable("files.convert", Some("ctrl-alt-c")),
     CommandMeta::remappable("tab.new", Some("ctrl-t")),
     CommandMeta::remappable("tab.close", Some("ctrl-w")),
     CommandMeta::remappable("tab.reopen", Some("ctrl-shift-t")),

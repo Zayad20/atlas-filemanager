@@ -38,6 +38,7 @@ use gpui_component::WindowExt;
 /// overlay requires only: one new variant + one arm in each of those two places.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum OverlayClaim {
+    Converter,
     TagPicker,
     TypeFilter,
     BreadcrumbMenu,
@@ -68,6 +69,9 @@ impl App {
     /// window or cx required. Used by both `modal_overlay_active` and
     /// `overlay_focus_target` so they can never desync.
     pub(crate) fn active_claim(&self) -> Option<OverlayClaim> {
+        if self.converter.as_ref().is_some_and(|s| s.visible()) {
+            return Some(OverlayClaim::Converter);
+        }
         if self.tag_picker_menu.is_some() {
             return Some(OverlayClaim::TagPicker);
         }
@@ -180,6 +184,7 @@ impl App {
     ) -> Option<FocusHandle> {
         use crate::ui::palette::PaletteKind;
         match self.active_claim()? {
+            OverlayClaim::Converter => Some(self.overlay_focus(cx)),
             OverlayClaim::TagPicker => self
                 .tag_picker_input
                 .as_ref()

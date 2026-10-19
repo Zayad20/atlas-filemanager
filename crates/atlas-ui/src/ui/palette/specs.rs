@@ -2260,6 +2260,13 @@ impl App {
 
         if !selected_paths.is_empty() && !recycle_focused {
             files.push(CommandDef::new(
+                "files.convert",
+                rust_i18n::t!("convert_title"),
+                rust_i18n::t!("convert_description"),
+                AtlasIcon::ArrowClockwise,
+                Action::OpenConverter,
+            ));
+            files.push(CommandDef::new(
                 "files.rename",
                 rust_i18n::t!("cmd_files_rename_title"),
                 rust_i18n::t!("cmd_files_rename_desc"),

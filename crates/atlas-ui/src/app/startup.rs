@@ -703,6 +703,7 @@ impl App {
             was_inactive: false,
             inactive_since: None,
             eco_cleared: false,
+            converter: None,
             ctx_menu: None,
             ctx_menu_seq: 0,
             suppress_next_shell_ctx_menu: false,
