@@ -33,6 +33,9 @@ pub const ICON_MANAGER_ICON: &[u8] =
 pub const RUNTIME_TOOLS_MANIFEST: &str =
     include_str!("../../../../extensions/runtime-tools/extension.toml");
 
+pub const CONVERSION_PANDOC_MANIFEST: &str =
+    include_str!("../../../../extensions/conversion-pandoc/extension.toml");
+
 /// Bundled cloud virtual drives extension.
 pub const CLOUD_MANIFEST: &str =
     include_str!("../../../../extensions/cloud/extension.toml");
@@ -70,6 +73,7 @@ pub enum ExtAction {
 impl App {
     pub(crate) fn reload_ext_registry(&mut self) {
         self.ext_registry = atlas_core::ext::Registry::load(&self.state.ext.enabled);
+        self.refresh_conversion_tools();
         #[cfg(feature = "provider-host")]
         if self.ext_registry.has_sidebar_section("cloud") {
             self.state.profiles.ensure_cloud_section();

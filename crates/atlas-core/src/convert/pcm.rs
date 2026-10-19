@@ -8,14 +8,14 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Copy, Debug)]
-struct Pcm {
-    channels: u16,
-    bits: u16,
-    rate: u32,
-    offset: u64,
-    bytes: u64,
-    little: bool,
-    unsigned8: bool,
+pub(super) struct Pcm {
+    pub channels: u16,
+    pub bits: u16,
+    pub rate: u32,
+    pub offset: u64,
+    pub bytes: u64,
+    pub little: bool,
+    pub unsigned8: bool,
 }
 
 impl Pcm {
@@ -310,8 +310,8 @@ fn header(file: &mut impl Write, pcm: Pcm, extension: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn convert(command: &Command, output: &Path, cancel: &AtomicBool) -> Result<()> {
-    let mut input = File::open(&command.source)?;
+pub(super) fn open(path: &Path) -> Result<(File, Pcm)> {
+    let mut input = File::open(path)?;
     let length = input.metadata()?.len();
     let pcm = match &read::<4>(&mut input)? {
         b"RIFF" => wave(&mut input, length)?,
@@ -319,10 +319,15 @@ pub(super) fn convert(command: &Command, output: &Path, cancel: &AtomicBool) -> 
         b".snd" => au(&mut input, length)?,
         _ => bail!("Expected a RIFF/WAVE, AIFF or AU container with integer PCM samples"),
     };
+    input.seek(SeekFrom::Start(pcm.offset))?;
+    Ok((input, pcm))
+}
+
+pub(super) fn convert(command: &Command, output: &Path, cancel: &AtomicBool) -> Result<()> {
+    let (mut input, pcm) = open(&command.source)?;
     let mut writer = BufWriter::new(File::create(output)?);
     let dst = command.target.extension;
     header(&mut writer, pcm, dst)?;
-    input.seek(SeekFrom::Start(pcm.offset))?;
     let mut remaining = pcm.bytes;
     let sample_bytes = usize::from(pcm.bits / 8);
     let mut buffer = [0; 64 * 1024];

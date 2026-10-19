@@ -51,6 +51,9 @@ impl App {
         match event.keystroke.key.as_str() {
             "escape" => self.dismiss_converter(),
             "enter" if choosing => self.start_conversion(),
+            "i" if choosing && event.keystroke.modifiers.alt => {
+                self.activate_selected_conversion_engine()
+            }
             "left" | "up" | "right" | "down" | "tab" | "pageup" | "pagedown"
                 if choosing && count > 0 =>
             {
@@ -124,7 +127,14 @@ impl App {
         }
         let expanded = session.expanded;
         let viewport = window.viewport_size();
-        let available_height = f32::from(viewport.height) - 265.;
+        let package_detail = session.package.is_some()
+            || session.package_error.is_some()
+            || session
+                .catalog
+                .get(session.selected)
+                .is_some_and(|option| !option.available());
+        let available_height =
+            f32::from(viewport.height) - if package_detail { 370. } else { 265. };
         let diameter = available_height
             .min(f32::from(viewport.width) - 64.)
             .clamp(190., 360.);
@@ -412,6 +422,7 @@ impl App {
                     if let Some(s) = &mut app.converter {
                         s.phase = Phase::Choosing;
                     }
+                    app.refresh_conversion_tools();
                 }));
             }
         }
@@ -472,7 +483,18 @@ impl App {
                     cx.notify();
                 }
             }))
-            .child(content);
+            .child(
+                div()
+                    .id("convert-content-scroll")
+                    .w(px(
+                        (diameter + 64.).max(350.) + if expanded { 284. } else { 0. }
+                    ))
+                    .max_w_full()
+                    .max_h(px((f32::from(viewport.height) - 32.).max(120.)))
+                    .overflow_y_scrollbar()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(content),
+            );
         deferred(scrim).into_any_element()
     }
 
@@ -564,6 +586,11 @@ impl App {
                 cx,
             ));
         for (index, option) in visible.iter().enumerate() {
+            let label = if option.target.extension == "md" {
+                "MD"
+            } else {
+                option.target.label
+            };
             let angle = wheel::angle(index, count);
             let radius = diameter * 0.345;
             let x = diameter * 0.5 + radius * angle.cos();
@@ -576,21 +603,21 @@ impl App {
                     .top(px(y - 13.))
                     .w(px(diameter * 0.31))
                     .text_center()
-                    .text_size(px(if option.target.label.len() > 6 {
-                        15.
-                    } else {
-                        20.
-                    }))
+                    .text_size(px(if label.len() > 6 { 15. } else { 20. }))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(if chosen {
                         gpui::white()
                     } else {
                         ink.opacity(if option.available() { 1. } else { 0.55 })
                     })
-                    .child(option.target.label),
+                    .child(label),
             );
         }
-        let label = options[selected].target.label;
+        let label = if options[selected].target.extension == "md" {
+            "MD"
+        } else {
+            options[selected].target.label
+        };
         let enabled = options[selected].available();
         ring.child(
             v_flex()
@@ -629,11 +656,13 @@ impl App {
                         )
                         .child(label),
                 )
-                .child(div().text_xs().text_color(ink).child(text(if enabled {
-                    "convert_apply"
-                } else {
-                    "convert_engine_needed"
-                }))),
+                .when(enabled || diameter >= 250., |center| {
+                    center.child(div().text_xs().text_color(ink).child(text(if enabled {
+                        "convert_apply"
+                    } else {
+                        "convert_engine_needed"
+                    })))
+                }),
         )
         .into_any_element()
     }
@@ -664,7 +693,9 @@ impl App {
                         .is_some_and(|e| extensions.iter().any(|s| e.eq_ignore_ascii_case(s)))
                 })
             };
-            let note = if option.engines.contains(&"Windows") {
+            let note = if extension == "flac" && option.engines.contains(&"Atlas") {
+                Some("convert_flac_note")
+            } else if option.engines.contains(&"Windows") {
                 Some("convert_windows_audio_note")
             } else if has_source(&["srt", "vtt", "ass", "ssa", "lrc", "smi", "ttml", "dfxp"]) {
                 Some(if extension == "lrc" || extension == "smi" {
@@ -732,7 +763,11 @@ impl App {
             if let Some(note) = note {
                 detail = detail.child(div().text_xs().text_center().child(text(note)));
             }
-        } else {
+        } else if session
+            .package
+            .as_ref()
+            .is_none_or(|package| !option.missing.contains(&package.tool))
+        {
             let names = option
                 .missing
                 .iter()
@@ -741,6 +776,64 @@ impl App {
                 .join(" + ");
             detail = detail.child(rust_i18n::t!("convert_needs", engine = names).into_owned());
             for tool in &option.missing {
+                let engine = *tool;
+                if let Some(provider) = session.disabled_providers.get(tool) {
+                    let id = provider.clone();
+                    detail = detail.child(button(
+                        "convert-enable-package",
+                        rust_i18n::t!("convert_enable_package", engine = tool.name()).into_owned(),
+                        cx,
+                        move |app| {
+                            app.handle_ext_action(crate::app::ext::ExtAction::SetEnabled {
+                                id: id.clone(),
+                                enabled: true,
+                            })
+                        },
+                    ));
+                } else if let Some(request) = session
+                    .installers
+                    .get(tool)
+                    .filter(|_| session.package.is_none())
+                {
+                    let size = format!("{:.1} MiB", request.tool.download_bytes as f64 / 1048576.0);
+                    detail = detail.child(button(
+                        "convert-install-package",
+                        rust_i18n::t!("convert_install_package", engine = tool.name(), size = size)
+                            .into_owned(),
+                        cx,
+                        move |app| app.install_conversion_engine(engine),
+                    ));
+                    if request.tool.installed_bytes > 0 {
+                        detail = detail.child(
+                            div().text_xs().text_center().child(
+                                rust_i18n::t!(
+                                    "convert_package_disk",
+                                    size = format!(
+                                        "{:.1} MiB",
+                                        request.tool.installed_bytes as f64 / 1048576.0
+                                    )
+                                )
+                                .into_owned(),
+                            ),
+                        );
+                    }
+                    if !request.tool.license.is_empty() {
+                        let license = request.tool.license.clone();
+                        let url = request.tool.license_url.clone();
+                        detail = detail.child(button(
+                            "convert-package-license",
+                            license,
+                            cx,
+                            move |app| {
+                                let url = url.clone();
+                                app.rt.spawn_blocking(move || {
+                                    let _ = open::that(url);
+                                });
+                            },
+                        ));
+                    }
+                    continue;
+                }
                 let url = tool.url();
                 detail = detail.child(button(
                     tool.executable(),
@@ -757,8 +850,63 @@ impl App {
                 "convert-rescan",
                 text("convert_rescan"),
                 cx,
-                App::open_converter,
+                App::refresh_conversion_tools,
             ));
+        }
+        if let Some(package) = &session.package {
+            let label = match package.progress {
+                atlas_core::ext::tool_package::Progress::Download { bytes, total } => {
+                    let amount = total.map_or_else(
+                        || format!("{:.1} MiB", bytes as f64 / 1048576.0),
+                        |total| {
+                            format!(
+                                "{:.1} / {:.1} MiB",
+                                bytes as f64 / 1048576.0,
+                                total as f64 / 1048576.0
+                            )
+                        },
+                    );
+                    rust_i18n::t!(
+                        "convert_package_downloading",
+                        engine = package.tool.name(),
+                        amount = amount
+                    )
+                    .into_owned()
+                }
+                atlas_core::ext::tool_package::Progress::Extracting => {
+                    rust_i18n::t!("convert_package_extracting", engine = package.tool.name())
+                        .into_owned()
+                }
+            };
+            detail = detail.child(div().text_xs().text_center().child(label));
+            if package.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                detail = detail.child(div().text_xs().child(text("convert_package_cancelling")));
+            } else {
+                detail = detail.child(button(
+                    "convert-package-cancel",
+                    text(
+                        if matches!(
+                            package.progress,
+                            atlas_core::ext::tool_package::Progress::Download { .. }
+                        ) {
+                            "convert_package_cancel_download"
+                        } else {
+                            "convert_package_cancel_install"
+                        },
+                    ),
+                    cx,
+                    App::cancel_conversion_package,
+                ));
+            }
+        }
+        if let Some(error) = &session.package_error {
+            detail = detail.child(
+                div()
+                    .text_xs()
+                    .text_center()
+                    .text_color(cx.theme().danger)
+                    .child(error.clone()),
+            );
         }
         detail.into_any_element()
     }

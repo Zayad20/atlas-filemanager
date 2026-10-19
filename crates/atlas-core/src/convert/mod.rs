@@ -3,6 +3,7 @@
 mod books;
 mod catalog;
 mod contacts;
+mod flac;
 mod native;
 mod pcm;
 mod process;
@@ -217,6 +218,7 @@ fn execute_one(command: &Command, plan: &Plan, cancel: &AtomicBool) -> Result<Pa
         Backend::Archive => native::archive(command, &output, cancel)?,
         Backend::Subtitles => subtitles::convert(command, &output)?,
         Backend::Pcm => pcm::convert(command, &output, cancel)?,
+        Backend::Flac => flac::convert(command, &output, cancel)?,
         Backend::Vector => vector::convert(command, &plan.settings, &output)?,
         Backend::Contacts => contacts::convert(command, &output)?,
         Backend::Book => books::convert(command, &output)?,
@@ -225,7 +227,7 @@ fn execute_one(command: &Command, plan: &Plan, cancel: &AtomicBool) -> Result<Pa
             {
                 use atlas_win_space::media::{convert_audio, AudioTarget};
                 let target = match command.target.extension {
-                    "wav" => AudioTarget::Wave,
+                    "wav" | "aiff" | "au" | "flac" => AudioTarget::Wave,
                     "mp3" => AudioTarget::Mp3,
                     "aac" => AudioTarget::Aac,
                     "m4a" => AudioTarget::M4a,
@@ -253,8 +255,32 @@ fn execute_one(command: &Command, plan: &Plan, cancel: &AtomicBool) -> Result<Pa
                 } else {
                     command.source.as_path()
                 };
-                convert_audio(source, &output, target, plan.settings.quality, cancel)
-                    .map_err(anyhow::Error::msg)?;
+                if ["aiff", "au", "flac"].contains(&command.target.extension) {
+                    let decoded = tempfile::Builder::new()
+                        .prefix(".atlas-decoded-")
+                        .suffix(".wav")
+                        .tempfile_in(parent)?
+                        .into_temp_path();
+                    convert_audio(source, &decoded, target, plan.settings.quality, cancel)
+                        .map_err(anyhow::Error::msg)?;
+                    let native = Command {
+                        source: decoded.to_path_buf(),
+                        target: command.target,
+                        backend: if command.target.extension == "flac" {
+                            Backend::Flac
+                        } else {
+                            Backend::Pcm
+                        },
+                    };
+                    if native.backend == Backend::Flac {
+                        flac::convert(&native, &output, cancel)?;
+                    } else {
+                        pcm::convert(&native, &output, cancel)?;
+                    }
+                } else {
+                    convert_audio(source, &output, target, plan.settings.quality, cancel)
+                        .map_err(anyhow::Error::msg)?;
+                }
             }
             #[cfg(not(target_os = "windows"))]
             bail!("Windows audio conversion is unavailable on this platform");

@@ -11,6 +11,7 @@ pub mod marketplace;
 pub mod provider_sidecar;
 pub mod registry;
 pub mod runner;
+pub mod tool_package;
 
 pub use registry::Registry;
 

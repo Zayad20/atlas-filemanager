@@ -149,6 +149,152 @@ fn independent_ffmpeg_reader_decodes_native_aiff_and_au_when_installed() {
 }
 
 #[test]
+fn handmade_flac_is_lossless_for_all_pcm_depths_channels_and_containers() {
+    use md5::{Digest, Md5};
+    let tools = Tools::discover();
+    let Some(reader) = tools.get(Tool::Ffmpeg) else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    for bits in [8_u16, 16, 24, 32] {
+        for channels in [1_u16, 2, 6, 8] {
+            let width = usize::from(bits / 8);
+            let mut state = 0x12345678_u32;
+            let mut samples = Vec::new();
+            // Constant, predictable, noise and full-scale extremes, plus a short tail.
+            for frame in 0..12291 {
+                for channel in 0..channels {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    let value = match frame / 4096 {
+                        0 => i32::from(channel) * 16,
+                        1 => (frame % 128 - 64) * (i32::from(channel) + 1),
+                        2 => state as i32,
+                        _ => [i32::MIN, i32::MAX, 0][(frame % 3) as usize],
+                    };
+                    let mut bytes = value.to_le_bytes();
+                    if bits == 8 {
+                        bytes[0] ^= 0x80;
+                    }
+                    samples.extend_from_slice(&bytes[..width]);
+                }
+            }
+            let source = dir.path().join(format!("{bits}-{channels}.wav"));
+            let original = pcm_wave(bits, channels, 44100, &samples);
+            std::fs::write(&source, &original).unwrap();
+            let mut expected = samples.clone();
+            if bits == 8 {
+                for byte in &mut expected {
+                    *byte ^= 0x80;
+                }
+            }
+            for container in ["wav", "aiff", "au"] {
+                let input = if container == "wav" {
+                    source.clone()
+                } else {
+                    let report = run(&source, container);
+                    assert!(report.errors().is_empty(), "{:?}", report.errors());
+                    report.outputs()[0].clone()
+                };
+                let plan =
+                    Plan::build(&[input], "flac", Settings::default(), Tools::default()).unwrap();
+                assert_eq!(plan.commands[0].backend, Backend::Flac);
+                let report = execute(&plan, &Arc::new(AtomicBool::new(false)), |_, _, _| {});
+                assert!(report.errors().is_empty(), "{:?}", report.errors());
+                let path = &report.outputs()[0];
+                let bytes = std::fs::read(path).unwrap();
+                assert_eq!(&bytes[..8], b"fLaC\x80\0\0\x22");
+                assert_eq!(&bytes[26..42], Md5::digest(&expected).as_slice());
+                let raw = match bits {
+                    8 => "s8",
+                    16 => "s16le",
+                    24 => "s24le",
+                    _ => "s32le",
+                };
+                let codec = format!("pcm_{raw}");
+                let decoded = std::process::Command::new(reader)
+                    .args(["-v", "error", "-xerror", "-err_detect", "explode", "-i"])
+                    .arg(path)
+                    .args(["-f", raw, "-acodec", &codec, "pipe:1"])
+                    .output()
+                    .unwrap();
+                assert!(
+                    decoded.status.success(),
+                    "{bits}/{channels}/{container}: {}",
+                    String::from_utf8_lossy(&decoded.stderr)
+                );
+                assert_eq!(decoded.stdout, expected, "{bits}/{channels}/{container}");
+            }
+            assert_eq!(std::fs::read(source).unwrap(), original);
+        }
+    }
+}
+
+#[test]
+fn handmade_flac_compresses_tones_silence_short_tails_and_multibyte_frame_numbers() {
+    let tools = Tools::discover();
+    let dir = tempfile::tempdir().unwrap();
+    for (name, frames) in [("silence", 4096 * 130 + 1), ("tone", 44107), ("one", 1)] {
+        let samples: Vec<_> = (0..frames)
+            .flat_map(|index| {
+                let sample = if name == "silence" {
+                    0
+                } else {
+                    ((index as f64 * 440.0 * std::f64::consts::TAU / 44100.0).sin() * 16000.0)
+                        as i16
+                };
+                sample.to_le_bytes()
+            })
+            .collect();
+        let source = dir.path().join(format!("{name}.wav"));
+        std::fs::write(&source, pcm_wave(16, 1, 44100, &samples)).unwrap();
+        let report = run(&source, "flac");
+        assert!(report.errors().is_empty(), "{:?}", report.errors());
+        let output = &report.outputs()[0];
+        if frames > 1 {
+            assert!(std::fs::metadata(output).unwrap().len() < (samples.len() / 2) as u64);
+        }
+        if let Some(reader) = tools.get(Tool::Ffmpeg) {
+            let decoded = std::process::Command::new(reader)
+                .args(["-v", "error", "-xerror", "-i"])
+                .arg(output)
+                .args(["-f", "s16le", "-acodec", "pcm_s16le", "pipe:1"])
+                .output()
+                .unwrap();
+            assert!(
+                decoded.status.success(),
+                "{}",
+                String::from_utf8_lossy(&decoded.stderr)
+            );
+            assert_eq!(decoded.stdout, samples);
+        }
+    }
+}
+
+#[test]
+fn handmade_flac_rejects_bad_pcm_and_excess_channels_and_cleans_up_on_cancellation() {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, bytes) in [
+        ("bad", vec![0; 100]),
+        ("channels", pcm_wave(16, 9, 44100, &[0; 18])),
+        ("partial", pcm_wave(24, 2, 44100, &[0; 5])),
+    ] {
+        let source = dir.path().join(format!("{name}.wav"));
+        std::fs::write(&source, &bytes).unwrap();
+        let report = run(&source, "flac");
+        assert!(report.outputs().is_empty());
+        assert_eq!(report.errors().len(), 1);
+    }
+    let source = dir.path().join("cancel.wav");
+    std::fs::write(&source, pcm_wave(16, 1, 44100, &[0; 32768])).unwrap();
+    let plan = Plan::build(&[source], "flac", Settings::default(), Tools::default()).unwrap();
+    let cancel = AtomicBool::new(true);
+    assert!(execute_one(&plan.commands[0], &plan, &cancel).is_err());
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 4);
+}
+
+#[test]
 fn subtitle_pipeline_converts_without_engines_and_keeps_originals() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("subtítulos.srt");
@@ -450,14 +596,60 @@ fn windows_audio_encodes_and_decodes_without_external_tools() {
         let encoded = report.outputs()[0].clone();
         assert!(std::fs::metadata(&encoded).unwrap().len() > 500);
         if let Some(reader) = &independent_reader {
-            let decoded = std::process::Command::new(reader).args(["-v", "error", "-i"])
-                .arg(&encoded).args(["-f", "f32le", "-acodec", "pcm_f32le", "pipe:1"]).output().unwrap();
-            assert!(decoded.status.success(), "{}", String::from_utf8_lossy(&decoded.stderr));
-            let values: Vec<_> = decoded.stdout.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+            let decoded = std::process::Command::new(reader)
+                .args(["-v", "error", "-i"])
+                .arg(&encoded)
+                .args(["-f", "f32le", "-acodec", "pcm_f32le", "pipe:1"])
+                .output()
+                .unwrap();
+            assert!(
+                decoded.status.success(),
+                "{}",
+                String::from_utf8_lossy(&decoded.stderr)
+            );
+            let values: Vec<_> = decoded
+                .stdout
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+                .collect();
             assert!(values.len() > 20000 && values.len() < 40000);
             assert!(values.iter().all(|v| v.is_finite()));
-            let energy = values.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / values.len() as f64;
-            assert!(energy > 0.02 && energy < 0.3, "{target}: unexpected decoded signal energy {energy}");
+            let energy =
+                values.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / values.len() as f64;
+            assert!(
+                energy > 0.02 && energy < 0.3,
+                "{target}: unexpected decoded signal energy {energy}"
+            );
+        }
+        for target in ["flac", "aiff", "au"] {
+            let plan = Plan::build(
+                &[encoded.clone()],
+                target,
+                Settings::default(),
+                tools.clone(),
+            )
+            .unwrap();
+            assert_eq!(plan.commands[0].backend, Backend::SystemAudio);
+            let report = execute(&plan, &Arc::new(AtomicBool::new(false)), |_, _, _| {});
+            assert!(
+                report.errors().is_empty(),
+                "{target}: {:?}",
+                report.errors()
+            );
+            if let Some(reader) = &independent_reader {
+                let decoded = std::process::Command::new(reader)
+                    .args(["-v", "error", "-xerror", "-i"])
+                    .arg(&report.outputs()[0])
+                    .args(["-f", "s16le", "-acodec", "pcm_s16le", "pipe:1"])
+                    .output()
+                    .unwrap();
+                assert!(
+                    decoded.status.success(),
+                    "{target}: {}",
+                    String::from_utf8_lossy(&decoded.stderr)
+                );
+                assert!(decoded.stdout.len() > 40000);
+            }
         }
         let plan = Plan::build(&[encoded], "wav", Settings::default(), tools.clone()).unwrap();
         let decoded = execute(&plan, &Arc::new(AtomicBool::new(false)), |_, _, _| {});

@@ -34,6 +34,7 @@ pub enum Backend {
     Archive,
     Subtitles,
     Pcm,
+    Flac,
     Vector,
     Contacts,
     Book,
@@ -179,6 +180,9 @@ pub fn route(source: &Path, target: &Format, tools: &Tools) -> Option<Backend> {
         "zip", "7z", "rar", "tar", "tar.gz", "tar.bz2", "tar.xz", "gz", "bz2", "xz", "cab", "iso",
     ];
     let external = |t| Some(Backend::External(t));
+    if ["wav", "aiff", "aifc", "au"].contains(&src) && dst == "flac" {
+        return Some(Backend::Flac);
+    }
     if ["wav", "aiff", "aifc", "au"].contains(&src) && ["wav", "aiff", "au"].contains(&dst) {
         return Some(Backend::Pcm);
     }

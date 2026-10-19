@@ -47,6 +47,15 @@ pub async fn download_icon(url: &str, dest: &std::path::Path) -> Result<()> {
 }
 
 pub async fn install_tool(provider_dir: PathBuf, tool: ToolSpec) -> Result<PathBuf> {
+    if !tool.archive_root.is_empty() {
+        return super::tool_package::install(
+            provider_dir,
+            tool,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            |_| {},
+        )
+        .await;
+    }
     ensure!(
         !tool.sha256.is_empty(),
         "tool {} has no SHA-256 digest",
@@ -237,6 +246,7 @@ mod tests {
             archive_format: "zip".into(),
             signature_url: String::new(),
             sha256: String::new(),
+            ..ToolSpec::default()
         };
 
         let installed = install_tool(provider_dir.clone(), tool).await.unwrap();
@@ -268,6 +278,7 @@ mod tests {
             archive_format: "7z".into(),
             signature_url: String::new(),
             sha256: String::new(),
+            ..ToolSpec::default()
         };
 
         let installed = install_tool(provider_dir.clone(), tool).await.unwrap();

@@ -73,7 +73,7 @@ impl SystemAudio {
             ]
             .contains(&input)
             && match output {
-                "wav" => true,
+                "wav" | "aiff" | "au" | "flac" => true,
                 "mp3" => self.mp3,
                 "m4a" | "aac" => self.aac,
                 _ => false,
@@ -95,6 +95,12 @@ impl Tools {
     /// Scan executable paths and query system codecs off the interactive lane.
     /// Never start an external process, download a payload or scan recursively.
     pub fn discover() -> Self {
+        Self::discover_with(std::iter::empty())
+    }
+
+    /// Registry paths are an immutable snapshot of enabled tool providers.
+    /// Validate them on this worker lane and prefer them over system installs.
+    pub fn discover_with(managed: impl IntoIterator<Item = (String, PathBuf)>) -> Self {
         let mut directories: Vec<PathBuf> = std::env::var_os("PATH")
             .map(|p| {
                 std::env::split_paths(&p)
@@ -152,6 +158,13 @@ impl Tools {
                 .find(|p| p.is_file())
             {
                 tools.0.insert(tool, path);
+            }
+        }
+        for (name, path) in managed {
+            if let Some(tool) = Tool::ALL.into_iter().find(|tool| tool.executable() == name) {
+                if path.is_absolute() && path.is_file() {
+                    tools.0.insert(tool, path);
+                }
             }
         }
         tools

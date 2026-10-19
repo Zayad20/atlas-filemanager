@@ -185,7 +185,7 @@ pub struct Manifest {
     pub commands: Vec<ExtCommand>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ToolSpec {
     pub name: String,
     pub path: String,
@@ -203,6 +203,20 @@ pub struct ToolSpec {
     pub signature_url: String,
     #[serde(default)]
     pub sha256: String,
+    /// Optional exact download size, checked as well as SHA-256.
+    #[serde(default)]
+    pub download_bytes: u64,
+    /// Uncompressed payload bytes, disclosed before downloading when known.
+    #[serde(default)]
+    pub installed_bytes: u64,
+    #[serde(default)]
+    pub license: String,
+    #[serde(default)]
+    pub license_url: String,
+    /// Extract this archive directory as one package, including data/licenses.
+    /// Empty retains the legacy executable-directory selection.
+    #[serde(default)]
+    pub archive_root: String,
 }
 
 /// Validate an extension identifier (SEC-01).

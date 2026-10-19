@@ -9,8 +9,17 @@ pub(crate) fn install(view: &Entity<App>, window: &mut Window, cx: &mut gpui::Ap
     };
     std::fs::create_dir_all(&directory).unwrap();
     let audio = std::env::var_os("ATLAS_CONVERSION_LAB_AUDIO").is_some();
-    let source = directory.join(if audio { "Tone.wav" } else { "Sample.png" });
-    if audio {
+    let package = std::env::var_os("ATLAS_CONVERSION_LAB_PACKAGE").is_some();
+    let source = directory.join(if package {
+        "Documento.rst"
+    } else if audio {
+        "Tone.wav"
+    } else {
+        "Sample.png"
+    });
+    if package {
+        std::fs::write(&source, "Documento\n=========\n\nTexto para convertir.\n").unwrap();
+    } else if audio {
         // Explicit 16-bit PCM WAV fixture; keep the validation encoder unrelated
         // to the converter's audio implementation.
         let samples: Vec<_> = (0..22050)
@@ -71,6 +80,9 @@ fn frame(
     window: &mut Window,
     cx: &mut gpui::App,
 ) -> bool {
+    if std::env::var_os("ATLAS_CONVERSION_LAB_PACKAGE").is_some() {
+        return package_frame(view, directory, step, window, cx);
+    }
     if step == 12 {
         if std::env::var_os("ATLAS_CONVERSION_LAB_AUDIO").is_some() {
             let session = view.read(cx).converter.as_ref().unwrap();
@@ -170,6 +182,178 @@ fn frame(
     if step >= 600 {
         panic!("Conversion lab did not finish");
     }
+    window.refresh();
+    false
+}
+
+/// Visual state fixtures only. Real HTTPS/package/conversion behavior is tested
+/// independently by ext::tool_package::tests::real_pandoc_package_download_and_conversion_when_enabled.
+fn package_frame(
+    view: &Entity<App>,
+    directory: &std::path::Path,
+    step: usize,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) -> bool {
+    use atlas_core::{
+        convert::{self, Tool},
+        ext::{registry::ToolInstallRequest, tool_package::Progress},
+    };
+    use std::sync::{atomic::AtomicBool, Arc};
+    if step == 8 {
+        view.update(cx, |app, cx| {
+            let session = app.converter.as_mut().unwrap();
+            assert!(matches!(session.phase, super::Phase::Choosing));
+            session.tools.0.clear();
+            session.catalog = convert::options(&session.sources, &session.tools);
+            session.selected = session
+                .catalog
+                .iter()
+                .position(|option| option.target.extension == "docx")
+                .unwrap();
+            session.disabled_providers.clear();
+            let manifest = atlas_model::ext_model::Manifest::parse(
+                crate::app::ext::CONVERSION_PANDOC_MANIFEST,
+            )
+            .unwrap();
+            session.installers.insert(
+                Tool::Pandoc,
+                ToolInstallRequest {
+                    provider_dir: directory.join("fixture-provider"),
+                    tool: manifest.tools[0].clone(),
+                },
+            );
+            cx.notify();
+        });
+    }
+    if step == 12 {
+        window
+            .render_to_image()
+            .unwrap()
+            .save(directory.join("package-desktop.png"))
+            .unwrap();
+        window.resize(gpui::size(gpui::px(900.), gpui::px(560.)));
+    }
+    if step == 25 {
+        window
+            .render_to_image()
+            .unwrap()
+            .save(directory.join("package-laptop.png"))
+            .unwrap();
+        view.update(cx, |app, cx| {
+            app.converter.as_mut().unwrap().package = Some(super::PackageJob {
+                tool: Tool::Pandoc,
+                cancel: Arc::new(AtomicBool::new(false)),
+                progress: Progress::Download {
+                    bytes: 10_485_760,
+                    total: Some(42_154_914),
+                },
+            });
+            cx.notify();
+        });
+    }
+    if step == 38 {
+        window
+            .render_to_image()
+            .unwrap()
+            .save(directory.join("download-laptop.png"))
+            .unwrap();
+        view.update(cx, |app, cx| {
+            app.cancel_conversion_package();
+            assert!(app
+                .converter
+                .as_ref()
+                .unwrap()
+                .package
+                .as_ref()
+                .unwrap()
+                .cancel
+                .load(std::sync::atomic::Ordering::Relaxed));
+            cx.notify();
+        });
+    }
+    if step == 44 {
+        window
+            .render_to_image()
+            .unwrap()
+            .save(directory.join("cancelling-laptop.png"))
+            .unwrap();
+        view.update(cx, |app, cx| {
+            let session = app.converter.as_mut().unwrap();
+            session.package = None;
+            session.package_error =
+                Some("Connection interrupted. Select Install Pandoc to retry.".into());
+            cx.notify();
+        });
+    }
+    if step == 50 {
+        window
+            .render_to_image()
+            .unwrap()
+            .save(directory.join("error-laptop.png"))
+            .unwrap();
+        view.update(cx, |app, cx| {
+            let session = app.converter.as_mut().unwrap();
+            session.package_error = None;
+            session
+                .disabled_providers
+                .insert(Tool::Pandoc, "conversion-pandoc".into());
+            cx.notify();
+        });
+    }
+    if step == 62 {
+        window
+            .render_to_image()
+            .unwrap()
+            .save(directory.join("disabled-laptop.png"))
+            .unwrap();
+        view.update(cx, |app, cx| {
+            let session = app.converter.as_mut().unwrap();
+            session.disabled_providers.clear();
+            // Validate stale discovery cannot take ownership of a running plan.
+            session.phase = super::Phase::Running {
+                cancel: Arc::new(AtomicBool::new(false)),
+                done: 0,
+                total: 1,
+                current: session.sources[0].clone(),
+            };
+            session
+                .tx
+                .send(super::Event::Discovered {
+                    revision: session.discovery,
+                    tools: convert::Tools::default(),
+                    catalog: Vec::new(),
+                })
+                .unwrap();
+            app.drain_converter();
+            assert!(matches!(
+                app.converter.as_ref().unwrap().phase,
+                super::Phase::Running { .. }
+            ));
+            app.converter.as_mut().unwrap().phase = super::Phase::Choosing;
+            cx.notify();
+        });
+    }
+    if step == 74 {
+        // Alt+I exercises the real GPUI key dispatcher; the isolated fixture path
+        // fails before contacting the network, and the UI receives its error event.
+        window.dispatch_keystroke(gpui::Keystroke::parse("alt-i").unwrap(), cx);
+        assert!(view.read(cx).converter.as_ref().unwrap().package.is_some());
+    }
+    if step >= 90
+        && view
+            .read(cx)
+            .converter
+            .as_ref()
+            .unwrap()
+            .package_error
+            .is_some()
+    {
+        std::fs::write(directory.join("passed.txt"), "Native package UI state fixtures rendered at 1280x800 and 900x560: install, download, retry, disabled provider. Alt+I dispatched a real install attempt against an isolated missing provider and received its error. Stale discovery preserved the running phase. Network installation/conversion is verified separately by the package integration test.\n").unwrap();
+        cx.quit();
+        return true;
+    }
+    assert!(step < 600, "Package lab did not finish");
     window.refresh();
     false
 }

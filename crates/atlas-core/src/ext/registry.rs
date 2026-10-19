@@ -246,6 +246,11 @@ impl Registry {
         self.tools.get(name).cloned().or_else(|| binary_path(name))
     }
 
+    /// In-memory paths only: safe to snapshot before background discovery.
+    pub fn managed_tools(&self) -> HashMap<String, PathBuf> {
+        self.tools.clone()
+    }
+
     fn make_ref(ext: &Extension, cmd: &ExtCommand, tools: HashMap<String, PathBuf>) -> CommandRef {
         CommandRef {
             ext_id: ext.manifest.id.clone(),
@@ -265,7 +270,7 @@ impl Registry {
         Some(tools)
     }
 
-    fn install_request_for_tool(&self, name: &str) -> Option<ToolInstallRequest> {
+    pub fn install_request_for_tool(&self, name: &str) -> Option<ToolInstallRequest> {
         for ext in self
             .extensions
             .iter()
@@ -563,9 +568,14 @@ accepts = { extensions = ["psd"] }
 
         let cmd = registry.previewer_for("psd").unwrap();
         assert_eq!(cmd.tools.get("magick"), Some(&bin));
+        assert_eq!(registry.managed_tools().get("magick"), Some(&bin));
         assert!(registry
             .commands_for(&[(Some("psd".into()), false)])
             .is_empty());
+
+        let mut disabled = registry.extensions.clone();
+        disabled[0].enabled = false;
+        assert!(collect_tools(&disabled).is_empty());
 
         let _ = std::fs::remove_dir_all(root);
     }

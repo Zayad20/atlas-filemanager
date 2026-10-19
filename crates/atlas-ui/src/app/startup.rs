@@ -420,6 +420,10 @@ impl App {
         );
         let runtime_tools_src =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions/runtime-tools");
+        let _ = atlas_core::ext::install::ensure_bundled(
+            "conversion-pandoc",
+            crate::app::ext::CONVERSION_PANDOC_MANIFEST,
+        );
         let _ = atlas_core::ext::install::ensure_bundled_with_assets(
             "runtime-tools",
             crate::app::ext::RUNTIME_TOOLS_MANIFEST,

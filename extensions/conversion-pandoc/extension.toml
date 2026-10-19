@@ -1,0 +1,20 @@
+id = "conversion-pandoc"
+name = "Pandoc · Document conversion"
+version = "3.12.1"
+description = "Optional document engine. Downloaded only when requested; shared with file actions and previews."
+kind = "tool_provider"
+
+[[tools]]
+name = "pandoc"
+os = "windows"
+arch = "x86_64"
+path = "tools/windows-x64/pandoc/3.12.1/pandoc.exe"
+download_url = "https://github.com/jgm/pandoc/releases/download/3.12.1/pandoc-3.12.1-windows-x86_64.zip"
+download_bytes = 42154914
+installed_bytes = 236017543
+sha256 = "6ef431cb20b2c24a0371fc19200dc49d452be54b1b5c9239f3462841ef53e587"
+archive_format = "zip"
+archive_root = "pandoc-3.12.1"
+archive_path = "pandoc-3.12.1/pandoc.exe"
+license = "GPL-2.0-or-later"
+license_url = "https://github.com/jgm/pandoc/blob/3.12.1/COPYING.md"
