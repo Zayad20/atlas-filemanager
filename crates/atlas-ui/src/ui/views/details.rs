@@ -37,6 +37,7 @@ pub(crate) struct DetailsColors {
     pub header_bg: Hsla,
     pub stripe_bg: Hsla,
     pub border: Hsla,
+    pub glass: bool,
 }
 
 #[derive(Clone)]
@@ -67,8 +68,9 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.sync_view_transition(pane_id, cx);
         if let Some(tab) = self.tab_data_for(pane_id) {
-            let mode = if matches!(tab.view_mode, ViewMode::Details | ViewMode::List) { tab.group_by } else { atlas_model::tab::GroupBy::None };
+            let mode = if matches!(tab.view_mode, ViewMode::Details | ViewMode::List | ViewMode::Grid) { tab.group_by } else { atlas_model::tab::GroupBy::None };
             let collapsed = tab.collapsed_groups.clone();
             let visibility = (tab.show_files, tab.show_folders);
             let is_branch = tab.is_branch_view;
@@ -78,6 +80,7 @@ impl App {
                 state.set_grouping(mode, collapsed);
                 state.refresh_miller_visibility();
             }
+            self.request_group_times(pane_id);
         }
         self.restore_view_selection(pane_id);
         self.pending_drag_hover_targets.retain(|target| !matches!(target.id,
@@ -136,11 +139,6 @@ impl App {
                 pane_id.0
             )
         });
-        if matches!(view_mode, ViewMode::Details | ViewMode::List)
-            && self.tab_data_for(pane_id).is_some_and(|tab| tab.group_by != atlas_model::tab::GroupBy::None)
-        {
-            return self.render_grouped(pane_id, window, cx);
-        }
         match view_mode {
             ViewMode::Grid => {
                 if Self::EXPERIMENTAL_IMM_GRID {
@@ -191,15 +189,20 @@ impl App {
                 t.foreground,
                 t.accent,
                 t.accent_foreground,
-                t.list_active,
+                // Glass lets the backdrop breathe: tint with ink, never an opaque slab.
+                if is_glass {
+                    t.foreground.opacity(0.065)
+                } else {
+                    t.list_active
+                },
                 t.muted_foreground,
                 if is_glass {
-                    t.list_head
+                    t.foreground.opacity(0.035)
                 } else {
                     backdrop_tint(t.secondary, 0.18)
                 },
                 if is_glass {
-                    t.list_even.opacity(0.35)
+                    t.foreground.opacity(0.022)
                 } else {
                     backdrop_tint(t.list_even, 0.04)
                 },
@@ -210,6 +213,7 @@ impl App {
                 },
             )
         };
+        let (accent, accent_fg) = self.selection_colors(pane_id, accent, accent_fg, fg, muted);
         let font_size = window.text_style().font_size.to_pixels(window.rem_size());
         let row_font = window.text_style().font();
 
@@ -232,14 +236,15 @@ impl App {
         let content_lod = details_content_lod(pane_width, zoom_scale);
         // One priority projection and retained presentation for header and rows.
         // The scroll gutter is reserved in both, so their right edges also agree.
-        let layout = Arc::new(crate::ui::views::details_imm::presented_layout(
+        let (layout, header_layout) = crate::ui::views::details_imm::presented_layout(
             self,
             pane_id,
             (pane_width - 16.0 * zoom_scale).max(0.0),
             zoom_scale,
             window,
             cx,
-        ));
+        );
+        let layout = Arc::new(layout);
         let row_h = DETAILS_ROW_H * zoom_scale;
         // Retain this above the hover-card subtree, whose id changes per row.
         let row_motion = window.use_keyed_state(
@@ -254,14 +259,19 @@ impl App {
         let type_filter_set = self.type_filters.get(&pane_id).cloned().unwrap_or_default();
         let has_type_filter = !type_filter_set.is_empty();
 
-        // type_labels: rebuilt only when entries change (entries_version gate in TabState).
+        // Category discovery runs in the background when a listing arrives.
         // filtered_visible: Arc::clone in the common no-filter case (O(1), no alloc).
         let filter_perf = crate::perf::span("details.render.filter_projection");
-        let type_labels = self.state.tab_states.get_mut(&pane_id)
-            .map(|ts| ts.type_labels_cached(entry_type_label).to_vec()).unwrap_or_default();
+        let type_labels = self.state.tab_states.get(&pane_id)
+            .map(|ts| ts.ready_type_labels().to_vec()).unwrap_or_default();
         let filtered_visible = self.flat_visible_indices(pane_id);
+        // Grouped panes lay headers into the same row space as files.
+        let group_cells = self.grouped_cells(pane_id, atlas_model::grouping::GroupFlow::Rows);
+        let body_cells = group_cells
+            .as_ref()
+            .map_or_else(|| filtered_visible.clone(), |g| g.cells.clone());
         drop(filter_perf);
-        let count = filtered_visible.len();
+        let count = body_cells.len();
 
         let colors = DetailsColors {
             fg,
@@ -271,11 +281,13 @@ impl App {
             muted,
             header_bg,
             stripe_bg,
-            border,
+            // Hairline under the header; on glass it must still exist.
+            border: if is_glass { fg.opacity(0.16) } else { border },
+            glass: is_glass,
         };
 
         let header = details_header(
-            &layout,
+            &header_layout,
             filtered_visible.clone(),
             &view,
             pane_id,
@@ -332,7 +344,7 @@ impl App {
             };
             let scroll_y = (-f32::from(base_scroll.offset().y)).max(0.0);
             let _list_view = view.clone();
-            let fv = filtered_visible.clone();
+            let fv = body_cells.clone();
             let row_layout = Arc::clone(&layout);
 
             // The scroll transform can advance before this virtual Element gets its
@@ -345,7 +357,7 @@ impl App {
             let end_idx = ((scroll_y + viewport_h) / row_h).ceil() as usize + overscan_rows;
             let end_idx = end_idx.min(count);
             let icons_perf = crate::perf::span("details.render.prime_icons");
-            prime_details_file_icons_range(self, pane_id, &filtered_visible, start_idx, end_idx);
+            prime_details_file_icons_range(self, pane_id, &body_cells, start_idx, end_idx);
             drop(icons_perf);
 
             let mut overlays = Vec::new();
@@ -372,7 +384,7 @@ impl App {
                         == Some(&DragHoverId::Folder(pane_id, entry.path()));
                 let odd = i % 2 == 1;
                 let icon_tex = self
-                    .file_icon_for_entry(&entry.path(), &entry.kind(), entry.extension().as_deref())
+                    .row_icon_for_entry(&entry.path(), &entry.kind(), entry.extension().as_deref())
                     .texture();
 
                 if let Some(input) = rename_input {
@@ -413,10 +425,7 @@ impl App {
                     view.downgrade(),
                     fv.clone(),
                     row_h,
-                    scroll_y,
-                    viewport_h,
-                    start_idx,
-                    end_idx,
+                    base_scroll.clone(),
                     (*layout).clone(),
                     content_lod,
                     colors,
@@ -433,6 +442,22 @@ impl App {
                 div().absolute().inset_0().into_any_element()
             };
 
+            let group_overlays = group_cells.as_ref().map_or_else(Vec::new, |groups| {
+                let colors = crate::ui::group_header::GroupHeaderColors { fg, muted, border: cx.theme().border };
+                groups
+                    .headers
+                    .iter()
+                    .map(|header| {
+                        crate::ui::group_header::group_header(
+                            pane_id,
+                            header,
+                            &view,
+                            colors,
+                            (px(0.0), px(header.cell as f32 * row_h), None, px(row_h)),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            });
             let details_drag_layer = div()
                 .id(("details-drag-layer", pane_id.0))
                 .absolute()
@@ -444,6 +469,7 @@ impl App {
                 .on_file_drag_details(view.clone(), pane_id);
             let details_tooltip = self
                 .details_hover
+                .filter(|_| self.ctx_menu.is_none())
                 .and_then(|(hover_pane, entry_idx)| (hover_pane == pane_id).then_some(entry_idx))
                 .and_then(|entry_idx| {
                     self.state
@@ -498,7 +524,8 @@ impl App {
                                 .relative()
                                 .child(body_el)
                                 .child(details_drag_layer)
-                                .children(overlays),
+                                .children(overlays)
+                                .children(group_overlays),
                         )
                         .pr(crate::ui::rem_px(16.)),
                 )
@@ -531,7 +558,7 @@ impl App {
         .child(timed_layout_region(
             "pane.viewport",
             PANE_VIEWPORT_TIMINGS,
-            layout_region("pane.viewport_body", inner),
+            layout_region("pane.viewport_body", self.transition_viewport(pane_id, inner)),
         ))
         .on_prepaint_child({
             let v = prepaint_view;
@@ -572,7 +599,8 @@ impl App {
 
 /// Semantic category label for the Type column and filter overlay.
 pub fn entry_type_label(entry: &FileEntry) -> String {
-    atlas_model::file_entry::file_category(&entry.kind(), entry.extension().as_deref())
+    let key = atlas_model::file_entry::file_category(&entry.kind(), entry.extension().as_deref());
+    rust_i18n::t!(key).into_owned()
 }
 
 pub(crate) fn entry_display_size(entry: &FileEntry) -> String {
@@ -1087,7 +1115,7 @@ fn details_content_lod(pane_width: f32, zoom_scale: f32) -> DetailsContentLod {
     details_content_lod_for_width(pane_width, zoom_scale, details_lod_enabled())
 }
 
-fn prime_details_file_icons_range(
+pub(crate) fn prime_details_file_icons_range(
     app: &mut App,
     pane_id: TabId,
     visible: &[usize],
@@ -1098,7 +1126,11 @@ fn prime_details_file_icons_range(
         let Some(ts) = app.state.tab_states.get(&pane_id) else {
             return;
         };
-        let end = end.min(visible.len());
+        // Prime a viewport's worth of rows beyond both edges: type icons resolve off
+        // thread, so they must be requested before their rows scroll into view.
+        let span = end.saturating_sub(start).max(8);
+        let start = start.saturating_sub(span);
+        let end = end.saturating_add(span).min(visible.len());
         (start..end)
             .filter_map(|i| {
                 let entry = ts.entries.get(*visible.get(i)?)?;
@@ -1347,11 +1379,7 @@ fn render_rename_row(
             .items_center()
             .pl(px(cell_pad))
             .overflow_hidden()
-            .text_color(if selected {
-                colors.accent_fg
-            } else {
-                colors.muted
-            })
+            .text_color(colors.muted)
             .child(SharedString::from(text))
     });
 
@@ -1366,11 +1394,8 @@ fn render_rename_row(
         .overflow_hidden()
         .rounded_sm()
         .cursor_pointer()
-        .when(selected, |s| {
-            s.bg(colors.accent).text_color(colors.accent_fg)
-        })
-        .when(!selected && flashing, |s| s.bg(colors.accent.opacity(0.38)))
-        .when(!selected && !flashing && odd, |s| s.bg(colors.stripe_bg))
+        .when(flashing, |s| s.bg(colors.accent.opacity(0.38)))
+        .when(!flashing && odd, |s| s.bg(colors.stripe_bg))
         .child(
             div()
                 .absolute()

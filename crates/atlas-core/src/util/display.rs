@@ -107,8 +107,43 @@ pub fn is_hidden(path: &Path) -> bool {
 
 /// Extract a human-readable display name from a path.
 pub fn display_name(path: &Path) -> String {
+    if let Some(name) = crate::vault::live::display_name(path) { return name; }
     path.file_name().map_or_else(
-        || path.to_string_lossy().to_string(),
+        || {
+            #[cfg(windows)]
+            if let Some(std::path::Component::Prefix(prefix)) = path.components().next() {
+                if let Some(label) = unc_share_label(prefix.kind()) {
+                    return label;
+                }
+            }
+            path.to_string_lossy().to_string()
+        },
         |n| n.to_string_lossy().to_string(),
     )
+}
+
+/// A UNC root's useful name is its share (the distro for WSL). Keep the actual
+/// path intact for navigation, history and file operations.
+#[cfg(windows)]
+pub fn unc_share_label(prefix: std::path::Prefix<'_>) -> Option<String> {
+    match prefix {
+        std::path::Prefix::UNC(_, share) | std::path::Prefix::VerbatimUNC(_, share) =>
+            Some(share.to_string_lossy().into_owned()),
+        _ => None,
+    }
+}
+
+#[cfg(all(test, windows))]
+mod path_label_tests {
+    use super::*;
+
+    #[test]
+    fn network_roots_show_the_share_and_children_show_the_folder() {
+        for root in [r"\\wsl.localhost\Arch\", r"\\wsl$\Arch", r"\\?\UNC\wsl.localhost\Arch\"] {
+            assert_eq!(display_name(Path::new(root)), "Arch");
+        }
+        assert_eq!(display_name(Path::new(r"\\server\Projects\")), "Projects");
+        assert_eq!(display_name(Path::new(r"\\wsl.localhost\Arch\home\me")), "me");
+        assert_eq!(display_name(Path::new(r"C:\")), r"C:\");
+    }
 }

@@ -107,6 +107,37 @@ impl App {
         }
     }
 
+    /// Icon for compact rows (details/list/tree/miller/palette): in Windows themes
+    /// always the plain Shell file-type icon — never a thumbnail or content peek.
+    pub(crate) fn row_icon_for_entry(
+        &self,
+        path: &Path,
+        kind: &FileKind,
+        extension: Option<&str>,
+    ) -> FileIcon {
+        #[cfg(target_os = "windows")]
+        if is_windows_theme(&self.state.profiles.active().theme) {
+            let tex = if matches!(kind, FileKind::Dir) {
+                self.shell_folder_icon()
+            } else {
+                self.shell_type_icon(path)
+            };
+            if let Some(tex) = tex {
+                return FileIcon::IconTexture(IconTexture::Multi(tex));
+            }
+        } else if let Some(tex) = self.grid_thumbnail(path) {
+            return FileIcon::PreviewTexture(tex);
+        }
+        self.file_icon_fallback(kind, extension)
+    }
+
+    fn file_icon_fallback(&self, kind: &FileKind, extension: Option<&str>) -> FileIcon {
+        if let Some(multi) = self.multi_res_icon_for_entry(kind, extension) {
+            return FileIcon::IconTexture(IconTexture::Multi(multi));
+        }
+        FileIcon::IconTexture(IconTexture::Single(self.liquid_glass_icon(kind, extension)))
+    }
+
     pub(crate) fn file_icon_for_entry(
         &self,
         path: &Path,
@@ -119,17 +150,20 @@ impl App {
         #[cfg(target_os = "windows")]
         if matches!(kind, FileKind::Dir) && is_windows_theme(&self.state.profiles.active().theme) {
             if let Some(tex) = self.shell_folder_icon() {
-                return FileIcon::IconTexture(IconTexture::Single(tex));
+                return FileIcon::IconTexture(IconTexture::Multi(tex));
             }
         }
-        if let Some(multi) = self.multi_res_icon_for_entry(kind, extension) {
-            return FileIcon::IconTexture(IconTexture::Multi(multi));
+        #[cfg(target_os = "windows")]
+        if !matches!(kind, FileKind::Dir) && is_windows_theme(&self.state.profiles.active().theme) {
+            if let Some(tex) = self.shell_type_icon(path) {
+                return FileIcon::IconTexture(IconTexture::Multi(tex));
+            }
         }
-        FileIcon::IconTexture(IconTexture::Single(self.liquid_glass_icon(kind, extension)))
+        self.file_icon_fallback(kind, extension)
     }
 
     pub(crate) fn file_icon(&self, file: &FileIconRef) -> FileIcon {
-        self.file_icon_for_entry(&file.path, &file.kind, file.extension.as_deref())
+        self.row_icon_for_entry(&file.path, &file.kind, file.extension.as_deref())
     }
 
     pub(crate) fn maybe_request_file_icon(&mut self, file: &FileIconRef) {
@@ -138,7 +172,7 @@ impl App {
             if matches!(file.kind, FileKind::Dir) {
                 self.request_shell_folder_icon();
             } else {
-                self.request_shell_thumbnail_or_icon(&file.path);
+                self.request_shell_type_icon(&file.path);
             }
         }
     }

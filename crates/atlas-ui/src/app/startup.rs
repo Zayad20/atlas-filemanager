@@ -356,6 +356,15 @@ impl App {
             }
         });
 
+        // Premium entitlement (Store add-on or Polar key) updates the global edition.
+        rt.spawn(async {
+            // Load the daily counter off the UI thread so Free limit checks never hit the disk.
+            let _ = tokio::task::spawn_blocking(atlas_core::usage::preload).await;
+            if let Some(source) = atlas_core::license::refresh().await {
+                tracing::info!(?source, "premium entitlement active");
+            }
+        });
+
         // ── Windows OLE drag-and-drop setup ────────────────────────────────
         // Extract the HWND from gpui's HasWindowHandle impl. Stored as isize
         // so it is Send/clone-able; reconstructed to HWND only in dnd::windows.
@@ -380,6 +389,10 @@ impl App {
         // Pre-warm the shell-menu STA worker so the first right-click is instant.
         #[cfg(windows)]
         let shell_menu = Some(crate::shell_menu::spawn());
+        #[cfg(windows)]
+        if let Some(handle) = &shell_menu {
+            handle.prewarm();
+        }
 
         // Extensions: seed bundled ones, load enabled overrides, build the registry.
         let _ = atlas_core::ext::install::ensure_bundled(
@@ -500,6 +513,7 @@ impl App {
                     .update(cx, |app, cx| {
                         let mut dirty = app.drain_bg_results(cx);
                         dirty |= app.tick_ctx_input_blink();
+                        dirty |= app.tick_batch_blink(cx);
                         // Drive matching only until this query's snapshot is ready;
                         // streamed items must not repaint an already published list.
                         if app.state.overlay.show_goto_bar
@@ -570,7 +584,9 @@ impl App {
             .collect();
 
         // Ensure background search service is active (instant search daemon)
-        rt.spawn_blocking(atlas_core::search::ensure_service_started);
+        if std::env::var_os("ATLAS_DISABLE_SEARCH_SERVICE").is_none() {
+            rt.spawn_blocking(atlas_core::search::ensure_service_started);
+        }
 
         // transfer_journal resume is WIP and not wired into atlas-core yet.
 
@@ -609,6 +625,8 @@ impl App {
             // Phase5: preview texture caches + overlay focus start empty.
             preview_textures: HashMap::new(),
             multi_textures: HashMap::new(),
+            dir_ring: None,
+            tree_rows_cache: HashMap::new(),
 
             preview_view: HashMap::new(),
             inspector_animating: false,
@@ -619,6 +637,9 @@ impl App {
             batch_rename_field: BatchRenameField::Pattern,
             // Phase4: grid thumbnail cache starts empty.
             thumb_textures: crate::ui::thumbnail_cache::ThumbnailCache::new(thumbnail_cache_mb),
+            shell_icons: std::collections::HashMap::new(),
+            shell_icon_inflight: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            shell_icon_lru: std::collections::VecDeque::new(),
             ext_thumb_inflight: HashSet::new(),
             // Icon theme resolved above from the active profile (selection or
             // VSCode auto-discovery).
@@ -692,6 +713,7 @@ impl App {
             settings_section: 0,
             settings_font_families: None,
             rename_edit: None,
+            batch_input_sub: None,
             content_results: Vec::new(),
             content_gen: 0,
             content_cancel: None,
@@ -712,8 +734,14 @@ impl App {
             inactive_since: None,
             eco_cleared: false,
             converter: None,
+            cleanup_panel: None,
+            vault: None,
+            #[cfg(windows)]
+            vault_mount: None,
             ctx_menu: None,
             ctx_menu_seq: 0,
+            #[cfg(windows)]
+            ctx_native: Default::default(),
             suppress_next_shell_ctx_menu: false,
             type_filter_scroll: gpui::ScrollHandle::new(),
             settings_scroll: gpui::ScrollHandle::new(),
@@ -729,10 +757,12 @@ impl App {
             _rubber_escape_sub: Some(rubber_escape_sub),
             tag_picker_scroll: gpui::ScrollHandle::new(),
             thumb_wanted: std::sync::Arc::new(std::sync::Mutex::new(HashSet::new())),
+            thumb_wanted_by_pane: HashMap::new(),
             native_thumb_inflight: 0,
             pane_animations: HashMap::new(),
             pane_signals: HashMap::new(),
             dirty_panes: HashSet::new(),
+            focus_painted: None,
             sidebar_scroll_region: None,
             atlas_launcher_profiles_anchor: gpui::Point::default(),
             pane_layout_bounds: HashMap::new(),
@@ -743,6 +773,7 @@ impl App {
             tab_closing: HashMap::new(),
             pending_column_reflow: HashSet::new(),
             pane_items_appear: HashMap::new(),
+            pane_view_transitions: HashMap::new(),
             ext_manager_input: None,
             ext_prompt_inputs: Vec::new(),
             #[cfg(feature = "provider-host")]
@@ -751,6 +782,9 @@ impl App {
             rename_remote_input: None,
             pending_rename: None,
             pending_select: None,
+            pending_batch_select: None,
+            batch_blink_origin: std::time::Instant::now(),
+            batch_blink_visible: true,
             col_widths: details_prefs.widths,
             typed_selection: None,
             #[cfg(windows)]

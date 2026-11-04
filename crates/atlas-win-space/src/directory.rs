@@ -88,6 +88,12 @@ impl Drop for OwnedHandle {
 /// 64 KiB, FileIdExtdDirectoryInformation (128-bit ID, reparse tag and cached
 /// timestamps). No per-entry stat calls and no data-stream handles are opened.
 pub fn enumerate(path: &Path, mut emit: impl FnMut(DirectoryEntry)) -> io::Result<()> {
+    enumerate_while(path, |entry| { emit(entry); true })
+}
+
+/// Cancellation is checked between native batches (at most 64 KiB), without
+/// issuing a separate metadata query for every file.
+pub fn enumerate_while(path: &Path, mut emit: impl FnMut(DirectoryEntry) -> bool) -> io::Result<()> {
     let handle = unsafe {
         CreateFileW(
             wide(path).as_ptr(),
@@ -144,7 +150,11 @@ pub fn enumerate(path: &Path, mut emit: impl FnMut(DirectoryEntry)) -> io::Resul
                 status.information.min(buffer.len() * 8),
             )
         };
-        parse_directory_records(bytes, &mut emit)?;
+        let mut keep_going = true;
+        parse_directory_records(bytes, &mut |entry| {
+            if keep_going { keep_going = emit(entry); }
+        })?;
+        if !keep_going { return Ok(()); }
     }
 }
 

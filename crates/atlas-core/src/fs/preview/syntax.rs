@@ -1175,11 +1175,17 @@ pub fn tokenize_line(
         }
 
         // 13. Symbols / Operators
+        // Non-ASCII text also reaches this fallback. A token must consume a
+        // whole UTF-8 character, since callers slice the original string.
+        let start = i;
+        i += 1;
+        while i < len && !text.is_char_boundary(i) {
+            i += 1;
+        }
         tokens.push(SyntaxToken {
             kind: TokenKind::Symbol,
-            range: i..i + 1,
+            range: start..i,
         });
-        i += 1;
     }
 
     tokens
@@ -1205,6 +1211,33 @@ pub fn tokenize_document<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unicode_tokens_preserve_utf8_boundaries_and_text() {
+        let source = "café 日本語 e\u{301} 🧑🏽‍💻 → Ω\nplain ñ";
+        for ext in ["txt", "html", "xml", "tsx", "js", "rs", "py", "css", "json", "lua", "diff", "log", "md"] {
+            let lines = tokenize_document(source, ext);
+            let reconstructed = lines.iter().map(|line| line.iter().map(|(_, value)| *value).collect::<String>()).collect::<Vec<_>>().join("\n");
+            assert_eq!(reconstructed, source, "{ext}");
+        }
+    }
+
+    #[test]
+    fn unicode_near_delimiters_and_escapes_preserves_ranges() {
+        for source in ["é<!-- ñ -->🙂", "<div>ñ</div>", "'\\é' Ω", "/* ñ */好", "${ñ}é", "<Componente>💻</Componente>", "# título", "é\"日本\"ñ"] {
+            for ext in ["txt", "html", "tsx", "css", "sh", "lua", "rs"] {
+                let mut comment = false;
+                let tokens = tokenize_line(source, ext, &mut comment);
+                let mut end = 0;
+                for token in tokens {
+                    assert_eq!(token.range.start, end, "{source:?}, {ext}");
+                    assert!(source.get(token.range.clone()).is_some(), "invalid boundary: {token:?}, {source:?}, {ext}");
+                    end = token.range.end;
+                }
+                assert_eq!(end, source.len());
+            }
+        }
+    }
 
     #[test]
     fn test_rust_tokens() {

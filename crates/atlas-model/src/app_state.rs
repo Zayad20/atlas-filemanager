@@ -2,7 +2,7 @@
 use crate::layout_tree::{Container, Tile, TileId, Tree};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::file_entry::FileEntry;
 use crate::pane::{TabData, TabId};
@@ -20,12 +20,18 @@ pub enum FsChange {
 }
 
 pub enum BgResult {
+    IconKeysReady(Vec<String>),
+    DirTypeLabels { tab: TabId, op_id: u64, labels: Vec<String> },
     /// Payload stays in the isolated conversion session; this wakes the UI drain.
     ConversionWake,
+    /// Private-folder payload stays in the session-only UI channel.
+    VaultWake,
     WatcherDisabled(PathBuf),
     VolumeSnapshot(Vec<(PathBuf, u32)>),
     PreviewDelayElapsed { tab: TabId, request: crate::preview_cache::PreviewRequest, generation: u64 },
     DirListTiming { tab: crate::pane::TabId, op_id: u64, elapsed: std::time::Duration },
+    /// Created/accessed stamps of a listing, for grouping by those dates.
+    GroupTimes { tab: TabId, version: u64, times: Vec<crate::grouping::EntryTimes> },
     DirListExclusions { tab: TabId, op_id: u64, has_excluded_items: bool },
     DirListPreview {
         tab: TabId,
@@ -74,6 +80,12 @@ pub enum BgResult {
     },
     /// A downscaled grid thumbnail finished decoding off-thread. `rgba` empty == the
     /// decode failed (cached as a permanent miss so it isn't re-requested).
+    /// Windows Shell file-type icon rendered at several tiers (32/64/128/256 px,
+    /// each `(rgba, w, h)`). Empty == the Shell had nothing for this key.
+    ShellIconReady {
+        key: PathBuf,
+        tiers: Vec<(Vec<u8>, usize, usize)>,
+    },
     GridThumbnailReady {
         path: PathBuf,
         rgba: Vec<u8>,
@@ -223,6 +235,8 @@ pub enum BgResult {
         version: String,
         url: String,
     },
+    /// License activation/deactivation finished; carries the message to show.
+    LicenseChanged(Result<String, String>),
     /// A WASM extension requested the fuzzy panel. The background worker blocks on `reply_tx`.
     ExtShowQuickPick {
         items: Vec<String>,
@@ -238,6 +252,8 @@ pub enum BgResult {
     /// rclone daemon is up and the provider is ready.
     #[cfg(feature = "provider-host")]
     CloudReady,
+    #[cfg(feature = "provider-host")]
+    CloudProviderStopped { uninstall: bool, result: Result<(), String> },
     /// A non-fatal cloud error to surface in the UI.
     #[cfg(feature = "provider-host")]
     CloudError(String),
@@ -381,17 +397,26 @@ impl AppState {
         use crate::preview_cache::{MultiPreviewKey, PreviewRequest, MULTI_PREVIEW_LIMIT};
 
         let tab = self.focused_tile;
-        let view = match self.pane_tree.tiles.get(tab) {
-            Some(Tile::Pane(p)) => p.view_mode.clone(),
+        let (view, folder) = match self.pane_tree.tiles.get(tab) {
+            Some(Tile::Pane(p)) => (p.view_mode.clone(), p.location.fs_dir().map(Path::to_path_buf)),
             _ => return None,
         };
         let ts = self.tab_states.get(&tab)?;
         let selected = ts.selected_entries(&view);
+        #[cfg(feature = "provider-host")]
+        if let Some(Tile::Pane(pane)) = self.pane_tree.tiles.get(tab) {
+            if let crate::location::Location::Remote { id, .. } = &pane.location {
+                return if let [entry] = selected.as_slice() {
+                    Some(PreviewRequest::Single(crate::cloud_model::preview_key(id, ts.last_nav_op_id, &entry.path())))
+                } else { None };
+            }
+        }
         if let [entry] = selected.as_slice() {
             return Some(entry_to_preview_request(entry));
         }
         if selected.is_empty() {
-            return None;
+            // Nothing selected: preview the folder being browsed (Finder-style).
+            return folder.map(PreviewRequest::Single);
         }
 
         let mut hasher = DefaultHasher::new();
@@ -405,6 +430,7 @@ impl AppState {
                 .is_some_and(|ext| {
                     crate::preview_cache::is_image_ext(ext)
                         || crate::preview_cache::is_audio_ext(ext)
+                        || crate::preview_cache::is_model_ext(ext)
                         || crate::preview_cache::is_video_ext(ext)
                 });
             if paths.len() < MULTI_PREVIEW_LIMIT && is_thumbable {
@@ -475,6 +501,14 @@ impl AppState {
         match self.pane_tree.tiles.get_mut(self.focused_tile) {
             Some(Tile::Pane(p)) => Some(p),
             _ => None,
+        }
+    }
+
+    pub fn for_each_tab_data_mut(&mut self, mut f: impl FnMut(&mut TabData)) {
+        for (_, tile) in self.pane_tree.tiles.iter_mut() {
+            if let Tile::Pane(pane) = tile {
+                f(pane);
+            }
         }
     }
 
@@ -704,19 +738,20 @@ mod tests {
     fn multi_preview_limits_images_in_visible_order() {
         let (mut state, tile) = AppState::new(Settings::default());
         let tab = state.tab_states.get_mut(&tile).unwrap();
-        tab.set_entries((0..8).map(|idx| entry(&format!("{idx}.png"))).collect());
-        tab.selection.selected.extend([7, 2, 5, 1, 3, 6, 4, 0]);
+        let total = MULTI_PREVIEW_LIMIT + 4;
+        tab.set_entries((0..total).map(|idx| entry(&format!("{idx}.png"))).collect());
+        // Selection order is scrambled; thumbnails still follow visible order.
+        tab.selection.selected.extend((0..total).rev());
 
         let Some(PreviewRequest::Multiple { key, paths }) = state.active_preview_request() else {
             panic!("expected a multi-preview request");
         };
-        assert_eq!(key.selected_count, 8);
+        assert_eq!(key.selected_count, total);
         assert_eq!(paths.len(), MULTI_PREVIEW_LIMIT);
         assert_eq!(
             paths,
-            ["0.png", "1.png", "2.png", "3.png"]
-                .into_iter()
-                .map(PathBuf::from)
+            (0..MULTI_PREVIEW_LIMIT)
+                .map(|idx| PathBuf::from(format!("{idx}.png")))
                 .collect::<Vec<_>>()
         );
     }

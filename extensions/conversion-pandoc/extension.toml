@@ -1,7 +1,7 @@
 id = "conversion-pandoc"
 name = "Pandoc · Document conversion"
 version = "3.12.1"
-description = "Optional document engine. Downloaded only when requested; shared with file actions and previews."
+description = "Optional document conversion engine. Pandoc is downloaded only when a conversion needs it."
 kind = "tool_provider"
 
 [[tools]]

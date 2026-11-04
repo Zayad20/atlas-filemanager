@@ -10,7 +10,11 @@ pub(crate) fn image_file_to_preview(path: &Path) -> PreviewResult {
         Ok(img) => {
             let original_width = img.width() as usize;
             let original_height = img.height() as usize;
-            let img = img.thumbnail(1600, 1600).to_rgba8();
+            let img = if img.width() > 1600 || img.height() > 1600 {
+                img.thumbnail(1600, 1600)
+            } else {
+                img
+            }.to_rgba8();
             let (width, height) = img.dimensions();
             PreviewResult::Image {
                 rgba: img.into_raw(),

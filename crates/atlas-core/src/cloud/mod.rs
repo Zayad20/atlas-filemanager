@@ -12,6 +12,11 @@
 //!   existing file-view code path works unchanged.
 
 pub mod provider;
+pub mod control;
+mod journal;
+mod staging;
+pub mod preview;
+mod installation;
 #[cfg(feature = "cloud-backend")]
 pub mod rclone;
 pub mod remote;
@@ -37,4 +42,14 @@ pub fn mount_point_for(id: &str) -> PathBuf {
 /// Local directory where Access-mode downloads land by default.
 pub fn downloads_dir() -> PathBuf {
     dirs::download_dir().unwrap_or_else(|| crate::util::config::data_dir().join("downloads"))
+}
+
+/// Opening a remote object materializes an isolated copy. Two accounts or two
+/// homonymous objects never overwrite or open each other's local materialization.
+pub fn open_cache_dir(account: &str, generation: u64, source: &str) -> PathBuf {
+    use sha2::{Digest as _, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(account.as_bytes()); digest.update([0]);
+    digest.update(generation.to_le_bytes()); digest.update(source.as_bytes());
+    crate::util::config::data_dir().join("cloud-open").join(format!("{:x}", digest.finalize()))
 }

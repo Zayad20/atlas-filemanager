@@ -1,0 +1,14 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "zune-inflate",
+  "version": "0.2.54",
+  "license": "MIT OR Apache-2.0 OR Zlib",
+  "authors": [],
+  "homepage": "https://github.com/etemesi254/zune-image/tree/main/zune-inflate"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: a7e3d8fd82218e7f9f2172d41a048e4879abc81228589539e1ec750d72811f90

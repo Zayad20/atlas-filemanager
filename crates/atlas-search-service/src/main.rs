@@ -882,6 +882,7 @@ fn search_index(state: &State, query: &SearchQuery, request_id: u64) -> SearchBa
                 continue;
             }
         }
+        if atlas_core::vault::is_private_path(&path) { continue; }
         results.push(SearchResult {
             path,
             is_dir: record.is_dir,

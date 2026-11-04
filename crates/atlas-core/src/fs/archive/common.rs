@@ -61,6 +61,7 @@ pub(super) fn ensure_parent_dir(dest: &Path) -> anyhow::Result<()> {
 }
 
 /// Write `data` to `dest`, creating parent directories as needed.
+#[cfg(any(feature = "rar", feature = "sevenz"))]
 pub(super) fn write_to_dest(dest: &Path, data: &[u8]) -> anyhow::Result<()> {
     ensure_parent_dir(dest)?;
     #[allow(clippy::disallowed_methods)] // reason: trait is sync; runs under spawn_blocking

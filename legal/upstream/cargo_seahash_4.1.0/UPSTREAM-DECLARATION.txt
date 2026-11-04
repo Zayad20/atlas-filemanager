@@ -1,0 +1,17 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "seahash",
+  "version": "4.1.0",
+  "license": "MIT",
+  "authors": [
+    "ticki <ticki@users.noreply.github.com>",
+    "Tom Almeida <tom@tommoa.me>"
+  ],
+  "repository": "https://gitlab.redox-os.org/redox-os/seahash"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: dd213de338ca98b7ef7a2562bcf4e4214d215d1a8277750a6a72b4e809c8d0dd

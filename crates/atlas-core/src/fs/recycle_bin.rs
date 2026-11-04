@@ -163,6 +163,7 @@ struct Meta {
 }
 
 /// Decode percent-encoded characters in a string according to RFC 2396.
+#[cfg(any(not(windows), test))]
 fn percent_decode(s: &str) -> String {
     let mut bytes = Vec::with_capacity(s.len());
     let mut chars = s.as_bytes().iter();
@@ -184,6 +185,7 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+#[cfg(any(not(windows), test))]
 const fn from_hex_digit(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
@@ -194,6 +196,7 @@ const fn from_hex_digit(b: u8) -> Option<u8> {
 }
 
 /// Parse ISO-8601 deletion date formatted as `YYYY-MM-DDThh:mm:ss`.
+#[cfg(any(not(windows), test))]
 fn parse_deletion_date(s: &str) -> Option<SystemTime> {
     let s = s.trim();
     if s.len() < 19 {
@@ -244,6 +247,7 @@ fn parse_deletion_date(s: &str) -> Option<SystemTime> {
 }
 
 /// Parse FreeDesktop.org `.trashinfo` metadata file.
+#[cfg(any(not(windows), test))]
 fn parse_trashinfo(data: &str) -> Option<Meta> {
     let mut path = None;
     let mut deleted_at = None;

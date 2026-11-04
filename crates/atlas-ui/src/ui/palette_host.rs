@@ -95,6 +95,7 @@ impl App {
                 return host.clone();
             }
         }
+        kind.state(self).selected_idx = crate::ui::palette::INITIAL_SELECTION;
         let app = cx.entity();
         let host = cx.new(|cx| PaletteHost::new(app, kind, &input, cx));
         self.palette_host = Some((kind, host.clone()));

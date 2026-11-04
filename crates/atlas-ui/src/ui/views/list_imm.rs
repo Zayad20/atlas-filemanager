@@ -41,6 +41,17 @@ use crate::ui::selection_checkbox;
 use crate::ui::surface::{
     paint_rounded, paint_svg_icon, shape_text_truncated, text_origin_y, Slot,
 };
+
+pub(crate) fn list_name_bounds(cell: Bounds<Pixels>, zoom: f32) -> Bounds<Pixels> {
+    let name_x = (24.0 + 16.0 + 4.0) * zoom;
+    Bounds {
+        origin: point(cell.origin.x + px(name_x), cell.origin.y),
+        size: size(
+            px((f32::from(cell.size.width) - name_x - 8.0 * zoom).max(0.0)),
+            cell.size.height,
+        ),
+    }
+}
 use atlas_model::file_entry::FileKind;
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
@@ -374,6 +385,7 @@ impl Element for ListImmElement {
             start_idx,
             end_idx,
             total_count,
+            bands: Default::default(),
         };
 
         let content_mask = window.content_mask().bounds;
@@ -390,6 +402,7 @@ impl Element for ListImmElement {
                     visible
                         .get(pos)
                         .copied()
+                        .filter(|entry_idx| !atlas_model::grouping::is_virtual_cell(*entry_idx))
                         .map(|entry_idx| (entry_idx, model.cell_bounds(pos)))
                 })
                 .collect();
@@ -416,7 +429,7 @@ impl Element for ListImmElement {
             let mut folder_targets = Vec::new();
             if is_drag_active {
                 for pos in start_idx..end_idx {
-                    if let Some(&entry_idx) = tab_state.visible.get(pos) {
+                    if let Some(&entry_idx) = visible.get(pos) {
                         if let Some(entry) = tab_state.entries.get(entry_idx) {
                             if matches!(entry.kind(), FileKind::Dir) {
                                 let cell_b = model.cell_bounds(pos);
@@ -443,7 +456,7 @@ impl Element for ListImmElement {
             // Collect raw cell details for text shaping
             let mut items = Vec::with_capacity(end_idx.saturating_sub(start_idx));
             for pos in start_idx..end_idx {
-                let Some(&entry_idx) = tab_state.visible.get(pos) else {
+                let Some(&entry_idx) = visible.get(pos) else {
                     continue;
                 };
                 let Some(entry) = tab_state.entries.get(entry_idx) else {
@@ -465,7 +478,7 @@ impl Element for ListImmElement {
                 // Keep names aligned. Hover must never insert a control or shift a file.
                 let show_cell_check = show_checkboxes;
                 let icon =
-                    app.file_icon_for_entry(&entry.path(), &entry.kind(), entry.extension().as_deref());
+                    app.row_icon_for_entry(&entry.path(), &entry.kind(), entry.extension().as_deref());
 
                 items.push(RawCellData {
                     pos,
@@ -539,7 +552,7 @@ impl Element for ListImmElement {
                 )
             })
             .collect();
-        app_entity.update(cx, |app, _| {
+        app_entity.update(cx, |app, view_cx| {
             app.row_rects.borrow_mut().insert(
                 pane_id,
                 raw_cells
@@ -549,6 +562,8 @@ impl Element for ListImmElement {
                     .collect(),
             );
             app.list_hit.insert(pane_id, model);
+            // Smooth wheel frames move content under a stationary marquee.
+            app.refresh_rubber_for_pane(pane_id, view_cx);
         });
         if moving {
             window.request_animation_frame();
@@ -573,7 +588,7 @@ impl Element for ListImmElement {
             // The checkbox replaces the icon (same rule as Details): starting a
             // multi-selection never shifts names sideways.
             let slots = list_cell_cut(raw.rel_x, raw.rel_y, cell_w, cell_h, zoom_scale, false);
-            let name_color = if raw.selected {
+            let name_color = if raw.selected && !raw.editing {
                 self.colors.accent_fg
             } else {
                 self.colors.fg
@@ -678,7 +693,7 @@ impl Element for ListImmElement {
             window.with_element_opacity(Some(cell.opacity * crate::ui::views::rename::cut_path_opacity(&self.app, &cell.path, cx)), |window| {
                 window.paint_layer(cell_bounds, |window| {
                     // 1. Hover/selection/blinking background highlight
-                    let bg = if cell.selected {
+                    let bg = if cell.selected && !cell.editing {
                         Some(self.colors.accent)
                     } else if cell.blinking {
                         Some(self.colors.accent.opacity(0.38))
@@ -726,7 +741,7 @@ impl Element for ListImmElement {
                                 size: size(px(icon_sz), px(icon_sz)),
                             };
 
-                            if cell.selected && cell.selected_at.is_some() {
+                            if cell.selected && !cell.editing && cell.selected_at.is_some() {
                                 selection_checkbox::paint_animated(
                                     window,
                                     cx,
@@ -749,7 +764,7 @@ impl Element for ListImmElement {
                                 } else {
                                     AtlasIcon::File
                                 };
-                                let icon_color = if cell.selected {
+                                let icon_color = if cell.selected && !cell.editing {
                                     self.colors.accent_fg
                                 } else {
                                     self.colors.accent
@@ -942,7 +957,11 @@ impl App {
             .state
             .tab_states
             .get_mut(&pane_id)
-            .map_or(0, |ts| ts.visible_indices().len());
+            .map_or(0, |ts| {
+                ts.visible_indices();
+                // Collapsed groups hide every file but still show their headers.
+                ts.visible.len()
+            });
 
         if count == 0 {
             self.list_hit.remove(&pane_id);
@@ -1014,17 +1033,21 @@ impl App {
             }
         };
         let rows = list_row_count(viewport_h, pitch);
+        // Each group opens a fresh column topped by its header cell.
+        let group_cells = self.grouped_cells(pane_id, atlas_model::grouping::GroupFlow::Columns { rows });
+        let visible_arc = match &group_cells {
+            Some(groups) => groups.cells.clone(),
+            None => self.state.tab_states.get(&pane_id).map(|ts| ts.visible.clone()).unwrap_or_default(),
+        };
+        let count = visible_arc.len();
         let total_cols = count.div_ceil(rows);
-        // One wheel notch (three lines) advances one column, like Explorer.
-        base_scroll.set_line_scroll_height(px(cell_stride / 3.0));
+        // One wheel notch (three lines) advances one column smoothly, like Explorer.
+        // Divide by boost so the effective eased travel lands squarely on the column boundary.
+        let (_, boost) = crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
+        base_scroll.set_line_scroll_height(px((cell_stride / 3.0) / boost.max(1.0)));
         let content_w = total_cols as f32 * cell_stride;
-        let max_scroll = (content_w - viewport_w).max(0.0);
-        let visible_arc = self
-            .state
-            .tab_states
-            .get(&pane_id)
-            .map(|ts| ts.visible.clone())
-            .unwrap_or_default();
+        let overscroll_margin = if content_w > viewport_w { 20.0 * zoom_scale } else { 0.0 };
+        let max_scroll = (content_w + overscroll_margin - viewport_w).max(0.0);
         crate::ui::imm::scroll::apply_deferred(&scroll, false, viewport_w, max_scroll, |pos| {
             (pos < count).then(|| ((pos / rows) as f32 * cell_stride, CELL_W * zoom_scale))
         });
@@ -1037,15 +1060,16 @@ impl App {
 
         // Icons for the columns around the viewport; prepaint paints the exact
         // live span, so this only needs to be a close superset.
-        let first_col = ((scroll_x / cell_stride).floor() as usize).saturating_sub(1);
-        let last_col = ((scroll_x + viewport_w) / cell_stride).ceil() as usize + 1;
+        let ahead_cols = ((viewport_w / cell_stride).ceil() as usize).max(2);
+        let first_col = ((scroll_x / cell_stride).floor() as usize).saturating_sub(ahead_cols);
+        let last_col = ((scroll_x + viewport_w) / cell_stride).ceil() as usize + ahead_cols;
         let start = (first_col * rows).min(count);
         let end = (last_col * rows).min(count).max(start);
         let missing_icons = {
             let mut m = Vec::new();
             if let Some(ts) = self.state.tab_states.get(&pane_id) {
                 for i in start..end {
-                    if let Some(&idx) = ts.visible.get(i) {
+                    if let Some(&idx) = visible_arc.get(i) {
                         if let Some(e) = ts.entries.get(idx) {
                             let fref = crate::ui::file_icons::FileIconRef {
                                 path: e.path(),
@@ -1077,7 +1101,7 @@ impl App {
         let surface = ListImmElement::new(
             pane_id,
             view.downgrade(),
-            visible_arc,
+            visible_arc.clone(),
             base_scroll.clone(),
             rows,
             count,
@@ -1097,7 +1121,7 @@ impl App {
         let mut rename_overlay = None;
         if let Some(ts) = self.state.tab_states.get(&pane_id) {
             for visible_pos in start..end {
-                let Some(&entry_idx) = ts.visible.get(visible_pos) else {
+                let Some(&entry_idx) = visible_arc.get(visible_pos) else {
                     continue;
                 };
                 let Some(rename_input) =
@@ -1111,7 +1135,7 @@ impl App {
                     origin: point(px(cell_x), px(cell_y)),
                     size: size(px(CELL_W * zoom_scale), px(cell_h_px)),
                 };
-                let label = crate::ui::views::grid_surface_element::list_name_bounds(
+                let label = list_name_bounds(
                     cell_bounds,
                     zoom_scale,
                 );
@@ -1150,6 +1174,7 @@ impl App {
 
         let tooltip_data = self
             .list_hover
+            .filter(|_| self.ctx_menu.is_none())
             .filter(|(hover_pane, _)| *hover_pane == pane_id)
             .and_then(|(_, entry_idx)| {
                 self.state
@@ -1167,6 +1192,24 @@ impl App {
                     })
             });
 
+        let group_overlays = group_cells.as_ref().map_or_else(Vec::new, |groups| {
+            let colors = crate::ui::group_header::GroupHeaderColors { fg, muted, border };
+            let gap = 6.0 * zoom_scale;
+            groups
+                .headers
+                .iter()
+                .map(|header| {
+                    let (_, _, x, y) = list_cell_projection(header.cell, rows, cell_stride, pitch, 0.0, 0.0);
+                    crate::ui::group_header::group_header(
+                        pane_id,
+                        header,
+                        &view,
+                        colors,
+                        (px(x), px(y), Some(px(header.span as f32 * cell_stride - gap)), px(cell_h_px)),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
         let scroll_view = view.clone();
         let inner = div()
             .id(("anim-list-imm-scroll", pane_id.0))
@@ -1202,7 +1245,8 @@ impl App {
                     .relative()
                     .child(surface)
                     .when_some(rename_overlay, |el, overlay| el.child(overlay))
-                    .child(drag_layer),
+                    .child(drag_layer)
+                    .children(group_overlays),
             )
             .into_any_element();
 
@@ -1309,6 +1353,7 @@ mod tests {
             start_idx: 0,
             end_idx: 8,
             total_count: 8,
+            bands: Default::default(),
         };
         // Scrolled one column: the left edge shows column 1 (positions 3..6).
         assert_eq!(model.hit_entry(point(px(15.0), px(25.0))), Some(103));

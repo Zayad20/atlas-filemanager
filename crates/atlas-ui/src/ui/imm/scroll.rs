@@ -128,6 +128,20 @@ mod tests {
     }
 
     #[test]
+    fn live_span_covers_large_wheel_jumps_in_both_directions() {
+        // Offsets can jump much farther than overscan between render and
+        // prepaint. Every row intersecting the new viewport must be present.
+        for offset in [0.0, 24_005.0, 9_217.0, 95_100.0, 52.0] {
+            let (start, end) = live_span(offset, offset + 620.0, 27.0, 2, 10_000);
+            let first_visible = (offset / 27.0).floor() as usize;
+            let end_visible = ((offset + 620.0) / 27.0).ceil() as usize;
+            assert!(start <= first_visible);
+            assert!(end >= end_visible);
+            assert!(end - start <= 28);
+        }
+    }
+
+    #[test]
     fn keyboard_target_scrolls_minimally_with_one_item_of_context() {
         // Inside the viewport: no movement at all (no recentering).
         assert_eq!(keyboard_target(140.0, 20.0, 300.0, 0.0, 1000.0), 0.0);

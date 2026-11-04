@@ -33,6 +33,23 @@ pub struct DraggedFiles {
     pub(crate) paths: Vec<PathBuf>,
 }
 
+/// Internal cloud drag. Virtual object addresses never enter CF_HDROP or the
+/// local filesystem transfer engine.
+#[derive(Clone)]
+pub(crate) struct DraggedCloudFiles {
+    pub account: String,
+    pub account_label: String,
+    pub paths: Vec<PathBuf>,
+}
+
+impl Render for DraggedCloudFiles {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div().px_2().py_1().rounded_md().bg(cx.theme().accent)
+            .text_color(cx.theme().accent_foreground)
+            .child(format!("{} · {}", self.account_label, rust_i18n::t!("root_elements", count = self.paths.len())))
+    }
+}
+
 impl Render for DraggedFiles {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let n = self.paths.len();
@@ -165,6 +182,8 @@ impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let frame = crate::perf::next_frame();
         crate::perf::count("render.app");
+        crate::icon_theme::set_icon_scale(window.scale_factor());
+        self.sync_focus_paint(cx);
         crate::perf::frame_summary(frame, || {
             let mut panes = 0;
             let mut tabs = 0;
@@ -312,7 +331,7 @@ impl Render for App {
             let closing = &self.tab_closing;
             let pane_closing = &self.pane_closing;
             let sidebar_visible = self.state.settings.show_sidebar && !crate::perf::skip_sidebar();
-            let inspector_visible = self.state.settings.show_inspector && self.preview_visible_for_focused();
+            let inspector_visible = self.preview_visible_for_focused();
             let breadcrumb_menu_visible = self.breadcrumb_menu.is_some();
             if !self.pending_drag_hover_targets.is_empty() {
                 let visible_panes: std::collections::HashSet<_> = tree.tiles.iter().filter_map(|(_, tile)| {
@@ -375,7 +394,7 @@ impl Render for App {
                 .tab_states
                 .get(&pane)
                 .is_some_and(|ts| ts.selection.scroll_to_selected);
-            if needs_scroll && self.scroll_selected_into_view(pane, gpui::ScrollStrategy::Nearest) {
+            if needs_scroll && self.scroll_selected_into_view(pane, gpui::ScrollStrategy::Center) {
                 if let Some(ts) = self.state.tab_states.get_mut(&pane) {
                     ts.selection.scroll_to_selected = false;
                 }
@@ -590,16 +609,24 @@ impl Render for App {
                 .min((f32::from(viewport.width) - 96.0).max(180.0))
         };
         let inspector_container =
-            (preview_should_render && !crate::perf::skip_inspector()).then(|| {
+            (preview_should_render && !preview_expanded && !crate::perf::skip_inspector()).then(|| {
                 crate::perf::count("render.inspector");
+                // The grab zone lives outside the clipped panel shell and reaches
+                // well into the dock, so the edge is easy to hit.
+                let accent = cx.theme().accent;
+                let resizing = self.inspector_resize.is_some();
                 let resize_handle = (preview_visible && !preview_expanded && !preview_closing)
                     .then(|| {
                         div()
+                            .id("inspector-resize-handle")
+                            .accessibility_id("inspector-resize-handle")
+                            .role(gpui::Role::Splitter)
                             .absolute()
-                            .left(-px(6.0))
+                            .left(-px(14.0))
                             .top_0()
-                            .w(px(12.0))
+                            .w(px(20.0))
                             .h_full()
+                            .group("inspector-resize")
                             .cursor_col_resize()
                             .on_mouse_down(
                                 MouseButton::Left,
@@ -610,16 +637,19 @@ impl Render for App {
                                             start_width: this.state.settings.inspector_width,
                                         });
                                     cx.stop_propagation();
+                                    cx.notify();
                                 }),
                             )
                             .child(
                                 div()
                                     .absolute()
-                                    .left(px(5.5))
+                                    .left(px(13.0))
                                     .top_0()
-                                    .w(px(1.0))
+                                    .w(px(2.0))
                                     .h_full()
-                                    .bg(cx.theme().border.opacity(0.7)),
+                                    .rounded(px(1.0))
+                                    .bg(if resizing { accent } else { gpui::transparent_black() })
+                                    .group_hover("inspector-resize", |s| s.bg(accent.opacity(0.7))),
                             )
                             .occlude()
                     });
@@ -633,18 +663,25 @@ impl Render for App {
                     // still owns the panel shell/resize animation, but a pane
                     // split or unrelated App notification no longer rebuilds
                     // all preview rows and controls.
-                    .child(self.ensure_inspector_host(cx).into_any_element())
-                    .children(resize_handle);
+                    .child(self.ensure_inspector_host(cx).into_any_element());
                 let panel = div()
+                    .relative()
                     .h_full()
                     .flex_shrink_0()
-                    .w(px(inspector_width * preview_progress))
-                    .overflow_hidden()
-                    .opacity(preview_progress)
-                    .paint_offset(gpui::point(px(10.0 * (1.0 - preview_progress)), px(0.0)))
-                    .child(panel);
+                    .child(
+                        div()
+                            .h_full()
+                            .w(px(inspector_width * preview_progress))
+                            .overflow_hidden()
+                            .opacity(preview_progress)
+                            .paint_offset(gpui::point(px(10.0 * (1.0 - preview_progress)), px(0.0)))
+                            .child(panel),
+                    )
+                    .children(resize_handle);
                 crate::ui::layout_region::layout_region("inspector", panel).into_any_element()
             });
+        let expanded_inspector = (preview_visible && preview_expanded && !crate::perf::skip_inspector())
+            .then(|| self.render_expanded_preview(window, cx));
         let overlays = if crate::perf::skip_overlays() {
             crate::perf::count("render.overlays.skipped");
             Vec::new()
@@ -691,7 +728,8 @@ impl Render for App {
             .track_focus(&self.focus_handle)
             .on_modifiers_changed({
                 let view = view.clone();
-                move |_ev, _window, cx| {
+                move |_ev, window, cx| {
+                    window.refresh();
                     view.update(cx, |_, cx| cx.notify());
                 }
             })
@@ -1013,6 +1051,14 @@ impl Render for App {
                 this.remove_bookmark_reference(drag, window.mouse_position());
                 cx.notify();
             }))
+            .on_drop::<DraggedCloudFiles>(cx.listener(|this, drag, window, cx| {
+                #[cfg(feature = "provider-host")]
+                this.drop_cloud_files(drag, window.mouse_position(), window.modifiers().shift);
+                #[cfg(not(feature = "provider-host"))]
+                let _ = (this, drag, window);
+                cx.stop_propagation();
+                cx.notify();
+            }))
             // Behind the workspace: foreground controls block caption hit testing,
             // while padding and gaps stay draggable even in very narrow splits.
             .children(
@@ -1039,12 +1085,15 @@ impl Render for App {
                             .h_full()
                             .min_w(px(0.))
                             .children(sidebar_resizer)
-                            .child(center_content),
+                            .child(v_flex().size_full()
+                                .child(div().flex_1().min_h_0().child(center_content))
+                                .children(self.render_private_session_bar(cx))),
                     )
                     .children(inspector_container),
             )
             // Phase5: overlay layers (goto bar, palette, settings, paste conflict, …).
             .children(self.render_hidden_operation_notices(cx))
+            .children(expanded_inspector)
             .children(overlays)
             // Phase C: the rubber-band selection rectangle, painted over the panes.
             .children(marquee)

@@ -9,6 +9,7 @@
 #![allow(dead_code)]
 
 use std::path::Path;
+use super::control::TransferControl;
 
 /// A single entry returned by [`CloudProvider::list`] / `stat`.
 #[derive(Debug, Clone)]
@@ -40,6 +41,8 @@ pub type ProgressSink = std::sync::Arc<dyn Fn(u64, u64) + Send + Sync>;
 pub trait CloudProvider: Send + Sync {
     fn capabilities(&self) -> Capabilities;
 
+    async fn prepare_shutdown(&self) -> anyhow::Result<()> { Ok(()) }
+
     /// Create/overwrite the backend config for remote `id`. `parameters` are
     /// backend-specific; secret values are obscured by the backend, not stored
     /// by the app.
@@ -65,23 +68,36 @@ pub trait CloudProvider: Send + Sync {
     /// List the directory `path` (remote-relative) of remote `id`.
     async fn list(&self, id: &str, path: &str) -> anyhow::Result<Vec<RemoteEntry>>;
 
-    /// Download a single remote file to a local path, reporting progress.
+    /// Download a remote file or directory to a local path, reporting progress.
     async fn download(
         &self,
         id: &str,
         src: &str,
         dst: &Path,
         progress: ProgressSink,
-    ) -> anyhow::Result<()>;
+    ) -> anyhow::Result<()> {
+        self.download_controlled(id, src, dst, progress, TransferControl::default()).await
+    }
 
-    /// Upload a single local file to a remote path, reporting progress.
+    async fn download_controlled(&self, id: &str, src: &str, dst: &Path,
+        progress: ProgressSink, control: TransferControl) -> anyhow::Result<()>;
+
+    /// Upload a local file or directory to a remote path, reporting progress.
     async fn upload(
         &self,
         id: &str,
         src: &Path,
         dst: &str,
         progress: ProgressSink,
-    ) -> anyhow::Result<()>;
+    ) -> anyhow::Result<()> {
+        self.upload_controlled(id, src, dst, progress, TransferControl::default()).await
+    }
+
+    async fn upload_controlled(&self, id: &str, src: &Path, dst: &str,
+        progress: ProgressSink, control: TransferControl) -> anyhow::Result<()>;
+
+    async fn copy_between(&self, source_id: &str, source: &str, destination_id: &str, destination: &str,
+        progress: ProgressSink, control: TransferControl) -> anyhow::Result<()>;
 
     /// Storage usage `(used, total)` in bytes for the remote, if reported.
     async fn about(&self, id: &str) -> anyhow::Result<(u64, u64)>;

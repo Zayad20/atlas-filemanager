@@ -1,0 +1,16 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "unicode-casefold",
+  "version": "0.2.0",
+  "license": "MIT/Apache-2.0",
+  "authors": [
+    "Chris Wong <lambda.fairy@gmail.com>"
+  ],
+  "repository": "https://github.com/lfairy/unicode-casefold"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: c88e90579a62afeae27cf7f1ee4755d51f780a203fceda9f98e1416cae439ebd

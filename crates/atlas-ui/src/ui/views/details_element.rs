@@ -38,10 +38,7 @@ pub(crate) struct DetailsBodyElement {
     app: WeakEntity<App>,
     visible: Arc<Vec<usize>>,
     row_h: f32,
-    scroll_y: f32,
-    viewport_h: f32,
-    start_idx: usize,
-    end_idx: usize,
+    scroll: gpui::ScrollHandle,
     layout: DetailsRowLayout,
     content_lod: DetailsContentLod,
     colors: DetailsColors,
@@ -72,10 +69,7 @@ impl DetailsBodyElement {
         app: WeakEntity<App>,
         visible: Arc<Vec<usize>>,
         row_h: f32,
-        scroll_y: f32,
-        viewport_h: f32,
-        start_idx: usize,
-        end_idx: usize,
+        scroll: gpui::ScrollHandle,
         layout: DetailsRowLayout,
         content_lod: DetailsContentLod,
         colors: DetailsColors,
@@ -90,10 +84,7 @@ impl DetailsBodyElement {
             app,
             visible,
             row_h,
-            scroll_y,
-            viewport_h,
-            start_idx,
-            end_idx,
+            scroll,
             layout,
             content_lod,
             colors,
@@ -185,11 +176,20 @@ impl Element for DetailsBodyElement {
 
         let pane_id = self.pane_id;
         let visible = self.visible.clone();
-        let start_idx = self.start_idx;
-        let end_idx = self.end_idx;
         let row_h = self.row_h;
-        let scroll_y = self.scroll_y;
-        let viewport_h = self.viewport_h;
+        let tracked = self.scroll.bounds();
+        let viewport_bounds = if tracked.size.width > px(1.0) && tracked.size.height > px(1.0) {
+            tracked
+        } else {
+            bounds
+        };
+        let scroll_y = (-f32::from(self.scroll.offset().y)).max(0.0);
+        let viewport_h = f32::from(viewport_bounds.size.height);
+        // Smooth scrolling advances after render; shape and hit-test the range
+        // that is actually on screen in this prepaint pass.
+        let (start_idx, end_idx) = crate::ui::imm::scroll::live_span(
+            scroll_y, scroll_y + viewport_h, row_h, 2, visible.len(),
+        );
         let layout = self.layout.clone();
         let content_lod = self.content_lod;
         let font = self.font.clone();
@@ -311,10 +311,7 @@ impl Element for DetailsBodyElement {
         // Hit testing and folder drop targets follow the same presented geometry.
         let hit_perf = crate::perf::span("details.prepaint.hit_model");
         let hit_model = DetailsHitModel {
-            bounds: gpui::Bounds {
-                origin: point(bounds.origin.x, bounds.origin.y + px(scroll_y)),
-                size: size(bounds.size.width, px(viewport_h)),
-            },
+            bounds: viewport_bounds,
             scroll_y,
             row_h,
             visible: visible.clone(),
@@ -329,9 +326,12 @@ impl Element for DetailsBodyElement {
         // Inclusive parent of drop targets, row_build, ring.sync and ring.collect.
         let app_update_perf = crate::perf::span("details.prepaint.app_update");
         let has_gpui_drag = cx.has_active_drag();
-        let (mut rows, show_checkboxes) = app_entity.update(cx, |app, _| {
+        let (mut rows, show_checkboxes) = app_entity.update(cx, |app, cx| {
             let drop_perf = crate::perf::span("details.prepaint.drop_targets");
             app.details_hit.insert(pane_id, hit_model.clone());
+            app.pane_view_bounds.insert(pane_id, viewport_bounds);
+            app.refresh_rubber_for_pane(pane_id, cx);
+            super::details::prime_details_file_icons_range(app, pane_id, &visible, start_idx, end_idx);
             if app.is_drag_active(has_gpui_drag) {
                 app.pending_drag_hover_targets.retain(
                     |target| !matches!(target.id, DragHoverId::Folder(tab, _) if tab == pane_id),
@@ -405,6 +405,10 @@ impl Element for DetailsBodyElement {
                         continue;
                     };
                     let Some(entry) = tab_state.entries.get(entry_idx) else {
+                        // Group headers occupy a row but never paint file content.
+                        if atlas_model::grouping::is_virtual_cell(entry_idx) {
+                            app.details_row_rings.entry(pane_id).or_default().remove_row(i);
+                        }
                         continue;
                     };
                     if crate::ui::views::rename::active_input(app, pane_id, entry_idx).is_some() {
@@ -421,7 +425,8 @@ impl Element for DetailsBodyElement {
                     let flashing = matches!(entry.kind(), FileKind::Dir)
                         && app.drag_hover.blink_id.as_ref()
                             == Some(&DragHoverId::Folder(pane_id, entry.path()));
-                    let hovered = app.details_hover == Some((pane_id, entry_idx));
+                    let hovered = app.details_hover == Some((pane_id, entry_idx))
+                        && app.rename_edit.is_none();
                     let odd = i % 2 == 1;
 
                     let shape_key = details_ring::details_row_shape_key(
@@ -434,7 +439,7 @@ impl Element for DetailsBodyElement {
 
                     let icon_t0 = Instant::now();
                     let icon_tex = app
-                        .file_icon_for_entry(&entry.path(), &entry.kind(), entry.extension().as_deref())
+                        .row_icon_for_entry(&entry.path(), &entry.kind(), entry.extension().as_deref())
                         .texture();
                     icon_lookup_time += icon_t0.elapsed();
                     let fallback_icon_path = if icon_tex.is_none() {
@@ -621,8 +626,8 @@ impl Element for DetailsBodyElement {
         let presence_epoch = crate::ui::imm::motion::presentation_epoch(
             epoch,
             &[
-                self.scroll_y,
-                self.viewport_h,
+                scroll_y,
+                viewport_h,
                 self.row_h,
                 f32::from(bounds.size.width),
             ],
@@ -703,6 +708,7 @@ impl Element for DetailsBodyElement {
         let hover = self.colors.hover;
         let muted = self.colors.muted;
         let stripe_bg = self.colors.stripe_bg;
+        let danger = gpui_component::ActiveTheme::theme(cx).danger;
         let floating_bg = gpui_component::ActiveTheme::theme(cx)
             .background
             .opacity(1.0);
@@ -761,9 +767,18 @@ impl Element for DetailsBodyElement {
                     };
                 window.with_element_opacity(Some(opacity), |window| {
                     window.paint_layer(row_bounds, |window| {
+                        // A row in a live batch rename shows only its text caret: no
+                        // selection fill, no hover — the edit itself is the highlight.
+                        let batch_edit = row
+                            .selected
+                            .then(|| super::batch_row::row_edit(&app, &row.path, cx))
+                            .flatten();
+                        let sel = row.selected && batch_edit.is_none();
                         // 1. Background
-                        let bg = if row.selected {
+                        let bg = if sel {
                             Some(accent)
+                        } else if batch_edit.is_some() {
+                            None
                         } else if row.flashing {
                             Some(accent.opacity(0.38))
                         } else if row.hovered {
@@ -787,7 +802,7 @@ impl Element for DetailsBodyElement {
                         }
 
                         // 2. Icons
-                        if row.selected && prepaint.show_checkboxes {
+                        if sel && prepaint.show_checkboxes {
                             let icon_center_x =
                                 f32::from(origin_x) + row_pad_x + row_icon_size * 0.5;
                             let icon_center_y = f32::from(y) + row_h * 0.5;
@@ -840,25 +855,44 @@ impl Element for DetailsBodyElement {
                         if paint_names {
                             let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
                             let name_x = origin_x + px(prepaint.layout.name_x);
-                            let name_color = if row.selected { accent_fg } else { fg };
-                            if row.text.name_s.width() > px(name_width) {
-                                truncated_names += 1;
+                            let name_color = if sel { accent_fg } else { fg };
+                            if let Some(edit) = batch_edit {
+                                super::batch_row::paint_row_edit(
+                                    &edit,
+                                    window,
+                                    cx,
+                                    &self.font,
+                                    self.font_size,
+                                    Bounds {
+                                        origin: point(name_x, y),
+                                        size: size(px(name_width), px(row_h)),
+                                    },
+                                    text_y,
+                                    row_h,
+                                    zoom_scale,
+                                    fg,
+                                    danger,
+                                );
+                            } else {
+                                if row.text.name_s.width() > px(name_width) {
+                                    truncated_names += 1;
+                                }
+                                let _ = row.text.name_s.paint_mono_truncated(
+                                    point(name_x, text_y),
+                                    px(row_h),
+                                    px(name_width),
+                                    &prepaint.ellipsis,
+                                    name_color,
+                                    window,
+                                    cx,
+                                );
                             }
-                            let _ = row.text.name_s.paint_mono_truncated(
-                                point(name_x, text_y),
-                                px(row_h),
-                                px(name_width),
-                                &prepaint.ellipsis,
-                                name_color,
-                                window,
-                                cx,
-                            );
                         }
 
                         // 4. Meta text
                         if prepaint.content_lod.paints_metadata() {
                             let text_y = y + px(ROW_TEXT_Y_NUDGE * zoom_scale);
-                            let base_meta_color = if row.selected { accent_fg } else { muted };
+                            let base_meta_color = if sel { accent_fg } else { muted };
 
                             let metas = row
                                 .text
@@ -897,21 +931,18 @@ impl Element for DetailsBodyElement {
                                         origin: point(col_x, y),
                                         size: size(px(col_w), px(row_h)),
                                     };
-                                    window.paint_quad(gpui::fill(
-                                        cell,
-                                        if row.selected { accent } else { floating_bg },
-                                    ));
-                                    if !row.selected {
-                                        window.paint_quad(gpui::fill(cell, accent.opacity(0.08)));
-                                    }
-                                    for edge in [col_x, col_x + px(col_w - 1.0)] {
+                                    if self.colors.glass {
+                                        if !row.selected {
+                                            window.paint_quad(gpui::fill(cell, fg.opacity(0.05)));
+                                        }
+                                    } else {
                                         window.paint_quad(gpui::fill(
-                                            Bounds {
-                                                origin: point(edge, y),
-                                                size: size(px(1.0), px(row_h)),
-                                            },
-                                            accent.opacity(0.22),
+                                            cell,
+                                            if row.selected { accent } else { floating_bg },
                                         ));
+                                        if !row.selected {
+                                            window.paint_quad(gpui::fill(cell, accent.opacity(0.08)));
+                                        }
                                     }
                                 }
                                 if meta.column == DetailsColumn::Size && prepaint.folder_size > 0 {

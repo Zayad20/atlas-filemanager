@@ -55,7 +55,13 @@ impl DocumentRangeSemanticTokensProvider for AtlasSyntaxTokensProvider {
             );
 
             for tok in tokens {
-                if tok.kind == atlas_core::fs::preview::syntax::TokenKind::Whitespace {
+                // Plain identifiers keep the editor foreground; the theme's
+                // `variable` color is nearly invisible on dark surfaces.
+                if matches!(
+                    tok.kind,
+                    atlas_core::fs::preview::syntax::TokenKind::Whitespace
+                        | atlas_core::fs::preview::syntax::TokenKind::Identifier
+                ) {
                     continue;
                 }
 

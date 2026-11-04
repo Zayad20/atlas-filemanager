@@ -1,0 +1,1164 @@
+{
+  "cargo:accesskit@0.24.1": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_accesskit_0.24.1/LICENSE-APACHE",
+        "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+        "url": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE-APACHE"
+      },
+      {
+        "path": "legal/upstream/cargo_accesskit_0.24.1/LICENSE-MIT",
+        "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+        "url": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE-MIT"
+      },
+      {
+        "path": "legal/upstream/cargo_accesskit_0.24.1/LICENSE.chromium",
+        "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+        "url": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE.chromium"
+      }
+    ],
+    "repository": "https://github.com/AccessKit/accesskit",
+    "revision": "a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969"
+  },
+  "cargo:accesskit_consumer@0.37.0": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_accesskit_consumer_0.37.0/LICENSE-APACHE",
+        "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+        "url": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE-APACHE"
+      },
+      {
+        "path": "legal/upstream/cargo_accesskit_consumer_0.37.0/LICENSE-MIT",
+        "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+        "url": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE-MIT"
+      },
+      {
+        "path": "legal/upstream/cargo_accesskit_consumer_0.37.0/LICENSE.chromium",
+        "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+        "url": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE.chromium"
+      }
+    ],
+    "repository": "https://github.com/AccessKit/accesskit",
+    "revision": "a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969"
+  },
+  "cargo:accesskit_windows@0.33.1": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_accesskit_windows_0.33.1/LICENSE-APACHE",
+        "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+        "url": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE-APACHE"
+      },
+      {
+        "path": "legal/upstream/cargo_accesskit_windows_0.33.1/LICENSE-MIT",
+        "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+        "url": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE-MIT"
+      },
+      {
+        "path": "legal/upstream/cargo_accesskit_windows_0.33.1/LICENSE.chromium",
+        "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+        "url": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE.chromium"
+      }
+    ],
+    "repository": "https://github.com/AccessKit/accesskit",
+    "revision": "a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969"
+  },
+  "cargo:base64-simd@0.8.0": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_base64-simd_0.8.0/LICENSE",
+        "sha256": "71674605ec4c087fe9eb534e3e4f9e26eb2e4aabcd76a29fd156c6a844d44b3d",
+        "url": "https://raw.githubusercontent.com/Nugine/simd/d74c030d9dc4f3cae02146d1f497ff62726ef09a/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/Nugine/simd",
+    "revision": "d74c030d9dc4f3cae02146d1f497ff62726ef09a"
+  },
+  "cargo:clipboard-win@5.4.1": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_clipboard-win_5.4.1/LICENSE",
+        "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+        "url": "https://raw.githubusercontent.com/DoumanAsh/clipboard-win/3b27cf2bfd1adcfa6e0264eb51c1025ddaf0f342/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/DoumanAsh/clipboard-win",
+    "revision": "3b27cf2bfd1adcfa6e0264eb51c1025ddaf0f342"
+  },
+  "cargo:codespan-reporting@0.11.1": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_codespan-reporting_0.11.1/LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "url": "https://raw.githubusercontent.com/brendanzab/codespan/fd389a13f5bb6d625b71e2e4694b26e127f393f9/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/brendanzab/codespan",
+    "revision": "fd389a13f5bb6d625b71e2e4694b26e127f393f9"
+  },
+  "cargo:hexf-parse@0.2.1": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_hexf-parse_0.2.1/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "4a56dbdbc12054fd33b7a2634a45cbbe6fe12f5e6f4081002cbfa527f7220c70",
+        "sha256": "9683d06fac49e5c6ce4ec0081f90809c63e3c0ef5390377f6a66e65e6f11a2d9"
+      },
+      {
+        "path": "legal/standard-licenses/CC0-1.0.txt",
+        "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/CC0-1.0.txt"
+      }
+    ]
+  },
+  "cargo:lofty@0.22.4": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_lofty_0.22.4/LICENSE-APACHE",
+        "sha256": "33ee463a651c2dd0417e68e97d97c811c7bb19280c2116bff9906fe8d2718551",
+        "url": "https://raw.githubusercontent.com/Serial-ATA/lofty-rs/d9eb83ba614001973f9ba3663c9f3e10dd27a702/LICENSE-APACHE"
+      },
+      {
+        "path": "legal/upstream/cargo_lofty_0.22.4/LICENSE-MIT",
+        "sha256": "0884e92e74c08412d08bb7cbd121e3c09cbf2ae357972440b06f81b3305b0176",
+        "url": "https://raw.githubusercontent.com/Serial-ATA/lofty-rs/d9eb83ba614001973f9ba3663c9f3e10dd27a702/LICENSE-MIT"
+      }
+    ],
+    "repository": "https://github.com/Serial-ATA/lofty-rs",
+    "revision": "d9eb83ba614001973f9ba3663c9f3e10dd27a702"
+  },
+  "cargo:lofty_attr@0.11.1": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_lofty_attr_0.11.1/LICENSE-APACHE",
+        "sha256": "33ee463a651c2dd0417e68e97d97c811c7bb19280c2116bff9906fe8d2718551",
+        "url": "https://raw.githubusercontent.com/Serial-ATA/lofty-rs/0d42d626b8a1bf40cce0d47a49ce65076dcf9db1/LICENSE-APACHE"
+      },
+      {
+        "path": "legal/upstream/cargo_lofty_attr_0.11.1/LICENSE-MIT",
+        "sha256": "0884e92e74c08412d08bb7cbd121e3c09cbf2ae357972440b06f81b3305b0176",
+        "url": "https://raw.githubusercontent.com/Serial-ATA/lofty-rs/0d42d626b8a1bf40cce0d47a49ce65076dcf9db1/LICENSE-MIT"
+      }
+    ],
+    "repository": "https://github.com/Serial-ATA/lofty-rs",
+    "revision": "0d42d626b8a1bf40cce0d47a49ce65076dcf9db1"
+  },
+  "cargo:lyon@1.0.19": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_lyon_1.0.19/LICENSE-APACHE",
+        "sha256": "216486f29671a4262efe32af6d84a75bef398127f8c5f369b5c8305983887a06",
+        "url": "https://raw.githubusercontent.com/nical/lyon/56219c95c658d4f39de7b190d98e57d5773ba241/LICENSE-APACHE"
+      },
+      {
+        "path": "legal/upstream/cargo_lyon_1.0.19/LICENSE-MIT",
+        "sha256": "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e",
+        "url": "https://raw.githubusercontent.com/nical/lyon/56219c95c658d4f39de7b190d98e57d5773ba241/LICENSE-MIT"
+      }
+    ],
+    "repository": "https://github.com/nical/lyon",
+    "revision": "56219c95c658d4f39de7b190d98e57d5773ba241"
+  },
+  "cargo:lyon_algorithms@1.0.20": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_lyon_algorithms_1.0.20/LICENSE-APACHE",
+        "sha256": "216486f29671a4262efe32af6d84a75bef398127f8c5f369b5c8305983887a06",
+        "url": "https://raw.githubusercontent.com/nical/lyon/66b9ea7f4ab935763970e828781d8fd5e9305542/LICENSE-APACHE"
+      },
+      {
+        "path": "legal/upstream/cargo_lyon_algorithms_1.0.20/LICENSE-MIT",
+        "sha256": "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e",
+        "url": "https://raw.githubusercontent.com/nical/lyon/66b9ea7f4ab935763970e828781d8fd5e9305542/LICENSE-MIT"
+      }
+    ],
+    "repository": "https://github.com/nical/lyon",
+    "revision": "66b9ea7f4ab935763970e828781d8fd5e9305542"
+  },
+  "cargo:lyon_geom@1.0.19": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_lyon_geom_1.0.19/LICENSE-APACHE",
+        "sha256": "216486f29671a4262efe32af6d84a75bef398127f8c5f369b5c8305983887a06",
+        "url": "https://raw.githubusercontent.com/nical/lyon/56219c95c658d4f39de7b190d98e57d5773ba241/LICENSE-APACHE"
+      },
+      {
+        "path": "legal/upstream/cargo_lyon_geom_1.0.19/LICENSE-MIT",
+        "sha256": "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e",
+        "url": "https://raw.githubusercontent.com/nical/lyon/56219c95c658d4f39de7b190d98e57d5773ba241/LICENSE-MIT"
+      }
+    ],
+    "repository": "https://github.com/nical/lyon",
+    "revision": "56219c95c658d4f39de7b190d98e57d5773ba241"
+  },
+  "cargo:lyon_path@1.0.19": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_lyon_path_1.0.19/LICENSE-APACHE",
+        "sha256": "216486f29671a4262efe32af6d84a75bef398127f8c5f369b5c8305983887a06",
+        "url": "https://raw.githubusercontent.com/nical/lyon/56219c95c658d4f39de7b190d98e57d5773ba241/LICENSE-APACHE"
+      },
+      {
+        "path": "legal/upstream/cargo_lyon_path_1.0.19/LICENSE-MIT",
+        "sha256": "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e",
+        "url": "https://raw.githubusercontent.com/nical/lyon/56219c95c658d4f39de7b190d98e57d5773ba241/LICENSE-MIT"
+      }
+    ],
+    "repository": "https://github.com/nical/lyon",
+    "revision": "56219c95c658d4f39de7b190d98e57d5773ba241"
+  },
+  "cargo:lyon_tessellation@1.0.20": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_lyon_tessellation_1.0.20/LICENSE-APACHE",
+        "sha256": "216486f29671a4262efe32af6d84a75bef398127f8c5f369b5c8305983887a06",
+        "url": "https://raw.githubusercontent.com/nical/lyon/7fa75ea8eea36255cae2abcf709900b0c7a5c309/LICENSE-APACHE"
+      },
+      {
+        "path": "legal/upstream/cargo_lyon_tessellation_1.0.20/LICENSE-MIT",
+        "sha256": "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e",
+        "url": "https://raw.githubusercontent.com/nical/lyon/7fa75ea8eea36255cae2abcf709900b0c7a5c309/LICENSE-MIT"
+      }
+    ],
+    "repository": "https://github.com/nical/lyon",
+    "revision": "7fa75ea8eea36255cae2abcf709900b0c7a5c309"
+  },
+  "cargo:mac@0.1.1": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_mac_0.1.1/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "6d465c5e5a4b3e197049e9fb7393b2f996c1c654e6ded700afce046fac2f7969",
+        "sha256": "a500aaeebd39df113883156db110dc14be4098573e6275e404174d67cac398a5"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      },
+      {
+        "path": "legal/standard-licenses/Apache-2.0.txt",
+        "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/Apache-2.0.txt"
+      }
+    ]
+  },
+  "cargo:naga@24.0.0": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_naga_24.0.0/LICENSE.APACHE",
+        "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+        "url": "https://raw.githubusercontent.com/gfx-rs/wgpu/dc1e50e08cd4a5c8d6c3e8a180e93535d40bec4a/LICENSE.APACHE"
+      },
+      {
+        "path": "legal/upstream/cargo_naga_24.0.0/LICENSE.MIT",
+        "sha256": "c7fea58d1cfe49634cd92e54fc10a9d871f4b275321a4cd8c09e449122caaeb4",
+        "url": "https://raw.githubusercontent.com/gfx-rs/wgpu/dc1e50e08cd4a5c8d6c3e8a180e93535d40bec4a/LICENSE.MIT"
+      }
+    ],
+    "repository": "https://github.com/gfx-rs/wgpu",
+    "revision": "dc1e50e08cd4a5c8d6c3e8a180e93535d40bec4a"
+  },
+  "cargo:ogg_pager@0.7.2": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_ogg_pager_0.7.2/LICENSE-APACHE",
+        "sha256": "33ee463a651c2dd0417e68e97d97c811c7bb19280c2116bff9906fe8d2718551",
+        "url": "https://raw.githubusercontent.com/Serial-ATA/lofty-rs/76ff7093a1f6a98c60297de4695709d04c8c1f47/LICENSE-APACHE"
+      },
+      {
+        "path": "legal/upstream/cargo_ogg_pager_0.7.2/LICENSE-MIT",
+        "sha256": "0884e92e74c08412d08bb7cbd121e3c09cbf2ae357972440b06f81b3305b0176",
+        "url": "https://raw.githubusercontent.com/Serial-ATA/lofty-rs/76ff7093a1f6a98c60297de4695709d04c8c1f47/LICENSE-MIT"
+      }
+    ],
+    "repository": "https://github.com/Serial-ATA/lofty-rs",
+    "revision": "76ff7093a1f6a98c60297de4695709d04c8c1f47"
+  },
+  "cargo:profiling-procmacros@1.0.18": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_profiling-procmacros_1.0.18/LICENSE-APACHE",
+        "sha256": "10d30a673cd5e9349bdc02aeb48f14b3386d27d0da32df8f0a555d4aa16aa551",
+        "url": "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-APACHE"
+      },
+      {
+        "path": "legal/upstream/cargo_profiling-procmacros_1.0.18/LICENSE-MIT",
+        "sha256": "c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333",
+        "url": "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT"
+      }
+    ],
+    "repository": "https://github.com/aclysma/profiling",
+    "revision": "8271551172eb6fa4cba47369aedd93790c623df9"
+  },
+  "cargo:profiling@1.0.18": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_profiling_1.0.18/LICENSE-APACHE",
+        "sha256": "10d30a673cd5e9349bdc02aeb48f14b3386d27d0da32df8f0a555d4aa16aa551",
+        "url": "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-APACHE"
+      },
+      {
+        "path": "legal/upstream/cargo_profiling_1.0.18/LICENSE-MIT",
+        "sha256": "c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333",
+        "url": "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT"
+      }
+    ],
+    "repository": "https://github.com/aclysma/profiling",
+    "revision": "8271551172eb6fa4cba47369aedd93790c623df9"
+  },
+  "cargo:rust-i18n-macro@3.1.5": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_rust-i18n-macro_3.1.5/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "662f332eddb51077a89e086442bbffe1fb059b9f653f031ccb694a15a16f05f1",
+        "sha256": "ed0909037ed1114b98e20245e8c4a6709176eaaed1d61ac83f54c86f5ec2087d"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "cargo:rust-i18n-macro@4.1.0": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_rust-i18n-macro_4.1.0/LICENSE",
+        "sha256": "d6fde6c28ecbccfc7f6d97c0badbb14bbea2cc8f5e81a8c1537204bdfed9a6d5",
+        "url": "https://raw.githubusercontent.com/longbridge/rust-i18n/97cf091c24e4bc09a0acb397a8d9d7da8b6abc56/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/longbridge/rust-i18n",
+    "revision": "97cf091c24e4bc09a0acb397a8d9d7da8b6abc56"
+  },
+  "cargo:rust-i18n-support@3.1.5": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_rust-i18n-support_3.1.5/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "3a7e5519025ab105ed90398095593d5a327379ed5459089355bdeea56e4388c9",
+        "sha256": "aa55f6f5dc1f49b7b59fc019209653b07e293427a47a1c143c02eca8b97d326e"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "cargo:rust-i18n-support@4.1.0": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_rust-i18n-support_4.1.0/LICENSE",
+        "sha256": "d6fde6c28ecbccfc7f6d97c0badbb14bbea2cc8f5e81a8c1537204bdfed9a6d5",
+        "url": "https://raw.githubusercontent.com/longbridge/rust-i18n/97cf091c24e4bc09a0acb397a8d9d7da8b6abc56/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/longbridge/rust-i18n",
+    "revision": "97cf091c24e4bc09a0acb397a8d9d7da8b6abc56"
+  },
+  "cargo:seahash@4.1.0": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_seahash_4.1.0/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "dd213de338ca98b7ef7a2562bcf4e4214d215d1a8277750a6a72b4e809c8d0dd",
+        "sha256": "1f3d12c394f79acc6201fbc75f9193151977e1a98cb0140b7d994729ef93fd39"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "cargo:simd_helpers@0.1.0": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_simd_helpers_0.1.0/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "b41497677a5498040f2eb3fc089e3c2c38c413dca64f41dc57a115e26480461d",
+        "sha256": "6d49da5cca633d52a465eda74cd9d4c72aa22caad4a7cdbc2f2340f6b23bf993"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "cargo:spirv@0.4.0+sdk-1.4.341.0": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_spirv_0.4.0_sdk-1.4.341.0/LICENSE",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "url": "https://raw.githubusercontent.com/gfx-rs/rspirv/8afc3d0ac8e158128cd1410bb2e4b4c26ab11bb4/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/gfx-rs/rspirv",
+    "revision": "8afc3d0ac8e158128cd1410bb2e4b4c26ab11bb4"
+  },
+  "cargo:svg_fmt@0.4.5": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_svg_fmt_0.4.5/LICENSE",
+        "sha256": "7e98bed7f100747aaae7d82ab94fbe6b76fd6b84b09a3aaa413bff8196d0fbb1",
+        "url": "https://raw.githubusercontent.com/nical/rust_debug/93f414cd572b5c2781df93dbdc068ed13443d05a/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/nical/rust_debug",
+    "revision": "93f414cd572b5c2781df93dbdc068ed13443d05a"
+  },
+  "cargo:taffy@0.13.0": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_taffy_0.13.0/LICENSE",
+        "sha256": "f97daf1a0124413dccf399a4e6626b4b74acd05282f80b6d64ac82225650b77a",
+        "url": "https://raw.githubusercontent.com/DioxusLabs/taffy/45a56299d366ddb383e593a1f0372158d00e8530/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/DioxusLabs/taffy",
+    "revision": "45a56299d366ddb383e593a1f0372158d00e8530"
+  },
+  "cargo:tree-sitter-json@0.24.8": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_tree-sitter-json_0.24.8/LICENSE",
+        "sha256": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1",
+        "url": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-json/ee35a6ebefcef0c5c416c0d1ccec7370cfca5a24/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/tree-sitter/tree-sitter-json",
+    "revision": "ee35a6ebefcef0c5c416c0d1ccec7370cfca5a24"
+  },
+  "cargo:unicode-casefold@0.2.0": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_unicode-casefold_0.2.0/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "c88e90579a62afeae27cf7f1ee4755d51f780a203fceda9f98e1416cae439ebd",
+        "sha256": "046d4bcde2d6ae9e931556408e148683add64c472afa69ab4f6ac06d8bedf60e"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      },
+      {
+        "path": "legal/standard-licenses/Apache-2.0.txt",
+        "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/Apache-2.0.txt"
+      }
+    ]
+  },
+  "cargo:vsimd@0.8.0": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_vsimd_0.8.0/LICENSE",
+        "sha256": "71674605ec4c087fe9eb534e3e4f9e26eb2e4aabcd76a29fd156c6a844d44b3d",
+        "url": "https://raw.githubusercontent.com/Nugine/simd/d74c030d9dc4f3cae02146d1f497ff62726ef09a/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/Nugine/simd",
+    "revision": "d74c030d9dc4f3cae02146d1f497ff62726ef09a"
+  },
+  "cargo:winfsp-sys@0.12.1+winfsp-2.1": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_winfsp-sys_0.12.1_winfsp-2.1/LICENSE.md",
+        "sha256": "831e92808eb553250066261a1387a9323cbf300d4559a41f2c71fd3712bdb44a",
+        "url": "https://raw.githubusercontent.com/SnowflakePowered/winfsp-rs/5ae65f6ae65837bf368887672c5baca7542c3cc7/LICENSE.md"
+      }
+    ],
+    "repository": "https://github.com/SnowflakePowered/winfsp-rs",
+    "revision": "5ae65f6ae65837bf368887672c5baca7542c3cc7"
+  },
+  "cargo:winfsp@0.13.2+winfsp-2.1": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_winfsp_0.13.2_winfsp-2.1/LICENSE.md",
+        "sha256": "831e92808eb553250066261a1387a9323cbf300d4559a41f2c71fd3712bdb44a",
+        "url": "https://raw.githubusercontent.com/SnowflakePowered/winfsp-rs/0cdd86a6f1ecd38c89da6ccf3fe2fc3312e11d8f/LICENSE.md"
+      }
+    ],
+    "repository": "https://github.com/SnowflakePowered/winfsp-rs",
+    "revision": "0cdd86a6f1ecd38c89da6ccf3fe2fc3312e11d8f"
+  },
+  "cargo:workspace-hack@0.1.0": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_workspace-hack_0.1.0/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "65ecde059b4a46f1c71e2b1de82bd11d7a51b4ea2da3823170caa80ed2bb0ed7",
+        "sha256": "85259b90c2b8c755d437283867e72bb7c9ecb9f418525ece3d9463fd2d5a2ab6"
+      },
+      {
+        "path": "legal/standard-licenses/CC0-1.0.txt",
+        "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/CC0-1.0.txt"
+      }
+    ]
+  },
+  "cargo:zune-core@0.4.12": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_zune-core_0.4.12/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "cc3fa616bb3dd673abbdebce2d8b2a1a1ecb6a3dd9654313d6fcc0ab2d3c5f84",
+        "sha256": "ff635297bed32c788b2e3ef0397a03dc9817915b4ec89e9325c69c1a80dfc013"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      },
+      {
+        "path": "legal/standard-licenses/Apache-2.0.txt",
+        "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/Apache-2.0.txt"
+      },
+      {
+        "path": "legal/standard-licenses/Zlib.txt",
+        "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/Zlib.txt"
+      }
+    ]
+  },
+  "cargo:zune-inflate@0.2.54": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_zune-inflate_0.2.54/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "a7e3d8fd82218e7f9f2172d41a048e4879abc81228589539e1ec750d72811f90",
+        "sha256": "2cac91fd2ac9d28b64dee05d29edd64a05075a66acbd215ec9a4f1b6bd53896e"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      },
+      {
+        "path": "legal/standard-licenses/Apache-2.0.txt",
+        "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/Apache-2.0.txt"
+      },
+      {
+        "path": "legal/standard-licenses/Zlib.txt",
+        "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/Zlib.txt"
+      }
+    ]
+  },
+  "cargo:zune-jpeg@0.4.21": {
+    "notices": [
+      {
+        "path": "legal/upstream/cargo_zune-jpeg_0.4.21/LICENSE-ZLIB",
+        "sha256": "7fa429541e55b1509909e058f2d21a37467e4958ec713b357f6e0cf9dc4ee352",
+        "url": "https://raw.githubusercontent.com/etemesi254/zune-image/fa2c767a01d7d9373911d0bf63e0588553d67e0e/LICENSE-ZLIB"
+      },
+      {
+        "path": "legal/upstream/cargo_zune-jpeg_0.4.21/LICENSE.md",
+        "sha256": "c6dff146a9f31848ac296faa5a08a4253caf2c384c86f906dc99e7fc0a39cc8c",
+        "url": "https://raw.githubusercontent.com/etemesi254/zune-image/fa2c767a01d7d9373911d0bf63e0588553d67e0e/LICENSE.md"
+      }
+    ],
+    "repository": "https://github.com/etemesi254/zune-image",
+    "revision": "fa2c767a01d7d9373911d0bf63e0588553d67e0e"
+  },
+  "website:@cloudflare/kv-asset-handler@0.5.0": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website__cloudflare_kv-asset-handler_0.5.0/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "635bf6580f8cd6fab399627da52f18c5a4abb8038e2a7a21ba382a7c24702f73",
+        "sha256": "7cdf520b6752571678809142a4d186426508a8c7d64453420c8799440102a9d6"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      },
+      {
+        "path": "legal/standard-licenses/Apache-2.0.txt",
+        "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/Apache-2.0.txt"
+      }
+    ]
+  },
+  "website:@cloudflare/unenv-preset@2.16.2": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website__cloudflare_unenv-preset_2.16.2/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "9307fbe9f19db598b23d53bcc6f66db49239f89090f9059b98c56c4781c26f2c",
+        "sha256": "7ebfbf18e17196cc2e913a22b00ebb7680e2d23e6f3a0586936ce373145a32f3"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      },
+      {
+        "path": "legal/standard-licenses/Apache-2.0.txt",
+        "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/Apache-2.0.txt"
+      }
+    ]
+  },
+  "website:@cloudflare/vite-plugin@1.63.1": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website__cloudflare_vite-plugin_1.63.1/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "8c35366397e6f67cf481804822c35b6b917c3a006979f1814e01a99e07d53d16",
+        "sha256": "a65cda4d627096bb21cd0186af64a847c282a37a60ff2d10d9249a389a873d99"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:@cloudflare/workerd-windows-64@1.20261006.1": {
+    "notices": [
+      {
+        "path": "legal/upstream/website__cloudflare_workerd-windows-64_1.20261006.1/LICENSE",
+        "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+        "url": "https://raw.githubusercontent.com/cloudflare/workerd/107ea005f9702e5422a84bb5840ca9d9980cff0d/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/cloudflare/workerd",
+    "revision": "107ea005f9702e5422a84bb5840ca9d9980cff0d"
+  },
+  "website:@esbuild/win32-x64@0.28.2": {
+    "notices": [
+      {
+        "path": "legal/upstream/website__esbuild_win32-x64_0.28.2/LICENSE.md",
+        "sha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681",
+        "url": "https://raw.githubusercontent.com/evanw/esbuild/609683d892977362a0f99026cb74b96263d728a9/LICENSE.md"
+      }
+    ],
+    "repository": "https://github.com/evanw/esbuild",
+    "revision": "609683d892977362a0f99026cb74b96263d728a9"
+  },
+  "website:@gsap/react@2.1.2": {
+    "basis": "Exact custom-license banner preserved from the installed package; license URL supplied by publisher.",
+    "notices": [
+      {
+        "path": "legal/resources/gsap_react-NOTICE.txt",
+        "sha256": "753cf965c2581ab84d317ce60ed2d2ca754ea11c69e9fad76878dbff0d44c42e"
+      }
+    ]
+  },
+  "website:@next/env@16.2.1": {
+    "notices": [
+      {
+        "path": "legal/upstream/website__next_env_16.2.1/license.md",
+        "sha256": "ee765244e2d59f5234d474f62e0766fa0c8b99af967fdd4c0cb8dcb0c76ea224",
+        "url": "https://raw.githubusercontent.com/vercel/next.js/ed7d2cef246dcb3e2955c018fd8b2027e0ff8eed/license.md"
+      }
+    ],
+    "repository": "https://github.com/vercel/next.js",
+    "revision": "ed7d2cef246dcb3e2955c018fd8b2027e0ff8eed"
+  },
+  "website:@next/eslint-plugin-next@16.2.1": {
+    "notices": [
+      {
+        "path": "legal/upstream/website__next_eslint-plugin-next_16.2.1/license.md",
+        "sha256": "ee765244e2d59f5234d474f62e0766fa0c8b99af967fdd4c0cb8dcb0c76ea224",
+        "url": "https://raw.githubusercontent.com/vercel/next.js/ed7d2cef246dcb3e2955c018fd8b2027e0ff8eed/license.md"
+      }
+    ],
+    "repository": "https://github.com/vercel/next.js",
+    "revision": "ed7d2cef246dcb3e2955c018fd8b2027e0ff8eed"
+  },
+  "website:@next/swc-win32-x64-msvc@16.2.1": {
+    "notices": [
+      {
+        "path": "legal/upstream/website__next_swc-win32-x64-msvc_16.2.1/license.md",
+        "sha256": "ee765244e2d59f5234d474f62e0766fa0c8b99af967fdd4c0cb8dcb0c76ea224",
+        "url": "https://raw.githubusercontent.com/vercel/next.js/ed7d2cef246dcb3e2955c018fd8b2027e0ff8eed/license.md"
+      }
+    ],
+    "repository": "https://github.com/vercel/next.js",
+    "revision": "ed7d2cef246dcb3e2955c018fd8b2027e0ff8eed"
+  },
+  "website:@open-draft/deferred-promise@2.2.0": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website__open-draft_deferred-promise_2.2.0/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "36d6e1dda37c34e5559f0f10e09ae1ae5ce9d50ac2b872c2d287365bf52ad33c",
+        "sha256": "3edbea0060878eda620ec7069aaaebfa94f4319493bb43381b9373b1baaeb53c"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:@polar-sh/checkout@0.3.0": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website__polar-sh_checkout_0.3.0/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "f3c851848182ccf9664c13e470202d60178696a9e917d822c1bac4fa8ad1e060",
+        "sha256": "46f7a57a0177ef395e38c3b54a640b89ad18a4a12de7d90d40a18a945ccf2a6e"
+      },
+      {
+        "path": "legal/standard-licenses/Apache-2.0.txt",
+        "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/Apache-2.0.txt"
+      }
+    ]
+  },
+  "website:@posthog/core@1.40.2": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website__posthog_core_1.40.2/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "5a131bf2015ac8e5eaddb4320c1d2be0f95a82f1f5c0be772afe93488d25bb4a",
+        "sha256": "5d7f0a6f76a381627d86e0358c787580b7d8d9d8ea58f4189a9a6e59576ad1b8"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:@resvg/resvg-wasm@2.4.1": {
+    "notices": [
+      {
+        "path": "legal/upstream/website__resvg_resvg-wasm_2.4.1/LICENSE",
+        "sha256": "4b89d4518bd135ab4ee154a7bce722246b57a98c3d7efc1a09409898160c2bd1",
+        "url": "https://raw.githubusercontent.com/yisibl/resvg-js/2347b417e1955a6954223f1c17b815e177a01765/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/yisibl/resvg-js",
+    "revision": "2347b417e1955a6954223f1c17b815e177a01765"
+  },
+  "website:@rolldown/binding-win32-x64-msvc@1.2.13": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website__rolldown_binding-win32-x64-msvc_1.2.13/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "349cde33ec84476779296a79beb626f4cc12ed1fcd0173853bd87db1ff738e4a",
+        "sha256": "3c551df97af6602d24cc51921d54fbc0d7915d1ba4711ccfd15a6b67706ad4fd"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:@rrweb/types@2.0.0-alpha.20": {
+    "notices": [
+      {
+        "path": "legal/upstream/website__rrweb_types_2.0.0-alpha.20/LICENSE",
+        "sha256": "8bb7c5aa5a387e9a3c467ba00c83755d9c02a2f997f75fe9516881eea32c427f",
+        "url": "https://raw.githubusercontent.com/rrweb-io/rrweb/77e208076b46b0490bd6a1e6599805d557be2001/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/rrweb-io/rrweb",
+    "revision": "77e208076b46b0490bd6a1e6599805d557be2001"
+  },
+  "website:@rrweb/utils@2.1.7": {
+    "notices": [
+      {
+        "path": "legal/upstream/website__rrweb_utils_2.1.7/LICENSE",
+        "sha256": "e49e62397b603438476e0d6b5ca3b6e6d4f23a80594e596aff29ac04fa3e1b1c",
+        "url": "https://raw.githubusercontent.com/rrweb-io/rrweb/a9cb69272522e677522f9a2f2eb8ac43fbf9efcb/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/rrweb-io/rrweb",
+    "revision": "a9cb69272522e677522f9a2f2eb8ac43fbf9efcb"
+  },
+  "website:@types/json5@0.0.29": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website__types_json5_0.0.29/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "3713801b9752f96a2722287af03053a6f0b0ed0b0f1898f38baa7127058cf96d",
+        "sha256": "890f7b33eedac8eb44a1798386570976c66db07d69b5e89ce9a578743858f228"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:@unpic/core@1.0.3": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website__unpic_core_1.0.3/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "1f7f52c48f01bb35fc615eda5adde4f37ca4d4bce4e62640accd5f73fd263d3f",
+        "sha256": "efaddc0b64210432981feeeeb81410d79d506074fe18449fe2afed057c668af4"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:@unrs/resolver-binding-win32-x64-msvc@1.11.1": {
+    "notices": [
+      {
+        "path": "legal/upstream/website__unrs_resolver-binding-win32-x64-msvc_1.11.1/LICENSE",
+        "sha256": "a9e35996693bd619302922c731fa2f620ad12d5f50b19a37c8a3e0e078c9bd2f",
+        "url": "https://raw.githubusercontent.com/unrs/unrs-resolver/9480a90b081f2afcaeb6ca0e882d191c138dd7a3/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/unrs/unrs-resolver",
+    "revision": "9480a90b081f2afcaeb6ca0e882d191c138dd7a3"
+  },
+  "website:@vitejs/plugin-rsc@0.5.36": {
+    "notices": [
+      {
+        "path": "legal/upstream/website__vitejs_plugin-rsc_0.5.36/LICENSE",
+        "sha256": "29b68325fe026047d13e187b44c33b2acacf7dc647dec4583702e59f235e13b5",
+        "url": "https://raw.githubusercontent.com/vitejs/vite-plugin-react/1bed9c48c6e7f8a5b1d3f6c63438a1fb6e4bd0db/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/vitejs/vite-plugin-react",
+    "revision": "1bed9c48c6e7f8a5b1d3f6c63438a1fb6e4bd0db"
+  },
+  "website:client-only@0.0.1": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website_client-only_0.0.1/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "4d6342705767832f299b9a59c28e4275bcf02db19472732f93f67d979441df8f",
+        "sha256": "07c3ef28128bed41c56afe375d9ea7656cd4fba792d4d391f1648922d8507729"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:css-box-shadow@1.0.0-3": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website_css-box-shadow_1.0.0-3/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "5f1bd9c8e9751887808d9f04c51aeb18e823f67f84f8d1ffcadece2e23e7a952",
+        "sha256": "4fa4c0724f00b34325aa7d932bbc7c755661902e4880c854e58f35dc8ec50090"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:data-uri-to-buffer@4.0.1": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website_data-uri-to-buffer_4.0.1/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "ad4f90a737ab5d8af4dad265e9218456e3779ca5beb70df38dd5feecf80121dd",
+        "sha256": "abeb61094bb347c8f83573dd17d0a77dafb66fa8bd16f3a6b6d907cfa5593bc1"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:eslint-config-next@16.2.1": {
+    "notices": [
+      {
+        "path": "legal/upstream/website_eslint-config-next_16.2.1/license.md",
+        "sha256": "ee765244e2d59f5234d474f62e0766fa0c8b99af967fdd4c0cb8dcb0c76ea224",
+        "url": "https://raw.githubusercontent.com/vercel/next.js/ed7d2cef246dcb3e2955c018fd8b2027e0ff8eed/license.md"
+      }
+    ],
+    "repository": "https://github.com/vercel/next.js",
+    "revision": "ed7d2cef246dcb3e2955c018fd8b2027e0ff8eed"
+  },
+  "website:esrecurse@4.3.0": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website_esrecurse_4.3.0/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "3bc67cb54672ec6957b53947613c23599371bf9222dbbe97275d20516a561a20",
+        "sha256": "60140b12b6444acd9d9b8115c313311ab4904ed2fb58b310c363c17a3d4ef729"
+      },
+      {
+        "path": "legal/standard-licenses/BSD-2-Clause.txt",
+        "sha256": "f32fb3b417a194167cfad068223fc975ba96c5960513a10f66a3c28720aec1df",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/BSD-2-Clause.txt"
+      }
+    ]
+  },
+  "website:gsap@3.15.0": {
+    "basis": "Exact custom-license banner preserved from the installed package; license URL supplied by publisher.",
+    "notices": [
+      {
+        "path": "legal/resources/gsap-NOTICE.txt",
+        "sha256": "0d0e32c5ccefd4f9a4b55ff568d49a8ea0a74931a43930052e9ca9d38b8c652c"
+      }
+    ]
+  },
+  "website:imurmurhash@0.1.4": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website_imurmurhash_0.1.4/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "aa3b07e7fa3d63aa96e401c3842b8cca1dd3247954baf92377094766e903c185",
+        "sha256": "817f5db1b2dd79c4d66b9807da073007b897b80767a49979012bff54e2d1ce21"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:is-node-process@1.2.0": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website_is-node-process_1.2.0/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "3bf5781dc5e98b9f9923249b0a8e8bae3dc36699841a417bf9b7451f68fc012a",
+        "sha256": "381a9a1c28a9c64ebf6437dcb7cbc71a79e85a9efb41f7a1d32074c09659a4c3"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:keyv@4.5.4": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website_keyv_4.5.4/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "e8afd30f2f2a40ef5023928b50fdaed3a3338aa7e1c4e86205413afb05e8a099",
+        "sha256": "c9085692acb7c4e53920d52aae3a0438089ef415173e0432cf3dac74e346a817"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:language-subtag-registry@0.3.23": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website_language-subtag-registry_0.3.23/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "407de8da40e645a2f281a8f558ba2488424ac00f524b75832133367a126beda6",
+        "sha256": "cae064198e20050abde3a7400f44c2cec3e7a0a0e21ed6aec7d7e2812b02f976"
+      },
+      {
+        "path": "legal/standard-licenses/CC0-1.0.txt",
+        "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/CC0-1.0.txt"
+      }
+    ]
+  },
+  "website:language-tags@1.0.9": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website_language-tags_1.0.9/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "24c81125ee2c65b548fe4642fa14aae3e1b8fc548bc64c88d2ae6b94be738e36",
+        "sha256": "58970ab708a672f4bc03168a783112d000a6952034b51f5a9130c192c8c2db30"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:miniflare@5.20261006.1-alpha": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website_miniflare_5.20261006.1-alpha/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "ee86ee4a94943a21980f88d90e7973dd0b5b6f3d6ae853686dfa801720116c95",
+        "sha256": "80055fd88cc7842a31e6677ecc7662ff6a5990591ee49923b62bf7f252961620"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:natural-compare@1.4.0": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website_natural-compare_1.4.0/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "3d99911ccfa0ca34ae0c68bfd32c038b952542e55db7c649c37b11dd1573f6af",
+        "sha256": "9a5e85d3e4ad5deaa04298bccfcc361929d51d6296b9943d3412ac92e72feb1f"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:rrdom@2.1.7": {
+    "notices": [
+      {
+        "path": "legal/upstream/website_rrdom_2.1.7/LICENSE",
+        "sha256": "e49e62397b603438476e0d6b5ca3b6e6d4f23a80594e596aff29ac04fa3e1b1c",
+        "url": "https://raw.githubusercontent.com/rrweb-io/rrweb/a9cb69272522e677522f9a2f2eb8ac43fbf9efcb/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/rrweb-io/rrweb",
+    "revision": "a9cb69272522e677522f9a2f2eb8ac43fbf9efcb"
+  },
+  "website:rrweb-snapshot@2.1.7": {
+    "notices": [
+      {
+        "path": "legal/upstream/website_rrweb-snapshot_2.1.7/LICENSE",
+        "sha256": "e49e62397b603438476e0d6b5ca3b6e6d4f23a80594e596aff29ac04fa3e1b1c",
+        "url": "https://raw.githubusercontent.com/rrweb-io/rrweb/a9cb69272522e677522f9a2f2eb8ac43fbf9efcb/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/rrweb-io/rrweb",
+    "revision": "a9cb69272522e677522f9a2f2eb8ac43fbf9efcb"
+  },
+  "website:rrweb@2.0.0-alpha.20": {
+    "notices": [
+      {
+        "path": "legal/upstream/website_rrweb_2.0.0-alpha.20/LICENSE",
+        "sha256": "8bb7c5aa5a387e9a3c467ba00c83755d9c02a2f997f75fe9516881eea32c427f",
+        "url": "https://raw.githubusercontent.com/rrweb-io/rrweb/77e208076b46b0490bd6a1e6599805d557be2001/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/rrweb-io/rrweb",
+    "revision": "77e208076b46b0490bd6a1e6599805d557be2001"
+  },
+  "website:stable-hash@0.0.5": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website_stable-hash_0.0.5/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "8c0b1ce6729fd4ac946735e8410236cbe838be0f3475c40e4c7fb2cad14deae5",
+        "sha256": "df5640bcf31e798820ddb50c0431baa69e80fb23f7bc2e86a55743f11ffe11c3"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:standardwebhooks@1.0.0": {
+    "notices": [
+      {
+        "path": "legal/upstream/website_standardwebhooks_1.0.0/LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "url": "https://raw.githubusercontent.com/standard-webhooks/standard-webhooks/929bf0c1928b188287eaf88d0a9f0a4e87df6499/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/standard-webhooks/standard-webhooks",
+    "revision": "929bf0c1928b188287eaf88d0a9f0a4e87df6499"
+  },
+  "website:strict-event-emitter@0.5.1": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website_strict-event-emitter_0.5.1/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "dc958d0bfc8127388c7d651646749f7017990cb1d1aa01618a0a84915e5eff9a",
+        "sha256": "5dab9d508195cc377c0faa71dcc69776c3341b3f8b0587181570ff55838a6ffe"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:unpic@4.2.2": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website_unpic_4.2.2/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "6f8f5221f620b1e9f906a50abe764e84a21a4ffaf9d96a1eb723c891e0217e68",
+        "sha256": "bc0ed2be291dbeb22ed98ff3a355aabde9f75014174b9fec6f6042ed0fa04ab4"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  },
+  "website:unrs-resolver@1.11.1": {
+    "notices": [
+      {
+        "path": "legal/upstream/website_unrs-resolver_1.11.1/LICENSE",
+        "sha256": "a9e35996693bd619302922c731fa2f620ad12d5f50b19a37c8a3e0e078c9bd2f",
+        "url": "https://raw.githubusercontent.com/unrs/unrs-resolver/9480a90b081f2afcaeb6ca0e882d191c138dd7a3/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/unrs/unrs-resolver",
+    "revision": "9480a90b081f2afcaeb6ca0e882d191c138dd7a3"
+  },
+  "website:workerd@1.20261006.1": {
+    "notices": [
+      {
+        "path": "legal/upstream/website_workerd_1.20261006.1/LICENSE",
+        "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+        "url": "https://raw.githubusercontent.com/cloudflare/workerd/107ea005f9702e5422a84bb5840ca9d9980cff0d/LICENSE"
+      }
+    ],
+    "repository": "https://github.com/cloudflare/workerd",
+    "revision": "107ea005f9702e5422a84bb5840ca9d9980cff0d"
+  },
+  "website:wrangler@4.149.0": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website_wrangler_4.149.0/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "a55b192868faa5aee1061ace714422a8824b30cd9e622aadb149a07305758d81",
+        "sha256": "adc8a3b5a04dd37d55ed8a9dc53eb7ab6a32c89c753bff1c343fb6ed8e16bfd6"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      },
+      {
+        "path": "legal/standard-licenses/Apache-2.0.txt",
+        "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/Apache-2.0.txt"
+      }
+    ]
+  },
+  "website:yoga-layout@3.2.1": {
+    "basis": "Published package declaration and standard license texts; standalone upstream notice absent.",
+    "notices": [
+      {
+        "path": "legal/upstream/website_yoga-layout_3.2.1/UPSTREAM-DECLARATION.txt",
+        "publishedManifestSha256": "4b82c23413f756473143be7a2ce04bca9d1f2b43a4348098a8de19f63a0adda8",
+        "sha256": "5b8c7754966eb5788f144cedc89c0a7ecae5cc2b31095367abb986c264d3b9c0"
+      },
+      {
+        "path": "legal/standard-licenses/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+        "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MIT.txt"
+      }
+    ]
+  }
+}

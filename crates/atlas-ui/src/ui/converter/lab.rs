@@ -125,8 +125,23 @@ fn frame(
             .unwrap()
             .save(directory.join("wheel-laptop.png"))
             .unwrap();
+        // Full catalog (engine-gated targets too) exercises the outer rings.
         view.update(cx, |app, cx| {
-            app.converter.as_mut().unwrap().expanded = true;
+            let session = app.converter.as_mut().unwrap();
+            session.catalog = atlas_core::convert::options(&session.sources, &session.tools);
+            cx.notify();
+        });
+    }
+    if step == 30 {
+        window
+            .render_to_image()
+            .unwrap()
+            .save(directory.join("rings-laptop.png"))
+            .unwrap();
+        view.update(cx, |app, cx| {
+            let session = app.converter.as_mut().unwrap();
+            session.catalog = atlas_core::convert::native_options(&session.sources, &session.tools);
+            session.selected = 0;
             cx.notify();
         });
     }
@@ -156,7 +171,7 @@ fn frame(
                     position: gpui::point(center.x, center.y - bounds.size.height * 0.34),
                     button: gpui::MouseButton::Left,
                     modifiers: gpui::Modifiers::default(),
-                    click_count: 1,
+                    click_count: 2,
                     first_mouse: false,
                 }),
                 cx,
@@ -169,44 +184,65 @@ fn frame(
             super::Phase::Running { .. }
         ));
     }
-    if step >= 50
-        && view
-            .read(cx)
-            .converter
-            .as_ref()
-            .is_some_and(|s| matches!(s.phase, super::Phase::Finished(_)))
-    {
-        window
-            .render_to_image()
-            .unwrap()
-            .save(directory.join("results-laptop.png"))
-            .unwrap();
-        let session = view.read(cx).converter.as_ref().unwrap();
-        if let super::Phase::Finished(report) = &session.phase {
+    // A clean success closes the session (a toast reports it); only failed or
+    // cancelled runs stay open in `Finished`.
+    let finished = view.read(cx).converter.as_ref().map(|s| match &s.phase {
+        super::Phase::Finished(report) => {
             assert!(report.errors().is_empty(), "{:?}", report.errors());
             assert_eq!(report.outputs().len(), 1);
+            Some(report.outputs()[0].clone())
+        }
+        _ => None,
+    });
+    let output = match finished {
+        Some(output) => output,
+        None => newest_output(directory),
+    };
+    if step >= 50 {
+        if let Some(output) = output {
+            window
+                .render_to_image()
+                .unwrap()
+                .save(directory.join("results-laptop.png"))
+                .unwrap();
             let message = if std::env::var_os("ATLAS_CONVERSION_LAB_VIDEO").is_some() {
-                let bytes = std::fs::read(&report.outputs()[0]).unwrap();
+                let bytes = std::fs::read(&output).unwrap();
                 assert_eq!(&bytes[4..8], b"ftyp");
                 assert!(bytes.len() > 1000);
-                "Native window rendered at 1280x800 and 900x560. MOV to MP4 completed through Windows; no external engine was selected.\n"
+                "Native window rendered at 1280x800 and 900x560. MOV to MP4 completed through Windows; no external engine was selected.
+"
             } else if std::env::var_os("ATLAS_CONVERSION_LAB_AUDIO").is_some() {
-                assert!(std::fs::metadata(&report.outputs()[0]).unwrap().len() > 500);
-                "Native window rendered at 1280x800 and 900x560. WAV to MP3 completed through Windows; no external engine was selected.\n"
+                assert!(std::fs::metadata(&output).unwrap().len() > 500);
+                "Native window rendered at 1280x800 and 900x560. WAV to MP3 completed through Windows; no external engine was selected.
+"
             } else {
-                assert!(image::open(&report.outputs()[0]).is_ok());
-                "Native window rendered at 1280x800 and 900x560. JPEG conversion decoded successfully.\n"
+                assert!(image::open(&output).is_ok());
+                "Native window rendered at 1280x800 and 900x560. JPEG conversion decoded successfully.
+"
             };
             std::fs::write(directory.join("passed.txt"), message).unwrap();
+            cx.quit();
+            return true;
         }
-        cx.quit();
-        return true;
     }
     if step >= 600 {
         panic!("Conversion lab did not finish");
     }
     window.refresh();
     false
+}
+
+/// Most recent conversion output in the lab directory, once the session closed.
+fn newest_output(directory: &std::path::Path) -> Option<PathBuf> {
+    std::fs::read_dir(directory)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|ext| ["jpg", "mp4", "mp3"].contains(&&*ext.to_string_lossy()))
+        })
+        .max_by_key(|path| std::fs::metadata(path).and_then(|m| m.modified()).ok())
 }
 
 /// Visual state fixtures only. Real HTTPS/package/conversion behavior is tested

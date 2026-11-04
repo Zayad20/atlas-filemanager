@@ -101,6 +101,7 @@ pub(crate) struct DragHoverTarget {
 #[derive(Default)]
 pub(crate) struct DragHoverState {
     reference_drag: bool,
+    cloud_drag: bool,
     active: bool,
     pub(crate) cursor: Option<gpui::Point<gpui::Pixels>>,
     active_id: Option<DragHoverId>,
@@ -145,6 +146,7 @@ impl DragHoverState {
 
     pub(crate) fn clear(&mut self) {
         self.reference_drag = false;
+        self.cloud_drag = false;
         self.active = false;
         self.cursor = None;
         self.active_id = None;
@@ -164,6 +166,11 @@ impl DragHoverState {
 }
 
 impl App {
+    #[cfg(feature = "provider-host")]
+    pub(crate) fn begin_cloud_drag(&mut self) {
+        self.begin_drag_hover();
+        self.drag_hover.cloud_drag = true;
+    }
     pub(crate) fn begin_bookmark_drag(&mut self) {
         self.begin_drag_hover();
         self.drag_hover.reference_drag = true;
@@ -519,7 +526,15 @@ impl App {
                 shift = zones.shift;
             }
         }
-        let intent = drop_intent(&command, &paths, ctrl, shift);
+        let cloud = cx.active_drag().and_then(|drag| drag.value.downcast_ref::<crate::ui::root::DraggedCloudFiles>());
+        let intent = if let Some(cloud) = cloud {
+            paths = cloud.paths.clone();
+            #[cfg(feature = "provider-host")]
+            let allowed = self.cloud_drag_destination_allowed(cloud, &command, shift);
+            #[cfg(not(feature = "provider-host"))]
+            let allowed = false;
+            if allowed { DropIntent::Copy } else { DropIntent::Blocked }
+        } else { drop_intent(&command, &paths, ctrl, shift) };
         let tag = match &command {
             DragHoverDropCommand::AssignTag(id) => self.state.tag_cache.def(*id),
             _ => None,
@@ -547,8 +562,15 @@ impl App {
         let label = rust_i18n::t!(key).into_owned();
         let label = tag.map_or_else(|| label.clone(), |tag| format!("{label} «{}»", tag.name));
         let label = if paths.len() > 1 { format!("{label} · {}", paths.len()) } else { label };
+        #[cfg(feature = "provider-host")]
+        let label = if let DragHoverDropCommand::TransferTo(destination) = &command {
+            format!("{label} → {}", self.cloud_drop_label(destination))
+        } else { label };
         Some(div().absolute().inset_0()
-            .child(glow_rect(bounds, fill, ring, glow, 0.0, 1.5))
+            .children((bounds.size.height <= gpui::px(MAX_MARKED_TARGET_H)
+                && !matches!(command, DragHoverDropCommand::StageInSidebar)).then(|| {
+                glow_rect(bounds, fill, ring, glow, 0.0, 1.5)
+            }))
             .child(drag_badge(label, pos, window, cx))
             .into_any_element())
     }
@@ -895,7 +917,7 @@ impl App {
                 let tile = self.state.focused_tile;
                 self.navigate(tile, path);
             }
-            DragHoverCommand::NavigatePathIn(tile, path) => self.navigate(tile, path),
+            DragHoverCommand::NavigatePathIn(tile, path) => self.navigate_entry(tile, path),
             DragHoverCommand::NavigateLocation(loc) => {
                 let tile = self.state.focused_tile;
                 self.navigate_to(tile, loc, crate::app::nav::NavKind::Push);
@@ -975,7 +997,7 @@ pub(crate) fn drag_hover_layer(view: Entity<App>) -> impl gpui::IntoElement {
     canvas(
         |_, _, _| {},
         move |_, (), window, cx| {
-            if v.read(cx).drag_hover.reference_drag && !cx.has_active_drag() {
+            if (v.read(cx).drag_hover.reference_drag || v.read(cx).drag_hover.cloud_drag) && !cx.has_active_drag() {
                 v.update(cx, |this, cx| {
                     this.revert_drag_nav();
                     this.drag_hover.clear();
@@ -1030,6 +1052,10 @@ fn drag_badge(label: String, pos: gpui::Point<gpui::Pixels>, window: &Window, cx
         .px_2().py_1().rounded_md().bg(cx.theme().popover)
         .text_color(cx.theme().popover_foreground).text_sm().child(label).into_any_element()
 }
+
+/// Destination markers only wrap small targets (folder rows/cells, bookmarks);
+/// panes, the dropzone and whole sections get just the cursor badge.
+const MAX_MARKED_TARGET_H: f32 = 200.0;
 
 fn glow_rect(
     bounds: gpui::Bounds<gpui::Pixels>,

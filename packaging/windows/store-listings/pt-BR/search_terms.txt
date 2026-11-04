@@ -1,0 +1,7 @@
+gerenciador de arquivos
+explorador de arquivos
+limpeza de disco
+abas
+painel duplo
+busca de arquivos
+file manager

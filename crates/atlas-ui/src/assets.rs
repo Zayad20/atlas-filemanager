@@ -12,6 +12,8 @@ use std::borrow::Cow;
 /// `gpui-component` asset bundle so its built-in `IconName` set keeps working.
 pub struct AtlasAssets;
 
+pub(crate) const VAULT_FOLDER_ART: &str = "illustrations/vault-folder-lock.png";
+
 pub fn bundled_fonts() -> Vec<Cow<'static, [u8]>> {
     vec![
         Cow::Borrowed(include_bytes!("../assets/fonts/geist/Geist-Variable.ttf")),
@@ -57,6 +59,7 @@ macro_rules! liquid_glass_filetype_icons {
 
 fn app_icon(path: &str) -> Option<&'static [u8]> {
     match path {
+        VAULT_FOLDER_ART => Some(include_bytes!("../assets/illustrations/vault-folder-lock.png")),
         "icons/atlas-logo.png" => Some(include_bytes!("../assets/icons/atlas-logo.png")),
         "icons/atlas-app-icon.png" => Some(include_bytes!("../assets/icons/atlas-app-icon.png")),
         _ => None,
@@ -74,6 +77,7 @@ phosphor_icons!(
     "music-notes",
     "film-strip",
     "folder",
+    "lock-simple",
     "cloud",
     "tag",
     "clock-counter-clockwise",
@@ -165,7 +169,7 @@ impl AssetSource for AtlasAssets {
             PHOSPHOR_PATHS
                 .iter()
                 .chain(LIQUID_GLASS_PATHS.iter())
-                .chain(["icons/atlas-logo.png", "icons/atlas-app-icon.png"].iter())
+                .chain(["icons/atlas-logo.png", "icons/atlas-app-icon.png", VAULT_FOLDER_ART].iter())
                 .filter(|name| name.starts_with(path))
                 .map(|name| SharedString::from(*name)),
         );
@@ -185,7 +189,7 @@ mod tests {
         for path in PHOSPHOR_PATHS
             .iter()
             .chain(LIQUID_GLASS_PATHS.iter())
-            .chain(["icons/atlas-logo.png", "icons/atlas-app-icon.png"].iter())
+            .chain(["icons/atlas-logo.png", "icons/atlas-app-icon.png", VAULT_FOLDER_ART].iter())
         {
             let bytes = registry
                 .load(path)

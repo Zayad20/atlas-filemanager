@@ -30,15 +30,32 @@ pub struct MultiResIcon {
     pub full: Arc<RenderImage>,
 }
 
+static ICON_SCALE_BITS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0x3f80_0000); // 1.0f32
+
+/// Window DPI scale used by [`MultiResIcon::for_size`].
+pub fn set_icon_scale(scale: f32) {
+    if scale.is_finite() && scale > 0.0 {
+        ICON_SCALE_BITS.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[inline]
+fn icon_scale() -> f32 {
+    f32::from_bits(ICON_SCALE_BITS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 impl MultiResIcon {
-    /// Pick the closest resolution tier for the target rendered pixel edge.
+    /// Pick the closest resolution tier for the target *logical* pixel edge; the
+    /// window DPI scale converts it to physical pixels so HiDPI picks a sharper tier.
     #[inline]
     pub fn for_size(&self, px: f32) -> Arc<RenderImage> {
-        if px <= 28.0 {
+        let px = px * icon_scale();
+        if px <= 32.0 {
             self.small.clone()
-        } else if px <= 56.0 {
+        } else if px <= 64.0 {
             self.medium.clone()
-        } else if px <= 112.0 {
+        } else if px <= 128.0 {
             self.large.clone()
         } else {
             self.full.clone()

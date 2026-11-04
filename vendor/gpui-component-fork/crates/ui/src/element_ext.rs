@@ -51,7 +51,11 @@ pub trait ElementExt: ParentElement + Sized {
                 move |bounds, window, cx| f(bounds, window, cx),
                 |_, _, _, _| {},
             )
+            // `inset_0` anchors the probe to the padding box. Without it an absolute
+            // child sits at the content-box origin, so bounds of padded elements
+            // (sidebar rows, dropzone) were reported shifted by their padding.
             .absolute()
+            .inset_0()
             .size_full(),
         )
     }

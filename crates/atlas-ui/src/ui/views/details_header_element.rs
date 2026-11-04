@@ -182,9 +182,11 @@ fn header_targets(
             HeaderHit::ResizeName,
         ));
     }
-    for col in &layout.columns {
+    // The trailing edge only mirrors the previous divider, so it gets no grip.
+    let last = layout.columns.len().saturating_sub(1);
+    for (i, col) in layout.columns.iter().enumerate() {
         let edge = col.x + col.w;
-        if col.w >= 16.0 * zoom {
+        if i != last && col.w >= 16.0 * zoom {
             targets.push((
                 Slot::new(
                     edge - RESIZE_HALF * zoom,
@@ -257,7 +259,7 @@ mod tests {
             );
             assert_eq!(
                 hit_test(&targets, 318.0 * zoom, 12.0 * zoom),
-                Some(HeaderHit::ResizeMeta(DetailsColumn::Type))
+                Some(HeaderHit::SortMeta(DetailsColumn::Type))
             );
             assert_eq!(
                 hit_test(&targets, 300.0 * zoom, 12.0 * zoom),
@@ -485,7 +487,7 @@ impl Element for DetailsHeaderElement {
                     origin: point(bounds.origin.x, bounds.origin.y + px(header_h - 1.0)),
                     size: size(bounds.size.width, px(1.0)),
                 },
-                border.opacity(0.45),
+                if self.colors.glass { border } else { border.opacity(0.45) },
             ));
 
             if let Some((slot, _)) = prepaint.targets.iter().find(|(_, hit)| *hit == HeaderHit::SelectAll) {
@@ -586,8 +588,10 @@ impl Element for DetailsHeaderElement {
                     size: size(px(col.w.max(0.0)), px(header_h)),
                 };
                 if dragging == Some(col.column) {
-                    window.paint_quad(gpui::fill(clip, header_bg));
-                    window.paint_quad(gpui::fill(clip, accent.opacity(0.10)));
+                    if !self.colors.glass {
+                        window.paint_quad(gpui::fill(clip, header_bg));
+                    }
+                    paint_rounded(window, Slot::new(col.x + 2.0 * zoom_scale, 3.0 * zoom_scale, (col.w - 4.0 * zoom_scale).max(0.0), header_h - 6.0 * zoom_scale).to_bounds(bounds.origin), 5.0 * zoom_scale, self.colors.fg.opacity(0.09));
                 }
                 if col.w > 15.0 * zoom_scale {
                     window.with_content_mask(
@@ -633,18 +637,19 @@ impl Element for DetailsHeaderElement {
                     Bounds {
                         origin: point(
                             bounds.origin.x + px(edge_x - if hovered { zoom_scale } else { zoom_scale * 0.5 }),
-                            bounds.origin.y + px(3.0 * zoom_scale),
+                            bounds.origin.y + px(if hovered { 4.0 } else { 8.0 } * zoom_scale),
                         ),
-                        size: size(px(if hovered { 2.0 * zoom_scale } else { zoom_scale }), px((header_h - 6.0 * zoom_scale).max(1.0))),
+                        size: size(px(if hovered { 2.0 * zoom_scale } else { zoom_scale }), px((header_h - if hovered { 8.0 } else { 16.0 } * zoom_scale).max(1.0))),
                     },
-                    if hovered { accent.opacity(0.85) } else { self.colors.muted.opacity(0.42) },
+                    if hovered { accent.opacity(0.75) } else { self.colors.muted.opacity(0.22) },
                 ));
             };
             if !layout_snap.columns.is_empty() {
                 paint_grip(window, layout_snap.name_right, matches!(hover_hit, Some(HeaderHit::ResizeName)));
             }
-            for col in &layout_snap.columns {
-                if col.w >= 16.0 {
+            let last_col = layout_snap.columns.len().saturating_sub(1);
+            for (i, col) in layout_snap.columns.iter().enumerate() {
+                if i != last_col && col.w >= 16.0 {
                     paint_grip(window, col.x + col.w,
                         matches!(hover_hit, Some(HeaderHit::ResizeMeta(column)) if column == col.column));
                 }

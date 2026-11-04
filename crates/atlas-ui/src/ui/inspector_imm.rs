@@ -264,7 +264,13 @@ pub fn project_inspector_layout(
     metadata_row_count: usize,
     titlebar_offset: f32,
 ) -> ImmPreviewViewportLayout {
-    let mut cut = RectCut::from_bounds(bounds);
+    // Slots are panel-local; paint and hit testing apply bounds.origin once.
+    let mut cut = RectCut::new(
+        0.0,
+        0.0,
+        f32::from(bounds.size.width),
+        f32::from(bounds.size.height),
+    );
     let pad_x = 10.0 * zoom;
     let pad_y = 10.0 * zoom;
     cut.pad(pad_x, pad_y);
@@ -1562,8 +1568,8 @@ mod tests {
         let layout = project_inspector_layout(bounds, zoom, true, false, 5, 0.0);
 
         // Header slot cuts from the top with padding
-        assert_eq!(layout.header_slot.x, 20.0);
-        assert_eq!(layout.header_slot.y, 30.0);
+        assert_eq!(layout.header_slot.x, 10.0);
+        assert_eq!(layout.header_slot.y, 10.0);
         assert_eq!(layout.header_slot.w, 300.0);
         assert!(layout.header_slot.h > 0.0);
 
@@ -1576,6 +1582,36 @@ mod tests {
         assert!(layout.preview_slot.y + layout.preview_slot.h <= layout.metadata_slot.y);
         assert!(layout.metadata_slot.h > 0.0);
         assert!(layout.preview_slot.h > 0.0);
+    }
+
+    #[test]
+    fn preview_content_and_controls_stay_inside_an_offset_panel() {
+        let bounds = Bounds {
+            origin: point(px(960.0), px(48.0)),
+            size: size(px(320.0), px(600.0)),
+        };
+        let layout = project_inspector_layout(bounds, 1.0, true, false, 5, 34.0);
+        for slot in [
+            layout.header_slot,
+            layout.icon_slot,
+            layout.title_slot,
+            layout.subtitle_slot,
+            layout.close_btn_slot,
+            layout.collapse_btn_slot,
+            layout.external_btn_slot,
+            layout.preview_slot,
+            layout.metadata_slot,
+        ] {
+            let painted = slot.to_bounds(bounds.origin);
+            assert!(painted.left() >= bounds.left());
+            assert!(painted.top() >= bounds.top());
+            assert!(painted.right() <= bounds.right(), "off-panel slot: {slot:?}");
+            assert!(painted.bottom() <= bounds.bottom(), "off-panel slot: {slot:?}");
+            assert!(slot.contains(
+                f32::from(painted.center().x - bounds.origin.x),
+                f32::from(painted.center().y - bounds.origin.y),
+            ));
+        }
     }
 
     #[test]

@@ -185,6 +185,8 @@ pub fn run(
     initial_paths: Vec<std::path::PathBuf>,
 ) {
     let run_started = Instant::now();
+    #[cfg(feature = "ui-lab")]
+    let initial_paths = crate::ui::preview_lab::prepare(initial_paths);
     let settings = atlas_core::util::config::load_settings();
     let lang = settings
         .language
@@ -288,10 +290,15 @@ pub fn run(
             cx.quit();
         });
 
+        #[cfg(feature = "ui-lab")]
+        let hidden_preview_lab = std::env::var_os("ATLAS_PREVIEW_LAB").is_some();
+        #[cfg(not(feature = "ui-lab"))]
+        let hidden_preview_lab = false;
         let window_options = WindowOptions {
             // Windows delivers demand-driven frames through WM_PAINT. A hidden
             // window may never receive it, so visibility cannot wait for a frame.
-            show: true,
+            show: !hidden_preview_lab,
+            focus: !hidden_preview_lab,
             titlebar: Some(TitleBar::title_bar_options()),
             window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
             window_min_size: Some(size(px(900.), px(560.))),
@@ -314,13 +321,25 @@ pub fn run(
             });
             #[cfg(feature = "conversion-lab")]
             crate::ui::converter::lab::install(&view, window, cx);
+            #[cfg(feature = "ui-lab")]
+            crate::ui::preview_lab::install(&view, window, cx);
             app::App::schedule_startup_frames(window, 2);
             // Autosave: persist settings/session/profiles when the app is
             // about to quit, gated by the user's autosave-session setting.
             let weak_app = view.downgrade();
+            let closing_app = view.downgrade();
+            window.on_window_should_close(cx, move |_, cx| {
+                closing_app.update(cx, |app, cx| {
+                    let allowed = app.close_native_vault(false);
+                    cx.notify();
+                    allowed
+                }).unwrap_or(true)
+            });
             cx.on_app_quit(move |cx| {
                 #[cfg(feature = "conversion-lab")]
                 if std::env::var_os("ATLAS_CONVERSION_LAB").is_some() { return std::future::ready(()); }
+                #[cfg(feature = "ui-lab")]
+                if std::env::var_os("ATLAS_PREVIEW_LAB").is_some() { return std::future::ready(()); }
                 weak_app.update(cx, |app, _cx| app.save_on_quit()).ok();
                 std::future::ready(())
             })
@@ -351,3 +370,8 @@ pub fn run(
         }
     });
 }
+#[cfg(feature = "ui-lab")]
+pub fn run_vault_diagnostic(directory: std::path::PathBuf) -> anyhow::Result<()> {
+    app::vault::diagnostic::run(directory)
+}
+

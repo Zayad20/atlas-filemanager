@@ -5,6 +5,8 @@ edition = "2021"
 license = "AGPL-3.0-or-later"
 
 [features]
+# Build-time edition policy, independent of the UI and provider host.
+free = []
 # Virtual location request/result models used by the provider host.
 default = ["provider-host"]
 provider-host = []
@@ -13,11 +15,11 @@ provider-host = []
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
-rust-i18n.workspace = true
 toml = "0.8"
 dirs.workspace = true
 compact_str = { version = "0.9", features = ["serde"] }
 chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
 
 [lints]
 workspace = true

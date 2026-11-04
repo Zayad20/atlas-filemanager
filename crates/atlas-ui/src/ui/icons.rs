@@ -92,6 +92,7 @@ pub(crate) enum AtlasIcon {
     ArrowUp,
     ArrowDown,
     TrayArrowDown,
+    Lock,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -110,6 +111,18 @@ pub(crate) enum FileTypeIcon {
 }
 
 impl AtlasIcon {
+    /// Whether this icon variant has a faithful Segoe Fluent / MDL2 glyph mapping.
+    /// Icons without a native Windows glyph (or with mismatched glyphs like GitBranch
+    /// or TreeStructure which would otherwise map to a plain folder or webcam icon)
+    /// return false and render via Phosphor SVG.
+    #[inline]
+    pub(crate) const fn has_windows_glyph(self) -> bool {
+        !matches!(
+            self,
+            Self::TerminalWindow | Self::GitBranch | Self::TreeStructure
+        )
+    }
+
     #[inline]
     pub(crate) const fn path(self) -> &'static str {
         match self {
@@ -175,6 +188,7 @@ impl AtlasIcon {
             Self::ArrowUp => "icons/ph/arrow-up.svg",
             Self::ArrowDown => "icons/ph/arrow-down.svg",
             Self::TrayArrowDown => "icons/ph/tray-arrow-down.svg",
+            Self::Lock => "icons/ph/lock-simple.svg",
         }
     }
 }
@@ -231,7 +245,7 @@ pub(crate) fn theme_icon(
     color: Hsla,
     windows_theme: bool,
 ) -> AnyElement {
-    if windows_theme && !matches!(kind, AtlasIcon::TerminalWindow) {
+    if windows_theme && kind.has_windows_glyph() {
         windows_icon(kind, size, color)
     } else {
         icon(kind, size, color)
@@ -241,6 +255,7 @@ pub(crate) fn theme_icon(
 #[inline]
 pub(crate) fn windows_icon_glyph(kind: AtlasIcon) -> &'static str {
     match kind {
+        AtlasIcon::Lock => "\u{E72E}",
         AtlasIcon::House => "\u{E80F}",
         AtlasIcon::Monitor => "\u{E7F4}",
         AtlasIcon::Folder => "\u{E8B7}",
@@ -289,6 +304,8 @@ pub(crate) fn windows_icon_glyph(kind: AtlasIcon) -> &'static str {
         AtlasIcon::SelectionInverse => "\u{E8B5}",
         AtlasIcon::SortAscending => "\u{E8CB}",
         AtlasIcon::TreeStructure => "\u{E8B7}",
+        // Segoe Fluent / MDL2 has no Git Branch icon (\u{E8B8} is webcam in Fluent);
+        // excluded from Windows glyphs via AtlasIcon::has_windows_glyph().
         AtlasIcon::GitBranch => "\u{E8B8}",
         AtlasIcon::ClockCounterClockwise => "\u{E81C}",
         AtlasIcon::Tag => "\u{E8EC}",
@@ -309,6 +326,33 @@ pub(crate) fn atlas_logo(size: f32) -> AnyElement {
         .size(crate::ui::rem_px(size))
         .flex_none()
         .into_any_element()
+}
+
+/// Cache the white artwork for dark surfaces and solid black ink for light ones.
+fn atlas_logo_image(dark: bool) -> std::sync::Arc<gpui::RenderImage> {
+    use std::sync::{Arc, LazyLock};
+    fn decode(dark: bool) -> Arc<gpui::RenderImage> {
+        let mut pixels = image::load_from_memory(include_bytes!("../../assets/icons/atlas-logo.png"))
+            .expect("embedded Atlas logo must decode").into_rgba8();
+        for pixel in pixels.pixels_mut() {
+            if !dark {
+                // The white source has watermark opacity (48/255 in its body).
+                // Use solid black ink on light surfaces, retaining antialiased edges.
+                pixel.0[..3].fill(0);
+                pixel.0[3] = (u16::from(pixel.0[3]) * 255 / 48).min(255) as u8;
+            }
+            pixel.0.swap(0, 2); // GPUI uploads straight BGRA.
+        }
+        Arc::new(gpui::RenderImage::new(vec![image::Frame::new(pixels)]))
+    }
+    static WHITE: LazyLock<Arc<gpui::RenderImage>> = LazyLock::new(|| decode(true));
+    static BLACK: LazyLock<Arc<gpui::RenderImage>> = LazyLock::new(|| decode(false));
+    if dark { WHITE.clone() } else { BLACK.clone() }
+}
+
+pub(crate) fn themed_atlas_logo(size: f32, dark: bool) -> AnyElement {
+    img(atlas_logo_image(dark))
+        .size(crate::ui::rem_px(size)).flex_none().into_any_element()
 }
 
 /// Fallback file-type icon (built-in liquid-glass PNG set), used when the active

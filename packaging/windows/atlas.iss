@@ -23,6 +23,17 @@ ChangesEnvironment=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
+Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
+Name: "french"; MessagesFile: "compiler:Languages\French.isl"
+Name: "german"; MessagesFile: "compiler:Languages\German.isl"
+Name: "italian"; MessagesFile: "compiler:Languages\Italian.isl"
+Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
+Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
+Name: "polish"; MessagesFile: "compiler:Languages\Polish.isl"
+Name: "dutch"; MessagesFile: "compiler:Languages\Dutch.isl"
+Name: "turkish"; MessagesFile: "compiler:Languages\Turkish.isl"
+Name: "ukrainian"; MessagesFile: "compiler:Languages\Ukrainian.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
@@ -33,6 +44,13 @@ Name: "launch"; Description: "Launch Atlas after install"; GroupDescription: "Fi
 
 [Files]
 Source: "..\..\target\release\atlas.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\target\release\atlas-cloud-extension.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\target\release\atlas-icon-extension.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\legal\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "..\..\crates\atlas-core\vendor\unrar-bin\UnRAR.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\target\extensions\cloud\rclone.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\target\extensions\cloud\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; DestName: "CLOUD-THIRD-PARTY-NOTICES.txt"; Flags: ignoreversion
 Source: "..\..\target\release\atlas-search-service.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\icons\atlas.ico"; DestDir: "{app}"; Flags: ignoreversion
 

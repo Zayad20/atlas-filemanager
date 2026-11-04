@@ -1,0 +1,14 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "workspace-hack",
+  "version": "0.1.0",
+  "license": "CC0-1.0",
+  "authors": [],
+  "repository": "https://github.com/facebookincubator/cargo-guppy"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: 65ecde059b4a46f1c71e2b1de82bd11d7a51b4ea2da3823170caa80ed2bb0ed7

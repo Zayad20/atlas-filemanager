@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-fn run(command: Command, cancel: &AtomicBool) -> Result<()> {
+pub(super) fn run(command: Command, cancel: &AtomicBool) -> Result<()> {
     run_captured(command, cancel, None)
 }
 

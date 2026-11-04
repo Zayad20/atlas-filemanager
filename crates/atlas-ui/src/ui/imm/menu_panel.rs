@@ -380,6 +380,7 @@ impl Element for MenuPanel {
         let scroll_x = ink.scroll_x;
         let thumb = ink.thumb.map(|slot| slot.to_bounds(bounds.origin));
         let scroll = self.scroll;
+        let focus = self.focus.clone();
         window.on_mouse_event::<MouseDownEvent>(move |ev, phase, window, cx| {
             if phase != DispatchPhase::Bubble || !hitbox.is_hovered(window) {
                 return;
@@ -392,6 +393,7 @@ impl Element for MenuPanel {
                 return;
             }
             if ev.button == MouseButton::Left {
+                window.focus(&focus, cx);
                 view.update(cx, |app, cx| {
                     if app
                         .ctx_menu

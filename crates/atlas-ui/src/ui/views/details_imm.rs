@@ -91,7 +91,7 @@ pub(crate) fn presented_layout(
     zoom: f32,
     window: &mut Window,
     cx: &mut gpui::App,
-) -> DetailsRowLayout {
+) -> (DetailsRowLayout, DetailsRowLayout) {
     let _perf = crate::perf::span("details.layout.columns");
     let prefs = app.details_prefs_for(pane);
     let mut layout = responsive_layout(available, zoom, prefs.widths, &prefs.order);
@@ -110,6 +110,8 @@ pub(crate) fn presented_layout(
             available,
         },
     );
+    // The header follows the pointer directly; the rows chase it on the spring.
+    let mut header = layout.clone();
     let active = state.update(cx, |state, _| {
         let now = Instant::now();
         let direct = app.state.settings.disable_animations
@@ -136,7 +138,7 @@ pub(crate) fn presented_layout(
                     (available - width).max(layout.name_right),
                 );
             }
-            let (value, running) = position.sample(target, direct || attached, now);
+            let (value, running) = position.sample(target, direct, now);
             active |= running;
             if let Some(column) = layout
                 .columns
@@ -145,6 +147,13 @@ pub(crate) fn presented_layout(
             {
                 column.x = value;
             }
+            if let Some(column) = header
+                .columns
+                .iter_mut()
+                .find(|c| column_index(c.column) == i)
+            {
+                column.x = if attached { target } else { value };
+            }
         }
         state.available = available;
         active
@@ -152,7 +161,7 @@ pub(crate) fn presented_layout(
     if active {
         window.request_animation_frame();
     }
-    layout
+    (layout, header)
 }
 
 impl App {

@@ -10,9 +10,16 @@ pub(crate) enum UiLabAction {
 #[cfg(any(feature = "perf-log", feature = "tracy"))]
 mod imp {
     use std::collections::HashMap;
+    use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};
+
+    fn log(args: std::fmt::Arguments<'_>) {
+        // A redirected console can close while Atlas is still rendering.
+        // Diagnostics must not panic (especially from Span::drop).
+        let _ = std::io::stderr().lock().write_fmt(format_args!("{args}\n"));
+    }
 
     struct Config {
         enabled: bool,
@@ -188,23 +195,23 @@ mod imp {
             .map(|(name, us)| format!("{name}_ms={:.2}", us as f64 / 1000.0))
             .collect::<Vec<_>>()
             .join(" ");
-        eprintln!(
+        log(format_args!(
             "[atlas-perf +{:>8.1}ms] frame_summary frame={summary_frame} sampled_at={frame} gap_ms={gap_ms:.1} {} {} {}",
             cfg.started.elapsed().as_secs_f64() * 1000.0,
             detail_s,
             counter_s,
             timing_s
-        );
+        ));
     }
 
     pub(crate) fn event(detail: impl FnOnce() -> String) {
         let cfg = config();
         if cfg.events {
-            eprintln!(
+            log(format_args!(
                 "[atlas-perf +{:>8.1}ms] {}",
                 cfg.started.elapsed().as_secs_f64() * 1000.0,
                 detail()
-            );
+            ));
         }
     }
 
@@ -304,19 +311,19 @@ mod imp {
             }
             let ms = elapsed.as_secs_f64() * 1000.0;
             match &self.detail {
-                Some(detail) => eprintln!(
+                Some(detail) => log(format_args!(
                     "[atlas-perf +{:>8.1}ms] {:>7.2}ms {} {}",
                     cfg.started.elapsed().as_secs_f64() * 1000.0,
                     ms,
                     self.name,
                     detail
-                ),
-                None => eprintln!(
+                )),
+                None => log(format_args!(
                     "[atlas-perf +{:>8.1}ms] {:>7.2}ms {}",
                     cfg.started.elapsed().as_secs_f64() * 1000.0,
                     ms,
                     self.name
-                ),
+                )),
             }
         }
     }

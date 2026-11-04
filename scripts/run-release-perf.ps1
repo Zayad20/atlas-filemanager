@@ -112,30 +112,63 @@ function Stop-WorkspaceSearchConsole {
     }
 }
 
-# Cargo run builds only the Atlas package, so build its companion explicitly.
-# Windows locks running executables: release only this destination before build.
+function Stop-WorkspaceBuildProcesses {
+    $targetRoot = [System.IO.Path]::GetFullPath((Join-Path $root "target"))
+    $workspaceRoot = [System.IO.Path]::GetFullPath($root)
+    foreach ($name in @('cargo', 'rustc', 'rust-lld')) {
+        foreach ($proc in Get-CimInstance Win32_Process -Filter "Name = '$name.exe'" -ErrorAction SilentlyContinue) {
+            $cmd = $proc.CommandLine
+            if ($cmd -and ($cmd.Contains($workspaceRoot) -or $cmd.Contains($targetRoot))) {
+                Write-Host "Stopping orphaned build process: $($proc.Name) (PID $($proc.ProcessId))"
+                try {
+                    Start-Process -FilePath "taskkill.exe" -ArgumentList "/F", "/T", "/PID", "$($proc.ProcessId)" -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue
+                } catch {
+                    Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+}
+
+# Windows locks running executables: release workspace processes before rebuild.
 Close-WorkspaceAtlas
 Stop-WorkspaceSearchConsole -OnlyExecutable $searchExe
+Stop-WorkspaceBuildProcesses
+
 Write-Host "Search:    cargo +1.97.1 build --locked --profile $profile -p atlas-search-service"
 & cargo +1.97.1 build --locked --profile $profile -p atlas-search-service
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
-if (-not $BuildOnly) {
-    # Replace a console from another profile before Atlas probes the shared pipe.
-    Stop-WorkspaceSearchConsole
-    $searchProcess = Start-Process -FilePath $searchExe -ArgumentList '--console' -WindowStyle Hidden -PassThru
-    Write-Host "Search:    $searchExe (PID $($searchProcess.Id))"
+if (-not $Lean) {
+    Write-Host "Cloud:     cargo +1.97.1 build --locked --profile $profile -p atlas-cloud-extension"
+    & cargo +1.97.1 build --locked --profile $profile -p atlas-cloud-extension
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-$verb = if ($BuildOnly) { "build" } else { "run" }
-$command = @("+1.97.1", $verb, "--locked", "--profile", $profile)
-if ($Lean) {
-    $command += "--no-default-features"
+# Separate cargo build flags from executable arguments passed after '--'.
+$cargoFlags = @()
+$appArgs = @()
+$afterDashDash = $false
+foreach ($arg in $CargoArgs) {
+    if ($arg -eq '--') {
+        $afterDashDash = $true
+        continue
+    }
+    if ($afterDashDash) {
+        $appArgs += $arg
+    } else {
+        $cargoFlags += $arg
+    }
 }
-$command += @("--features", "perf-log")
-if ($CargoArgs) {
-    $command += $CargoArgs
+
+$buildCommand = @("+1.97.1", "build", "--locked", "--profile", $profile)
+if ($Lean) {
+    $buildCommand += "--no-default-features"
+}
+$buildCommand += @("--features", "perf-log")
+if ($cargoFlags) {
+    $buildCommand += $cargoFlags
 }
 
 Write-Host "Compiler:  stable LLVM 1.97.1"
@@ -144,74 +177,104 @@ Write-Host "Profile:   $profile"
 Write-Host "Perf logs: enabled (events=$(-not $NoEvents), threshold_ms=$env:ATLAS_PERF_MS)"
 Write-Host "GPUI frames: $(-not $NoGpuiFrames)"
 Write-Host "Isolation: sidebar=$SkipSidebar overlays=$SkipOverlays inspector=$SkipInspector"
-Write-Host "Command:   cargo $($command -join ' ')"
+Write-Host "Atlas:     cargo $($buildCommand -join ' ')"
+
+# Build the main Atlas binary with live console output so the user sees progress.
+& cargo @buildCommand
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+$atlasExe = [System.IO.Path]::GetFullPath((Join-Path $root "target\$profile\atlas.exe"))
+if ($BuildOnly) {
+    Write-Host "Built:     $atlasExe"
+    exit 0
+}
+
+Stop-WorkspaceSearchConsole
+$searchProcess = Start-Process -FilePath $searchExe -ArgumentList '--console' -WindowStyle Hidden -PassThru
+Write-Host "Search:    $searchExe (PID $($searchProcess.Id))"
 
 $cargoExit = 0
-if ($NoFileLog) {
-    $previousErrorAction = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        & cargo @command
-        $cargoExit = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $previousErrorAction
-    }
-} else {
-    $logRoot = Join-Path $root "perf-logs"
-    New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
-    if ([string]::IsNullOrWhiteSpace($LogPath)) {
-        $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-        $resolvedLogPath = Join-Path $logRoot "release-perf-$stamp.log"
-    } elseif ([System.IO.Path]::IsPathRooted($LogPath)) {
-        $resolvedLogPath = $LogPath
+try {
+    if ($NoFileLog) {
+        $previousErrorAction = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            Write-Host "Running:   $atlasExe $(if ($appArgs) { $appArgs -join ' ' })"
+            & $atlasExe @appArgs
+            $cargoExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorAction
+        }
     } else {
-        $resolvedLogPath = Join-Path $root $LogPath
-    }
-    $resolvedLogPath = [System.IO.Path]::GetFullPath($resolvedLogPath)
-    $logParent = Split-Path -Parent $resolvedLogPath
-    New-Item -ItemType Directory -Force -Path $logParent | Out-Null
-    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-    . (Join-Path $PSScriptRoot "perf-capture.ps1")
-    $captureId = [guid]::NewGuid().ToString("N")
-    $stdoutPath = "$resolvedLogPath.$captureId.stdout.tmp"
-    $stderrPath = "$resolvedLogPath.$captureId.stderr.tmp"
-    $gpuiFrameLog = if ($env:GPUI_FRAME_LOG) { $env:GPUI_FRAME_LOG } else { "unset" }
-    $skipSidebarValue = if ($env:ATLAS_PERF_SKIP_SIDEBAR) { $env:ATLAS_PERF_SKIP_SIDEBAR } else { "0" }
-    $skipOverlaysValue = if ($env:ATLAS_PERF_SKIP_OVERLAYS) { $env:ATLAS_PERF_SKIP_OVERLAYS } else { "0" }
-    $skipInspectorValue = if ($env:ATLAS_PERF_SKIP_INSPECTOR) { $env:ATLAS_PERF_SKIP_INSPECTOR } else { "0" }
-    $header = @(
-        "# Atlas release-perf"
-        "# ATLAS_PERF=$env:ATLAS_PERF ATLAS_PERF_EVENTS=$env:ATLAS_PERF_EVENTS ATLAS_PERF_MS=$env:ATLAS_PERF_MS"
-        "# GPUI_FRAME_LOG=$gpuiFrameLog RUST_LOG=$env:RUST_LOG"
-        "# ATLAS_PERF_SKIP_SIDEBAR=$skipSidebarValue ATLAS_PERF_SKIP_OVERLAYS=$skipOverlaysValue ATLAS_PERF_SKIP_INSPECTOR=$skipInspectorValue"
-        "# ATLAS_CONFIG_DIR=$env:ATLAS_CONFIG_DIR ATLAS_PERF_AUTOMATE_SPLITS=$env:ATLAS_PERF_AUTOMATE_SPLITS ATLAS_PERF_SPLIT_COUNT=$env:ATLAS_PERF_SPLIT_COUNT ATLAS_PERF_SPLIT_INTERVAL_MS=$env:ATLAS_PERF_SPLIT_INTERVAL_MS"
-        ""
-    ) -join "`n"
-    [System.IO.File]::WriteAllText($resolvedLogPath, $header, $utf8NoBom)
-    $captureMerged = $false
-    try {
-        $cargoExit = Invoke-PerfCapture -FilePath "cargo.exe" `
-            -Arguments $command `
-            -WorkingDirectory $root `
-            -StdoutPath $stdoutPath `
-            -StderrPath $stderrPath
-        foreach ($part in @($stdoutPath, $stderrPath)) {
-            if (Test-Path -LiteralPath $part) {
-                $partText = [System.IO.File]::ReadAllText($part, $utf8NoBom)
-                [System.IO.File]::AppendAllText($resolvedLogPath, $partText, $utf8NoBom)
-                if ($partText) {
-                    Write-Output $partText.TrimEnd()
+        $logRoot = Join-Path $root "perf-logs"
+        New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
+        if ([string]::IsNullOrWhiteSpace($LogPath)) {
+            $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+            $resolvedLogPath = Join-Path $logRoot "release-perf-$stamp.log"
+        } elseif ([System.IO.Path]::IsPathRooted($LogPath)) {
+            $resolvedLogPath = $LogPath
+        } else {
+            $resolvedLogPath = Join-Path $root $LogPath
+        }
+        $resolvedLogPath = [System.IO.Path]::GetFullPath($resolvedLogPath)
+        $logParent = Split-Path -Parent $resolvedLogPath
+        New-Item -ItemType Directory -Force -Path $logParent | Out-Null
+        $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+        . (Join-Path $PSScriptRoot "perf-capture.ps1")
+        $captureId = [guid]::NewGuid().ToString("N")
+        $stdoutPath = "$resolvedLogPath.$captureId.stdout.tmp"
+        $stderrPath = "$resolvedLogPath.$captureId.stderr.tmp"
+        $gpuiFrameLog = if ($env:GPUI_FRAME_LOG) { $env:GPUI_FRAME_LOG } else { "unset" }
+        $skipSidebarValue = if ($env:ATLAS_PERF_SKIP_SIDEBAR) { $env:ATLAS_PERF_SKIP_SIDEBAR } else { "0" }
+        $skipOverlaysValue = if ($env:ATLAS_PERF_SKIP_OVERLAYS) { $env:ATLAS_PERF_SKIP_OVERLAYS } else { "0" }
+        $skipInspectorValue = if ($env:ATLAS_PERF_SKIP_INSPECTOR) { $env:ATLAS_PERF_SKIP_INSPECTOR } else { "0" }
+        $header = @(
+            "# Atlas release-perf"
+            "# ATLAS_PERF=$env:ATLAS_PERF ATLAS_PERF_EVENTS=$env:ATLAS_PERF_EVENTS ATLAS_PERF_MS=$env:ATLAS_PERF_MS"
+            "# GPUI_FRAME_LOG=$gpuiFrameLog RUST_LOG=$env:RUST_LOG"
+            "# ATLAS_PERF_SKIP_SIDEBAR=$skipSidebarValue ATLAS_PERF_SKIP_OVERLAYS=$skipOverlaysValue ATLAS_PERF_SKIP_INSPECTOR=$skipInspectorValue"
+            "# ATLAS_CONFIG_DIR=$env:ATLAS_CONFIG_DIR ATLAS_PERF_AUTOMATE_SPLITS=$env:ATLAS_PERF_AUTOMATE_SPLITS ATLAS_PERF_SPLIT_COUNT=$env:ATLAS_PERF_SPLIT_COUNT ATLAS_PERF_SPLIT_INTERVAL_MS=$env:ATLAS_PERF_SPLIT_INTERVAL_MS"
+            ""
+        ) -join "`n"
+        [System.IO.File]::WriteAllText($resolvedLogPath, $header, $utf8NoBom)
+
+        Write-Host "Atlas:     $atlasExe $(if ($appArgs) { $appArgs -join ' ' })"
+        Write-Host "Capturing: $resolvedLogPath"
+        Write-Host "Tip:       Close Atlas window or press Ctrl+C in this terminal to finish capture cleanly."
+
+        $captureMerged = $false
+        try {
+            $cargoExit = Invoke-PerfCapture -FilePath $atlasExe `
+                -Arguments $appArgs `
+                -WorkingDirectory $root `
+                -StdoutPath $stdoutPath `
+                -StderrPath $stderrPath
+            foreach ($part in @($stdoutPath, $stderrPath)) {
+                if (Test-Path -LiteralPath $part) {
+                    $partText = [System.IO.File]::ReadAllText($part, $utf8NoBom)
+                    [System.IO.File]::AppendAllText($resolvedLogPath, $partText, $utf8NoBom)
+                    if ($partText) {
+                        Write-Output $partText.TrimEnd()
+                    }
                 }
             }
+            $captureMerged = $true
+        } finally {
+            if ($captureMerged) {
+                Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+            } else {
+                Write-Warning "Capture retained for recovery: $stdoutPath, $stderrPath"
+            }
         }
-        $captureMerged = $true
-    } finally {
-        if ($captureMerged) {
-            Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
-        } else {
-            Write-Warning "Capture retained for recovery: $stdoutPath, $stderrPath"
-        }
+        Write-Host "Log:       $resolvedLogPath"
     }
-    Write-Host "Log:       $resolvedLogPath"
+} finally {
+    if ($searchProcess -and -not $searchProcess.HasExited) {
+        Write-Host "Stopping search console: PID $($searchProcess.Id)"
+        Stop-Process -Id $searchProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+    Stop-WorkspaceBuildProcesses
 }
 exit $cargoExit

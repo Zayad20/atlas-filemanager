@@ -145,6 +145,7 @@ pub fn load_session() -> Option<atlas_model::layout_tree::Tree<TabData>> {
 
 pub fn save_session(tree: &atlas_model::layout_tree::Tree<TabData>) {
     let mut tree = tree.clone();
+    scrub_private_tree(&mut tree);
     let volumes = volume_snapshot();
     for (_, tile) in tree.tiles.iter_mut() {
         if let atlas_model::layout_tree::Tile::Pane(tab) = tile {
@@ -155,13 +156,40 @@ pub fn save_session(tree: &atlas_model::layout_tree::Tree<TabData>) {
 }
 
 pub fn load_profiles() -> ProfileManager {
-    read_or_default("profiles.json")
+    let profiles = read_or_default("profiles.json");
+    // Persist generated identities immediately, before any vault can reference them.
+    save_profiles(&profiles);
+    profiles
 }
 
 pub fn save_profiles(profiles: &ProfileManager) {
     let mut profiles = profiles.clone();
+    use atlas_model::profiles::{FolderViewFeature, RecentFoldersFeature};
+    for profile in &mut profiles.profiles {
+        if let Some(tree) = &mut profile.tree { scrub_private_tree(tree); }
+        profile.bookmarks.retain(|bookmark| !crate::vault::live::is_private(&bookmark.path));
+        let mut recent = profile.scoped::<RecentFoldersFeature>();
+        recent.retain(|path| !crate::vault::live::is_private(path));
+        profile.set_scoped::<RecentFoldersFeature>(&recent);
+        let mut views = profile.scoped::<FolderViewFeature>();
+        views.retain_paths(|path| !crate::vault::live::is_private(path));
+        profile.set_scoped::<FolderViewFeature>(&views);
+    }
     refresh_bookmark_volumes(&mut profiles);
     write_json("profiles.json", &profiles);
+}
+
+fn scrub_private_tree(tree: &mut atlas_model::layout_tree::Tree<TabData>) {
+    for (_, tile) in tree.tiles.iter_mut() {
+        let atlas_model::layout_tree::Tile::Pane(tab) = tile else { continue };
+        if crate::vault::live::is_private(&tab.location.display_path()) {
+            tab.location = atlas_model::location::Location::Directory(dirs::home_dir().unwrap_or_default());
+            tab.volume_serial = None;
+        }
+        tab.history.retain(|location| !crate::vault::live::is_private(&location.display_path()));
+        tab.history_forward.retain(|location| !crate::vault::live::is_private(&location.display_path()));
+        if tab.breadcrumb_trail.as_ref().is_some_and(|path| crate::vault::live::is_private(path)) { tab.breadcrumb_trail = None; }
+    }
 }
 
 static VOLUME_SNAPSHOT: std::sync::RwLock<Vec<(PathBuf, u32)>> = std::sync::RwLock::new(Vec::new());

@@ -1,0 +1,1 @@
+Administrador de archivos moderno con pestañas, panel dual, búsqueda rápida y limpieza de disco.

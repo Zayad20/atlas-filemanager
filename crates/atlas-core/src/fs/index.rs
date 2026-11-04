@@ -10,6 +10,17 @@ pub fn build_index(current_root: PathBuf, injector: nucleo::Injector<IndexEntry>
         let home = dirs::home_dir().unwrap_or_else(|| current_root.clone());
         let mut seen = HashSet::new();
 
+        // Browsing a WSL distro: its folders are what the user is completing.
+        // Index its home deeply (and the rest of the distro shallowly) first.
+        if super::paths::wsl_distro_name(&current_root).is_some() {
+            let wsl_home = wsl_home_of(&current_root);
+            index_tree(&wsl_home, WSL_HOME_DEPTH, &wsl_home, &mut seen, &injector, WSL_ENTRY_CAP, is_linux_system_dir);
+            let distro = wsl_distro_root(&current_root);
+            if distro != wsl_home {
+                index_tree(&distro, 2, &distro, &mut seen, &injector, WSL_ENTRY_CAP * 2, is_linux_system_dir);
+            }
+        }
+
         for path in common_folders()
             .into_iter()
             .chain([home.clone(), current_root.clone()])
@@ -17,12 +28,20 @@ pub fn build_index(current_root: PathBuf, injector: nucleo::Injector<IndexEntry>
             inject_folder(path, &home, &mut seen, &injector);
         }
 
-        index_tree(&home, 5, &home, &mut seen, &injector);
+        index_tree(&home, 5, &home, &mut seen, &injector, usize::MAX, is_heavy_dir);
         if !current_root.starts_with(&home) {
-            index_tree(&current_root, 3, &home, &mut seen, &injector);
+            index_tree(&current_root, 3, &home, &mut seen, &injector, usize::MAX, is_heavy_dir);
         }
         index_files(&current_root, 4, 10_000, &injector);
     });
+}
+
+/// The global goto index; `extended` (a profile opt-in) adds every drive and WSL distro.
+pub fn build_goto_index(root: PathBuf, injector: nucleo::Injector<IndexEntry>, extended: bool) {
+    if extended {
+        build_extended_index(injector.clone());
+    }
+    build_index(root, injector);
 }
 
 /// Lightweight directory-only warm index used by Goto (never repointed by scoped searches).
@@ -100,6 +119,8 @@ fn index_tree(
     home: &Path,
     seen: &mut HashSet<PathBuf>,
     injector: &nucleo::Injector<IndexEntry>,
+    limit: usize,
+    prune: fn(&str) -> bool,
 ) {
     // Breadth first: publish nearby folders before descending into large
     // AppData, dependency or document trees. A new project at home/developer/
@@ -107,7 +128,7 @@ fn index_tree(
     inject_folder(root.to_path_buf(), home, seen, injector);
     let mut pending = VecDeque::from([(root.to_path_buf(), 0_usize)]);
     while let Some((directory, depth)) = pending.pop_front() {
-        if depth >= max_depth {
+        if depth >= max_depth || seen.len() >= limit {
             continue;
         }
         if super::scan_policy::is_scan_excluded(&directory) || super::preview::is_cloud_placeholder(&directory) { continue; }
@@ -122,8 +143,14 @@ fn index_tree(
             .collect();
         folders.sort();
         for folder in folders {
-            inject_folder(folder.clone(), home, seen, injector);
-            pending.push_back((folder, depth + 1));
+            // `file_type` above already proved it is a directory: skip the
+            // extra stat, which is a network round trip on WSL shares.
+            inject_known_folder(folder.clone(), home, seen, injector);
+            // Massive trees (target, node_modules, /usr…) stay findable by name
+            // but are never descended into.
+            if !folder.file_name().and_then(|n| n.to_str()).is_some_and(prune) {
+                pending.push_back((folder, depth + 1));
+            }
         }
     }
 }
@@ -167,7 +194,19 @@ fn inject_folder(
     seen: &mut HashSet<PathBuf>,
     injector: &nucleo::Injector<IndexEntry>,
 ) {
-    if !path.is_dir() || !seen.insert(path.clone()) {
+    if !path.is_dir() {
+        return;
+    }
+    inject_known_folder(path, home, seen, injector);
+}
+
+fn inject_known_folder(
+    path: PathBuf,
+    home: &Path,
+    seen: &mut HashSet<PathBuf>,
+    injector: &nucleo::Injector<IndexEntry>,
+) {
+    if !seen.insert(path.clone()) {
         return;
     }
     // Match against the home-relative path when possible: the constant
@@ -181,6 +220,78 @@ fn inject_folder(
     };
     injector.push(IndexEntry { path, is_dir: true }, move |_item, cols| {
         cols[0] = display.as_str().into();
+    });
+}
+
+const WSL_HOME_DEPTH: usize = 6;
+const WSL_ENTRY_CAP: usize = 60_000;
+const EXTENDED_DEPTH: usize = 4;
+const EXTENDED_ENTRY_CAP: usize = 250_000;
+
+/// Dependency and build output trees: listed, never walked.
+fn is_heavy_dir(name: &str) -> bool {
+    matches!(name, "node_modules" | "target" | "__pycache__" | "vendor" | "venv" | "dist" | "build")
+}
+
+/// Linux trees that are never a navigation target and are huge over 9P.
+fn is_linux_system_dir(name: &str) -> bool {
+    matches!(
+        name,
+        "proc" | "sys" | "dev" | "run" | "usr" | "lib" | "lib32" | "lib64" | "bin" | "sbin"
+            | "boot" | "snap" | "lost+found"
+    ) || is_heavy_dir(name)
+}
+
+/// System and dependency trees skipped by the opt-in whole-disk index.
+fn is_extended_skip(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "windows" | "$recycle.bin" | "system volume information" | "winsxs" | "node_modules"
+            | "recovery" | "msocache"
+    ) || is_linux_system_dir(&name)
+}
+
+/// The distro root (`\wsl.localhost\Arch\`) containing `path`.
+fn wsl_distro_root(path: &Path) -> PathBuf {
+    let mut root = PathBuf::new();
+    for (index, component) in path.components().enumerate() {
+        root.push(component);
+        // `\wsl.localhost\Arch` is a prefix plus a root dir; the prefix already
+        // carries the distro name.
+        if index == 1 {
+            break;
+        }
+    }
+    root
+}
+
+/// `\wsl.localhost\Arch\home\me` when `path` is inside it, else the distro root.
+fn wsl_home_of(path: &Path) -> PathBuf {
+    let root = wsl_distro_root(path);
+    let mut rest = path.strip_prefix(&root).unwrap_or(path).components();
+    match (rest.next(), rest.next()) {
+        (Some(home), Some(user)) if home.as_os_str().eq_ignore_ascii_case("home") => {
+            root.join(home).join(user)
+        }
+        _ => root,
+    }
+}
+
+/// Opt-in: also make every local drive and WSL distro searchable by folder
+/// name. Breadth first and capped, so the nearest folders arrive first and the
+/// memory cost stays bounded (roughly 100 bytes per folder).
+pub fn build_extended_index(injector: nucleo::Injector<IndexEntry>) {
+    rayon::spawn(move || {
+        let roots: Vec<PathBuf> = super::mounts::list_drives()
+            .into_iter()
+            .map(|drive| drive.mount_point)
+            .chain(super::paths::list_wsl_roots())
+            .collect();
+        let mut seen = HashSet::new();
+        for root in roots {
+            index_tree(&root, EXTENDED_DEPTH, &root, &mut seen, &injector, EXTENDED_ENTRY_CAP, is_extended_skip);
+        }
     });
 }
 
@@ -216,7 +327,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".hidden/ignored")).unwrap();
         let mut pool = NucleoPool::new();
         let mut seen = HashSet::new();
-        index_tree(root, 5, root, &mut seen, &pool.injector());
+        index_tree(root, 5, root, &mut seen, &pool.injector(), usize::MAX, super::is_heavy_dir);
         let deadline = Instant::now() + Duration::from_secs(5);
         while pool.nucleo.snapshot().item_count() as usize != seen.len() {
             pool.tick();
@@ -238,6 +349,18 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wsl_home_is_found_from_any_path_inside_the_distro() {
+        use super::{wsl_distro_root, wsl_home_of};
+        use std::path::Path;
+        let deep = Path::new(r"\\wsl.localhost\Arch\home\me\dev\x");
+        assert_eq!(wsl_home_of(deep), Path::new(r"\\wsl.localhost\Arch\home\me"));
+        let etc = Path::new(r"\\wsl.localhost\Arch\etc\systemd");
+        assert_eq!(wsl_home_of(etc), wsl_distro_root(etc));
+        assert_eq!(wsl_distro_root(etc), Path::new(r"\\wsl.localhost\Arch\"));
     }
 
     #[test]

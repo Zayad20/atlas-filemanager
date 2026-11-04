@@ -1,8 +1,8 @@
 id = "document-previews"
 name = "Document Previews"
-version = "0.1.2"
+version = "0.1.3"
 author = "Atlas Team"
-description = "Inspector previews for PDF, CSV/TSV, Excel, Word, PowerPoint and PSD placeholders"
+description = "Inspector previews: PDF pages, CSV/TSV and spreadsheet tables, DOCX/PPTX text, and PSD/PSB images. PDF and PSD require local tools."
 kind = "builtin"
 
 [[commands]]

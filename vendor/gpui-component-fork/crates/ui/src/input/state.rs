@@ -881,6 +881,12 @@ impl InputState {
         self
     }
 
+    /// Configure mouse-wheel easing using GPUI's shared scroll engine.
+    /// Precise pixel input and cursor/selection scrolling remain immediate.
+    pub fn set_scroll_smooth(&mut self, ease: f32, boost: f32) {
+        self.scroll_handle.set_smooth(ease, boost);
+    }
+
     /// Set true to treat `Enter` as a submit action in multi-line mode,
     /// while `Shift+Enter` inserts a newline.
     ///
@@ -1084,6 +1090,14 @@ impl InputState {
         self.move_to(offset, None, cx);
         self.update_preferred_column();
         self.focus(window, cx);
+    }
+
+    /// Select the first `chars` characters of the line with the caret at the end of
+    /// the selection (rename: stem selected, caret right before the extension).
+    pub fn select_leading(&mut self, chars: u32, cx: &mut Context<Self>) {
+        let offset = self.text.position_to_offset(&Position::new(0, chars));
+        self.move_to(0, None, cx);
+        self.select_to(offset, cx);
     }
 
     /// Focus the input field.
@@ -1658,14 +1672,28 @@ impl InputState {
             .as_ref()
             .map(|layout| layout.line_height)
             .unwrap_or(window.line_height());
-        let delta = event.delta.pixel_delta(line_height);
-
         let old_offset = self.scroll_handle.offset();
-        self.update_scroll_offset(Some(old_offset + delta), cx);
+        if self.mode.is_single_line() {
+            self.update_scroll_offset(Some(old_offset + event.delta.pixel_delta(line_height)), cx);
+            if self.scroll_handle.offset() != old_offset {
+                cx.stop_propagation();
+            }
+            self.diagnostic_popover = None;
+            return;
+        }
+        self.scroll_handle.set_line_scroll_height(line_height);
+        self.scroll_handle
+            .apply_scroll_delta(event.delta, cx.background_executor().now());
+        let animating = self.scroll_handle.update_scroll_geometry(
+            self.input_bounds,
+            self.scroll_size,
+            cx.background_executor().now(),
+        );
 
         // Only stop propagation if the offset actually changed
-        if self.scroll_handle.offset() != old_offset {
+        if animating || self.scroll_handle.offset() != old_offset {
             cx.stop_propagation();
+            cx.notify();
         }
 
         self.diagnostic_popover = None;

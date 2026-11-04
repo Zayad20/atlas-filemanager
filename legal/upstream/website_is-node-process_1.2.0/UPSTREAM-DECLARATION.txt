@@ -1,0 +1,16 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "is-node-process",
+  "version": "1.2.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mswjs/is-node-process"
+  }
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: 3bf5781dc5e98b9f9923249b0a8e8bae3dc36699841a417bf9b7451f68fc012a

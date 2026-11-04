@@ -11,8 +11,8 @@
 //!      * File name label with binary-search UTF-8 truncation (`shape_text_truncated`).
 //!      * Directory caret indicator (`AtlasIcon::CaretRight`) on the right side for folders.
 //! 3. Hardware GPU clipping layer:
-//!    - Each column wrapped in `window.paint_layer(column_bounds, ...)` so columns never bleed.
-//!    - Filename label wrapped in `window.paint_layer(name_bounds, ...)` for sub-pixel safety.
+//!    - Column, body, header and filename masks intersect the pane viewport.
+//!    - Stacking layers alone do not clip text or scrollbars.
 //! 4. Total coverage of interactions:
 //!    - Single-click: Folder dispatches `Action::MillerSelect { tile, column, idx, shift: false, ctrl: false }`; file selects for preview.
 //!    - Double-click: Activates file or enters folder (`Action::MillerActivate`).
@@ -33,7 +33,7 @@ use crate::ui::drag_hover::{
 use crate::ui::file_icons::FileIcon;
 use crate::ui::glass::backdrop_tint;
 use crate::ui::icons::{is_windows_theme, AtlasIcon};
-use crate::ui::root::{ctrl_scroll, zone_recorder};
+use crate::ui::root::{ctrl_scroll, pane_bounds_recorder, zone_recorder};
 use crate::ui::selection_checkbox;
 use crate::ui::surface::{
     line_width, paint_fill, paint_rounded, paint_theme_icon, shape_text, shape_text_truncated,
@@ -63,6 +63,12 @@ pub const MILLER_ICON_SZ: f32 = 14.0;
 pub const MILLER_CARET_SZ: f32 = 12.0;
 pub const MILLER_PAD_X: f32 = 8.0;
 pub const MILLER_PAD_Y: f32 = 2.0;
+
+fn with_miller_clip(window: &mut Window, bounds: Bounds<Pixels>, draw: impl FnOnce(&mut Window)) {
+    let bounds = bounds.intersect(&window.content_mask().bounds);
+    if bounds.is_empty() { return; }
+    window.with_content_mask(Some(gpui::ContentMask { bounds, fade_out: Default::default() }), |window| window.paint_layer(bounds, draw));
+}
 
 /// Arithmetic layout slots for a Miller column.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -247,6 +253,7 @@ pub struct MillerPreparedColumn {
     pub slots: MillerColumnSlots,
     pub title: String,
     pub title_line: ShapedLine,
+    pub header_slots: MillerHeaderSlots,
     pub status_line: Option<ShapedLine>,
     pub status_msg: Option<String>,
     pub rows: Vec<MillerPreparedRow>,
@@ -468,11 +475,8 @@ impl Element for MillerImmElement {
                     None
                 };
 
-                let status_text = if let Some(msg) = &status_msg {
-                    msg.clone()
-                } else {
-                    format!("{}/{}", visible.len(), col.entries.len())
-                };
+                // Long errors and empty-state messages belong in the body.
+                let status_text = format!("{}/{}", visible.len(), col.entries.len());
 
                 // Measure status text width
                 let status_line_preview = shape_text(
@@ -533,7 +537,11 @@ impl Element for MillerImmElement {
                     miller_visible_row_range(scroll_y, body_h, row_h, total_rows);
 
                 // Request missing file icons
-                for idx in visible[start_idx..end_idx].iter().copied() {
+                // (a viewport of lookahead per side: icons resolve off thread)
+                let ahead = ((body_h / row_h.max(1.0)).ceil() as usize).max(2);
+                let icon_start = start_idx.saturating_sub(ahead);
+                let icon_end = end_idx.saturating_add(ahead).min(visible.len());
+                for idx in visible[icon_start..icon_end].iter().copied() {
                     if let Some(entry) = col.entries.get(idx) {
                         let file_ref = crate::ui::file_icons::FileIconRef {
                             path: entry.path(),
@@ -599,7 +607,7 @@ impl Element for MillerImmElement {
                     };
                     let icon = app.file_icon(&file_ref);
 
-                    let name_color = if selected {
+                    let name_color = if selected && !editing {
                         colors.accent_fg
                     } else {
                         colors.fg
@@ -639,6 +647,7 @@ impl Element for MillerImmElement {
                     slots: col_slots,
                     title,
                     title_line,
+                    header_slots,
                     status_line: Some(status_line),
                     status_msg,
                     rows: prepared_rows,
@@ -772,6 +781,8 @@ impl Element for MillerImmElement {
                 f32::from(bounds.origin.x),
                 f32::from(bounds.origin.y),
                 f32::from(bounds.size.height),
+                f32::from(content_mask.size.width),
+                f32::from(content_mask.size.height),
                 self.col_w,
                 self.row_h,
             ],
@@ -878,7 +889,7 @@ impl Element for MillerImmElement {
             };
 
             window.with_element_opacity(Some(col.opacity), |window| {
-            window.paint_layer(col_bounds, |window| {
+            with_miller_clip(window, col_bounds, |window| {
                 // 1. Column header
                 let header_slot = col.slots.header_slot;
                 let header_bounds = Bounds {
@@ -888,9 +899,10 @@ impl Element for MillerImmElement {
                 paint_fill(window, header_bounds, colors.header_bg);
 
                 // Header title text
-                let header_slots = miller_header_cut(header_slot, 20.0 * zoom, zoom);
+                let header_slots = col.header_slots;
                 let title_x = origin.x + px(header_slots.title_slot.x);
                 let title_y = origin.y + px(text_origin_y(header_slots.title_slot.y, zoom));
+                with_miller_clip(window, header_slots.title_slot.to_bounds(origin), |window| {
                 let _ = col.title_line.paint(
                     point(title_x, title_y),
                     px(header_slots.title_slot.h),
@@ -899,11 +911,13 @@ impl Element for MillerImmElement {
                     window,
                     cx,
                 );
+                });
 
                 // Header status / count text
                 if let Some(status_line) = &col.status_line {
                     let status_x = origin.x + px(header_slots.status_slot.x);
                     let status_y = origin.y + px(text_origin_y(header_slots.status_slot.y, zoom));
+                    with_miller_clip(window, header_slots.status_slot.to_bounds(origin), |window| {
                     let _ = status_line.paint(
                         point(status_x, status_y),
                         px(header_slots.status_slot.h),
@@ -912,6 +926,7 @@ impl Element for MillerImmElement {
                         window,
                         cx,
                     );
+                    });
                 }
 
                 // Header bottom border
@@ -925,16 +940,18 @@ impl Element for MillerImmElement {
                 if col.rows.is_empty() {
                     if let Some(msg) = &col.status_msg {
                         let empty_font = window.text_style().font();
-                        let empty_line = shape_text(
+                        let empty_line = shape_text_truncated(
                             msg.as_str(),
                             &empty_font,
                             self.font_size,
                             colors.muted,
+                            (col.slots.body_slot.w - 16.0 * zoom).max(0.0),
                             window,
                         );
                         let w = line_width(&empty_line);
                         let cx_pt = origin.x + px(col.slots.body_slot.x + (col.slots.body_slot.w - w) * 0.5);
                         let cy_pt = origin.y + px(col.slots.body_slot.y + col.slots.body_slot.h * 0.4);
+                        with_miller_clip(window, col.slots.body_slot.to_bounds(origin), |window| {
                         let _ = empty_line.paint(
                             point(cx_pt, cy_pt),
                             px(20.0 * zoom),
@@ -943,9 +960,10 @@ impl Element for MillerImmElement {
                             window,
                             cx,
                         );
+                        });
                     }
                 } else {
-                    window.paint_layer(col.slots.body_slot.to_bounds(origin), |window| {
+                    with_miller_clip(window, col.slots.body_slot.to_bounds(origin), |window| {
                     for row in &col.rows {
                         window.with_element_opacity(Some(row.opacity * crate::ui::views::rename::cut_path_opacity(&self.app, &row.entry.path(), cx)), |window| {
                         let row_slot = row.slots.row_slot;
@@ -957,7 +975,7 @@ impl Element for MillerImmElement {
                         let is_row_hovered = col.interactive && row.interactive && hover_row_info == Some((row.col_idx, row.row_idx));
 
                         // Selection / Blinking / Hover background
-                        if row.selected {
+                        if row.selected && !row.editing {
                             paint_rounded(window, row_bounds, 4.0 * zoom, colors.accent);
                         } else if row.blinking {
                             paint_rounded(window, row_bounds, 4.0 * zoom, colors.accent.opacity(0.38));
@@ -995,7 +1013,7 @@ impl Element for MillerImmElement {
                                     size: size(px(icon_sz), px(icon_sz)),
                                 };
 
-                                if row.selected && row.slots.check_slot.is_some() {
+                                if row.selected && !row.editing && row.slots.check_slot.is_some() {
                                     selection_checkbox::paint_animated(
                                         window,
                                         cx,
@@ -1018,7 +1036,7 @@ impl Element for MillerImmElement {
                                     } else {
                                         AtlasIcon::File
                                     };
-                                    let icon_color = if row.selected {
+                                    let icon_color = if row.selected && !row.editing {
                                         colors.accent_fg
                                     } else {
                                         colors.accent
@@ -1044,7 +1062,7 @@ impl Element for MillerImmElement {
                                         origin: point(text_x, origin.y + px(name_slot.y)),
                                         size: size(px(name_slot.w), px(name_slot.h)),
                                     };
-                                    window.paint_layer(name_bounds, |window| {
+                                    with_miller_clip(window, name_bounds, |window| {
                                         let _ = row.name_line.paint(
                                             point(text_x, text_y),
                                             px(row_slot.h),
@@ -1058,7 +1076,7 @@ impl Element for MillerImmElement {
 
                                 // Caret slot on right for directory
                                 if let Some(caret_slot) = row.slots.caret_slot {
-                                    let caret_color = if row.selected {
+                                    let caret_color = if row.selected && !row.editing {
                                         colors.accent_fg
                                     } else {
                                         colors.accent
@@ -1097,8 +1115,8 @@ impl Element for MillerImmElement {
                 // 4. Sleek scrollbar indicator if overflowing
                 if col.content_h > col.slots.body_slot.h && col.slots.body_slot.h > 20.0 {
                     let track_h = col.slots.body_slot.h;
-                    let thumb_h = ((track_h / col.content_h) * track_h).clamp(24.0 * zoom, track_h);
-                    let scroll_ratio = col.scroll_y / col.max_scroll_y.max(1.0);
+                    let thumb_h = ((track_h / col.content_h) * track_h).clamp((24.0 * zoom).min(track_h), track_h);
+                    let scroll_ratio = (col.scroll_y / col.max_scroll_y.max(1.0)).clamp(0.0, 1.0);
                     let thumb_y = col.slots.body_slot.y + scroll_ratio * (track_h - thumb_h);
                     let thumb_bounds = Bounds {
                         origin: point(origin.x + px(col.slots.body_slot.x + col.slots.body_slot.w - 5.0 * zoom), origin.y + px(thumb_y)),
@@ -1204,8 +1222,8 @@ impl Element for MillerImmElement {
                                 this.notify_pane(pane_id, cx);
                                 cx.notify();
                             });
-                        } else if ev.click_count >= 2 {
-                            // Double-click: activates file or enters folder
+                        } else if ev.click_count >= 2 && !shift && !ctrl {
+                            // Modified double-clicks keep the shared selection policy.
                             down_view.update(cx, |this, cx| {
                                 if this.rename_edit.is_some() {
                                     this.commit_rename(cx);
@@ -1224,6 +1242,9 @@ impl Element for MillerImmElement {
                                 if this.rename_edit.is_some() {
                                     this.commit_rename(cx);
                                 }
+                                let preserve_group = this.state.tab_states.get(&pane_id)
+                                    .and_then(|state| state.miller.columns.get(ci))
+                                    .is_some_and(|col| col.selection.selected.len() > 1 && col.selection.selected.contains(&idx));
                                 this.selection_left_mouse_down(
                                     RubberTarget::MillerColumn(pane_id, ci),
                                     Some(idx),
@@ -1233,7 +1254,7 @@ impl Element for MillerImmElement {
                                     ev.click_count,
                                     cx,
                                 );
-                                if !shift && !ctrl {
+                                if !shift && !ctrl && !preserve_group {
                                     this.process_actions(vec![Action::MillerSelect {
                                         tile: pane_id,
                                         column: ci,
@@ -1341,9 +1362,15 @@ impl Element for MillerImmElement {
             }
 
             if ev.modifiers.control || ev.modifiers.platform {
-                wheel_view.update(cx, |_this, cx| {
-                    ctrl_scroll(ev, pane_id, &wheel_view, window, cx);
-                });
+                // ctrl_scroll owns the App update; wrapping it in another
+                // update leases the same entity twice and panics.
+                ctrl_scroll(ev, pane_id, &wheel_view, window, cx);
+                return;
+            }
+
+            let delta = ev.delta.pixel_delta(px(1.0));
+            if ev.modifiers.shift || delta.x.abs() > delta.y.abs() {
+                // Horizontal gestures belong to the cascade's outer scroller.
                 return;
             }
 
@@ -1616,7 +1643,7 @@ impl App {
             .size_full()
             .overflow_x_scroll()
             .track_scroll(&horizontal)
-            .when_some(hovered_entry, |el, (name, path, is_dir, size, modified)| {
+            .when_some(hovered_entry.filter(|_| self.ctx_menu.is_none()), |el, (name, path, is_dir, size, modified)| {
                 el.tooltip(move |window, cx| {
                     crate::ui::tooltips::entry_hover_tooltip(
                         name.clone(),
@@ -1645,6 +1672,7 @@ impl App {
             .size_full()
             .flex_1()
             .min_h(px(0.))
+            .on_prepaint_child(pane_bounds_recorder(pane_id, &view))
             .child(body_container)
             .child(reveal_layer);
 

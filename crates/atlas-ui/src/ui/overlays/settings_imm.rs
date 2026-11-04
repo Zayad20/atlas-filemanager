@@ -779,7 +779,7 @@ impl SettingsImmLayout {
 
         // 6. About Tab Rows
         if show_all && active_tab == SettingsTab::About
-            || (!show_all && match_query(&query_lower, &["about", "version", "community", "support", "discord", "web"]))
+            || (!show_all && match_query(&query_lower, &["about", "version", "community", "support", "discord", "web", "license", "privacy", "icons8"]))
         {
             row_defs.push((
                 "Atlas Version",
@@ -791,6 +791,16 @@ impl SettingsImmLayout {
                 },
                 52.0 * zoom,
             ));
+            for (title, description, label, url) in [
+                ("Third-party licenses", "Read bundled copyright notices and license texts offline", "Open notices", crate::ui::overlays::legal::NOTICES_URL),
+                ("Source code", "Corresponding source and build instructions for this release", "Download source", atlas_core::update::SOURCE_URL),
+                ("Privacy policy", "Local files, optional cloud and website data", "Read policy", "https://atlasnative.com/privacy-policy"),
+                ("Terms of service", "Purchase terms and software license information", "Read terms", "https://atlasnative.com/terms-of-service"),
+                ("Icons by Icons8", "Liquid Glass file and folder artwork", "Visit Icons8", "https://icons8.com"),
+                ("WinFsp - Windows File System Proxy", "Copyright (C) Bill Zissimopoulos", "WinFsp source", "https://github.com/winfsp/winfsp"),
+            ] {
+                row_defs.push((title, description, description, SettingControlKind::AboutAction { label, url }, 52.0 * zoom));
+            }
             row_defs.push((
                 "Community Discord",
                 "Join discussions, share themes, and get help",
@@ -1730,7 +1740,11 @@ impl Element for SettingsImmElement {
                             }
                         }
                         SettingsHit::AboutUrl(url) => {
-                            let _ = open::that(url);
+                            if url == crate::ui::overlays::legal::NOTICES_URL {
+                                crate::ui::overlays::legal::open_notices();
+                            } else {
+                                let _ = open::that(url);
+                            }
                         }
                     }
                     cx.notify();

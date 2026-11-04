@@ -1,0 +1,19 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "miniflare",
+  "version": "5.20261006.1-alpha",
+  "license": "MIT",
+  "author": "MrBBot <me@mrbbot.dev>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cloudflare/workers-sdk.git",
+    "directory": "packages/miniflare"
+  },
+  "homepage": "https://github.com/cloudflare/workers-sdk/tree/main/packages/miniflare#readme"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: ee86ee4a94943a21980f88d90e7973dd0b5b6f3d6ae853686dfa801720116c95

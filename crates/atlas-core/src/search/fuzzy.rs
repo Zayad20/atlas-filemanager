@@ -5,7 +5,8 @@
 //! every haystack, sort by score descending. Smart-case and Unicode
 //! normalization match nucleo's defaults.
 
-use nucleo::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo::pattern::{CaseMatching, Normalization};
+pub use nucleo::pattern::Pattern;
 use nucleo::{Config, Matcher, Utf32Str};
 
 pub struct FuzzyScorer {
@@ -65,14 +66,22 @@ impl FuzzyScorer {
             .collect()
     }
 
-    /// Byte ranges of the characters in `hay` matched by `query` (for match
-    /// highlighting), contiguous runs merged. `None` when there is no match
-    /// or the query is empty.
-    pub fn match_ranges(&mut self, query: &str, hay: &str) -> Option<Vec<std::ops::Range<usize>>> {
+    /// Parse a query once for batch scoring across multiple attributes.
+    pub fn parse_pattern(query: &str) -> Option<Pattern> {
         if query.trim().is_empty() {
             return None;
         }
-        let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
+        Some(Pattern::parse(query, CaseMatching::Smart, Normalization::Smart))
+    }
+
+    /// Score a single haystack against a pre-compiled pattern without re-parsing.
+    pub fn score_pattern(&mut self, pattern: &Pattern, hay: &str) -> Option<u32> {
+        let hay = Utf32Str::new(hay, &mut self.buf);
+        pattern.score(hay, &mut self.matcher)
+    }
+
+    /// Highlight ranges for a single haystack against a pre-compiled pattern.
+    pub fn match_ranges_pattern(&mut self, pattern: &Pattern, hay: &str) -> Option<Vec<std::ops::Range<usize>>> {
         let utf32 = Utf32Str::new(hay, &mut self.buf);
         let mut indices: Vec<u32> = Vec::new();
         pattern.indices(utf32, &mut self.matcher, &mut indices)?;
@@ -91,6 +100,14 @@ impl FuzzyScorer {
             }
         }
         Some(ranges)
+    }
+
+    /// Byte ranges of the characters in `hay` matched by `query` (for match
+    /// highlighting), contiguous runs merged. `None` when there is no match
+    /// or the query is empty.
+    pub fn match_ranges(&mut self, query: &str, hay: &str) -> Option<Vec<std::ops::Range<usize>>> {
+        let pattern = Self::parse_pattern(query)?;
+        self.match_ranges_pattern(&pattern, hay)
     }
 }
 

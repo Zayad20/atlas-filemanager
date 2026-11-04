@@ -26,9 +26,9 @@ Atlas is a desktop file manager for Windows and Linux designed for modern workfl
 - **Native & blazing fast**: GPU-accelerated performance via Rust and GPUI
 - **All of the eyecandy**: smooth scrolling, fluid animations, and a modern interface
 - **Keyboard-first**: navigate and execute instantly via a powerful Command Palette
-- **Highly extensible** with support for WASM plugins
+- **Highly extensible** with declarative file tools, preview providers, and native sidecars
 - **Advanced multi-pane layouts**: split your view and drag-and-drop effortlessly
-- **Four built-in views**: Grid, List, Details, and Miller Columns
+- **Five built-in views**: Grid, List, Details, Tree, and Miller Columns
 - **Built-in archive manager**: native ZIP and RAR extraction/compression
 - **Smart organization**: advanced filtering and custom color tags
 - **A lot of customization**: switch between themes and user profiles instantly
@@ -59,8 +59,10 @@ cargo test --workspace
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the workspace layout and dependency rules.
-See [docs/extensions.md](docs/extensions.md) for the extension manifest, WASM host API,
-security limits, and publishing flow.
+See [Alpha build editions](docs/build-editions.md) to enable the opt-in Free limits
+with `cargo build --release --features free`.
+See [docs/extensions.md](docs/extensions.md) for extension manifests, sidecar providers,
+installation, and publishing.
 
 ## Contributing
 

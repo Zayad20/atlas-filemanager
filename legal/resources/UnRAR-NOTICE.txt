@@ -1,0 +1,7 @@
+UnRAR 7.20 x64 freeware
+Copyright (c) 1993-2026 Alexander Roshal
+The unmodified UnRAR command-line executable is distributed for archive reading/extraction.
+Publisher: RARLAB — https://www.rarlab.com/
+UnRAR components and licensing: https://www.rarlab.com/rar_add.htm
+RAR/WinRAR EULA (including the UnRAR distribution exception): https://www.rarlab.com/license.htm
+Do not apply Atlas's software license to this executable.

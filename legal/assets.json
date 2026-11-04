@@ -1,0 +1,915 @@
+[
+  {
+    "name": "Geist (Geist-Italic-wght.ttf)",
+    "version": "Version 1.800",
+    "license": "OFL-1.1",
+    "source": "https://raw.githubusercontent.com/vercel/geist-font/main/OFL.txt",
+    "scope": "desktop-font",
+    "notices": [
+      "legal/resources/Geist-Italic-wght-OFL.txt"
+    ],
+    "files": [
+      {
+        "path": "crates/atlas-ui/assets/fonts/geist/Geist-Italic-wght.ttf",
+        "sha256": "c5db6397dae7993afb72e397277c5a5308ba32de010eb19ec2b8b73f5e9d3ec4"
+      }
+    ]
+  },
+  {
+    "name": "Geist (Geist-Variable.ttf)",
+    "version": "Version 1.800",
+    "license": "OFL-1.1",
+    "source": "https://raw.githubusercontent.com/vercel/geist-font/main/OFL.txt",
+    "scope": "desktop-font",
+    "notices": [
+      "legal/resources/Geist-Variable-OFL.txt"
+    ],
+    "files": [
+      {
+        "path": "crates/atlas-ui/assets/fonts/geist/Geist-Variable.ttf",
+        "sha256": "cdcc4815cbf5f9882fa74e48f8ab410a0495781a58ff7316570f664e7e987753"
+      }
+    ]
+  },
+  {
+    "name": "Geist Mono (GeistMono-Italic-wght.ttf)",
+    "version": "Version 1.700",
+    "license": "OFL-1.1",
+    "source": "https://raw.githubusercontent.com/vercel/geist-font/main/OFL.txt",
+    "scope": "desktop-font",
+    "notices": [
+      "legal/resources/GeistMono-Italic-wght-OFL.txt"
+    ],
+    "files": [
+      {
+        "path": "crates/atlas-ui/assets/fonts/geist/GeistMono-Italic-wght.ttf",
+        "sha256": "e5800990ff5069667f4ff0a5dc582b260597e0adc022a887d9d103fc4cdd2cf2"
+      }
+    ]
+  },
+  {
+    "name": "Geist Mono (GeistMono-Variable.ttf)",
+    "version": "Version 1.700",
+    "license": "OFL-1.1",
+    "source": "https://raw.githubusercontent.com/vercel/geist-font/main/OFL.txt",
+    "scope": "desktop-font",
+    "notices": [
+      "legal/resources/GeistMono-Variable-OFL.txt"
+    ],
+    "files": [
+      {
+        "path": "crates/atlas-ui/assets/fonts/geist/GeistMono-Variable.ttf",
+        "sha256": "0e1af3f507a1c8dfbb03d13ffad585834cd45ed7ccb78c756c7ce7873d180d30"
+      }
+    ]
+  },
+  {
+    "name": "Inter (inter.woff2)",
+    "version": "Version 4.001;git-66647c0bb",
+    "license": "OFL-1.1",
+    "source": "https://raw.githubusercontent.com/vercel/geist-font/main/OFL.txt",
+    "scope": "website-font",
+    "notices": [
+      "legal/resources/inter-OFL.txt"
+    ],
+    "files": [
+      {
+        "path": "website-edge/public/fonts/inter.woff2",
+        "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+      }
+    ]
+  },
+  {
+    "name": "Orbitron (orbitron.woff2)",
+    "version": "Version 2.001",
+    "license": "OFL-1.1",
+    "source": "https://raw.githubusercontent.com/vercel/geist-font/main/OFL.txt",
+    "scope": "website-font",
+    "notices": [
+      "legal/resources/orbitron-OFL.txt"
+    ],
+    "files": [
+      {
+        "path": "website-edge/public/fonts/orbitron.woff2",
+        "sha256": "c25a9f9da5d9f3db1bf2a01474722dc9b377675b7bbab6d0dfda6902794fd1ed"
+      }
+    ]
+  },
+  {
+    "name": "Roboto Mono (robotomono.woff2)",
+    "version": "Version 3.001",
+    "license": "OFL-1.1",
+    "source": "https://raw.githubusercontent.com/vercel/geist-font/main/OFL.txt",
+    "scope": "website-font",
+    "notices": [
+      "legal/resources/robotomono-OFL.txt"
+    ],
+    "files": [
+      {
+        "path": "website-edge/public/fonts/robotomono.woff2",
+        "sha256": "b81cd55177300649be8f95b3b747d721ce607e8ed2856e25bd0c630cfd631faf"
+      }
+    ]
+  },
+  {
+    "name": "Phosphor Icons",
+    "version": "Bundled SVG snapshot",
+    "license": "MIT",
+    "source": "https://raw.githubusercontent.com/phosphor-icons/core/main/LICENSE",
+    "scope": "desktop-and-website-artwork",
+    "notices": [
+      "legal/resources/Phosphor-LICENSE.txt"
+    ],
+    "files": [
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/arrow-clockwise.svg",
+        "sha256": "4a78a777b692cb74826e3071ae7049cc0d3927e68a7b8272e7251b1760cd771f"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/arrow-counter-clockwise.svg",
+        "sha256": "4eb160d5ae781107c674481ac081962e6bce6281a646129e6c3f960b9dd5dac6"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/arrow-down.svg",
+        "sha256": "582711e88611a811a7dc343a4d40b48e33a2c8c7537962d79c63f58ece803fc4"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/arrow-left.svg",
+        "sha256": "3c2001cf957d182fc54927e4b286cc8cf66dd97830f441ca2650d42a63a9006a"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/arrow-right.svg",
+        "sha256": "e45bc4a12592b8723110db42c6deffdf177e4fe7704cf50324963fa0a59b2d74"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/arrow-up.svg",
+        "sha256": "1ec235bd7702abc79e9ff7e491c85d9919523739e41002e8f4b40ccbed99961e"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/arrows-left-right.svg",
+        "sha256": "84c43373542a3ac2e7de3d22ddef0c8eb61ef6ba7a270c6aca5aa493dd40f8b4"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/bookmark-simple.svg",
+        "sha256": "493a836009ab98f8d4ca84f088cc03f2785cdee86daa1643e003865ff3168b41"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/caret-down.svg",
+        "sha256": "53f0cf2d0b144ac3cb07e353e0cd0853ffb3ed432d741460ce288edfcb0924b1"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/caret-right.svg",
+        "sha256": "e6dec01e074807965b7f3146b976a9b5e82c31d9c2c88aeb52e77cc2ab16c1d7"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/clipboard.svg",
+        "sha256": "99acff34440463eeffca1a9f81fd871930dc937cf0931dd0c0537966c51e8ce5"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/clock-counter-clockwise.svg",
+        "sha256": "06aa1cb0d2664789232f4addb1c5932c8ce14e48465c8e8fb09a651b619b44e3"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/cloud.svg",
+        "sha256": "a72f1f201500924d20a30d7190a3277e411ab526d5b71a6f6a91b0812a09c669"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/columns.svg",
+        "sha256": "91866f43c752fc0e5d2220ab04278c9b90a4885a09ec2d30debd01f7a3807b4f"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/copy-simple.svg",
+        "sha256": "6ab0f1fecd17db9ece3e9ccfd237a95d5bc767eecb9ef567dfc0074f7f768f6e"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/discord-logo.svg",
+        "sha256": "34df89c51f58424b912c4940fd21dcc7b97da5287be1dc9e99ae48c20da6efc8"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/dots-three.svg",
+        "sha256": "ca4e748007101155641ec3041cd129bb03a8030d0eed16e313b9dd75e6beac77"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/download-simple.svg",
+        "sha256": "c48678aa09b44ba4974954690ee6cc846379c448a7214f8c802604c2a1562014"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/eye.svg",
+        "sha256": "91d39f20bf95e0f36c07bd79b83a85fe6ff4ca20e2759c4afee7419ef80403fe"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/file-text.svg",
+        "sha256": "9a580a038cce9f6dd223597864abe1b5c5c03bf8176d2f7171574598468b16f7"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/file.svg",
+        "sha256": "d4195c0df64c875fd45d26e93f224034ef42c6f4f9bf19d4b1dcd5ef013addc8"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/film-strip.svg",
+        "sha256": "6d079e87432258b9fe9eff9d10ababcfbca7a400537277a215360a436581987f"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/folder.svg",
+        "sha256": "4a882bcd4a91ae0a01887024f08d358932f183b6b171e87a3e48c5910364d507"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/funnel.svg",
+        "sha256": "a851c18ee781e0ac769129d224910b85119894ce637eaeee00b5a47f38e05827"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/gear.svg",
+        "sha256": "5c0cb3ba307c72babf78d952d9140c682ff30307fedc7fbb87c9a293c1e2fd64"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/git-branch.svg",
+        "sha256": "0985e2654ebe788e97c8ce5277fad3d017ff5ea554371c7d1e23663fd34f671d"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/globe-simple.svg",
+        "sha256": "ef674261414661350af7d83642fd842650988a5b2e6df6c7a3b5871f147435b7"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/grid-four.svg",
+        "sha256": "77b1e8d834b1b4365fafada3171f4ab69e53700af7c3e4f100505d56d1c98a82"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/hard-drive-system.svg",
+        "sha256": "dee927b61f8567424f9bbf37e02ad76796df1e3754c0d426837482a516dc8b6e"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/hard-drive.svg",
+        "sha256": "ff0cfae4d9d3cccecbedec605a485cc5fe5376dc58a55d0bd0ce5c3d7ced172e"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/hard-drives.svg",
+        "sha256": "6f113d180d03e93df3dd8d650e85dbb11547537efc333b261d32f5b3dc47d2e8"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/house.svg",
+        "sha256": "180e9259e99e23da197b59b19394d006d6a5d33e384cc2b9c8381cb0214a5716"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/image.svg",
+        "sha256": "642a0575f7b5a7ea2f5fefa6f27a5dc57683911845b85213a7e33652c2a3179d"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/lifebuoy.svg",
+        "sha256": "58447c337892613662d0587f872477e6e189ac294efb82939269eee9ea98aebd"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/lightning.svg",
+        "sha256": "3a50c776266b21812f8ec5b5a841a81f54aa942569a31eb03a36fb0a5bfbe66e"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/list-bullets.svg",
+        "sha256": "1f3098ab8399215aa6f964995d1d71cee15c8015cfd0dcae4f8c1a46c6d3b4d7"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/list-dashes.svg",
+        "sha256": "97de695c4478ab61e24b8910cc6bc47bf1f3a029dbd2383fed8f7eb5dc200c74"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/lock-simple.svg",
+        "sha256": "74ae9ee1e89683b231854fb15deda470a2e250624d1e90d7d898ffa5f8e62042"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/magnifying-glass.svg",
+        "sha256": "f9fa2561978a9a3291e8ae0ebfcb651104f5069fade8f84871627bca68889cde"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/minus.svg",
+        "sha256": "f1356679d1006b4b07920e6bab72a3286e36fe9d78926e1cca25bed9fa9c9231"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/monitor.svg",
+        "sha256": "ac9005f7dd981b06b7c029b3625bf908ded63e0dc52e781ad550ae2ef621f86a"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/music-notes.svg",
+        "sha256": "b991d76e24e781b864f9ad8b7aa14e516d4fd851871a979928917e20d492eca0"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/palette.svg",
+        "sha256": "f16925171ff434d8e8768da0d06867d77cd50d9e78932ab12af65bccac7a1375"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/pencil-simple.svg",
+        "sha256": "999530da442f44d8cf0054364373d16150f3e082c2ac294a4988a9c3a4295c28"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/plus.svg",
+        "sha256": "d688feb9dd2e41c1721d6906a05a2a42e18cd774762fe706d72b2bdfd91cddc4"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/puzzle-piece.svg",
+        "sha256": "65f4ee4f170f7d9771917c4c271e21525d1af7c478b2700b8d0fcbb91683839c"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/scissors.svg",
+        "sha256": "eaac8d2e533467346dbaa4dd6feff42d572ec8c3a1c2d6035be200b6d95c5c47"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/selection-all.svg",
+        "sha256": "881c1d741d30b990cddd22684ac16a2b2c4987d83d8678762b6c184a27de71e7"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/selection-inverse.svg",
+        "sha256": "7db35e90e0ba3223623eca766b99ddd61a31f8a31d91b03e83f2de96af3b945f"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/sidebar-simple.svg",
+        "sha256": "360c2151c7522fc5bf4e5fb46bcee08ab7b78a6b08a3b6538ab367bb9e49ea0e"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/sort-ascending.svg",
+        "sha256": "a9791208ad848f553cc7eb38a6adaf3dedcbb5922841dd05c683d123fd6272f6"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/split-horizontal.svg",
+        "sha256": "6ec54287c5893ee60e8bd22f654544f06c9cb879a5eaf47fbd92a159049b9682"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/split-vertical.svg",
+        "sha256": "46936a4e4dfd8aa9db5776a57c4f46d5caaa660dcc3d66769b2cb3b3aad6538d"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/square.svg",
+        "sha256": "c9691f818804ab86ee21376fdbf25ce29ae3b0287f05d0a080938363ec0d57d5"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/star-fill.svg",
+        "sha256": "42451b34121b695bdaab88fdcf3eacec9cda9ac36d222349609426dcb9f04b48"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/star.svg",
+        "sha256": "165cd96e51d60442fb9c7aa89592fa6ef28f22d18368c85771be302c2e977101"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/tag.svg",
+        "sha256": "56633631b2e56436c33010c432f5da46533d2cfcae9773e694ee90ad43d96d69"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/terminal-window.svg",
+        "sha256": "5976041bee2ef170386936ce2f55bb4c06bb946a4ed1cabff864f4ce7649f394"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/trash.svg",
+        "sha256": "e6a830c0409f9e101e3695c981eef98427d39fd01f502b9cbd6900930b01f19c"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/tray-arrow-down.svg",
+        "sha256": "cc251477bc367a97c34cb35095a0d37f17719794b2a0cf9a90cb37b710291be1"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/tree-structure.svg",
+        "sha256": "b44cc8e3cfb16309ee80aa43bb581427d57796a702ddace498ba41ff0709c461"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/usb.svg",
+        "sha256": "94d6009425b113597a2f7c3ee2b08da3988d54d8582e1155e17eb905551d0ed9"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/user-switch.svg",
+        "sha256": "a2585ce876263b2c3a106ff22341c37b90cd1a13b5bc0b8762c5eadc8998ffe4"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/ph/x.svg",
+        "sha256": "7397b15e1fa66eaf6ff9b59fe91d483cb5c3bcf75b2fe052097ab6f0593b513a"
+      }
+    ]
+  },
+  {
+    "name": "Lucide icon artwork",
+    "version": "Bundled GPUI Component SVG snapshot",
+    "license": "ISC",
+    "source": "https://github.com/lucide-icons/lucide",
+    "scope": "desktop-component-artwork",
+    "notices": [
+      "legal/resources/Lucide-LICENSE.txt"
+    ],
+    "files": [
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/a-large-small.svg",
+        "sha256": "7b72af1c661f870451b39bf705f3eafaad6ee43d91caf5d9335b177b02b03638"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/arrow-down.svg",
+        "sha256": "9787730a5f99f6507843d0d42e7cbf7af92c4232beef359b786eccc91a5a7e7f"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/arrow-left.svg",
+        "sha256": "076808e934073464af12a471eaadb75345201c1b75d8b3d5d7b7ed49df6863d1"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/arrow-right.svg",
+        "sha256": "05535b2a1f572910eddeaf1f3eb29f61f8b7764e8d31b18049524b3b9fb5347b"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/arrow-up.svg",
+        "sha256": "041f9dd460eb66ccca7759feffbe75af54d629f30b4b710793cbcfc59cf489f2"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/asterisk.svg",
+        "sha256": "446108e994041615b3cd536c2b95036508473384a14765dc7bf47b21af84d429"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/battery-charging.svg",
+        "sha256": "3d41f5c7868ff5281f817569ce6e9999df3cdfb9669c8ed416dabc46692c56d9"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/battery-full.svg",
+        "sha256": "f2eb7dddf8cccd8cf591b43a36d69e834cf01bb11e61953b18c2191c9270980a"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/battery-low.svg",
+        "sha256": "45b2b17cad9a77306331d4f330d0895a3547cb448d6bc0bb46cfeef563e1c779"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/battery-medium.svg",
+        "sha256": "7f6167e83bf217043b8b72ab1cd1c25b523f2fdbbe144a3b4601568c570739b2"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/battery-warning.svg",
+        "sha256": "ec738563a907c5e64d79ea0f233efe032134d853d8ce0523962bae32c4b7758d"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/battery.svg",
+        "sha256": "ec7e89631081bd7e0ec1cb621cbe87fffc623bbeb576f0bf503cdecf882fe7a5"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/bell.svg",
+        "sha256": "c9053af052cb532c73179f85f877d7ec5005e321c0bec1ab99d9c6a83da75a82"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/book-open.svg",
+        "sha256": "36c03476e62def525ae841bafd68e374200416d8f7c57125c625264926a5170d"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/bot.svg",
+        "sha256": "6cb17b3342d199c823503445923248f41390c85dab954d52bf9c293a7e566c1f"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/building-2.svg",
+        "sha256": "66043e7bab3f0422aaf93a07b44685654ac5076d65786833c001a0032185df8d"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/calendar.svg",
+        "sha256": "e928977eec8d6dd5f1ffcfadbe62b329452552e5910c6ff02748c0f86b43756e"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/case-sensitive.svg",
+        "sha256": "4356f81843c3dca2b247a72c1041c527754b194ed044d2821e7ca01b6439beae"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/chart-pie.svg",
+        "sha256": "007b7dcbb8e2c53fbf6d33de679ac06728511cc2531c0aff4e7bbeef7216a623"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/check.svg",
+        "sha256": "d4d7b8439550c76623cfb4cb54a2a3f88f6319c990cc0d1dd5d11e3ff75adb2c"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/chevron-down.svg",
+        "sha256": "350a4abf840fe9fac8f1aa4f60ff5d8ab68d84b6dfca20f5a545fa17bc0e9e96"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/chevron-left.svg",
+        "sha256": "a059737ac495464c5c143b7bc17a8a831030c66ebf11c1ca790c7e86f92fd41d"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/chevron-right.svg",
+        "sha256": "502f36eea957fbfe4483e8abe83e255b05f3f492e07d753cf733dfa9f5ee6163"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/chevron-up.svg",
+        "sha256": "fbdfd4acd9d392f186f898a1866868f645392edb5d0832606acada63c78de276"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/chevrons-up-down.svg",
+        "sha256": "5414881e13c19c1d867656d9f1dc5d25c8f99b27f6dec2721b5f576000380c74"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/circle-check.svg",
+        "sha256": "2ad3739cbb3ce3c7809cd558dc457defe0a19f87db86cfb0bf727c95d319f12f"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/circle-user.svg",
+        "sha256": "3ffd49c801a92c274baefeead4cf54b172855cf0061ebcfbe339a5c8d31cade7"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/circle-x.svg",
+        "sha256": "32f5484da1d086d693b65ff999cdb23e69804711e54f4ad082567a792bbd943c"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/close.svg",
+        "sha256": "182424ba223e1c79c4e0b62d678f1099736f16d1d6f895a3c1f20d7f35cb7454"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/copy.svg",
+        "sha256": "9f9bb2f7f943b350f0455a0b599946bd2ef4dbfcc6bd9a6e4f44149d7d5e161c"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/cpu.svg",
+        "sha256": "e7641a46337339ee0c6d721a941392c5aaa6bd5f098b3fad7b9e1d97962f7bf6"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/dash.svg",
+        "sha256": "43d8858a1a88bde4cccdd40e7b8071b517ec245c5436502e5236755cbdb6d409"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/delete.svg",
+        "sha256": "bb3eb902a3f69ab344908942088a8bc4db328dc9aeb6d0dd3476386029de258c"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/ellipsis-vertical.svg",
+        "sha256": "70d6996edb7f56d55bdd70dc6eceb256b27cc179bb48748d2ae83a085f6bcec8"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/ellipsis.svg",
+        "sha256": "4c074b23be59ac3f07794e373ba2639f5c14f0658656017fc63a1fb95ffbc212"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/external-link.svg",
+        "sha256": "eb8ae2be20d44ef3fd24007f2199d6d4be7acfd058a6d898b45388c16affb78d"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/eye-off.svg",
+        "sha256": "6fe9515a2bd16fd4430d760e1df6c3d11dd14c548351ca92320484ffbb3270b1"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/eye.svg",
+        "sha256": "aeaa8dc6f13c4d8f61d0c22b01bf6988650f725060979168fb33ae9b5394c85f"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/file.svg",
+        "sha256": "0e98ed193a8fc0c85bc3a1a01c9f41c2d8d1a9f96d01d48785b94719077e0b8c"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/folder-closed.svg",
+        "sha256": "afc1082599952987ee52a6fa2a93000a39f31592361ce59579a09a45d37c1376"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/folder-open.svg",
+        "sha256": "dd52d633c8163e4590337130f12ef2d182c4a089d328b31183e7b524b37e7e98"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/folder.svg",
+        "sha256": "6a831d33ff329ea02956211aa631f5ddee3d012de5e05d4176bb6b88bb3bc650"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/frame.svg",
+        "sha256": "04f2db4f49fc7924d558b0c58bacc658745597108235a3481576c921313a5e4b"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/gallery-vertical-end.svg",
+        "sha256": "fc8d498eae294d9feffd66c7fa947001095fccc2e52fee755869e15274a3b2b8"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/github.svg",
+        "sha256": "3ee59ca123810813bf7cfdcc69663a2a09dd10a4a791d610caeae57f0a7b5c81"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/globe.svg",
+        "sha256": "cff43e47fd0871fb6abc8c2d2675a7db80a63a67fde266ab1c041d62c82b326a"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/hard-drive.svg",
+        "sha256": "8270414863f583c167d632a97bda5452826d9e1f5a53ffe7578d3cc85043bacb"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/heart-off.svg",
+        "sha256": "9a9467828022c31e7e8c8203fdb85facafff0e173cdbb8c9574efbf7bc6f207f"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/heart.svg",
+        "sha256": "93126fdb5147762ecaf6410f5e1e52edee02ef5ebde044b77e998ba84bb7b65a"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/inbox.svg",
+        "sha256": "7ef7c9a1295f9eb25039ef9e90ffcacfccace5bf6a4ac5fc55a81611a7e5a6dd"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/info.svg",
+        "sha256": "5237b468f275adde82a4fdf98725435cfac89b9288de9cdd7b0e58ad25f3458d"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/inspector.svg",
+        "sha256": "ae828d98e5147720fc84e81856764f299b602e40ec6dd2e21f0af77b31a147c4"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/layout-dashboard.svg",
+        "sha256": "15e1b01446207a99894cd0a97a59741b7fe9699e74b2cf26796dc3c0fd811b63"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/loader-circle.svg",
+        "sha256": "31117c080c614a734c4465bf2efa03fcc87d18f21d8f1e6a7c1410a9a1b118d3"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/loader.svg",
+        "sha256": "c74fe678648e07e4f69408a463e307f82fadf0fb89f6f28c8bfe02707eaeaa13"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/map.svg",
+        "sha256": "9b9709a9efc010f16e6eab2230df4187a1c6c30a9577c7c6d1054431010036f3"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/maximize.svg",
+        "sha256": "8f2aa4eb5c9a48477d4b2e677cede91224949720ce8c50f07e9001a12eb74634"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/memory-stick.svg",
+        "sha256": "c18d1ffdace08481a9a0775df40525772911009d289194bcfcf74a27a214acab"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/menu.svg",
+        "sha256": "eb7dbe91dd546e407444737249025e22f4bd3d5e78bd7892c3f5ae3191353da7"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/minimize.svg",
+        "sha256": "cefe06efdf20d9f4c10f2f1a4a666667621908478b898f48dabe5b415a8fc33f"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/minus.svg",
+        "sha256": "ead64ea12da232a5b1e359f09ab6968bfac7213a266e326fd21c7653b9d67f96"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/moon.svg",
+        "sha256": "3ac4ca214b483062e2751f0a0696ed43293c075cdd391d3bcdb5b0b50fa7ae89"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/network.svg",
+        "sha256": "780376014ab56c6f1138029032a4187f93ea2aeadd55c1e43efcf01117c080a9"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/palette.svg",
+        "sha256": "fe6b5a2093c78318c0a51b41ffa9df01acaedc8b5cad5dd62d08a6530fc8f941"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/panel-bottom-open.svg",
+        "sha256": "d38d5be09ad6fa67df9d7ff13a9e74ae88d6784c407a6d01b5a26f01caf874c7"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/panel-bottom.svg",
+        "sha256": "44cfb974b2a0d2e1ebdb54c77cd914c197a6489fc82119a08781b218f3e2b686"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/panel-left-close.svg",
+        "sha256": "4ebbdaac467bb3d09b0aaaaca5273f70f2f4d05ececa8aa3bd6aeef680e8e6c4"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/panel-left-open.svg",
+        "sha256": "5514126bf08d1331dc3fa749f4e4ed9056823c36a44119e7ed213b3730fb247d"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/panel-left.svg",
+        "sha256": "18c8d0c2412681cec9a9e244d11775f86dc7906d4baf3655e8c4b5517f3b73bb"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/panel-right-close.svg",
+        "sha256": "36cf9f65482d096b31db86f82763e7402df6f6831aa53ca549a18d36de1107a7"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/panel-right-open.svg",
+        "sha256": "9471e6aa1d45c9f32bd510f074c7143c229b89b57bd4100166925bf0aae432c3"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/panel-right.svg",
+        "sha256": "728621ecd5d2aa4718e6d0d56523ff328a04c5bdc1a272c85376277735ff5184"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/pause.svg",
+        "sha256": "027dada3eadcac8e34adcd2a69bff2e35d9c9cf1ea24f91cde66a4d4eb067d6e"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/play.svg",
+        "sha256": "dc5b0f1341ab4b8d4006111b8ab3960545c2bc6e90ee03cbadb8dbbb5e2d602a"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/plus.svg",
+        "sha256": "4fc42c257823302f92b4738207a2f81bc5fa607ed4503dcb0c312aa343fa9c23"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/redo-2.svg",
+        "sha256": "de345d43652e8ff9e59fdb0c8327111d872dedec4203260ea2e385bf90a04710"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/redo.svg",
+        "sha256": "00b92ee24be0838a9a2d88057f8d5143ce57aa4a9caed25b875746e84af1d2c7"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/replace.svg",
+        "sha256": "974e597bcc636a88156027c039098d640cf9fe62d5fa9a5dc5544dd8abf815a0"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/resize-corner.svg",
+        "sha256": "f81276ee70513829e535f05d899f40c9aac1207c7be49b2a55142adaadf745b8"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/search.svg",
+        "sha256": "a14905db35e45a67fa97f1d0eb1ec0795da6a1f0758671ff3ae264e72629fc20"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/settings-2.svg",
+        "sha256": "d5972c6ea8a2e634e1ffc88bea22dbe8ff55373097d578c1910b0073b408dd0c"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/settings.svg",
+        "sha256": "7c34b7cbf8b8cd0a11bca9c8717d98dca84708cfaad50b475793b624b3304344"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/sort-ascending.svg",
+        "sha256": "a78598720a39d154cec88054c0a0d6a1696e79e1505343cc35329a997d95f2df"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/sort-descending.svg",
+        "sha256": "b8abc0ddc156220f9ff2e79634e55b7c25f0b52ebf627d638322045ac0450fd9"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/square-terminal.svg",
+        "sha256": "a928acf797898278fac74f512d64449d32c44e18c9fc7fa34fea39f8a2d5649d"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/star-fill.svg",
+        "sha256": "d76dce85fbc5cf94aa488d674c9c3389dfd43bf73ef3225d220a0f3207fcfb7e"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/star-off.svg",
+        "sha256": "3323da9db0a2156a4ed11a3893d233d1ea53ddd7f6dae517b2afc3748216e5f3"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/star.svg",
+        "sha256": "388ac752e31c64312f3c19334392edc0077a61ad54b3b3e0a39f2b173b2be104"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/sun.svg",
+        "sha256": "499b8dd9cbdd4ed9f2057a9b60584c76e5cce6d145331c53ab8db715038aee98"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/thumbs-down.svg",
+        "sha256": "1d27631af135fdb04c8772c962f3bd1d98722539bbe6cec4c4a953a09cecce47"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/thumbs-up.svg",
+        "sha256": "e18f9aac000b33cccbc336bc2cd27f4fd51c160ff95d0590618072eccc18077e"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/triangle-alert.svg",
+        "sha256": "ca891930c52aabcb43c64060d4f703d36075afccf8b2613ab7df6bdcae48de96"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/undo-2.svg",
+        "sha256": "b57412ba279331e42dcacc1857c453bcfd16c4338d17d997f9d3961c30c0206c"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/undo.svg",
+        "sha256": "1558979499e87502bda4e16ef06e905a314b34e56f190537ed594b90d1e3f51a"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/user.svg",
+        "sha256": "ecb9960dd8e4fb8158447cc147650e53762474286e60bbac22db503aeabf42d2"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/window-close.svg",
+        "sha256": "233ac519a0b3f866c7c6904232e8f30fa129330fdd0eaa3b50162960ec721c08"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/window-maximize.svg",
+        "sha256": "44d73aa6db90b489c2b090395a8f06f646a4401e8fe5c7a48a3e5f9effd6b0b1"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/window-minimize.svg",
+        "sha256": "8dac279fce896407480aa703539dd03489483658382cf3f8aece261dcdd48856"
+      },
+      {
+        "path": "vendor/gpui-component-fork/crates/assets/assets/icons/window-restore.svg",
+        "sha256": "04746130a5118adc5996be186dd683e713a3a76d618fac6ff991c1fc827c69ed"
+      }
+    ]
+  },
+  {
+    "name": "Icons8 Liquid Glass",
+    "version": "Bundled PNG snapshot",
+    "license": "LicenseRef-Icons8",
+    "source": "https://icons8.com/license",
+    "scope": "desktop-artwork",
+    "notices": [
+      "legal/resources/Icons8-NOTICE.txt"
+    ],
+    "files": [
+      {
+        "path": "crates/atlas-ui/assets/icons/filetypes/liquid-glass/archive.png",
+        "sha256": "1cdd01936a23f0509e09b0f1b4e3741b56e61d875e8ddb438635baa419e7c087"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/filetypes/liquid-glass/audio.png",
+        "sha256": "b8d8d88d32770d12471a5497940d1bafdcc87dae0caa152d2a5ffc021d4e5d85"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/filetypes/liquid-glass/code.png",
+        "sha256": "2009c068d112298d79cc655d88b2967bb1d889c770b262334c325bb5eaef4bdd"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/filetypes/liquid-glass/document.png",
+        "sha256": "f8ac22b17322a1c68d5dcaa713fd208d103de8d539b1d35257471a6385027fd6"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/filetypes/liquid-glass/file.png",
+        "sha256": "6e2c0fa31610b91c9f8fde9ebc5d8795a36a4621913c857fb911c988970f3d77"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/filetypes/liquid-glass/folder.png",
+        "sha256": "4f2a3c73cceb4f0db1bae87623e6fc83906742299271456c146fb5c23de35fdf"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/filetypes/liquid-glass/image.png",
+        "sha256": "ec7a77269d6902f67988b1eaeb7f06810f5f480c818a151d6587cddf14a7d80d"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/filetypes/liquid-glass/pdf.png",
+        "sha256": "877088f43dc91a7fdf24ec9253d2e352ab9968dc150b6999e23338d05fb3f8fd"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/filetypes/liquid-glass/presentation.png",
+        "sha256": "ccf9cd5a8cf26f3be517c1c944667a0f1d1d19bbe714ce26bade060fbd0e1a13"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/filetypes/liquid-glass/python.png",
+        "sha256": "a21b505cbf4aec6ae26ffea7e68e86c16d7cd9a48e3c8fe71c9901fe1fcf5139"
+      },
+      {
+        "path": "crates/atlas-ui/assets/icons/filetypes/liquid-glass/video.png",
+        "sha256": "f321856885c830c5f90a38e302c29ffdea135cdd66aeff97f2d53714621e8767"
+      }
+    ]
+  },
+  {
+    "name": "UnRAR for Windows",
+    "version": "7.20 x64",
+    "license": "LicenseRef-UnRAR",
+    "source": "https://www.rarlab.com/rar_add.htm",
+    "scope": "windows-bundled-tool",
+    "notices": [
+      "legal/resources/UnRAR-NOTICE.txt"
+    ],
+    "files": [
+      {
+        "path": "crates/atlas-core/vendor/unrar-bin/UnRAR.exe",
+        "sha256": "e785a0c0dcf79385f0483c1eb2242e3937d0447f6b21dd158906e92757b46542"
+      }
+    ]
+  },
+  {
+    "name": "rclone",
+    "version": "1.74.4",
+    "license": "MIT",
+    "source": "https://github.com/rclone/rclone/tree/v1.74.4",
+    "scope": "optional-cloud-tool",
+    "notices": [
+      "legal/resources/rclone-COPYING.txt"
+    ]
+  },
+  {
+    "name": "WinFsp",
+    "version": "2.1",
+    "license": "GPL-3.0-only WITH LicenseRef-WinFsp-FLOSS-exception",
+    "source": "https://github.com/winfsp/winfsp/tree/v2.1",
+    "scope": "separately-installed-optional-driver",
+    "notices": [
+      "legal/resources/WinFsp-LICENSE.txt"
+    ],
+    "review": "Driver installed separately. The Rust bindings have their own GPL license. A closed-source distribution cannot assume the FLOSS exception applies."
+  },
+  {
+    "name": "Lenis",
+    "version": "1.3.27",
+    "license": "MIT",
+    "source": "https://github.com/darkroomengineering/lenis",
+    "scope": "edge-site-bundled-javascript",
+    "notices": [
+      "legal/resources/Lenis-LICENSE.txt"
+    ],
+    "files": [
+      {
+        "path": "website-edge/public/vendor/motion.js",
+        "sha256": "c40aeb9864a180301682328e2a28fad2bc4db439a4cd8bb73b8e8fd59e1e4328"
+      }
+    ]
+  },
+  {
+    "name": "Motion",
+    "version": "Bundled edge-site snapshot",
+    "license": "MIT",
+    "source": "https://github.com/motiondivision/motion",
+    "scope": "edge-site-bundled-javascript",
+    "notices": [
+      "legal/resources/Motion-LICENSE.txt"
+    ],
+    "files": [
+      {
+        "path": "website-edge/public/vendor/motion.js",
+        "sha256": "c40aeb9864a180301682328e2a28fad2bc4db439a4cd8bb73b8e8fd59e1e4328"
+      }
+    ]
+  }
+]

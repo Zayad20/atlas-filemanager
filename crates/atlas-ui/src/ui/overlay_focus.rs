@@ -38,6 +38,8 @@ use gpui_component::WindowExt;
 /// overlay requires only: one new variant + one arm in each of those two places.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum OverlayClaim {
+    DiskCleanup,
+    Vault,
     Converter,
     TagPicker,
     TypeFilter,
@@ -69,6 +71,10 @@ impl App {
     /// window or cx required. Used by both `modal_overlay_active` and
     /// `overlay_focus_target` so they can never desync.
     pub(crate) fn active_claim(&self) -> Option<OverlayClaim> {
+        if self.vault.is_some() { return Some(OverlayClaim::Vault); }
+        if self.cleanup_panel.is_some() {
+            return Some(OverlayClaim::DiskCleanup);
+        }
         if self.converter.as_ref().is_some_and(|s| s.visible()) {
             return Some(OverlayClaim::Converter);
         }
@@ -103,10 +109,10 @@ impl App {
         if self.state.ext.show_manager {
             return Some(OverlayClaim::ExtManager);
         }
-        if o.show_settings {
+        if o.show_settings || o.show_guide {
             return Some(OverlayClaim::Settings);
         }
-        if self.state.batch_rename.is_some() {
+        if self.state.batch_rename.is_some() && self.rename_edit.is_none() {
             return Some(OverlayClaim::BatchRename);
         }
         if o.renaming_profile {
@@ -157,6 +163,15 @@ impl App {
     /// Decide which focus handle should own the keyboard this frame and move focus
     /// to it (only when not already focused, to avoid fighting the cursor).
     pub(crate) fn sync_overlay_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.active_claim(),Some(OverlayClaim::DiskCleanup)) {
+            if let Some(panel)=&self.cleanup_panel {
+                if panel.read(cx).focus.contains_focused(window,cx) {return;}
+            }
+        }
+        if self.vault.is_some() {
+            let focus = self.overlay_focus(cx);
+            if focus.contains_focused(window, cx) { return; }
+        }
         // Layer 1 — yield to gpui-component overlays (Dialog/Sheet manage focus themselves).
         if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
             return;
@@ -184,6 +199,8 @@ impl App {
     ) -> Option<FocusHandle> {
         use crate::ui::palette::PaletteKind;
         match self.active_claim()? {
+            OverlayClaim::DiskCleanup => self.cleanup_panel.as_ref().map(|p|p.read(cx).focus.clone()),
+            OverlayClaim::Vault => Some(self.vault_focus(window, cx)),
             OverlayClaim::Converter => Some(self.overlay_focus(cx)),
             OverlayClaim::TagPicker => self
                 .tag_picker_input
@@ -245,8 +262,8 @@ impl App {
                 if let Some((input, chars)) = pending {
                     input.update(cx, |state, cx| {
                         state.set_cursor_position(Position::new(0, chars), window, cx);
+                        state.select_leading(chars, cx);
                     });
-                    window.dispatch_action(Box::new(SelectToStartOfLine), cx);
                 }
                 self.rename_edit
                     .as_ref()

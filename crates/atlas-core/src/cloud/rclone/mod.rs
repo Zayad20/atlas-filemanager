@@ -3,6 +3,7 @@
 pub mod oauth;
 pub mod provider;
 pub mod rc_api;
+mod objects;
 pub mod sidecar;
 #[cfg(windows)]
 pub mod windows_mount;

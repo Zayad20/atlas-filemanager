@@ -3,7 +3,11 @@ param(
     [string]$Version = "0.1.0.0",
     [ValidateSet("x64")]
     [string]$Architecture = "x64",
-    [switch]$SkipBuild
+    # Store package: Free baseline; Premium unlocks at runtime via the Store add-on or a Polar key.
+    [ValidateSet("free", "full")]
+    [string]$Edition = "free",
+    [switch]$SkipBuild,
+    [switch]$SignForLocalTesting
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,18 +15,33 @@ $repo = Split-Path $PSScriptRoot -Parent
 $target = Join-Path $repo "target\msix"
 $staging = Join-Path $target "staging"
 $manifest = Join-Path $repo "packaging\windows\msix\Package.appxmanifest"
+& python (Join-Path $repo "scripts\generate-third-party.py") --verify-release
+if ($LASTEXITCODE -ne 0) { throw "Third-party license verification failed." }
+$sourceVersion = ($Version.Split('.')[0..2] -join '.')
+& python (Join-Path $repo "scripts\verify-source-release.py") --version $sourceVersion
+if ($LASTEXITCODE -ne 0) { throw "Corresponding source snapshot verification failed." }
 $icon = Join-Path $repo "packaging\icons\atlas.png"
 $unplatedIcon = Join-Path $repo "packaging\icons\atlas-unplated.png"
 if (-not (Test-Path $unplatedIcon)) {
     $unplatedIcon = $icon
 }
 
-Stop-Process -Name "atlas", "atlas-search-service", "atlas-cloud-extension", "atlas-icon-extension" -Force -ErrorAction SilentlyContinue
-
+# Packaging does not terminate unrelated Atlas/build processes.
 if (-not $SkipBuild) {
+    $env:ATLAS_RELEASE_VERSION = $sourceVersion
+    $env:ATLAS_SOURCE_URL = "https://pub-89dd9e8d0b06444ca2f59e0dc245dbc9.r2.dev/source/atlas-$sourceVersion-source.zip"
+    $featureArgs = @()
+    if ($Edition -eq "free") {
+        $featureArgs = @("--features", "free")
+        # Public Polar organization id (not a secret); override with the env var for a different org.
+        if (-not $env:ATLAS_POLAR_ORG_ID) { $env:ATLAS_POLAR_ORG_ID = "eec2eec8-cbfd-4967-ba65-ca98e824cce0" }
+    }
     Push-Location $repo
     try {
-        cargo build --release --locked -p atlas -p atlas-search-service -p atlas-cloud-extension -p atlas-icon-extension
+        cargo build --release --locked @featureArgs -p atlas -p atlas-search-service -p atlas-cloud-extension -p atlas-icon-extension
+        if ($LASTEXITCODE -ne 0) {
+            throw "Cargo release build failed with exit code $LASTEXITCODE."
+        }
     } finally {
         Pop-Location
     }
@@ -33,18 +52,14 @@ if (-not (Test-Path $exe)) {
     throw "Missing $exe. Build Atlas first or omit -SkipBuild."
 }
 
-# Update extension binaries in user AppData if existing
-$cloudExtTarget = Join-Path $env:APPDATA "atlas\extensions\cloud\atlas-cloud-extension.exe"
-$cloudExtBuilt = Join-Path $repo "target\release\atlas-cloud-extension.exe"
-if ((Test-Path (Split-Path $cloudExtTarget)) -and (Test-Path $cloudExtBuilt)) {
-    Copy-Item -LiteralPath $cloudExtBuilt -Destination $cloudExtTarget -Force
+# All companions are staged in the package, never into the developer's profile.
+# Stage only inside this repository's target/msix directory.
+$resolvedStaging = [System.IO.Path]::GetFullPath($staging)
+$allowedStaging = [System.IO.Path]::GetFullPath((Join-Path $repo "target\msix")) + [System.IO.Path]::DirectorySeparatorChar
+if (-not $resolvedStaging.StartsWith($allowedStaging, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to clean a staging path outside target/msix: $resolvedStaging"
 }
-$iconExtTarget = Join-Path $env:APPDATA "atlas\extensions\icon-manager\atlas-icon-extension.exe"
-$iconExtBuilt = Join-Path $repo "target\release\atlas-icon-extension.exe"
-if ((Test-Path (Split-Path $iconExtTarget)) -and (Test-Path $iconExtBuilt)) {
-    Copy-Item -LiteralPath $iconExtBuilt -Destination $iconExtTarget -Force
-}
-
+& (Join-Path $PSScriptRoot "build-cloud-extension.ps1") -SkipBuild
 Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
 $assets = New-Item -ItemType Directory -Force -Path (Join-Path $staging "Assets")
 Copy-Item -LiteralPath $exe -Destination (Join-Path $staging "atlas.exe")
@@ -56,6 +71,33 @@ Copy-Item -LiteralPath (Join-Path $repo "crates\atlas-core\vendor\unrar-bin\UnRA
     -Destination (Join-Path $staging "UnRAR.exe")
 Copy-Item -LiteralPath (Join-Path $repo "packaging\windows\msix\THIRD-PARTY-NOTICES.txt") `
     -Destination $staging
+Copy-Item -LiteralPath (Join-Path $repo "LICENSE") -Destination (Join-Path $staging "LICENSE.txt")
+$sourceNotice = @"
+Atlas $sourceVersion corresponding source and build instructions:
+https://github.com/neondeex/atlas-filemanager
+https://pub-89dd9e8d0b06444ca2f59e0dc245dbc9.r2.dev/source/atlas-$sourceVersion-source.zip
+No additional charge or private repository access is required.
+Atlas: AGPL-3.0-or-later. Third-party components retain their own licenses.
+"@
+Set-Content -LiteralPath (Join-Path $staging "SOURCE-CODE.txt") -Value $sourceNotice -Encoding UTF8
+foreach ($companion in @("atlas-cloud-extension.exe", "atlas-icon-extension.exe")) {
+    $companionPath = Join-Path $repo "target\release\$companion"
+    if (-not (Test-Path -LiteralPath $companionPath)) { throw "Missing companion: $companionPath" }
+    Copy-Item -LiteralPath $companionPath -Destination $staging
+}
+Copy-Item -LiteralPath (Join-Path $repo "target\extensions\cloud\rclone.exe") -Destination $staging
+Copy-Item -LiteralPath (Join-Path $repo "extensions\cloud\THIRD-PARTY-NOTICES.txt") `
+    -Destination (Join-Path $staging "CLOUD-THIRD-PARTY-NOTICES.txt")
+$goInventory = Get-Content -Raw -LiteralPath (Join-Path $repo "legal\rclone-dependency-inventory.json") | ConvertFrom-Json
+$goReceipt = Get-Content -Raw -LiteralPath (Join-Path $repo "legal\rclone-source-release.json") | ConvertFrom-Json
+$goNotices = Join-Path $repo "packaging\windows\msix\RCLONE-THIRD-PARTY-NOTICES.txt"
+if ((Get-FileHash -LiteralPath (Join-Path $staging "rclone.exe") -Algorithm SHA256).Hash.ToLowerInvariant() -ne $goInventory.binarySha256) {
+    throw "The bundled rclone binary changed. Audit its exact modules before packaging."
+}
+if ((Get-FileHash -LiteralPath $goNotices -Algorithm SHA256).Hash.ToLowerInvariant() -ne $goReceipt.noticeSha256) {
+    throw "The rclone dependency notices changed. Regenerate their source receipt."
+}
+Copy-Item -LiteralPath $goNotices -Destination $staging
 
 
 [xml]$xml = Get-Content -Raw $manifest
@@ -204,7 +246,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $signtool = Join-Path (Split-Path $makeAppx -Parent) "signtool.exe"
-if (Test-Path $signtool) {
+if ($SignForLocalTesting -and (Test-Path $signtool)) {
     try {
         $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Subject -eq "CN=49A3C9B5-859D-4613-AE50-D104622E4EBC" } | Select-Object -First 1
         if (-not $cert) {
@@ -212,12 +254,11 @@ if (Test-Path $signtool) {
                 -KeyUsage DigitalSignature -FriendlyName "Atlas Dev Cert" -CertStoreLocation "Cert:\CurrentUser\My" `
                 -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
         }
-        $store = [System.Security.Cryptography.X509Certificates.X509Store]::new("TrustedPeople", "CurrentUser")
-        $store.Open("ReadWrite")
-        $store.Add($cert)
-        $store.Close()
         & $signtool sign /fd SHA256 /sha1 $cert.Thumbprint /q $package
         Write-Host "Successfully signed $package with dev cert ($($cert.Thumbprint))." -ForegroundColor Green
+        $cerPath = Join-Path $target "AtlasDev.cer"
+        Export-Certificate -Cert $cert -FilePath $cerPath -Force | Out-Null
+        Write-Host "Exported public certificate to $cerPath" -ForegroundColor Green
     } catch {
         Write-Warning "Failed to sign MSIX package: $_"
     }

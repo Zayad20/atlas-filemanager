@@ -25,6 +25,7 @@ use windows::Win32::UI::Shell::{IShellItem, IShellItemImageFactory, SHCreateItem
 // Declare locally — named constants appeared later in windows-rs; avoids tracking
 //           which exact crate release exports them.
 const SIIGBF_THUMBNAILONLY: i32 = 0x0000_0008;
+const SIIGBF_ICONONLY: i32 = 0x0000_0004;
 
 thread_local! {
     /// COM is initialized once per blocking-pool thread.  Each tokio blocking
@@ -67,6 +68,7 @@ pub(crate) fn recycle_bin_contains_items() -> Option<bool> {
 /// The caller falls back to the file-type glyph on `None`, matching the
 /// existing behavior for unknown formats.
 pub fn shell_thumbnail(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, usize)> {
+    if atlas_core::vault::live::is_private(path) { return None; }
     let (pixels, w, h) = shell_image(path, max_edge, SIIGBF_THUMBNAILONLY)?;
     Some(trim_black_bars(pixels, w, h, &path.display().to_string()))
 }
@@ -74,9 +76,57 @@ pub fn shell_thumbnail(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, us
 /// Extract the best Shell image for a folder: thumbnail/custom icon when Windows
 /// has one, otherwise the Shell icon.
 pub fn shell_thumbnail_or_icon(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, usize)> {
+    if atlas_core::vault::live::is_private(path) { return None; }
     if atlas_core::fs::preview::is_cloud_placeholder(path) { return None; }
     let (pixels, w, h) = shell_image_from_parsing_name(&path.to_string_lossy(), max_edge, 0)?;
     Some(clean_shell_image(pixels, w, h, &path.display().to_string()))
+}
+
+/// Extract the plain Shell *file-type icon* for `path` (never a thumbnail or a
+/// folder content peek). Returned untrimmed so the bitmap stays square — cropping
+/// to the visible bbox made folder icons render narrow.
+pub fn shell_icon_only(path: &Path, max_edge: u32) -> Option<(Vec<u8>, usize, usize)> {
+    if atlas_core::fs::preview::is_cloud_placeholder(path) { return None; }
+    shell_image_from_parsing_name(&path.to_string_lossy(), max_edge, SIIGBF_ICONONLY)
+}
+
+/// Shell icon at four crisp tiers (32/64/128/256). 32 is requested natively so the
+/// hinted 32px icon is used; 64/128 are Lanczos-downscaled from the 256 jumbo icon
+/// instead of letting the Shell upscale its 48px bitmap.
+///
+/// `compact` (per-file icons: exe/lnk/no-extension…) produces only 32 + 64 to keep
+/// memory and CPU small when a directory has thousands of unique icons.
+pub fn shell_icon_tiers(path: &Path, compact: bool) -> Vec<(Vec<u8>, usize, usize)> {
+    let Some((full, fw, fh)) = shell_icon_only(path, 256) else { return Vec::new() };
+    let Some(src) = image::RgbaImage::from_raw(fw as u32, fh as u32, full.clone()) else {
+        return Vec::new();
+    };
+    let small = shell_icon_only(path, 32).unwrap_or_else(|| resize_tier(&src, 32));
+    if compact {
+        return vec![small, resize_tier(&src, 64)];
+    }
+    vec![
+        small,
+        resize_tier(&src, 64),
+        resize_tier(&src, 128),
+        (full, fw, fh),
+    ]
+}
+
+fn resize_tier(src: &image::RgbaImage, edge: u32) -> (Vec<u8>, usize, usize) {
+    // Premultiply before filtering so transparent edges don't halo.
+    let mut pm = src.clone();
+    for px in pm.pixels_mut() {
+        let a = px[3] as u32;
+        for c in 0..3 { px[c] = ((px[c] as u32 * a + 127) / 255) as u8; }
+    }
+    let mut out = image::imageops::resize(&pm, edge, edge, image::imageops::FilterType::Lanczos3);
+    for px in out.pixels_mut() {
+        let a = px[3] as u32;
+        if a > 0 { for c in 0..3 { px[c] = ((px[c] as u32 * 255 + a / 2) / a).min(255) as u8; } }
+    }
+    let (w, h) = (out.width() as usize, out.height() as usize);
+    (out.into_raw(), w, h)
 }
 
 /// Extract the Shell icon for a virtual shell object such as Recycle Bin.
@@ -414,3 +464,5 @@ mod tests {
         assert_eq!(rgba.len(), w * h * 4);
     }
 }
+
+

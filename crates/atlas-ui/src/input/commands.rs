@@ -67,6 +67,12 @@ pub(crate) const COMMANDS: &[CommandMeta] = &[
     CommandMeta::remappable("view.group-size", None),
     CommandMeta::remappable("view.group-type", None),
     CommandMeta::remappable("view.group-name", None),
+    CommandMeta::remappable("view.group-created", None),
+    CommandMeta::remappable("view.group-accessed", None),
+    CommandMeta::remappable("view.group-deleted", None),
+    CommandMeta::remappable("view.group-origin", None),
+    CommandMeta::remappable("view.group-expand", None),
+    CommandMeta::remappable("view.group-collapse", None),
     CommandMeta::remappable("view.zoom-in", Some("ctrl-=")),
     CommandMeta::remappable("view.zoom-out", Some("ctrl--")),
     CommandMeta::remappable("view.zoom-reset", Some("ctrl-0")),
@@ -133,6 +139,7 @@ pub(crate) const COMMANDS: &[CommandMeta] = &[
     CommandMeta::remappable("ext.manager", Some("ctrl-shift-x")),
     CommandMeta::remappable("sys.palette", Some("ctrl-shift-p")),
     CommandMeta::remappable("sys.settings", Some("ctrl-,")),
+    CommandMeta::remappable("sys.guide", Some("f1")),
 ];
 
 pub(crate) fn command_meta(command_id: &str) -> Option<&'static CommandMeta> {

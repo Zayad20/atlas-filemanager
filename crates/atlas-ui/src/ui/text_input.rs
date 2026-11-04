@@ -59,6 +59,9 @@ pub fn code_editor(
     cx.new(|cx| {
         let mut state = InputState::new(window, cx)
             .code_editor(language)
+            // Preview, not an IDE: no fold chevrons or indent rails in a narrow panel.
+            .folding(false)
+            .indent_guides(false)
             .line_number(line_numbers);
         if !text.is_empty() {
             state.set_value(text, window, cx);

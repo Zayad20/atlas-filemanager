@@ -1,0 +1,18 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "@rolldown/binding-win32-x64-msvc",
+  "version": "1.2.13",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rolldown/rolldown.git",
+    "directory": "packages/rolldown"
+  },
+  "homepage": "https://rolldown.rs/"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: 349cde33ec84476779296a79beb626f4cc12ed1fcd0173853bd87db1ff738e4a

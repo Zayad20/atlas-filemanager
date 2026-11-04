@@ -33,9 +33,10 @@ use gpui::prelude::*;
 use gpui::ColorExt as _;
 use gpui::SharedString;
 use gpui::{
-    div, img, px, AnyElement, ClickEvent, Context, Entity, Hsla, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, RenderImage, ScrollDelta, ScrollWheelEvent, WeakEntity, Window,
+    div, img, px, AnyElement, ClickEvent, Context, Entity, Hsla, MouseButton, RenderImage,
+    WeakEntity, Window,
 };
+use gpui_component::button::ButtonVariants as _;
 use gpui_component::input::InputEvent;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::ElementExt;
@@ -82,7 +83,9 @@ impl Render for InspectorHost {
         self.is_rendering = true;
         let el = match self.app.upgrade() {
             Some(app) => app.update(cx, |app, cx| {
-                app.pending_drag_hover_targets.retain(|target| !matches!(target.id, crate::ui::drag_hover::DragHoverId::Inspector(_)));
+                app.pending_drag_hover_targets.retain(|target| {
+                    !matches!(target.id, crate::ui::drag_hover::DragHoverId::Inspector(_))
+                });
                 crate::perf::count("render.inspector_body");
                 app.render_inspector(window, cx)
             }),
@@ -105,6 +108,24 @@ fn preview_fingerprint(app: &App) -> u64 {
     app.state.settings.show_inspector.hash(&mut hasher);
     app.state.settings.show_titlebar.hash(&mut hasher);
     app.state.profiles.active().theme.hash(&mut hasher);
+    app.state.profiles.active().name.hash(&mut hasher);
+    app.state.settings.global_zoom.to_bits().hash(&mut hasher);
+    for tag in app
+        .state
+        .tag_cache
+        .visible_defs(&app.state.profiles.active().name)
+    {
+        tag.id.hash(&mut hasher);
+        tag.name.hash(&mut hasher);
+        tag.color.hash(&mut hasher);
+        tag.profile.hash(&mut hasher);
+    }
+    if app.preview_visible_for_focused() {
+        for path in app.selected_paths() {
+            path.hash(&mut hasher);
+            app.state.tag_cache.tags_of(&path).hash(&mut hasher);
+        }
+    }
     app.state.settings.glass_opacity.to_bits().hash(&mut hasher);
     app.state
         .settings
@@ -132,6 +153,11 @@ fn preview_fingerprint(app: &App) -> u64 {
     }
 
     hash_preview_result(app.state.preview.results.get(&tab), &mut hasher);
+    if let Some(PreviewResult::Dir { entries, .. }) = app.state.preview.results.get(&tab) {
+        for path in dir_media_paths(entries) {
+            app.grid_thumbnail(path).is_some().hash(&mut hasher);
+        }
+    }
     app.state.preview.metadata.get(&tab).hash(&mut hasher);
 
     if let Some(multi) = app.state.preview.multi.get(&tab) {
@@ -154,8 +180,27 @@ fn preview_fingerprint(app: &App) -> u64 {
         view.pan_x.to_bits().hash(&mut hasher);
         view.pan_y.to_bits().hash(&mut hasher);
         view.expanded.hash(&mut hasher);
+        view.details_open.hash(&mut hasher);
+        view.stack_index.hash(&mut hasher);
+        view.stack_drag.map(f32::to_bits).hash(&mut hasher);
+        view.stack_dx.to_bits().hash(&mut hasher);
+        view.viewport
+            .map(|bounds| {
+                (
+                    f32::from(bounds.size.width).to_bits(),
+                    f32::from(bounds.size.height).to_bits(),
+                )
+            })
+            .hash(&mut hasher);
     }
 
+    if let Some(editor) = app.preview_editor.as_ref() {
+        editor.path.hash(&mut hasher);
+        editor.dirty.hash(&mut hasher);
+        editor.editing.hash(&mut hasher);
+        editor.line_numbers.hash(&mut hasher);
+        editor.ln_needs_sync.hash(&mut hasher);
+    }
     hasher.finish()
 }
 
@@ -293,17 +338,17 @@ impl App {
     }
 }
 
-/// Scale `w`×`h` to fit inside `box_w`×`box_h` preserving aspect ratio. Returns the
-/// fitted display size. A zero/empty source falls back to the box size.
-fn fit_into(w: f32, h: f32, box_w: f32, box_h: f32) -> (f32, f32) {
-    if w <= 0.0 || h <= 0.0 {
-        return (box_w, box_h);
+fn preview_source_name(path: &Path) -> PathBuf {
+    #[cfg(feature = "provider-host")]
+    if path.to_string_lossy().starts_with("remote-preview:") {
+        return atlas_model::remote_path::file_name(&path.to_string_lossy()).into();
     }
-    let scale = (box_w / w).min(box_h / h);
-    (w * scale, h * scale)
+    path.to_path_buf()
 }
 
 fn preview_language_for_path(path: &Path) -> &'static str {
+    let display_path = preview_source_name(path);
+    let path = display_path.as_path();
     let ext = path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -383,7 +428,8 @@ impl App {
         if same {
             return true;
         }
-        let ext = path
+        let display_path = preview_source_name(&path);
+        let ext = display_path
             .extension()
             .and_then(|e| e.to_str())
             .map(|s| s.to_string())
@@ -407,8 +453,9 @@ impl App {
             text,
             show_ln,
         );
-        let syntax_provider =
-            std::rc::Rc::new(crate::ui::syntax_provider::AtlasSyntaxTokensProvider::new(&ext));
+        let syntax_provider = std::rc::Rc::new(
+            crate::ui::syntax_provider::AtlasSyntaxTokensProvider::new(&ext),
+        );
         state_entity.update(cx, |state, _cx| {
             state.lsp.semantic_tokens_provider = Some(syntax_provider);
         });
@@ -474,17 +521,27 @@ impl App {
             self.cancel_pending_preview();
             return;
         }
-        self.preview_delay.schedule(tab, request, &self.rt, self.tx.clone());
+        self.preview_delay
+            .schedule(tab, request, &self.rt, self.tx.clone());
     }
 
     fn cancel_pending_preview(&mut self) {
         self.preview_delay.cancel();
     }
 
-    pub(crate) fn load_delayed_preview(&mut self, tab: TileId, request: PreviewRequest, generation: u64) {
-        if !self.preview_delay.accepts(tab, &request, generation) { return; }
-        if self.state.focused_tile != tab || !self.preview_visible_for_focused()
-            || self.state.active_preview_request().as_ref() != Some(&request) {
+    pub(crate) fn load_delayed_preview(
+        &mut self,
+        tab: TileId,
+        request: PreviewRequest,
+        generation: u64,
+    ) {
+        if !self.preview_delay.accepts(tab, &request, generation) {
+            return;
+        }
+        if self.state.focused_tile != tab
+            || !self.preview_visible_for_focused()
+            || self.state.active_preview_request().as_ref() != Some(&request)
+        {
             self.cancel_pending_preview();
             return;
         }
@@ -500,18 +557,15 @@ impl App {
         }
     }
 
-    /// Is the preview panel visible for the focused tab? True when the global
-    /// `show_inspector` is on OR the per-tab `preview_enabled` toggle is set.
+    /// Is the preview panel visible? It is window-level and always previews the
+    /// focused pane, so moving focus between panes never opens or closes it.
     pub(crate) fn preview_visible_for_focused(&self) -> bool {
-        let global = self.state.settings.show_inspector;
-        let per_tab = self
-            .state
-            .active_tab_data()
-            .is_some_and(|d| d.preview_enabled);
-        global || per_tab
+        self.state.settings.show_inspector
     }
 
     pub(crate) fn load_preview_gpui(&mut self, tab: TileId, path: PathBuf) {
+        #[cfg(feature = "provider-host")]
+        if self.load_cloud_preview_for_selection() { return; }
         if self.state.preview.paths.get(&tab).map(PathBuf::as_path) == Some(path.as_path()) {
             return;
         }
@@ -523,15 +577,22 @@ impl App {
             v.pan_y = 0.0;
         }
         self.preview_drag = None;
+        // `results` stays until the new one lands so the panel never flashes
+        // empty; `result_paths` tells the renderers which file it belongs to.
         self.state.preview.paths.insert(tab, path.clone());
         self.state.preview.metadata.remove(&tab);
-        self.state.preview.results.remove(&tab);
         self.state.preview.multi.remove(&tab);
-        self.preview_textures.remove(&tab);
         let tx = self.tx.clone();
+        if atlas_core::vault::live::is_private(&path) {
+            self.rt.spawn(async move { atlas_core::fs::preview::load_preview(tab, path, tx).await; });
+            return;
+        }
         if atlas_core::fs::preview::is_cloud_placeholder(&path) {
-            let _ = tx.send(atlas_model::app_state::BgResult::PreviewReady { tab, path,
-                result: PreviewResult::Error(rust_i18n::t!("preview_cloud_offline").to_string()) });
+            let _ = tx.send(atlas_model::app_state::BgResult::PreviewReady {
+                tab,
+                path,
+                result: PreviewResult::Error(rust_i18n::t!("preview_cloud_offline").to_string()),
+            });
             return;
         }
         let metadata_path = path.clone();
@@ -589,6 +650,39 @@ impl App {
             });
             let _ = tx.send(atlas_model::app_state::BgResult::PreviewReady { tab, path, result });
         } else {
+            #[cfg(windows)]
+            if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| atlas_model::preview_cache::is_video_ext(&e.to_lowercase()))
+            {
+                // Explorer's thumbnail cache is near-instant; ffmpeg is the fallback.
+                self.rt.spawn(async move {
+                    let p = path.clone();
+                    let fast = tokio::task::spawn_blocking(move || {
+                        let probe_path = p.clone();
+                        let probe = std::thread::spawn(move || atlas_core::fs::preview::video_exif(&probe_path));
+                        let thumb = crate::shell_thumb::shell_thumbnail(&p, 1024);
+                        (thumb, probe.join().unwrap_or_default())
+                    })
+                    .await
+                    .ok();
+                    if let Some((Some((rgba, width, height)), exif)) = fast {
+                        let result = PreviewResult::Image {
+                            rgba,
+                            width,
+                            height,
+                            original_width: width,
+                            original_height: height,
+                            exif,
+                        };
+                        let _ = tx.send(atlas_model::app_state::BgResult::PreviewReady { tab, path, result });
+                    } else {
+                        atlas_core::fs::preview::load_preview(tab, path, tx).await;
+                    }
+                });
+                return;
+            }
             self.rt.spawn(async move {
                 atlas_core::fs::preview::load_preview(tab, path, tx).await;
             });
@@ -606,9 +700,7 @@ impl App {
         }
         self.preview_drag = None;
         self.state.preview.paths.insert(tab, inner.clone());
-        self.state.preview.results.remove(&tab);
         self.state.preview.multi.remove(&tab);
-        self.preview_textures.remove(&tab);
         let tx = self.tx.clone();
         self.rt.spawn(async move {
             atlas_core::fs::preview::load_archive_preview(tab, archive, inner, tx).await;
@@ -633,6 +725,11 @@ impl App {
         self.state.clear_preview(tab);
         self.preview_textures.remove(&tab);
         self.multi_textures.remove(&tab);
+        if let Some(view) = self.preview_view.get_mut(&tab) {
+            view.stack_index = 0;
+            view.stack_drag = None;
+            view.stack_dx = 0.0;
+        }
         self.state.preview.multi.insert(
             tab,
             MultiPreviewState {
@@ -650,12 +747,35 @@ impl App {
         }
     }
 
+    /// Path the stored preview result belongs to; during a load this is still
+    /// the previous file while `paths` already names the next one.
+    pub(crate) fn shown_preview_path(&self, tab: TileId) -> Option<PathBuf> {
+        let preview = &self.state.preview;
+        preview
+            .result_paths
+            .get(&tab)
+            .or_else(|| preview.paths.get(&tab))
+            .cloned()
+    }
+
+    #[cfg(feature = "ui-lab")]
+    pub(crate) fn preview_is_stale_for_lab(&self, tab: TileId) -> bool {
+        self.preview_is_stale(tab)
+    }
+
+    /// True while the visible result is for a file other than the requested one.
+    fn preview_is_stale(&self, tab: TileId) -> bool {
+        let preview = &self.state.preview;
+        preview.results.contains_key(&tab)
+            && preview.paths.get(&tab) != preview.result_paths.get(&tab)
+    }
+
     /// Get-or-build the cached single-preview texture for the focused tab from the
     /// decoded RGBA in `state.preview.results` (Image / Pdf variants). Keyed by path
     /// so a new selection invalidates the old texture.
     fn focused_preview_texture(&mut self) -> Option<Arc<RenderImage>> {
         let tab = self.state.focused_tile;
-        let path = self.state.preview.paths.get(&tab).cloned()?;
+        let path = self.shown_preview_path(tab)?;
         if let Some((cached_path, tex)) = self.preview_textures.get(&tab) {
             if *cached_path == path {
                 return Some(tex.clone());
@@ -742,250 +862,421 @@ impl App {
 
     // ── Rendering ────────────────────────────────────────────────────────────
 
-    pub const EXPERIMENTAL_IMM_INSPECTOR: bool = true;
-
-    /// Render the inspector panel (right side of the central row). The caller in
-    /// `root.rs` only invokes this when `preview_visible_for_focused()` is true.
+    /// The retained preview keeps layout, focus and controls in native elements.
     pub(crate) fn render_inspector(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // Trigger / advance the debounced preview load for the current selection.
         self.sync_active_preview_gpui();
         self.sync_selection_tags();
-
-        let (fg, muted, border, danger) = {
-            let t = cx.theme();
-            (t.foreground, t.muted_foreground, t.border, t.danger)
+        // Same material as the file panes (`dock/render.rs`): the list colour on
+        // glass/Windows themes, frosted the same way, so the two read as one surface.
+        let active_theme = self.state.profiles.active().theme.clone();
+        let is_glass = active_theme.ends_with(" Glass");
+        let (fg, muted, border, panel_bg) = {
+            let theme = cx.theme();
+            (
+                theme.foreground,
+                theme.muted_foreground,
+                theme.border,
+                if is_glass || crate::ui::icons::is_windows_theme(&active_theme) {
+                    theme.colors.list
+                } else {
+                    theme.sidebar
+                },
+            )
         };
-        // Phase6: expanded preview is rendered as an overlay by root.rs, so widening
-        // it here no longer pushes the main dock/sidebar during window resize.
-        let expanded = self
-            .preview_view
-            .get(&self.state.focused_tile)
-            .is_some_and(|v| v.expanded);
-        let viewport = window.viewport_size();
-        let width = if expanded {
-            let max_width = (f32::from(viewport.width) - 32.0).max(260.0);
-            self.state
-                .settings
-                .inspector_width
-                .max(180.0)
-                .min(max_width)
-        } else {
-            self.state
-                .settings
-                .inspector_width
-                .max(180.0)
-                .min((f32::from(viewport.width) - 96.0).max(180.0))
-        };
-        let box_w = (width - 24.0).max(80.0);
-        let available_h = (f32::from(viewport.height) - 190.0).max(360.0);
-        let box_h = if expanded {
-            (f32::from(viewport.height) - 120.0).max(520.0)
-        } else {
-            available_h
-        };
-
+        let expanded = self.preview_view_for_focused().expanded;
         let summary = self
             .state
             .active_tab_state()
             .zip(self.state.active_tab_data())
             .map(|(tab, data)| selection_summary(tab, &data.view_mode))
             .unwrap_or_default();
-
-        if Self::EXPERIMENTAL_IMM_INSPECTOR {
-            let active_theme = self.state.profiles.active().theme.as_str();
-            let is_glass = active_theme.ends_with(" Glass");
-            let windows_theme = crate::ui::icons::is_windows_theme(active_theme);
-            let zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
-            let pane_id = self.state.focused_tile;
-            let titlebar_offset = if self.state.settings.show_titlebar {
-                if windows_theme { 46.0 * zoom } else { 34.0 * zoom }
-            } else {
-                0.0
-            };
-            let (panel_bg, panel_border) = {
-                let t = cx.theme();
-                (
-                    if is_glass {
-                        t.sidebar
-                    } else {
-                        backdrop_tint(t.secondary, 0.10)
-                    },
-                    t.border,
-                )
-            };
-            let colors = crate::ui::inspector_imm::InspectorImmColors {
-                fg,
-                muted,
-                bg: panel_bg,
-                surface: backdrop_tint(panel_bg, 0.16),
-                border: panel_border,
-                hover: layer_color(panel_bg, 0.08, 0.8),
-                accent: cx.theme().accent,
-                danger,
-                keyword: cx.theme().accent,
-                type_color: cx.theme().accent,
-                string_color: cx.theme().foreground,
-                number_color: cx.theme().muted_foreground,
-                comment_color: cx.theme().muted_foreground,
-            };
-
-            let texture = self.focused_preview_texture();
-            let multi_textures = self.focused_multi_textures();
-            let preview_result = self.state.preview.results.get(&pane_id).cloned().map(Arc::new);
-
-            let image_interactive = texture.is_some() && summary.count == 1;
-            let imm_element = crate::ui::inspector_imm::InspectorImmElement::new(
-                pane_id,
-                cx.entity().downgrade(),
-                summary.single.clone(),
-                summary.clone(),
-                preview_result,
-                texture,
-                multi_textures,
-                expanded,
-                zoom,
-                windows_theme,
-                is_glass,
-                titlebar_offset,
-                colors,
-            ).image_view(self.preview_view_for_focused()).disable_animations(self.state.settings.disable_animations);
-
-            let app_entity = cx.entity();
-            let mut host = div()
-                .id("inspector-imm-host")
-                .w(px(width))
-                .h_full();
-            if let Some(entry) = summary.single.as_ref().filter(|_| !image_interactive) {
-                host = host.on_file_drag_anchor(app_entity, entry.path.clone());
-            }
-            return host.child(imm_element).into_any_element();
-        }
-
-        let active_theme = self.state.profiles.active().theme.as_str();
-        let is_glass = active_theme.ends_with(" Glass");
-        let (panel_bg, panel_border) = {
-            let t = cx.theme();
-            (
-                if is_glass {
-                    t.sidebar
-                } else {
-                    backdrop_tint(t.secondary, 0.10)
-                },
-                t.border,
-            )
+        // Nothing selected: the panel describes the folder being browsed
+        // instead of showing an empty state.
+        let summary = if summary.count == 0 {
+            self.folder_summary().unwrap_or(summary)
+        } else {
+            summary
         };
-        let mut col = v_flex()
-            .w(px(width))
-            .h_full()
+        let paths = match (&summary.single, summary.count) {
+            (Some(entry), 1) => vec![entry.path.clone()],
+            _ => self.selected_paths(),
+        };
+        let title = summary.single.as_ref().map_or_else(
+            || {
+                if summary.count > 1 {
+                    rust_i18n::t!("inspector_elements_selected", count = summary.count).to_string()
+                } else {
+                    rust_i18n::t!("inspector_title").to_string()
+                }
+            },
+            |entry| entry.name.clone(),
+        );
+        let locked_path = paths.first().filter(|path| paths.len() == 1 && atlas_core::vault::is_private_path(path)).cloned();
+        let subtitle = if locked_path.is_some() {
+            rust_i18n::t!("vault_locked_subtitle").to_string()
+        } else { preview_summary(
+            &summary,
+            self.state.preview.results.get(&self.state.focused_tile),
+        ) };
+        // Quick Look-style header: the title leads; actions stay quiet until the
+        // panel is hovered so they never compete with the window caption buttons.
+        let mut actions = h_flex()
+            .flex_shrink_0()
+            .gap_0p5()
+            .opacity(0.)
+            .group_hover("preview-panel", |s| s.opacity(1.));
+        if let Some(entry) = summary.single.as_ref().filter(|_| locked_path.is_none()) {
+            let path = entry.path.clone();
+            actions = actions.child(
+                preview_icon_button(
+                    "preview-open-external",
+                    gpui_component::IconName::ExternalLink,
+                    rust_i18n::t!("inspector_open_external").to_string(),
+                    fg,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.process_actions(vec![Action::Open(vec![path.clone()])]);
+                    cx.notify();
+                })),
+            );
+        }
+        actions = actions
+            .child(
+                preview_icon_button(
+                    "preview-expand",
+                    if expanded {
+                        gpui_component::IconName::Minimize
+                    } else {
+                        gpui_component::IconName::Maximize
+                    },
+                    rust_i18n::t!(if expanded {
+                        "inspector_collapse"
+                    } else {
+                        "inspector_expand"
+                    })
+                    .to_string(),
+                    fg,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.toggle_preview_expanded();
+                    cx.notify();
+                })),
+            )
+            .child(
+                preview_icon_button(
+                    "preview-close",
+                    gpui_component::IconName::PanelRightClose,
+                    rust_i18n::t!("inspector_close").to_string(),
+                    muted,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.process_actions(vec![Action::ToggleInspector]);
+                    this.preview_drag = None;
+                    cx.notify();
+                })),
+            );
+        let header = h_flex()
+            .flex_shrink_0()
+            .min_w(px(0.))
+            .items_start()
+            .gap_2()
+            .pb_3()
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(title),
+                    )
+                    .when(!subtitle.is_empty(), |col| {
+                        col.child(div().truncate().text_xs().text_color(muted).child(subtitle))
+                    }),
+            )
+            .child(actions);
+        let mut panel = v_flex()
+            .id("native-preview-panel")
+            .group("preview-panel")
+            .size_full()
+            .min_w(px(0.))
+            .min_h(px(0.))
+            .overflow_hidden()
             .text_color(fg)
-            .bg(panel_bg)
-            .rounded(px(10.))
-            .when(!is_glass && !crate::ui::icons::is_windows_theme(active_theme), |s| {
-                s.border_1().border_color(panel_border.opacity(0.28))
-            })
             .when(is_glass, |s| s.glass_surface(panel_bg))
-            .p_3()
-            .when(self.state.settings.show_titlebar, |s| {
-                s.pt(crate::ui::rem_px(
-                    if crate::ui::icons::is_windows_theme(active_theme) { 46.0 } else { 34.0 },
+            .when(!is_glass, |s| s.bg(panel_bg).rounded(px(8.)))
+            .px_3()
+            .py_3()
+            .when(!expanded && self.state.settings.show_titlebar, |panel| {
+                panel.pt(crate::ui::rem_px(
+                    if crate::ui::icons::is_windows_theme(
+                        self.state.profiles.active().theme.as_str(),
+                    ) {
+                        46.
+                    } else {
+                        34.
+                    },
                 ))
             })
-            .gap_3();
-
+            .child(header);
+        if let Some(path) = locked_path {
+            return panel.child(self.render_locked_vault_preview(path, cx)).into_any_element();
+        }
         if summary.count == 0 {
-            return col
-                .items_center()
-                .justify_center()
+            return panel
                 .child(
-                    div()
+                    v_flex()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .px_3()
+                        .text_center()
                         .text_color(muted)
-                        .child(rust_i18n::t!("inspector_no_selection").to_string()),
+                        .child(icon(AtlasIcon::Eye, 24., muted))
+                        .child(
+                            div()
+                                .text_sm()
+                                .child(rust_i18n::t!("inspector_no_selection").to_string()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .child(rust_i18n::t!("inspector_empty_hint").to_string()),
+                        ),
                 )
                 .into_any_element();
         }
-
-        if summary.count > 1 {
-            col = col.child(self.render_multi(&summary, muted, window, cx));
-            return col.into_any_element();
+        let body = if summary.count > 1 {
+            self.render_multi(&summary, muted, window, cx)
+        } else {
+            self.render_preview_body(muted, cx.theme().danger, window, cx)
+        };
+        panel = panel.child(
+            v_flex()
+                .relative()
+                .flex_1()
+                .min_h(px(0.))
+                .min_w(px(0.))
+                .overflow_hidden()
+                .child(body),
+        );
+        // Always reserve a reachable footer for tags; details never push it offscreen.
+        let tags = if paths.iter().any(|path| atlas_core::vault::live::is_private(path)) {
+            div().into_any_element()
+        } else if summary.count > 1 {
+            self.render_multi_tags(&paths, muted, cx)
+        } else if let Some(path) = paths.first() {
+            self.render_inspector_tags(path, muted, cx)
+        } else {
+            div().into_any_element()
+        };
+        panel = panel.child(
+            v_flex()
+                .flex_shrink_0()
+                .min_w(px(0.))
+                .gap_2()
+                .pt_2()
+                .child(
+                    div()
+                        .id("preview-tags")
+                        .max_h(crate::ui::rem_px(64.))
+                        .overflow_y_scroll()
+                        .child(tags),
+                )
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .gap_2()
+                        .min_w(px(0.))
+                        .child(self.render_tag_section(paths, muted, cx))
+                        .child(
+                            gpui_component::button::Button::new("preview-details")
+                                .small()
+                                .compact()
+                                .ghost()
+                                .map(|b| { use gpui_component::Selectable as _; b.selected(self.preview_view_for_focused().details_open) })
+                                .tooltip(rust_i18n::t!("inspector_details").to_string())
+                                .child(
+                                    gpui_component::Icon::new(gpui_component::IconName::Info)
+                                        .with_size(gpui_component::Size::Small)
+                                        .text_color(muted),
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    let state = this
+                                        .preview_view
+                                        .entry(this.state.focused_tile)
+                                        .or_default();
+                                    state.details_open = !state.details_open;
+                                    cx.notify();
+                                }))
+                                .map(|button| {
+                                    accessible_button(
+                                        "preview-details",
+                                        rust_i18n::t!("inspector_details").to_string(),
+                                        button,
+                                    )
+                                }),
+                        ),
+                ),
+        );
+        if self.preview_view_for_focused().details_open {
+            let details = self.render_preview_details(&summary, muted, window, cx);
+            panel = panel.child(
+                div()
+                    .flex_shrink_0()
+                    .mt_2()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(border.opacity(0.35))
+                    .child(details),
+            );
         }
+        panel.into_any_element()
+    }
 
-        // Single selection: metadata header + content preview.
+    pub(crate) fn render_expanded_preview(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let top = if self.state.settings.show_titlebar {
+            if crate::ui::icons::is_windows_theme(self.state.profiles.active().theme.as_str()) {
+                46.
+            } else {
+                34.
+            }
+        } else {
+            0.
+        };
+        div()
+            .absolute()
+            .inset_0()
+            .bg(gpui::hsla(0., 0., 0., 0.36))
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.collapse_preview_expanded();
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_3()
+                    .right_3()
+                    .bottom_3()
+                    .top(crate::ui::rem_px(top + 8.))
+                    .overflow_hidden()
+                    .rounded(px(10.))
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(self.ensure_inspector_host(cx)),
+            )
+            .into_any_element()
+    }
+
+    fn render_preview_details(
+        &self,
+        summary: &SelectionSummary,
+        muted: Hsla,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let mut properties = Vec::new();
         if let Some(entry) = &summary.single {
-            col = col.child(
-                h_flex()
+            properties.push((
+                rust_i18n::t!("inspector_location").to_string(),
+                entry.path.display().to_string(),
+            ));
+            if let Some(modified) = entry.modified {
+                properties.push((
+                    rust_i18n::t!("inspector_modified_label").to_string(),
+                    format_date(modified),
+                ));
+            }
+            if let Some(ext) = &entry.extension {
+                properties.push((
+                    rust_i18n::t!("inspector_type_label").to_string(),
+                    ext.to_uppercase(),
+                ));
+            }
+            if let Some((path, metadata)) =
+                self.state.preview.metadata.get(&self.state.focused_tile)
+            {
+                if path == &entry.path {
+                    properties.extend(metadata.iter().cloned());
+                }
+            }
+        }
+        if let Some(PreviewResult::Image { exif, .. }) =
+            self.state.preview.results.get(&self.state.focused_tile)
+        {
+            if !self.preview_is_stale(self.state.focused_tile) {
+                properties.extend(exif.iter().take(30).cloned());
+            }
+        }
+        if summary.count > 1 {
+            properties.extend(self.selected_paths().into_iter().take(20).map(|path| {
+                (
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                    path.display().to_string(),
+                )
+            }));
+        }
+        let mut seen = std::collections::HashSet::new();
+        properties.retain(|(key, _)| seen.insert(key.to_lowercase()));
+        let foreground = cx.theme().foreground;
+        let max_h = (f32::from(window.viewport_size().height) * 0.24).clamp(70., 190.);
+        div()
+            .id("preview-metadata")
+            .max_h(px(max_h))
+            .overflow_y_scroll()
+            .child(
+                v_flex()
                     .gap_2()
-                    .items_center()
-                    .child(
-                        match self.icon_tex_for_entry(&entry.kind, entry.extension.as_deref()) {
-                            Some(tex) => gpui::img(tex)
-                                .w(gpui::px(18.))
-                                .h(gpui::px(18.))
-                                .flex_none()
-                                .into_any_element(),
-                            None => file_type_icon(&entry.kind, entry.extension.as_deref(), 18.0),
-                        },
-                    )
-                    .child(
-                        v_flex()
+                    .children(properties.into_iter().map(|(label, value)| {
+                        let tooltip = value.clone();
+                        h_flex()
+                            .gap_2()
                             .min_w(px(0.))
-                            .flex_1()
+                            .text_xs()
                             .child(
                                 div()
+                                    .w(crate::ui::rem_px(76.))
+                                    .flex_shrink_0()
+                                    .text_color(muted)
                                     .truncate()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child(entry.name.to_string()),
+                                    .child(label.clone()),
                             )
                             .child(
                                 div()
-                                    .text_xs()
-                                    .text_color(muted)
+                                    .id(SharedString::from(format!("preview-property-{label}")))
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_color(foreground)
                                     .truncate()
-                                    .child(entry.path.display().to_string()),
-                            ),
-                    ),
-            );
-            let mut meta = v_flex().text_xs().text_color(muted).gap_1();
-            if let Some(size) = entry.size {
-                meta = meta
-                    .child(rust_i18n::t!("inspector_size", size = format_size(size)).to_string());
-            }
-            if let Some(modified) = entry.modified {
-                meta = meta.child(
-                    rust_i18n::t!("inspector_modified", date = format_date(modified)).to_string(),
-                );
-            }
-            if let Some(ext) = &entry.extension {
-                meta = meta.child(rust_i18n::t!("inspector_type", ext = ext).to_string());
-            }
-            if let Some((path, properties)) = self.state.preview.metadata.get(&self.state.focused_tile) {
-                if path == &entry.path {
-                    for (label, value) in properties {
-                        meta = meta.child(div().child(format!("{label}: {value}")));
-                    }
-                }
-            }
-            col = col.child(meta);
-        }
-
-        // Capture the single-selection path before the mutable borrows below.
-        let single_path: Option<PathBuf> = summary.single.as_ref().map(|e| e.path.clone());
-
-        col = col.child(div().h(px(1.)).w_full().bg(border.opacity(0.35)));
-
-        // ── Preview body ─────────────────────────────────────────────────────
-        col = col.child(self.render_preview_body(muted, danger, box_w, box_h, window, cx));
-
-        // Tags + add-tag action (all file types, single selection).
-        if let Some(ref path) = single_path {
-            col = col.child(self.render_inspector_tags(path, muted, cx));
-            col = col.child(self.render_tag_section(vec![path.clone()], muted, cx));
-        }
-
-        col.into_any_element()
+                                    .child(value)
+                                    .tooltip(move |window, cx| {
+                                        gpui_component::tooltip::Tooltip::new(tooltip.clone())
+                                            .build(window, cx)
+                                    }),
+                            )
+                    })),
+            )
+            .into_any_element()
     }
 
     fn render_floating_preview_controls(
@@ -1084,170 +1375,153 @@ impl App {
         bar.into_any_element()
     }
 
-    /// Tags shared by ALL paths in a multiselect (intersection). Empty when none.
     fn render_multi_tags(
         &mut self,
         paths: &[PathBuf],
         muted: Hsla,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if paths.is_empty() {
-            return div().into_any_element();
-        }
-        // Intersection: tags present in every path's tag list.
-        let first_ids = self.state.tag_cache.tags_of(&paths[0]).to_vec();
-        let shared: Vec<atlas_model::tag_cache::TagId> = first_ids
-            .into_iter()
-            .filter(|id| {
-                paths[1..]
-                    .iter()
-                    .all(|p| self.state.tag_cache.tags_of(p).contains(id))
-            })
-            .collect();
-        if shared.is_empty() {
-            return div().into_any_element();
-        }
-        let profile_name = self.state.profiles.active().name.clone();
-        let chips: Vec<AnyElement> = shared
-            .iter()
-            .filter_map(|&id| {
-                self.state
-                    .tag_cache
-                    .visible_defs(&profile_name)
-                    .find(|d| d.id == id)
-                    .map(|d| {
-                        let [r, g, b] = d.color;
-                        let swatch = gpui::rgb(((r as u32) << 16) | ((g as u32) << 8) | (b as u32));
-                        h_flex()
-                            .gap_1()
-                            .px(px(6.))
-                            .py(px(2.))
-                            .rounded_full()
-                            .border_1()
-                            .border_color(swatch)
-                            .text_xs()
-                            .text_color(muted)
-                            .child(
-                                div()
-                                    .w(px(8.))
-                                    .h(px(8.))
-                                    .rounded_full()
-                                    .flex_none()
-                                    .bg(swatch),
-                            )
-                            .child(SharedString::from(d.name.clone()))
-                            .into_any_element()
-                    })
-            })
-            .collect();
-        let _ = cx;
-        div()
-            .flex()
-            .flex_row()
-            .flex_wrap()
-            .gap_1()
-            .children(chips)
-            .into_any_element()
+        self.render_tag_chips(paths, muted, cx)
     }
 
-    /// Renders the row of tag chips assigned to `path`. Empty when no tags are known.
     fn render_inspector_tags(
         &mut self,
-        path: &std::path::Path,
+        path: &Path,
         muted: Hsla,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
-        let tag_ids = self.state.tag_cache.tags_of(path).to_vec();
-        if tag_ids.is_empty() {
-            return div().into_any_element();
-        }
+        self.render_tag_chips(&[path.to_path_buf()], muted, cx)
+    }
 
-        let profile_name = self.state.profiles.active().name.clone();
-        let chips: Vec<AnyElement> = tag_ids
-            .iter()
-            .filter_map(|&id| {
-                self.state
-                    .tag_cache
-                    .visible_defs(&profile_name)
-                    .find(|d| d.id == id)
-                    .map(|d| {
-                        let [r, g, b] = d.color;
-                        let swatch_color =
-                            gpui::rgb(((r as u32) << 16) | ((g as u32) << 8) | (b as u32));
-                        let name = SharedString::from(d.name.clone());
-                        h_flex()
-                            .gap_1()
-                            .px(px(6.))
-                            .py(px(2.))
-                            .rounded_full()
-                            .border_1()
-                            .border_color(swatch_color)
-                            .text_xs()
-                            .text_color(muted)
-                            .child(
-                                div()
-                                    .w(px(8.))
-                                    .h(px(8.))
-                                    .rounded_full()
-                                    .flex_none()
-                                    .bg(swatch_color),
-                            )
-                            .child(name)
-                            .into_any_element()
-                    })
+    fn render_tag_chips(&self, paths: &[PathBuf], muted: Hsla, cx: &Context<Self>) -> AnyElement {
+        let profile = &self.state.profiles.active().name;
+        let tags: Vec<_> = self
+            .state
+            .tag_cache
+            .visible_defs(profile)
+            .filter(|tag| {
+                !paths.is_empty()
+                    && paths
+                        .iter()
+                        .all(|path| self.state.tag_cache.tags_of(path).contains(&tag.id))
             })
+            .cloned()
             .collect();
-
-        div()
-            .flex()
-            .flex_row()
+        let app = cx.entity();
+        h_flex()
             .flex_wrap()
             .gap_1()
-            .children(chips)
+            .min_w(px(0.))
+            .children(tags.into_iter().map(|tag| {
+                let [r, g, b] = tag.color;
+                let swatch = gpui::rgb((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b));
+                let paths = paths.to_vec();
+                let app = app.clone();
+                let name = tag.name.clone();
+                let remove_label =
+                    rust_i18n::t!("inspector_remove_tag", name = tag.name).to_string();
+                h_flex()
+                    .gap_1()
+                    .pl_2()
+                    .rounded(px(5.))
+                    .bg(muted.opacity(0.08))
+                    .child(div().size(px(6.)).rounded_full().bg(swatch))
+                    .child(
+                        div()
+                            .text_xs()
+                            .max_w(crate::ui::rem_px(108.))
+                            .truncate()
+                            .child(name),
+                    )
+                    .child(accessible_button(
+                        format!("preview-remove-tag-{}", tag.id.0),
+                        remove_label.clone(),
+                        gpui_component::button::Button::new((
+                            "preview-remove-tag",
+                            tag.id.0 as u64,
+                        ))
+                        .tooltip(remove_label)
+                        .xsmall()
+                        .compact()
+                        .ghost()
+                        .child(icon(AtlasIcon::X, 10., muted))
+                        .on_click(move |_, _, cx| {
+                            app.update(cx, |this, cx| {
+                                this.process_actions(vec![Action::UnassignTagFromFiles {
+                                    tag: tag.id,
+                                    paths: paths.clone(),
+                                }]);
+                                cx.notify();
+                            });
+                        }),
+                    ))
+            }))
             .into_any_element()
     }
 
-    /// Renders the add-tag button for any file type / multiselect.
+    /// Tags stay reachable for every preview type and accept keyboard activation.
     fn render_tag_section(
         &mut self,
         paths: Vec<PathBuf>,
         muted: Hsla,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if paths.is_empty() {
+        if paths.iter().any(|path| atlas_core::vault::live::is_private(path)) {
             return div().into_any_element();
         }
-        div()
-            .id("tag-add-btn")
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_1()
-            .px_2()
-            .py_1()
-            .rounded(px(crate::ui::RADIUS))
-            .text_sm()
-            .text_color(muted)
-            .cursor_pointer()
-            .hover(|s| s.opacity(0.8))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
-                    this.open_tag_picker(ev.position, paths.clone(), window, cx);
-                }),
+        gpui_component::button::Button::new("preview-add-tag")
+            .small()
+            .compact()
+            .ghost()
+            .tooltip(rust_i18n::t!("inspector_add_tag").to_string())
+            .child(
+                h_flex()
+                    .gap_0p5()
+                    .items_center()
+                    .child(icon(AtlasIcon::Tag, 14., muted))
+                    .child(icon(AtlasIcon::Plus, 10., muted)),
             )
-            .child(icon(AtlasIcon::Tag, 14.0, muted))
-            .child(rust_i18n::t!("inspector_add_tag").to_string())
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                this.open_tag_picker(event.position(), paths.clone(), window, cx);
+                cx.notify();
+            }))
+            .map(|button| {
+                accessible_button(
+                    "preview-add-tag",
+                    rust_i18n::t!("inspector_add_tag").to_string(),
+                    button,
+                )
+            })
             .into_any_element()
     }
 
-    /// The content-preview portion for a single selection.
+    /// The content-preview portion for a single selection. While the next file
+    /// loads the previous result stays up, dimmed, instead of flashing blank.
     fn render_preview_body(
         &mut self,
         muted: Hsla,
         danger: Hsla,
-        box_w: f32,
-        box_h: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let stale = self.preview_is_stale(self.state.focused_tile);
+        let body = self.render_preview_content(muted, danger, window, cx);
+        if !stale {
+            return body;
+        }
+        v_flex()
+            .flex_1()
+            .w_full()
+            .min_h(px(0.))
+            .opacity(0.55)
+            .child(body)
+            .into_any_element()
+    }
+
+    fn render_preview_content(
+        &mut self,
+        muted: Hsla,
+        danger: Hsla,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1280,9 +1554,7 @@ impl App {
                 .into_any_element(),
             PreviewKind::Text => self.render_text_preview(muted, window, cx),
             PreviewKind::Markdown => self.render_markdown_preview(muted, window, cx),
-            PreviewKind::Image | PreviewKind::Pdf => {
-                self.render_image_preview(muted, box_w, box_h, cx)
-            }
+            PreviewKind::Image | PreviewKind::Pdf => self.render_image_preview(muted, cx),
             PreviewKind::Table => self.render_table_preview(muted, cx),
             PreviewKind::Document => self.render_document_preview(muted),
             PreviewKind::Presentation => self.render_presentation_preview(muted),
@@ -1342,11 +1614,7 @@ impl App {
         };
         let raw = text.clone();
         let path = self
-            .state
-            .preview
-            .paths
-            .get(&tab)
-            .cloned()
+            .shown_preview_path(tab)
             .unwrap_or_else(|| PathBuf::from("<preview>"));
         let lang = preview_language_for_path(&path);
 
@@ -1358,6 +1626,11 @@ impl App {
         };
 
         let state_ref = editor.state.clone();
+        let (smooth_ease, smooth_boost) =
+            crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
+        state_ref.update(cx, |state, _| {
+            state.set_scroll_smooth(smooth_ease, smooth_boost);
+        });
         let raw_for_copy = raw.clone();
 
         let (surface, border) = {
@@ -1379,6 +1652,7 @@ impl App {
             .overflow_hidden()
             .child(
                 gpui_component::input::Input::new(&state_ref)
+                    .disabled(editor.path.to_string_lossy().starts_with("remote-preview:"))
                     .h_full()
                     .appearance(false),
             )
@@ -1430,159 +1704,157 @@ impl App {
             .into_any_element()
     }
 
-    /// Image / PDF: show the decoded texture fitted into a `box_w`×`box_h` viewport
-    /// with scroll-to-zoom and drag-to-pan. Double-click toggles fit ↔ 2×. EXIF
-    /// metadata (if present) follows as a key/value list.
-    fn render_image_preview(
-        &mut self,
-        muted: Hsla,
-        box_w: f32,
-        box_h: f32,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    /// Flexible image stage; transparent pixels use the quiet theme surface.
+    fn render_image_preview(&mut self, muted: Hsla, cx: &mut Context<Self>) -> AnyElement {
         let tab = self.state.focused_tile;
-        let (_ow, _oh, dw, dh, exif, is_pdf) = match self.state.preview.results.get(&tab) {
+        let source = match self.state.preview.results.get(&tab) {
             Some(PreviewResult::Image {
                 original_width,
                 original_height,
-                width,
-                height,
-                exif,
                 ..
-            }) => (
-                *original_width,
-                *original_height,
-                *width,
-                *height,
-                exif.clone(),
-                false,
-            ),
-            Some(PreviewResult::Pdf { width, height, .. }) => {
-                (*width, *height, *width, *height, Vec::new(), true)
-            }
+            }) => (*original_width, *original_height),
+            Some(PreviewResult::Pdf { width, height, .. }) => (*width, *height),
             _ => return div().into_any_element(),
         };
-        let view = self.preview_view_for_focused();
-        let texture = self.focused_preview_texture();
-        let (well, border) = {
-            let t = cx.theme();
-            (backdrop_tint(t.secondary, 0.16), t.border)
+        let Some(texture) = self.focused_preview_texture() else {
+            return div()
+                .flex_1()
+                .text_color(muted)
+                .child(rust_i18n::t!("inspector_loading").to_string())
+                .into_any_element();
         };
-        let kind = if is_pdf {
-            PreviewKind::Pdf
-        } else {
-            PreviewKind::Image
-        };
-
-        let mut col = v_flex().flex_1().min_h(px(0.)).gap_2();
-
-        if let Some(tex) = texture {
-            let (fit_w, fit_h) = fit_into(dw as f32, dh as f32, box_w, box_h);
-            let img_w = fit_w * view.zoom;
-            let img_h = fit_h * view.zoom;
-            let left = (box_w - img_w) / 2.0 + view.pan_x;
-            let top = (box_h - img_h) / 2.0 + view.pan_y;
-            let image = img(tex)
-                .absolute()
-                .left(px(left))
-                .top(px(top))
-                .w(px(img_w))
-                .h(px(img_h))
-                .rounded_sm();
-            col = col.child(
-                div()
-                    .id("preview-image")
-                    .group("preview-surface")
-                    .relative()
-                    .overflow_hidden()
-                    .w(px(box_w))
-                    .h(px(box_h))
-                    .bg(well)
-                    .rounded(px(10.))
+        let state = self.preview_view_for_focused();
+        let geometry = state
+            .viewport
+            .map(|viewport| crate::ui::preview_image::ImageGeometry::new(viewport, source, state));
+        let percent = geometry.map_or(100., |g| g.scale * 100.);
+        let fg = cx.theme().foreground;
+        let well = layer_color(cx.theme().background, -0.015, 1.0);
+        let fit = gpui_component::button::Button::new("preview-zoom-fit")
+            .small()
+            .compact()
+            .ghost()
+            .tooltip(rust_i18n::t!("inspector_preview_zoom_fit").to_string())
+            .child(
+                gpui_component::Icon::new(gpui_component::IconName::Frame)
+                    .with_size(gpui_component::Size::Small)
+                    .text_color(fg),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.process_actions(vec![Action::PreviewZoomFit]);
+                cx.notify();
+            }))
+            .map(|button| {
+                accessible_button(
+                    "preview-zoom-fit",
+                    rust_i18n::t!("inspector_preview_zoom_fit").to_string(),
+                    button,
+                )
+            });
+        let actual = gpui_component::button::Button::new("preview-zoom-actual")
+            .small()
+            .compact()
+            .ghost()
+            .label("1:1")
+            .tooltip(rust_i18n::t!("inspector_actual_size").to_string())
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let state = this
+                    .preview_view
+                    .entry(this.state.focused_tile)
+                    .or_default();
+                if let Some(viewport) = state.viewport {
+                    let geometry =
+                        crate::ui::preview_image::ImageGeometry::new(viewport, source, *state);
+                    state.zoom = (1. / geometry.fit_scale).clamp(0.1, 48.);
+                    state.pan_x = 0.;
+                    state.pan_y = 0.;
+                }
+                cx.notify();
+            }));
+        let actual = accessible_button(
+            "preview-zoom-actual",
+            rust_i18n::t!("inspector_actual_size").to_string(),
+            actual,
+        );
+        let zoomed = (state.zoom - 1.0).abs() > 0.001;
+        let (surface, border) = (cx.theme().popover, cx.theme().border);
+        // Floating glass pill (Quick Look): appears on hover, stays while zoomed.
+        let pill = h_flex()
+            .absolute()
+            .bottom(px(12.))
+            .left_0()
+            .right_0()
+            .justify_center()
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_0p5()
+                    .px_1()
+                    .py(px(2.))
+                    .rounded(px(999.))
+                    .bg(layer_color(surface, 0.0, 0.86))
                     .border_1()
-                    .border_color(border.opacity(0.18))
-                    .child(image)
-                    .child(self.render_floating_preview_controls(kind, None, cx))
-                    .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _w, cx| {
-                        let dy = match ev.delta {
-                            ScrollDelta::Pixels(p) => f32::from(p.y),
-                            ScrollDelta::Lines(l) | ScrollDelta::PreciseLines(l) => l.y,
-                        };
-                        if dy != 0.0 {
-                            let tab = this.state.focused_tile;
-                            let v = this.preview_view.entry(tab).or_default();
-                            let factor = if dy > 0.0 { 1.1 } else { 1.0 / 1.1 };
-                            v.zoom = (v.zoom * factor).clamp(0.1, 48.0);
+                    .border_color(border.opacity(0.30))
+                    .raised_surface()
+                    .occlude()
+                    .child(
+                        preview_button(
+                            "preview-zoom-out",
+                            AtlasIcon::Minus,
+                            rust_i18n::t!("inspector_preview_zoom_out").to_string(),
+                            fg,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.process_actions(vec![Action::PreviewZoomOut]);
                             cx.notify();
-                        }
-                        cx.stop_propagation();
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, ev: &MouseDownEvent, _w, _cx| {
-                            this.preview_drag = Some(ev.position);
-                        }),
+                        })),
                     )
-                    .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _w, cx| {
-                        if ev.pressed_button == Some(MouseButton::Left) {
-                            if let Some(prev) = this.preview_drag {
-                                let dx = f32::from(ev.position.x - prev.x);
-                                let dy = f32::from(ev.position.y - prev.y);
-                                let tab = this.state.focused_tile;
-                                let v = this.preview_view.entry(tab).or_default();
-                                v.pan_x += dx;
-                                v.pan_y += dy;
-                                this.preview_drag = Some(ev.position);
-                                cx.notify();
-                            }
-                        } else {
-                            this.preview_drag = None;
-                        }
-                    }))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _ev: &MouseUpEvent, _w, _cx| {
-                            this.preview_drag = None;
-                        }),
+                    .child(
+                        div()
+                            .min_w(crate::ui::rem_px(40.))
+                            .text_center()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(format!("{percent:.0}%")),
                     )
-                    .on_click(cx.listener(|this, ev: &ClickEvent, _w, cx| {
-                        if ev.click_count() >= 2 {
-                            let tab = this.state.focused_tile;
-                            let v = this.preview_view.entry(tab).or_default();
-                            v.zoom = if (v.zoom - 1.0).abs() < 0.01 {
-                                2.0
-                            } else {
-                                1.0
-                            };
-                            v.pan_x = 0.0;
-                            v.pan_y = 0.0;
+                    .child(
+                        preview_button(
+                            "preview-zoom-in",
+                            AtlasIcon::Plus,
+                            rust_i18n::t!("inspector_preview_zoom_in").to_string(),
+                            fg,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.process_actions(vec![Action::PreviewZoomIn]);
                             cx.notify();
-                        }
-                    })),
-            );
-        } else {
-            col = col.child(div().text_color(muted).child("…"));
-        }
-        if !exif.is_empty() {
-            let mut grid = v_flex().text_xs().text_color(muted).gap_1().mt_2();
-            for (k, v) in exif.iter().take(30) {
-                grid = grid.child(
-                    h_flex()
-                        .gap_2()
-                        .child(div().w(px(120.)).truncate().child(k.clone()))
-                        .child(div().flex_1().truncate().child(v.clone())),
-                );
-            }
-            col = col.child(div().h(px(1.)).w_full().bg(muted).opacity(0.3));
-            col = col.child(
-                div()
-                    .id("inspector-exif")
-                    .max_h(px(200.))
-                    .overflow_y_scroll()
-                    .child(grid),
-            );
-        }
-        col.into_any_element()
+                        })),
+                    )
+                    .child(div().w(px(1.)).h(px(14.)).mx_0p5().bg(border.opacity(0.5)))
+                    .child(fit)
+                    .child(actual),
+            )
+            .opacity(if zoomed { 1. } else { 0. })
+            .group_hover("preview-image-stage", |s| s.opacity(1.));
+        div()
+            .id("preview-image")
+            .group("preview-image-stage")
+            .relative()
+            .size_full()
+            .min_h(px(0.))
+            .min_w(px(0.))
+            .overflow_hidden()
+            .rounded(px(10.))
+            .bg(well)
+            .child(crate::ui::preview_image::image_canvas(
+                cx.entity(),
+                tab,
+                texture,
+                source,
+                state,
+                cx,
+            ))
+            .child(pill)
+            .into_any_element()
     }
 
     fn render_table_preview(&mut self, muted: Hsla, cx: &mut Context<Self>) -> AnyElement {
@@ -1596,7 +1868,7 @@ impl App {
             return div().into_any_element();
         };
         let is_glass = self.state.profiles.active().theme.ends_with(" Glass");
-        let (border, stripe, header_bg, fg) = {
+        let (border, stripe, header_bg, fg, surface) = {
             let t = cx.theme();
             (
                 t.border,
@@ -1611,55 +1883,94 @@ impl App {
                     layer_color(t.secondary, 0.04, 0.88)
                 },
                 t.foreground,
+                t.secondary,
             )
         };
         let cols = headers
             .len()
             .max(rows.iter().map(Vec::len).max().unwrap_or(0))
             .min(50);
-        let mut table = v_flex().min_w(px((cols as f32).max(1.0) * 120.0)).text_xs();
+        let shown = rows.len().min(200);
+        let widths = table_column_widths(headers, &rows[..shown], cols);
+        let index_w = 24. + 7. * (shown.max(1).to_string().len() as f32);
+        let total_w = index_w + widths.iter().sum::<f32>();
+        let cell = |width: f32, text: String, color: Hsla| {
+            div()
+                .w(px(width))
+                .flex_shrink_0()
+                .px_2()
+                .truncate()
+                .text_color(color)
+                .child(text)
+        };
+        let mut table = v_flex().w(px(total_w)).text_xs();
         if !headers.is_empty() {
-            let mut row = h_flex().h(px(28.)).bg(header_bg).text_color(muted);
-            for cell in headers.iter().take(cols) {
-                row = row.child(div().w(px(120.)).px_2().truncate().child(cell.clone()));
-            }
-            table = table.child(row);
-        }
-        for (i, cells) in rows.iter().take(200).enumerate() {
             let mut row = h_flex()
-                .h(px(26.))
-                .text_color(fg)
-                .border_t_1()
-                .border_color(border.opacity(0.35))
-                .when(i % 2 == 1, |s| s.bg(stripe));
-            for col in 0..cols {
-                row = row.child(
-                    div()
-                        .w(px(120.))
-                        .px_2()
-                        .truncate()
-                        .child(cells.get(col).cloned().unwrap_or_default()),
-                );
+                .h(px(28.))
+                .bg(header_bg)
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(cell(index_w, String::new(), muted));
+            for (col, width) in widths.iter().enumerate() {
+                row = row.child(cell(*width, headers.get(col).cloned().unwrap_or_default(), fg));
             }
             table = table.child(row);
         }
-        let mut wrap = v_flex().flex_1().min_h(px(0.)).gap_2();
-        if *truncated {
-            wrap = wrap.child(
+        for (i, cells) in rows.iter().take(shown).enumerate() {
+            let mut row = h_flex()
+                .h(px(24.))
+                .border_t_1()
+                .border_color(border.opacity(0.22))
+                .when(i % 2 == 1, |s| s.bg(stripe))
+                .child(cell(index_w, (i + 1).to_string(), muted));
+            for (col, width) in widths.iter().enumerate() {
+                row = row.child(cell(*width, cells.get(col).cloned().unwrap_or_default(), fg));
+            }
+            table = table.child(row);
+        }
+        let shape = rust_i18n::t!(
+            "inspector_table_shape",
+            rows = if *truncated {
+                format!("{shown}+")
+            } else {
+                shown.to_string()
+            },
+            cols = cols
+        )
+        .to_string();
+        v_flex()
+            .size_full()
+            .min_h(px(0.))
+            .gap_2()
+            .child(
                 div()
+                    .id("preview-table")
+                    .flex_1()
+                    .min_h(px(0.))
+                    .rounded(px(10.))
+                    .border_1()
+                    .border_color(border.opacity(0.22))
+                    .bg(layer_color(surface, -0.02, 0.30))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .id("preview-table-scroll")
+                            .size_full()
+                            .overflow_scroll()
+                            .child(table),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
                     .text_xs()
                     .text_color(muted)
-                    .child(rust_i18n::t!("preview_truncated")),
-            );
-        }
-        wrap.child(
-            div()
-                .flex_1()
-                .min_h(px(0.))
-                .overflow_x_scrollbar()
-                .child(div().h_full().overflow_y_scrollbar().child(table)),
-        )
-        .into_any_element()
+                    .child(if *truncated {
+                        format!("{shape} · {}", rust_i18n::t!("preview_truncated"))
+                    } else {
+                        shape
+                    }),
+            )
+            .into_any_element()
     }
 
     fn render_document_preview(&mut self, muted: Hsla) -> AnyElement {
@@ -1866,9 +2177,47 @@ impl App {
         col.child(meta).into_any_element()
     }
 
+    /// Ask for the thumbnails of the folder's image/video files (the ring cards).
+    fn request_dir_ring_thumbnails(&mut self, paths: &[PathBuf]) {
+        if let Ok(mut wanted) = self.thumb_wanted.lock() {
+            wanted.extend(paths.iter().cloned());
+        }
+        for path in paths {
+            if self.thumb_textures.contains_key(path) {
+                continue;
+            }
+            let is_image = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| atlas_model::preview_cache::is_image_ext(&e.to_ascii_lowercase()));
+            #[cfg(target_os = "windows")]
+            if !is_image {
+                self.request_shell_thumbnail(path);
+                continue;
+            }
+            let _ = is_image;
+            self.request_thumbnail(path);
+        }
+    }
+
     fn render_dir_preview(&mut self, muted: Hsla, cx: &mut Context<Self>) -> AnyElement {
         let tab = self.state.focused_tile;
         let view = cx.entity();
+        let in_archive = self
+            .shown_preview_path(tab)
+            .as_deref()
+            .is_some_and(atlas_core::fs::archive::is_archive_path);
+        let media: Vec<PathBuf> = match self.state.preview.results.get(&tab) {
+            Some(PreviewResult::Dir { entries, .. }) if !in_archive => {
+                dir_media_paths(entries).into_iter().cloned().collect()
+            }
+            _ => Vec::new(),
+        };
+        self.request_dir_ring_thumbnails(&media);
+        let ring_cards: Vec<Arc<RenderImage>> = media
+            .iter()
+            .filter_map(|path| self.grid_thumbnail(path))
+            .collect();
         let Some(PreviewResult::Dir {
             entries,
             total_count,
@@ -1877,6 +2226,55 @@ impl App {
         else {
             return div().into_any_element();
         };
+        let container = self.shown_preview_path(tab);
+        let archive = container
+            .as_deref()
+            .is_some_and(atlas_core::fs::archive::is_archive_path);
+        let (dirs, files) = entries.iter().fold((0, 0), |(d, f), e| {
+            if e.is_dir { (d + 1, f) } else { (d, f + 1) }
+        });
+        let (total_count, total_size) = (*total_count, *total_size);
+        let mut hero = Vec::new();
+        if let Some(container) = container.as_ref() {
+            let kind = if archive { FileKind::File } else { FileKind::Dir };
+            let extension = archive.then(|| {
+                container
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default()
+            });
+            hero.push(HeroItem::Icon {
+                path: container.clone(),
+                kind,
+                extension,
+            });
+        }
+        for e in entries.iter().filter(|e| !e.is_dir).take(2) {
+            hero.push(HeroItem::Icon {
+                path: if archive { PathBuf::new() } else { e.path.clone() },
+                kind: FileKind::File,
+                extension: e.extension.clone(),
+            });
+        }
+        // Only real thumbnails are shown; with none there is no hero at all.
+        let hero = if ring_cards.is_empty() {
+            None
+        } else {
+            let key = container.clone().unwrap_or_default();
+            let ring = crate::ui::dir_ring::ensure(&mut self.dir_ring, cx);
+            ring.update(cx, |ring, _| ring.set_items(&key, ring_cards));
+            Some(ring.into_any_element())
+        };
+        let stats = self.stat_row(
+            [
+                (AtlasIcon::Folder, dirs, "inspector_kind_folders"),
+                (AtlasIcon::File, files, "inspector_kind_files"),
+                (AtlasIcon::Grid, total_count, "inspector_kind_items"),
+            ],
+            Some(total_size),
+            muted,
+            cx,
+        );
         let mut list = v_flex().gap_1().text_xs();
         for e in entries {
             let row_kind = if e.is_dir {
@@ -1924,13 +2322,13 @@ impl App {
                         let view = view.clone();
                         let path = path.clone();
                         move |ev, _window, cx| {
-                            if ev.click_count() < 2 {
+                            if ev.click_count() < 2 || archive {
                                 return;
                             }
                             view.update(cx, |this, cx| {
                                 let tile = this.state.focused_tile;
                                 if is_dir {
-                                    this.navigate(tile, path.clone());
+                                    this.navigate_entry(tile, path.clone());
                                 } else {
                                     this.process_actions(vec![Action::Open(vec![path.clone()])]);
                                 }
@@ -1938,31 +2336,48 @@ impl App {
                             });
                         }
                     })
-                    .on_file_drag_anchor(view.clone(), path.clone())
-                    .when(is_dir, {
-                        let dest_move = path.clone();
-                        let dest_copy = path.clone();
+                    .when(!archive, |row| row.on_file_drag_anchor(view.clone(), path.clone()))
+                    .when(is_dir && !archive, {
+                        let nav_path = path.clone();
+                        let dest = match self.folder_drop_command(tab, &path) {
+                            crate::ui::drag_hover::DragHoverDropCommand::TransferTo(dest) => dest,
+                            _ => path.clone(),
+                        };
+                        let dest_move = dest.clone();
+                        let dest_copy = dest;
                         let mv = view.clone();
                         let cpv = view.clone();
                         move |row| {
-                            use crate::ui::drag_hover::{drag_hover_recorder_with_drop, DragHoverId, DragHoverKind, DragHoverCommand, DragHoverDropCommand};
+                            use crate::ui::drag_hover::{
+                                drag_hover_recorder_with_drop, DragHoverCommand,
+                                DragHoverDropCommand, DragHoverId, DragHoverKind,
+                            };
                             row.on_prepaint_child(drag_hover_recorder_with_drop(
                                 DragHoverId::Inspector(dest_move.clone()),
                                 DragHoverKind::Folder,
-                                DragHoverCommand::NavigatePathIn(tab, dest_move.clone()),
+                                DragHoverCommand::NavigatePathIn(tab, nav_path),
                                 DragHoverDropCommand::TransferTo(dest_move.clone()),
                                 &mv,
-                            )).on_drop::<DraggedFiles>(move |d, _window, cx| {
+                            ))
+                            .on_drop::<DraggedFiles>(move |d, _window, cx| {
                                 let (paths, dest) = (d.paths.clone(), dest_move.clone());
                                 mv.update(cx, |this, cx| {
-                                    this.execute_drag_hover_drop_command(DragHoverDropCommand::TransferTo(dest), paths, true);
+                                    this.execute_drag_hover_drop_command(
+                                        DragHoverDropCommand::TransferTo(dest),
+                                        paths,
+                                        true,
+                                    );
                                     cx.notify();
                                 });
                             })
                             .on_drop::<gpui::ExternalPaths>(move |paths, _window, cx| {
                                 let (paths, dest) = (paths.paths().to_vec(), dest_copy.clone());
                                 cpv.update(cx, |this, cx| {
-                                    this.execute_drag_hover_drop_command(DragHoverDropCommand::TransferTo(dest), paths, false);
+                                    this.execute_drag_hover_drop_command(
+                                        DragHoverDropCommand::TransferTo(dest),
+                                        paths,
+                                        false,
+                                    );
                                     cx.notify();
                                 });
                             })
@@ -1970,7 +2385,7 @@ impl App {
                     }),
             );
         }
-        if *total_count > DIR_PREVIEW_LIMIT {
+        if entries.len() < total_count && entries.len() >= DIR_PREVIEW_LIMIT {
             list = list.child(
                 div().text_color(muted).child(
                     rust_i18n::t!(
@@ -1981,120 +2396,494 @@ impl App {
                 ),
             );
         }
+        let border = cx.theme().border;
         v_flex()
-            .flex_1()
+            .size_full()
             .min_h(px(0.))
-            .gap_2()
+            .gap_3()
             .child(
-                h_flex()
-                    .gap_2()
-                    .text_color(muted)
-                    .child(
-                        rust_i18n::t!("inspector_elements_count", count = total_count).to_string(),
-                    )
-                    .child("·")
-                    .child(format_size(*total_size)),
+                v_flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap_3()
+                    .pt_3()
+                    .children(hero)
+                    .child(stats),
             )
             .child(
                 div()
                     .id("inspector-dir")
                     .flex_1()
                     .min_h(px(0.))
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(border.opacity(0.25))
                     .overflow_y_scroll()
                     .child(list),
             )
             .into_any_element()
     }
 
-    /// Multi-selection: counts + an overlapping thumbnail stack. gpui does not expose
-    /// a cheap per-element rotation path here, so the fan is expressed with offset
-    /// cards rather than rotated meshes.
     fn render_multi(
         &mut self,
         summary: &SelectionSummary,
         muted: Hsla,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let textures = self.focused_multi_textures();
-        let mut col = v_flex().flex_1().min_h(px(0.)).gap_2();
-        col = col.child(
-            div()
-                .text_lg()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(
-                    rust_i18n::t!("inspector_elements_selected", count = summary.count).to_string(),
-                ),
-        );
-        let mut meta = h_flex().gap_2().text_xs().text_color(muted);
-        if summary.file_count > 0 {
-            meta = meta.child(
-                rust_i18n::t!("inspector_files_count", count = summary.file_count).to_string(),
-            );
-        }
-        if summary.dir_count > 0 {
-            meta = meta.child(
-                rust_i18n::t!("inspector_folders_count", count = summary.dir_count).to_string(),
-            );
-        }
-        if summary.known_size_count > 0 {
-            meta = meta.child(format_size(summary.total_size));
-        }
-        col = col.child(meta);
-
-        if summary.image_count > 0 {
-            if textures.is_empty() {
-                col = col.child(
-                    div()
-                        .text_color(muted)
-                        .child(rust_i18n::t!("inspector_loading_thumbnails").to_string()),
-                );
-            } else {
-                // The first four thumbnails arrive with a tilt baked into the bitmap
-                // (gpui can't rotate rasters on screen), so we just overlap them into a
-                // fan. Corners are transparent, so no clipping/border here.
-                let thumbs: Vec<AnyElement> = textures
-                    .into_iter()
-                    .take(4)
-                    .enumerate()
-                    .map(|(idx, (_, tex))| {
-                        div()
-                            .when(idx > 0, |d| d.ml(px(-30.)))
-                            .child(img(tex).max_w(px(104.)).max_h(px(104.)))
-                            .into_any_element()
-                    })
-                    .collect();
-                col = col.child(h_flex().pl_2().items_center().children(thumbs));
-                if summary.count > summary.image_count {
-                    col = col.child(
-                        div().text_xs().text_color(muted).child(
-                            rust_i18n::t!(
-                                "inspector_not_images",
-                                count = summary.count - summary.image_count
-                            )
-                            .to_string(),
-                        ),
-                    );
-                }
-            }
+        let (fg, border) = (cx.theme().foreground, cx.theme().border);
+        // Real thumbnails only, orbiting in the ring; no ring when nothing decoded.
+        // PDFs rasterise to a mostly blank white page: not worth a ring card.
+        let cards: Vec<Arc<RenderImage>> = textures
+            .iter()
+            .filter(|(path, _)| {
+                !path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+            })
+            .take(RING_LIMIT)
+            .map(|(_, texture)| texture.clone())
+            .collect();
+        let hero = if cards.is_empty() {
+            None
         } else {
-            col = col.child(
+            let key = PathBuf::from(format!(
+                "multi:{}:{}",
+                summary.count,
+                textures.first().map(|(p, _)| p.display().to_string()).unwrap_or_default()
+            ));
+            let ring = crate::ui::dir_ring::ensure(&mut self.dir_ring, cx);
+            ring.update(cx, |ring, _| ring.set_items(&key, cards));
+            Some(ring.into_any_element())
+        };
+        let others = summary
+            .count
+            .saturating_sub(summary.dir_count + summary.image_count);
+        let stats = self.stat_row(
+            [
+                (AtlasIcon::Folder, summary.dir_count, "inspector_kind_folders"),
+                (AtlasIcon::Image, summary.image_count, "inspector_kind_images"),
+                (AtlasIcon::File, others, "inspector_kind_files"),
+            ],
+            None,
+            muted,
+            cx,
+        );
+        let rows = summary.items.iter().map(|item| {
+            h_flex()
+                .h(crate::ui::rem_px(26.))
+                .flex_shrink_0()
+                .gap_2()
+                .px_2()
+                .rounded(px(6.))
+                .min_w(px(0.))
+                .child(
+                    self.file_icon_for_entry(&item.path, &item.kind, item.extension.as_deref())
+                        .element(16., muted),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .truncate()
+                        .text_xs()
+                        .text_color(fg)
+                        .child(item.name.clone()),
+                )
+                .when_some(item.size, |row, size| {
+                    row.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(format_size(size)),
+                    )
+                })
+        });
+        let hidden = summary.count.saturating_sub(summary.items.len());
+        v_flex()
+            .size_full()
+            .min_h(px(0.))
+            .gap_3()
+            .child(
                 v_flex()
+                    .flex_shrink_0()
                     .items_center()
-                    .gap_1()
-                    .text_color(muted)
-                    .child(icon(AtlasIcon::Grid, 28.0, muted))
-                    .child(rust_i18n::t!("inspector_mixed_selection").to_string()),
+                    .gap_3()
+                    .pt_3()
+                    .children(hero)
+                    .child(stats),
+            )
+            .child(
+                div()
+                    .id("preview-multi-list")
+                    .flex_1()
+                    .min_h(px(0.))
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(border.opacity(0.25))
+                    .overflow_y_scroll()
+                    .child(v_flex().children(rows).when(hidden > 0, |list| {
+                        list.child(
+                            div().px_2().pt_1().text_xs().text_color(muted).child(
+                                rust_i18n::t!("inspector_more_items", count = hidden).to_string(),
+                            ),
+                        )
+                    })),
+            )
+            .into_any_element()
+    }
+
+    /// Quick Look-style stack: `front` large in the middle, its neighbours
+    /// peeking out behind on either side. `dx` slides the front card while the
+    /// user swipes.
+    #[allow(dead_code)]
+    fn stack_hero(
+        &self,
+        items: &[HeroItem],
+        front: usize,
+        dx: f32,
+        interactive: bool,
+        muted: Hsla,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        // Opaque cards: translucent theme surfaces would let the stack bleed through.
+        let card_bg = layer_color(cx.theme().background, 0.05, 1.0);
+        let border = cx.theme().border;
+        let card = |item: &HeroItem, edge: f32| -> gpui::Div {
+            let content = match item {
+                HeroItem::Texture(texture) => img(texture.clone())
+                    .size_full()
+                    .rounded(px(10.))
+                    .object_fit(gpui::ObjectFit::Cover)
+                    .into_any_element(),
+                HeroItem::Icon {
+                    path,
+                    kind,
+                    extension,
+                } => div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        self.file_icon_for_entry(path, kind, extension.as_deref())
+                            .element(edge * 0.56, muted),
+                    )
+                    .into_any_element(),
+            };
+            div()
+                .size(crate::ui::rem_px(edge))
+                .p(px(4.))
+                .rounded(px(14.))
+                .bg(card_bg)
+                .border_1()
+                .border_color(border.opacity(0.45))
+                .raised_surface()
+                .child(content)
+        };
+        let mut stack = div()
+            .relative()
+            .flex_shrink_0()
+            .w(crate::ui::rem_px(236.))
+            .h(crate::ui::rem_px(150.));
+        let n = items.len();
+        if n == 0 {
+            return stack.into_any_element();
+        }
+        let front = front % n;
+        // Previous card peeks left, next card peeks right.
+        let mut backs: Vec<(usize, f32, &'static str, isize)> = Vec::new();
+        if n > 1 {
+            backs.push(((front + n - 1) % n, 4., "preview-stack-prev", -1));
+        }
+        if n > 2 || (n == 2 && front == 0) {
+            backs.push(((front + 1) % n, 148., "preview-stack-next", 1));
+        }
+        if n == 2 && front == 1 {
+            backs.retain(|b| b.3 < 0);
+        }
+        for (index, left, id, step) in backs {
+            let app = cx.entity();
+            let back = div()
+                .id(id)
+                .accessibility_id(id)
+                .role(gpui::Role::Button)
+                .absolute()
+                .left(crate::ui::rem_px(left))
+                .top(crate::ui::rem_px(4.))
+                .opacity(0.82)
+                .child(card(&items[index], 84.));
+            if !interactive {
+                stack = stack.child(back);
+                continue;
+            }
+            stack = stack.child(
+                back.cursor_pointer()
+                    .hover(|s| s.opacity(1.))
+                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                        app.update(cx, |this, cx| {
+                            let tab = this.state.focused_tile;
+                            let view = this.preview_view.entry(tab).or_default();
+                            if view.stack_dx.abs() >= 4. {
+                                // A swipe that ends over a peeking card is still a swipe.
+                                finish_stack_swipe(this, n, cx);
+                                return;
+                            }
+                            view.stack_index = step_index(view.stack_index, step, n);
+                            view.stack_drag = None;
+                            view.stack_dx = 0.;
+                            cx.notify();
+                        });
+                        cx.stop_propagation();
+                    }),
             );
         }
-
-        // Tags shared by the selection + add-tag action.
-        let paths = self.selected_paths();
-        col = col.child(self.render_multi_tags(&paths, muted, cx));
-        col = col.child(self.render_tag_section(paths, muted, cx));
-        let _ = window; // kept for future use
-        col.into_any_element()
+        let lift = (dx.abs() / 160.).min(1.);
+        stack = stack.child(
+            div()
+                .absolute()
+                .left(crate::ui::rem_px(56.))
+                .top(crate::ui::rem_px(24.))
+                .ml(px(dx))
+                .opacity(1. - lift * 0.35)
+                .child(card(&items[front], 124.)),
+        );
+        stack.into_any_element()
     }
+
+    /// Interactive multi-selection stack: swipe the front photo, scroll, or
+    /// click a peeking card to bring it forward; the caption names the card.
+    #[allow(dead_code)]
+    fn stack_carousel(
+        &self,
+        hero: Vec<(HeroItem, String)>,
+        muted: Hsla,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let n = hero.len();
+        let view = self.preview_view_for_focused();
+        let front = if n == 0 { 0 } else { view.stack_index % n };
+        let caption = hero.get(front).map(|(_, name)| name.clone()).unwrap_or_default();
+        let (items, _): (Vec<HeroItem>, Vec<String>) = hero.into_iter().unzip();
+        let stack = self.stack_hero(&items, front, view.stack_dx, true, muted, cx);
+        let app = cx.entity();
+        let (down, moved, up, out, wheel) =
+            (app.clone(), app.clone(), app.clone(), app.clone(), app);
+        let fg = cx.theme().foreground;
+        v_flex()
+            .items_center()
+            .gap_1p5()
+            .child(
+                div()
+                    .id("preview-stack")
+                    .accessibility_id("preview-stack")
+                    .role(gpui::Role::Group)
+                    .cursor(if view.stack_drag.is_some() {
+                        gpui::CursorStyle::ClosedHand
+                    } else {
+                        gpui::CursorStyle::OpenHand
+                    })
+                    .child(stack)
+                    .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                        down.update(cx, |this, cx| {
+                            let tab = this.state.focused_tile;
+                            let view = this.preview_view.entry(tab).or_default();
+                            view.stack_drag = Some(f32::from(event.position.x));
+                            view.stack_dx = 0.;
+                            cx.notify();
+                        });
+                    })
+                    .on_mouse_move(move |event, _, cx| {
+                        moved.update(cx, |this, cx| {
+                            let tab = this.state.focused_tile;
+                            let view = this.preview_view.entry(tab).or_default();
+                            let Some(start) = view.stack_drag else { return };
+                            if event.pressed_button != Some(MouseButton::Left) {
+                                view.stack_drag = None;
+                                view.stack_dx = 0.;
+                            } else {
+                                view.stack_dx = (f32::from(event.position.x) - start).clamp(-120., 120.);
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                        up.update(cx, |this, cx| finish_stack_swipe(this, n, cx));
+                    })
+                    .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+                        out.update(cx, |this, cx| finish_stack_swipe(this, n, cx));
+                    })
+                    .on_scroll_wheel(move |event, window, cx| {
+                        let delta = event.delta.pixel_delta(window.line_height());
+                        let amount = if f32::from(delta.x).abs() > f32::from(delta.y).abs() {
+                            f32::from(delta.x)
+                        } else {
+                            f32::from(delta.y)
+                        };
+                        wheel.update(cx, |this, cx| {
+                            let tab = this.state.focused_tile;
+                            let view = this.preview_view.entry(tab).or_default();
+                            view.stack_wheel += amount;
+                            if view.stack_wheel.abs() >= 36. {
+                                let step = if view.stack_wheel > 0. { -1 } else { 1 };
+                                view.stack_index = step_index(view.stack_index, step, n);
+                                view.stack_wheel = 0.;
+                                cx.notify();
+                            }
+                        });
+                        cx.stop_propagation();
+                    }),
+            )
+            .when(n > 0, |col| {
+                col.child(
+                    h_flex()
+                        .max_w(crate::ui::rem_px(236.))
+                        .gap_1p5()
+                        .items_center()
+                        .text_xs()
+                        .child(div().min_w(px(0.)).truncate().text_color(fg).child(caption))
+                        .when(n > 1, |row| {
+                            row.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .px_1p5()
+                                    .rounded(px(999.))
+                                    .bg(muted.opacity(0.16))
+                                    .text_color(muted)
+                                    .child(format!("{} / {n}", front + 1)),
+                            )
+                        }),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// Icon + number chips (labels live in tooltips) and an optional size chip.
+    fn stat_row<const N: usize>(
+        &self,
+        counts: [(AtlasIcon, usize, &'static str); N],
+        size: Option<u64>,
+        muted: Hsla,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let (fg, surface) = (cx.theme().foreground, cx.theme().secondary);
+        let chip = |id: SharedString, glyph: AtlasIcon, text: String, tip: String| {
+            h_flex()
+                .id(id)
+                .gap_1()
+                .items_center()
+                .px_2()
+                .py(px(2.))
+                .rounded(px(999.))
+                .bg(layer_color(surface, 0.02, 0.70))
+                .text_xs()
+                .text_color(fg)
+                .child(icon(glyph, 12., muted))
+                .child(text)
+                .tooltip(move |window, cx| {
+                    gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                })
+        };
+        let mut row = h_flex().flex_wrap().justify_center().gap_1();
+        for (glyph, count, key) in counts {
+            if count > 0 {
+                row = row.child(chip(
+                    SharedString::from(format!("preview-stat-{key}")),
+                    glyph,
+                    count.to_string(),
+                    format!("{count} {}", rust_i18n::t!(key)),
+                ));
+            }
+        }
+        if let Some(size) = size {
+            row = row.child(chip(
+                "preview-stat-size".into(),
+                AtlasIcon::HardDrive,
+                format_size(size),
+                rust_i18n::t!("inspector_total_size").to_string(),
+            ));
+        }
+        row.into_any_element()
+    }
+
+    /// Summary for the browsed folder when nothing is selected.
+    fn folder_summary(&self) -> Option<SelectionSummary> {
+        let path = self.state.active_tab_data()?.location.fs_dir()?.to_path_buf();
+        let name = path
+            .file_name()
+            .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        Some(SelectionSummary {
+            count: 1,
+            dir_count: 1,
+            single: Some(SelectedEntry {
+                name,
+                path,
+                kind: FileKind::Dir,
+                size: None,
+                modified: None,
+                extension: None,
+            }),
+            ..SelectionSummary::default()
+        })
+    }
+}
+
+/// Cards the folder ring can orbit.
+/// Kept small on purpose: a crowded ring hides the picture in front.
+const RING_LIMIT: usize = 7;
+
+/// Files of a folder preview that have a real picture to show (images, videos).
+fn dir_media_paths(entries: &[atlas_model::preview_cache::DirPreviewEntry]) -> Vec<&PathBuf> {
+    entries
+        .iter()
+        .filter(|e| {
+            !e.is_dir
+                && e.extension.as_deref().is_some_and(|ext| {
+                    let ext = ext.to_ascii_lowercase();
+                    atlas_model::preview_cache::is_image_ext(&ext)
+                        || atlas_model::preview_cache::is_video_ext(&ext)
+                })
+        })
+        .map(|e| &e.path)
+        .take(RING_LIMIT)
+        .collect()
+}
+
+/// Cards the multi-selection carousel can cycle through.
+const STACK_LIMIT: usize = 48;
+
+fn step_index(index: usize, step: isize, n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    (index as isize + step).rem_euclid(n as isize) as usize
+}
+
+/// Release of a swipe: past the threshold the photo slides to its neighbour.
+fn finish_stack_swipe(app: &mut App, n: usize, cx: &mut Context<App>) {
+    let tab = app.state.focused_tile;
+    let view = app.preview_view.entry(tab).or_default();
+    if view.stack_drag.take().is_none() {
+        return;
+    }
+    if view.stack_dx <= -48. {
+        view.stack_index = step_index(view.stack_index, 1, n);
+    } else if view.stack_dx >= 48. {
+        view.stack_index = step_index(view.stack_index, -1, n);
+    }
+    view.stack_dx = 0.;
+    cx.notify();
+}
+
+enum HeroItem {
+    Texture(Arc<RenderImage>),
+    Icon {
+        path: PathBuf,
+        kind: FileKind,
+        extension: Option<String>,
+    },
 }
 
 pub(crate) fn tool_label(name: &str) -> String {
@@ -2105,6 +2894,123 @@ pub(crate) fn tool_label(name: &str) -> String {
         "gs" => "Ghostscript".into(),
         other => other.to_string(),
     }
+}
+
+fn accessible_button(
+    id: impl Into<SharedString>,
+    label: String,
+    button: gpui_component::button::Button,
+) -> gpui::Stateful<gpui::Div> {
+    let id = id.into();
+    div()
+        .id(id.clone())
+        .accessibility_id(id)
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .flex_shrink_0()
+        .child(button)
+}
+
+#[derive(IntoElement)]
+struct PreviewButton {
+    id: &'static str,
+    label: String,
+    button: gpui_component::button::Button,
+}
+
+impl PreviewButton {
+    fn on_click(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    ) -> Self {
+        self.button = self.button.on_click(handler);
+        self
+    }
+}
+
+impl RenderOnce for PreviewButton {
+    fn render(self, _: &mut Window, _: &mut gpui::App) -> impl IntoElement {
+        accessible_button(self.id, self.label, self.button)
+    }
+}
+
+fn preview_button(id: &'static str, glyph: AtlasIcon, label: String, color: Hsla) -> PreviewButton {
+    PreviewButton {
+        id,
+        label: label.clone(),
+        button: gpui_component::button::Button::new(id)
+            .small()
+            .compact()
+            .ghost()
+            .tooltip(label)
+            .child(icon(glyph, 14., color)),
+    }
+}
+
+/// Content-sized column widths (approximate glyph width), clamped so one long
+/// cell cannot push every other column out of view.
+fn table_column_widths(headers: &[String], rows: &[Vec<String>], cols: usize) -> Vec<f32> {
+    (0..cols)
+        .map(|col| {
+            let longest = std::iter::once(headers.get(col))
+                .chain(rows.iter().take(60).map(|row| row.get(col)))
+                .flatten()
+                .map(|text| text.chars().count())
+                .max()
+                .unwrap_or(0);
+            (longest as f32 * 6.6 + 18.).clamp(48., 240.)
+        })
+        .collect()
+}
+
+fn preview_icon_button(
+    id: &'static str,
+    glyph: gpui_component::IconName,
+    label: String,
+    color: Hsla,
+) -> PreviewButton {
+    PreviewButton {
+        id,
+        label: label.clone(),
+        button: gpui_component::button::Button::new(id)
+            .small()
+            .compact()
+            .ghost()
+            .tooltip(label)
+            .child(
+                gpui_component::Icon::new(glyph)
+                    .with_size(gpui_component::Size::Small)
+                    .text_color(color),
+            ),
+    }
+}
+
+fn preview_summary(summary: &SelectionSummary, result: Option<&PreviewResult>) -> String {
+    let mut parts = Vec::new();
+    if let Some(PreviewResult::Image {
+        original_width,
+        original_height,
+        ..
+    }) = result
+    {
+        parts.push(format!("{original_width} × {original_height} px"));
+    }
+    if summary.count > 1 {
+        if summary.file_count > 0 {
+            parts.push(
+                rust_i18n::t!("inspector_files_count", count = summary.file_count).to_string(),
+            );
+        }
+        if summary.dir_count > 0 {
+            parts.push(
+                rust_i18n::t!("inspector_folders_count", count = summary.dir_count).to_string(),
+            );
+        }
+    }
+    if summary.known_size_count > 0 {
+        parts.push(format_size(summary.total_size));
+    }
+    parts.join(" · ")
 }
 
 enum PreviewKind {
@@ -2201,6 +3107,19 @@ pub struct SelectionSummary {
     pub total_size: u64,
     pub known_size_count: usize,
     pub single: Option<SelectedEntry>,
+    /// First `MULTI_LIST_LIMIT` selected items, for the multi-selection list.
+    pub items: Vec<SelectedItem>,
+}
+
+const MULTI_LIST_LIMIT: usize = 200;
+
+#[derive(Clone, Debug)]
+pub struct SelectedItem {
+    pub name: String,
+    pub path: PathBuf,
+    pub kind: FileKind,
+    pub extension: Option<String>,
+    pub size: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -2226,6 +3145,15 @@ fn selection_summary(tab_state: &TabState, view_mode: &ViewMode) -> SelectionSum
         if let Some(size) = entry.size() {
             s.total_size += size;
             s.known_size_count += 1;
+        }
+        if s.items.len() < MULTI_LIST_LIMIT {
+            s.items.push(SelectedItem {
+                name: entry.name.to_string(),
+                path: entry.path(),
+                kind: entry.kind().clone(),
+                extension: entry.extension().as_ref().map(ToString::to_string),
+                size: entry.size(),
+            });
         }
         if entry
             .extension()

@@ -372,35 +372,22 @@ impl App {
         self.details_row_rings
             .retain(|id, _| tiles.get(*id).is_some());
 
-        let root = self.state.pane_tree.root;
-        let content = root
-            .and_then(|root| {
-                self.render_flat_tree(root, window, cx)
-                    .or_else(|| self.render_tree(root, window, cx))
-            })
-            .unwrap_or_else(|| div().size_full().into_any_element());
-        let content = self.with_root_drop_zones(content, window, cx);
         let view = cx.entity();
-        div()
-            .relative()
-            .size_full()
-            .min_w(px(0.))
-            .min_h(px(0.))
-            .overflow_hidden()
-            .child(content)
-            .on_prepaint_child(move |bounds, window, cx| {
-                view.update(cx, |this, _cx| {
-                    let old = this
-                        .dock_root_bounds
-                        .map(|b| (f32::from(b.size.width), f32::from(b.size.height)));
-                    let new = (f32::from(bounds.size.width), f32::from(bounds.size.height));
-                    if old != Some(new) {
-                        this.dock_root_bounds = Some(bounds);
-                        window.request_animation_frame();
-                    }
-                });
+        crate::ui::current_bounds::current_bounds(move |bounds, window, cx| {
+            view.update(cx, |this, cx| {
+                // Use this layout pass's constraints. Measuring after building
+                // the absolute slots made them trail window resize by a frame.
+                this.dock_root_bounds = Some(bounds);
+                let content = this.state.pane_tree.root
+                    .and_then(|root| {
+                        this.render_flat_tree(root, window, cx)
+                            .or_else(|| this.render_tree(root, window, cx))
+                    })
+                    .unwrap_or_else(|| div().size_full().into_any_element());
+                this.with_root_drop_zones(content, window, cx)
             })
-            .into_any_element()
+        })
+        .into_any_element()
     }
 
     fn with_root_drop_zones(&self, content: AnyElement, window: &Window, cx: &Context<Self>) -> AnyElement {
@@ -1381,6 +1368,9 @@ impl App {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         crate::perf::count("render.tabs_like");
+        // root.rs owns modifier changes through the element's paint listener.
+        // A cached pane may render during prepaint; registering a second window
+        // listener here violates GPUI's phase rules.
         let _perf = crate::perf::span_detail("dock.tabs", || {
             format!(
                 "children={} active={}",
@@ -1491,23 +1481,20 @@ impl App {
                             },
                             move |drag, _pos, _window, cx| {
                                 activate_drag_app.update(cx, |this, cx| {
-                                    if this.state.dragging_pane != Some(drag.pane_id) {
-                                        this.animate_pane_drag(drag.pane_id, true);
-                                        this.state.dragging_pane = Some(drag.pane_id);
-                                        this.state.drag_pending = false;
-                                        cx.notify();
-                                    }
+                                    this.animate_pane_drag(drag.pane_id, true);
+                                    this.state.dragging_pane = Some(drag.pane_id);
+                                    this.state.drag_pending = false;
+                                    cx.notify();
                                 });
                                 tab_drag_entity(drag.pane_id, drag.content.clone(), drag.size, cx)
                             },
                         ))
                         .on_mouse_down(MouseButton::Left, move |_, _window, cx| {
-                            activate_drag_app_down.update(cx, |this, cx| {
+                            activate_drag_app_down.update(cx, |this, _cx| {
                                 if this.state.dragging_pane != Some(active_id) {
                                     this.animate_pane_drag(active_id, true);
                                     this.state.dragging_pane = Some(active_id);
                                     this.state.drag_pending = true;
-                                    cx.notify();
                                 }
                             });
                         })

@@ -33,6 +33,10 @@ else {
 }
 
 $command = @("build", "--locked", "--release")
+if (-not $Lean) {
+    # Keep the provider protocol in sync with the host from this same checkout.
+    $command += @("-p", "atlas", "-p", "atlas-cloud-extension")
+}
 if ($Lean) {
     $command += "--no-default-features"
 }
@@ -44,6 +48,11 @@ Write-Host "Compiler: $compiler"
 Write-Host "Linker:   rust-lld.exe (from .cargo/config.toml)"
 Write-Host "Target:   $(if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'target' })"
 Write-Host "Command:  cargo $($cargoPrefix + $command -join ' ')"
+
+# Stop any orphan processes or running atlas before release build
+foreach ($proc in Get-Process -Name atlas, atlas-search-service -ErrorAction SilentlyContinue) {
+    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+}
 
 & cargo @cargoPrefix @command
 if ($LASTEXITCODE -ne 0) {

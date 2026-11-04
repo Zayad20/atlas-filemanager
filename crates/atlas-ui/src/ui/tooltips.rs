@@ -1,9 +1,9 @@
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use atlas_core::util::display::{format_date, format_size};
 use gpui::prelude::*;
-use gpui::{div, px, AnyView, App, Keystroke, SharedString, Window};
+use gpui::{div, px, AnyView, App, Context, Keystroke, SharedString, Task, Window};
 use gpui_component::kbd::Kbd;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, v_flex, ActiveTheme as _};
@@ -49,6 +49,38 @@ pub(crate) fn shortcut_tooltip(
     .build(window, cx)
 }
 
+const ENTRY_TOOLTIP_LIFETIME: Duration = Duration::from_secs(5);
+
+/// Keep the native hover session alive after expiry so a stationary pointer
+/// cannot repeatedly show the card. Leaving and returning creates a new session.
+struct EntryHoverTooltip {
+    content: Option<AnyView>,
+    _expiry: Task<()>,
+}
+
+impl EntryHoverTooltip {
+    fn new(content: AnyView, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let expiry = cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(ENTRY_TOOLTIP_LIFETIME).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.content = None;
+                cx.notify();
+                window.refresh();
+            });
+        });
+        Self {
+            content: Some(content),
+            _expiry: expiry,
+        }
+    }
+}
+
+impl Render for EntryHoverTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().children(self.content.clone())
+    }
+}
+
 /// Hover card for a file/folder row.
 ///
 /// Tooltips render on the UI thread, alongside pointer and scroll event handling.
@@ -66,7 +98,7 @@ pub(crate) fn entry_hover_tooltip(
 ) -> AnyView {
     let name = name.into();
 
-    Tooltip::element(move |_window, cx| {
+    let content = Tooltip::element(move |_window, cx| {
         let muted = cx.theme().muted_foreground;
         let col = v_flex().gap_1().min_w(px(200.)).child(
             div()
@@ -94,5 +126,53 @@ pub(crate) fn entry_hover_tooltip(
 
         col.child(rows)
     })
-    .build(window, cx)
+    .build(window, cx);
+    cx.new(|cx| EntryHoverTooltip::new(content, window, cx))
+        .into()
+}
+
+#[cfg(all(test, feature = "ui-lab"))]
+mod tests {
+    use super::*;
+
+    struct Content;
+
+    impl Render for Content {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().child("License.txt")
+        }
+    }
+
+    #[gpui::test]
+    fn file_tooltip_expires_without_pointer_movement(cx: &mut gpui::TestAppContext) {
+        let window = cx.add_window(|window, cx| {
+            let content = cx.new(|_| Content).into();
+            EntryHoverTooltip::new(content, window, cx)
+        });
+        cx.run_until_parked();
+        cx.dispatcher
+            .advance_clock(ENTRY_TOOLTIP_LIFETIME - Duration::from_millis(1));
+        cx.run_until_parked();
+        window
+            .update(cx, |tooltip, _, _| assert!(tooltip.content.is_some()))
+            .unwrap();
+
+        cx.dispatcher.advance_clock(Duration::from_millis(1));
+        cx.run_until_parked();
+        window
+            .update(cx, |tooltip, _, _| assert!(tooltip.content.is_none()))
+            .unwrap();
+
+        // Ordinary redraws and more idle time must not restart the hover card.
+        cx.dispatcher.advance_clock(ENTRY_TOOLTIP_LIFETIME);
+        cx.run_until_parked();
+        window
+            .update(cx, |tooltip, window, cx| {
+                assert!(tooltip.content.is_none());
+                window.refresh();
+                let _ = tooltip.render(window, cx);
+                assert!(tooltip.content.is_none());
+            })
+            .unwrap();
+    }
 }

@@ -3,8 +3,14 @@
 mod books;
 mod catalog;
 mod contacts;
+#[cfg(test)]
+mod edition_tests;
 mod flac;
 mod native;
+mod office;
+#[cfg(all(test, target_os = "windows"))]
+mod page_tests;
+mod pages;
 mod pcm;
 mod process;
 mod subtitles;
@@ -13,10 +19,11 @@ mod vector;
 #[cfg(all(test, target_os = "windows"))]
 mod video_tests;
 
-pub use catalog::{options, Backend, ConversionOption, Format, FORMATS};
+pub use catalog::{native_options, options, route, Backend, ConversionOption, Format, FORMATS};
 pub use tools::{Tool, Tools};
 
 use anyhow::{bail, Context, Result};
+use atlas_model::edition::{self, Feature};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -58,12 +65,39 @@ pub struct Plan {
 }
 
 impl Plan {
+    pub fn build_native(
+        paths: &[PathBuf],
+        extension: &str,
+        settings: Settings,
+        tools: Tools,
+    ) -> Result<Self> {
+        edition::current().check(Feature::BatchConversion, paths.len())?;
+        let tools = tools.native_and_opus();
+        let target = FORMATS
+            .iter()
+            .find(|format| format.extension == extension)
+            .context("Unknown output format")?;
+        for source in paths {
+            if catalog::extension(source) != extension
+                && catalog::route(source, target, &tools).is_some_and(|backend| {
+                    backend
+                        .required_tools()
+                        .iter()
+                        .any(|tool| *tool != Tool::Opus)
+                })
+            {
+                bail!("This route is not implemented by Atlas or Windows; only the Opus encoder is enabled");
+            }
+        }
+        Self::build(paths, extension, settings, tools)
+    }
     pub fn build(
         paths: &[PathBuf],
         extension: &str,
         settings: Settings,
         tools: Tools,
     ) -> Result<Self> {
+        edition::current().check(Feature::BatchConversion, paths.len())?;
         let target = FORMATS
             .iter()
             .find(|f| f.extension == extension)
@@ -156,6 +190,31 @@ pub fn execute(
     cancel: &Arc<AtomicBool>,
     progress: impl Fn(usize, usize, &Path) + Sync,
 ) -> Report {
+    // Plans are public and can be constructed without the builders. Enforce the
+    // edition before starting any worker or creating any output file.
+    let edition = edition::current();
+    let free = edition == edition::Edition::Free;
+    let planned = plan.commands.len();
+    let used_today = if free { crate::usage::conversions_today() } else { 0 };
+    let allowed = edition
+        .check(Feature::BatchConversion, planned)
+        .and_then(|()| edition.check(Feature::ConversionsPerDay, used_today + planned));
+    if let Err(limit) = allowed {
+        return Report {
+            outcomes: plan
+                .commands
+                .iter()
+                .enumerate()
+                .map(|(index, command)| {
+                    progress(index + 1, plan.commands.len(), &command.source);
+                    Outcome::Failed {
+                        source: command.source.clone(),
+                        error: limit.to_string(),
+                    }
+                })
+                .collect(),
+        };
+    }
     let done = AtomicUsize::new(0);
     let total = plan.commands.len();
     let run = |command: &Command| {
@@ -185,7 +244,7 @@ pub fn execute(
         );
         outcome
     };
-    let outcomes = match rayon::ThreadPoolBuilder::new()
+    let outcomes: Vec<Outcome> = match rayon::ThreadPoolBuilder::new()
         .num_threads(2)
         .thread_name(|n| format!("atlas-convert-{n}"))
         .build()
@@ -193,6 +252,13 @@ pub fn execute(
         Ok(pool) => pool.install(|| plan.commands.par_iter().map(run).collect()),
         Err(_) => plan.commands.iter().map(run).collect(),
     };
+    if free {
+        let created = outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, Outcome::Created { .. }))
+            .count();
+        crate::usage::record_conversions(created);
+    }
     Report { outcomes }
 }
 
@@ -203,6 +269,9 @@ fn execute_one(command: &Command, plan: &Plan, cancel: &AtomicBool) -> Result<Pa
         .as_deref()
         .or_else(|| command.source.parent())
         .context("Missing output directory")?;
+    if command.backend == Backend::PdfPages {
+        return pages::execute(command, plan, parent, cancel);
+    }
     // Keep a path guard rather than an open file handle: system codecs can
     // require exclusive access to their destination. The guard still removes
     // every failed/cancelled temporary and publishes with noclobber atomically.
@@ -217,6 +286,7 @@ fn execute_one(command: &Command, plan: &Plan, cancel: &AtomicBool) -> Result<Pa
         Backend::Sheet => native::sheet(command, &output)?,
         Backend::Markdown => native::markdown(command, &output)?,
         Backend::Text => native::text(command, &output)?,
+        Backend::OfficePackage => office::normalize(command, &output, cancel)?,
         Backend::Archive => native::archive(command, &output, cancel)?,
         Backend::Subtitles => subtitles::convert(command, &output)?,
         Backend::Pcm => pcm::convert(command, &output, cancel)?,
@@ -224,6 +294,20 @@ fn execute_one(command: &Command, plan: &Plan, cancel: &AtomicBool) -> Result<Pa
         Backend::Vector => vector::convert(command, &plan.settings, &output)?,
         Backend::Contacts => contacts::convert(command, &output)?,
         Backend::Book => books::convert(command, &output)?,
+        Backend::SystemPdfText => {
+            #[cfg(windows)]
+            {
+                let stage = tempfile::Builder::new()
+                    .prefix(".atlas-ocr-")
+                    .tempdir_in(parent)?;
+                let text =
+                    atlas_win_space::pdf::recognize_pages(&command.source, stage.path(), cancel)
+                        .map_err(anyhow::Error::msg)?;
+                native::extracted_document(&text, command.target.extension, &output)?;
+            }
+            #[cfg(not(windows))]
+            bail!("Windows OCR is unavailable on this platform");
+        }
         Backend::SystemVideo => {
             #[cfg(target_os = "windows")]
             atlas_win_space::media::convert_video(
@@ -301,6 +385,7 @@ fn execute_one(command: &Command, plan: &Plan, cancel: &AtomicBool) -> Result<Pa
             bail!("Windows audio conversion is unavailable on this platform");
         }
         Backend::External(tool) => process::convert(tool, command, plan, &output, cancel)?,
+        Backend::PdfPages => unreachable!("Page export uses a directory"),
     }
     if cancel.load(Ordering::Relaxed) {
         bail!("Cancelled");

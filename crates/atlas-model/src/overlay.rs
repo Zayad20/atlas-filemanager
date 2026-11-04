@@ -94,12 +94,26 @@ impl Toast {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct GuideCoach {
+    pub topic: usize,
+    /// Index of the step waiting for the user; `== steps` once finished.
+    pub step: usize,
+    /// Fingerprint of the state the current step watches (`u64::MAX` = capture on next frame).
+    pub base: u64,
+}
+
 #[derive(Default)]
 pub struct OverlayState {
     pub show_goto_bar: bool,
     pub show_palette: bool,
     pub show_settings: bool,
     pub show_getting_started: bool,
+    /// Feature guide overlay (task-oriented help) and its selected topic.
+    pub show_guide: bool,
+    pub guide_topic: usize,
+    /// Interactive coach: the guide topic being practised and its current step.
+    pub guide_coach: Option<GuideCoach>,
     pub getting_started_step: usize,
     pub getting_started_loading_since: Option<std::time::Instant>,
     pub getting_started_welcome_since: Option<std::time::Instant>,

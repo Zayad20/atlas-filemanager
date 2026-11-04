@@ -51,7 +51,7 @@ pub fn watch_path_recursive(path: &Path, tx: flume::Sender<BgResult>) -> anyhow:
 }
 
 fn watch_path_with_mode(path: &Path, tx: flume::Sender<BgResult>, recursive: bool) -> anyhow::Result<WatcherHandle> {
-    anyhow::ensure!(!super::scan_policy::is_scan_excluded(path), "Background watching is disabled for this system directory");
+    anyhow::ensure!(!super::scan_policy::is_scan_excluded(path) || crate::vault::live::mount_root(path).is_some(), "Background watching is disabled for this system directory");
     anyhow::ensure!(!super::preview::is_cloud_placeholder(path), "Background watching is disabled for an offline cloud directory");
     let directory = path.to_path_buf();
     let watched_path = directory.clone();
@@ -136,7 +136,7 @@ fn watch_path_with_mode(path: &Path, tx: flume::Sender<BgResult>, recursive: boo
                     for event in coalesce_rename_chains(events) {
                         let path = match &event { Change::Upsert(path) | Change::Remove(path) => Some(path),
                             Change::Rename(_, to) => Some(to), Change::Rescan => None };
-                        if path.is_some_and(|path| super::scan_policy::is_scan_excluded(path)) { continue; }
+                        if path.is_some_and(|path| super::scan_policy::is_scan_excluded(path) && crate::vault::live::mount_root(path).is_none()) { continue; }
                         match event {
                             Change::Remove(path) => changes.push(FsChange::Remove(path)),
                             Change::Upsert(path) => {

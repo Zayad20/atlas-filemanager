@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Request {
@@ -25,6 +25,8 @@ impl Request {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Operation {
+    PrepareShutdown,
+    CancelRequest { request_id: u64 },
     Initialize {
         data_dir: String,
     },
@@ -67,17 +69,23 @@ pub enum Operation {
         entries: Vec<EntryRef>,
         destination: String,
     },
+    CopyObject { remote_id: String, from: String, to: String },
+    CopyBetween { transfer_id: String, source_id: String, source: String, destination_id: String, destination: String },
     Download {
         transfer_id: String,
         remote_id: String,
         source: String,
         destination: String,
+        #[serde(default)]
+        byte_limit: Option<u64>,
     },
     Upload {
         transfer_id: String,
         remote_id: String,
         source: String,
         destination: String,
+        #[serde(default)]
+        byte_limit: Option<u64>,
     },
     Mount {
         remote_id: String,
@@ -122,6 +130,8 @@ pub enum ResultPayload {
     },
     Error {
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
     },
 }
 
@@ -132,6 +142,8 @@ pub struct ProviderEntry {
     pub is_dir: bool,
     pub size: Option<u64>,
     pub modified_unix_ms: Option<i64>,
+    #[serde(default)]
+    pub mime: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -175,6 +187,6 @@ mod tests {
         );
         let json = serde_json::to_string(&request).unwrap();
         assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), request);
-        assert!(json.contains("\"version\":1"));
+        assert!(json.contains("\"version\":2"));
     }
 }

@@ -1,0 +1,1 @@
+Fast, modern file manager with tabs, dual panes, instant search, disk cleanup, and privacy focus.

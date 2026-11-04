@@ -39,6 +39,15 @@ function Invoke-PerfCapture {
         $null = $stderrCopy.GetAwaiter().GetResult()
         return $process.ExitCode
     } finally {
+        if ($process -and -not $process.HasExited) {
+            Write-Host "Interrupt signal received; terminating captured process tree (PID $($process.Id))..." -ForegroundColor Yellow
+            try {
+                Start-Process -FilePath "taskkill.exe" -ArgumentList "/F", "/T", "/PID", "$($process.Id)" -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue
+            } catch {
+                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            }
+            $null = $process.WaitForExit(3000)
+        }
         if ($stdout) { $stdout.Dispose() }
         if ($stderr) { $stderr.Dispose() }
         $process.Dispose()

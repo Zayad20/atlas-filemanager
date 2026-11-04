@@ -50,6 +50,7 @@ impl App {
     #[inline]
     pub(crate) fn process_actions(&mut self, actions: impl IntoIterator<Item = Action>) {
         for action in actions {
+            self.observe_guide(&action);
             match action {
                 Action::Navigate { tab, path } => self.navigate(tab, path),
                 Action::NavigateLocation { tab, location } => {
@@ -152,9 +153,20 @@ impl App {
                     }
                 }
                 Action::ToggleInspector => {
-                    if let Some(tab) = self.state.active_tab_data_mut() {
-                        tab.preview_enabled = !tab.preview_enabled;
+                    // One window-level panel that follows the focused pane; the
+                    // legacy per-tab flag made it vanish when focus moved.
+                    let show = !self.preview_visible_for_focused();
+                    self.state.settings.show_inspector = show;
+                    self.state.for_each_tab_data_mut(|tab| tab.preview_enabled = false);
+                    if !show {
+                        self.collapse_preview_expanded();
+                        #[cfg(feature = "provider-host")]
+                        for tile in self.state.all_pane_tile_ids() {
+                            let _ = self.cloud_tx.send(atlas_core::cloud::CloudCmd::CancelPreview { tab: tile });
+                            self.state.clear_preview(tile);
+                        }
                     }
+                    atlas_core::util::config::save_settings(&self.state.settings);
                 }
                 Action::ToggleVimMode => {
                     self.state.settings.vim_mode = !self.state.settings.vim_mode;
@@ -179,11 +191,69 @@ impl App {
                     self.settings_section = 5;
                     self.state.overlay.show_settings = true;
                 }
+                Action::ActivateLicense => {
+                    let key = arboard::Clipboard::new()
+                        .and_then(|mut clipboard| clipboard.get_text())
+                        .map(|text| text.trim().to_owned())
+                        .unwrap_or_default();
+                    // Keys are single short tokens; anything else is not a key.
+                    if key.is_empty() || key.len() > 100 || key.contains(char::is_whitespace) {
+                        self.toast_info(rust_i18n::t!("license_clipboard_empty").into_owned());
+                        continue;
+                    }
+                    self.toast_info(rust_i18n::t!("license_activating").into_owned());
+                    let tx = self.tx.clone();
+                    self.rt.spawn(async move {
+                        let result = atlas_core::license::activate(&key)
+                            .await
+                            .map(|()| rust_i18n::t!("license_activated").into_owned())
+                            .map_err(|error| super::edition::license_error_text(&error));
+                        let _ = tx.send(atlas_model::app_state::BgResult::LicenseChanged(result));
+                    });
+                }
+                Action::DeactivateLicense => {
+                    let tx = self.tx.clone();
+                    self.rt.spawn(async move {
+                        let result = atlas_core::license::deactivate()
+                            .await
+                            .map(|()| rust_i18n::t!("license_deactivated").into_owned())
+                            .map_err(|error| super::edition::license_error_text(&error));
+                        let _ = tx.send(atlas_model::app_state::BgResult::LicenseChanged(result));
+                    });
+                }
+                Action::GetPremium => {
+                    let _ = open::that("https://atlasnative.com/#pricing");
+                }
                 Action::OpenGettingStarted => {
                     self.getting_started_profile_input = None;
                     self.state.overlay.show_getting_started = true;
                     self.state.overlay.getting_started_step = 0;
                     self.state.overlay.getting_started_loading_since = None;
+                }
+                Action::OpenGuide(topic) => {
+                    self.state.overlay.guide_topic = topic;
+                    self.state.overlay.show_guide = true;
+                }
+                Action::CloseGuide => {
+                    self.state.overlay.show_guide = false;
+                }
+                Action::StartGuideCoach(topic) => {
+                    self.state.overlay.show_guide = false;
+                    self.state.overlay.guide_coach =
+                        Some(atlas_model::overlay::GuideCoach { topic, step: 0, base: u64::MAX });
+                }
+                Action::StopGuideCoach => {
+                    self.state.overlay.guide_coach = None;
+                }
+                Action::DownloadIconTheme(cmd_id) => {
+                    self.toast_info(rust_i18n::t!("icons_download_started").to_string());
+                    self.handle_ext_action(crate::app::ext::ExtAction::Run {
+                        ext_id: "icon-manager".into(),
+                        cmd_id,
+                    });
+                }
+                Action::SetGuideTopic(topic) => {
+                    self.state.overlay.guide_topic = topic;
                 }
                 Action::StartGettingStarted => {
                     self.state.overlay.getting_started_loading_since = Some(Instant::now());
@@ -232,6 +302,7 @@ impl App {
                         || search_active
                         || self.breadcrumb_menu.is_some()
                         || self.state.overlay.show_settings
+                        || self.state.overlay.show_guide
                         || self.state.ext.show_manager;
                     self.breadcrumb_menu = None;
                     self.breadcrumb_menu_input = None;
@@ -240,6 +311,7 @@ impl App {
                         self.state.overlay.show_settings = false;
                         self.settings_input = None;
                     }
+                    self.state.overlay.show_guide = false;
                     // Goto dismisses with a fade-out: keep its view + input mounted and
                     // start the exit animation; `tick_palette_close` drops them when it
                     // finishes. If it was already closing, leave the in-flight fade.
@@ -323,7 +395,8 @@ impl App {
                         if self.goto_index_root.as_ref() != Some(&(root.clone(), false)) {
                             self.nucleo.reset();
                             let injector = self.nucleo.injector();
-                            atlas_core::fs::index::build_index(root.clone(), injector);
+                            let extended = self.goto_extended_index();
+                            atlas_core::fs::index::build_goto_index(root.clone(), injector, extended);
                             self.goto_index_root = Some((root, false));
                         }
                     }
@@ -580,39 +653,12 @@ impl App {
                             if kind == FileKind::Dir {
                                 self.navigate_into_archive(tile, archive, path);
                             } else {
-                                // Open virtual file by extracting to a temp dir first.
-                                let dest_dir = std::env::temp_dir().join("atlas-open");
-                                let dest = dest_dir.join(path.file_name().map_or_else(
-                                    || rust_i18n::t!("extract_fallback_name").to_string(),
-                                    |n| n.to_string_lossy().into_owned(),
-                                ));
-                                let rt = self.rt.clone();
-                                rt.spawn(async move {
-                                    let _ = tokio::task::spawn_blocking(move || {
-                                        #[allow(clippy::disallowed_methods)]
-                                        // reason: inside spawn_blocking
-                                        let _ = std::fs::create_dir_all(&dest_dir);
-                                        if let Some(p) = atlas_core::fs::archive::open(&archive) {
-                                            let _ = p.extract_to(&path, &dest);
-                                        }
-                                        let _ = open::that(&dest);
-                                    })
-                                    .await;
-                                });
+                                self.activate_file_path(tile, path, Some(archive));
                             }
                         } else if kind == FileKind::Dir {
-                            self.navigate(tile, path);
+                            self.navigate_entry(tile, path);
                         } else {
-                            let is_archive = atlas_core::fs::archive::is_archive_path(&path);
-                            if is_archive {
-                                self.navigate_into_archive(tile, path, std::path::PathBuf::new());
-                            } else {
-                                #[cfg(feature = "provider-host")]
-                                if self.open_remote_paths_for(tile, &[path.clone()]) {
-                                    continue;
-                                }
-                                self.spawn_open_files(vec![path]);
-                            }
+                            self.activate_file_path(tile, path, None);
                         }
                     }
                 }
@@ -641,7 +687,7 @@ impl App {
                     if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tile) {
                         pane.group_by = mode;
                         pane.collapsed_groups.clear();
-                        if mode != atlas_model::tab::GroupBy::None && !matches!(pane.view_mode, ViewMode::Details | ViewMode::List) {
+                        if mode != atlas_model::tab::GroupBy::None && !matches!(pane.view_mode, ViewMode::Details | ViewMode::List | ViewMode::Grid) {
                             pane.view_mode = ViewMode::Details;
                         }
                     }
@@ -666,6 +712,29 @@ impl App {
                         }
                     }
                     self.dirty_panes.insert(tab);
+                }
+                Action::SetAllGroupsCollapsed(collapse) => {
+                    let tile = self.state.focused_tile;
+                    let ids: std::collections::BTreeSet<String> = if collapse {
+                        self.state.tab_states.get_mut(&tile).map_or_else(Default::default, |ts| {
+                            ts.grouped_rows_shared().iter().filter_map(|row| match row {
+                                atlas_model::tab::GroupRow::Header { id, .. } => Some(id.clone()),
+                                _ => None,
+                            }).collect()
+                        })
+                    } else {
+                        Default::default()
+                    };
+                    let mode = if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(tile) {
+                        pane.collapsed_groups = ids.clone();
+                        pane.group_by
+                    } else { atlas_model::tab::GroupBy::None };
+                    if let Some(ts) = self.state.tab_states.get_mut(&tile) {
+                        ts.set_grouping(mode, ids);
+                        let visible = ts.visible_indices_shared();
+                        ts.selection.retain_visible(&visible);
+                    }
+                    self.dirty_panes.insert(tile);
                 }
                 Action::SetSort { col, dir } => {
                     let mut folder_pref_write = None;
@@ -694,6 +763,13 @@ impl App {
                     self.save_folder_view_pref(folder_pref_write);
                 }
                 Action::Open(paths) => {
+                    if paths.iter().any(|path| atlas_core::vault::live::is_private(path) && !self.owns_native_vault_path(path)) {
+                        self.toast_error(rust_i18n::t!("vault_access_denied").to_string()); continue;
+                    }
+                    if paths.iter().any(|p| atlas_core::vault::is_private_path(p)) {
+                        for path in &paths { self.try_open_vault(path); }
+                        continue;
+                    }
                     #[cfg(feature = "provider-host")]
                     if self.open_remote_paths(&paths) {
                         continue;
@@ -1160,7 +1236,11 @@ impl App {
                                 self.paste_remote_within(src_id, dst_id, dst_path);
                                 continue;
                             }
-                            // Cross-remote or both local: fall through.
+                            (Some((destination_id, destination_path)), Some(source_id)) => {
+                                self.paste_remote_within(source_id.clone(), destination_id.clone(), destination_path.clone());
+                                continue;
+                            }
+                            // Both local.
                             _ => {}
                         }
                     }
@@ -1181,26 +1261,16 @@ impl App {
                 Action::OpenConverter => self.open_converter(),
                 Action::OpenBatchRename => {
                     let tile = self.state.focused_tile;
-                    let paths: Vec<PathBuf> = self
-                        .state
-                        .tab_states
-                        .get(&tile)
-                        .map(|ts| {
-                            ts.selection
-                                .selected
-                                .iter()
-                                .filter_map(|&i| ts.entries.get(i).map(|e| e.path()))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    if !paths.is_empty() {
-                        self.rename_edit = None;
-                        self.state.batch_rename =
-                            Some(atlas_model::batch_rename::BatchRenameState::new(paths));
-                        // Fresh native inputs for this session.
-                        self.batch_pattern_input = None;
-                        self.batch_replacement_input = None;
-                        self.batch_rename_field = crate::app::BatchRenameField::Pattern;
+                    // Same path as F2: the cursor row becomes the live input.
+                    let path = self.state.tab_states.get(&tile).and_then(|ts| {
+                        let idx = ts
+                            .selection
+                            .keyboard_cursor
+                            .or_else(|| ts.selection.selected.iter().copied().min())?;
+                        Some(ts.entries.get(idx)?.path())
+                    });
+                    if let Some(path) = path {
+                        self.pending_rename = Some((tile, path, false));
                     }
                 }
                 Action::SplitHorizontalFocused => {
@@ -1290,12 +1360,12 @@ impl App {
                         .filter(|state| state.miller_visible_indices(column).contains(&idx))
                         .and_then(|ts| ts.miller.columns.get(column))
                         .and_then(|c| c.entries.get(idx))
-                        .map(|e| (e.path(), e.kind().clone()));
-                    if let Some((path, kind)) = info {
-                        if kind == FileKind::Dir {
+                        .map(|e| (e.path(), e.kind().clone(), e.archive_root()));
+                    if let Some((path, kind, archive_root)) = info {
+                        if kind == FileKind::Dir || (archive_root.is_none() && atlas_core::fs::archive::is_archive_path(&path)) {
                             self.miller_select(tile, column, idx, false, false);
                         } else {
-                            self.spawn_open_files(vec![path]);
+                            self.activate_file_path(tile, path, archive_root);
                         }
                     }
                 }
@@ -1403,13 +1473,22 @@ impl App {
                     color,
                     profile,
                 } => {
-                    let _ = self
-                        .tag_db_tx
-                        .send(atlas_core::fs::tag_db::TagDbCmd::CreateTag {
+                    let paths = std::mem::take(&mut self.state.profile_ui.new_tag_paths);
+                    let command = if paths.is_empty() {
+                        atlas_core::fs::tag_db::TagDbCmd::CreateTag {
                             name,
                             color,
                             profile,
-                        });
+                        }
+                    } else {
+                        atlas_core::fs::tag_db::TagDbCmd::CreateAndAssignTag {
+                            name,
+                            color,
+                            profile,
+                            paths,
+                        }
+                    };
+                    let _ = self.tag_db_tx.send(command);
                 }
                 Action::RenameTag { tag, name } => {
                     if let Some(def) = self.state.tag_cache.defs.iter_mut().find(|d| d.id == tag) {
@@ -1426,6 +1505,7 @@ impl App {
                     self.state.profile_ui.new_tag_global = global;
                     self.state.profile_ui.new_tag_name.clear();
                     self.state.profile_ui.new_tag_color = atlas_model::profiles::PRESET_COLORS[0];
+                    self.state.profile_ui.new_tag_paths.clear();
                 }
                 Action::OpenRenameTagOverlay {
                     tag,
@@ -1439,12 +1519,14 @@ impl App {
                     self.state.profile_ui.new_tag_global = global;
                     self.state.profile_ui.new_tag_name = name;
                     self.state.profile_ui.new_tag_color = color;
+                    self.state.profile_ui.new_tag_paths.clear();
                 }
                 Action::CloseCreateTagOverlay => {
                     self.state.profile_ui.creating_tag = false;
                     self.state.profile_ui.adding_tag = false;
                     self.state.profile_ui.editing_tag = None;
                     self.state.profile_ui.new_tag_name.clear();
+                    self.state.profile_ui.new_tag_paths.clear();
                     self.create_tag_input = None;
                 }
                 Action::DeleteTag(tag) => {
@@ -1532,6 +1614,7 @@ impl App {
                 // ── Preview editor ────────────────────────────────────────────
                 Action::SavePreviewFile => {
                     if let Some(editor) = &mut self.preview_editor {
+                        if editor.path.to_string_lossy().starts_with("remote-preview:") { continue; }
                         if editor.dirty {
                             // `cached_text` is kept current by the InputState Change
                             // subscription; no `cx` needed here.

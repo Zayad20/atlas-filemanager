@@ -62,7 +62,7 @@ impl ProviderSidecar {
                     } else if let Ok(event) = serde_json::from_str::<Event>(&line) {
                         let _ = event_tx.send(event);
                     } else {
-                        tracing::warn!("provider emitted invalid JSON: {line}");
+                        tracing::warn!(bytes = line.len(), "provider emitted invalid JSON");
                     }
                 }
                 if let Ok(mut pending) = reader_pending.lock() {
@@ -72,6 +72,7 @@ impl ProviderSidecar {
                             id,
                             result: ResultPayload::Error {
                                 message: "provider sidecar exited".into(),
+                                code: Some("outcome_unknown".into()),
                             },
                         });
                     }
@@ -91,6 +92,16 @@ impl ProviderSidecar {
         &self,
         operation: atlas_model::provider_protocol::Operation,
     ) -> Result<Response> {
+        let (id, rx) = self.begin_request(operation)?;
+        let result = rx.recv_timeout(REQUEST_TIMEOUT)
+            .with_context(|| format!("provider request {id} timed out"));
+        self.pending.lock().ok().map(|mut pending| pending.remove(&id));
+        let response = result?;
+        anyhow::ensure!(response.version == VERSION, "Cloud extension protocol mismatch: update the installed Cloud extension");
+        Ok(response)
+    }
+
+    fn begin_request(&self, operation: atlas_model::provider_protocol::Operation) -> Result<(u64, flume::Receiver<Response>)> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let request = Request::new(id, operation);
         let (tx, rx) = flume::bounded(1);
@@ -113,8 +124,72 @@ impl ProviderSidecar {
             return Err(error);
         }
 
-        rx.recv_timeout(REQUEST_TIMEOUT)
-            .with_context(|| format!("provider request {id} timed out"))
+        Ok((id, rx))
+    }
+
+    /// Transfer lifetime is not bounded by the control RPC timeout. The reader
+    /// fails all waiters on process exit. Cancellation waits for backend ack.
+    pub async fn request_async(&self, operation: atlas_model::provider_protocol::Operation,
+        control: Option<crate::cloud::control::TransferControl>) -> Result<Response> {
+        use atlas_model::provider_protocol::Operation;
+        if control.as_ref().is_some_and(|control| control.is_cancelled()) {
+            return Err(crate::cloud::control::TransferCancelled.into());
+        }
+        let long_running = matches!(operation, Operation::Upload { .. } | Operation::Download { .. }
+            | Operation::Copy { .. } | Operation::CopyObject { .. } | Operation::CopyBetween { .. });
+        let cancellable_read = matches!(operation, Operation::List { .. } | Operation::Stat { .. } | Operation::Quota { .. });
+        let (id, rx) = self.begin_request(operation).map_err(|error| {
+            if long_running { crate::cloud::control::OutcomeUnknown(format!("Provider connection failed while submitting a job: {error}")).into() }
+            else { error }
+        })?;
+        let pending = self.pending.clone();
+        let mut cleanup = PendingRequest { id, pending, cancel_on_drop: cancellable_read.then(|| self.stdin.clone()) };
+        let response = if let Some(control) = control {
+            tokio::select! {
+                biased;
+                response = rx.recv_async() => response?,
+                () = control.cancelled() => {
+                    let (cancel_id, cancel_rx) = self.begin_request(Operation::CancelRequest { request_id: id })
+                        .map_err(|error| crate::cloud::control::OutcomeUnknown(format!("Cannot request backend cancellation: {error}")))?;
+                    let _cleanup = PendingRequest { id: cancel_id, pending: self.pending.clone(), cancel_on_drop: None };
+                    let ack = tokio::time::timeout(Duration::from_secs(60), cancel_rx.recv_async()).await
+                        .map_err(|_| crate::cloud::control::OutcomeUnknown("Cancellation acknowledgement timed out; backend outcome is unknown".into()))?
+                        .map_err(|error| crate::cloud::control::OutcomeUnknown(format!("Cancellation acknowledgement was lost: {error}")))?;
+                    if ack.version != VERSION || !matches!(ack.result, ResultPayload::Ok { .. }) {
+                        return Err(crate::cloud::control::OutcomeUnknown("Cloud cancellation was not acknowledged".into()).into());
+                    }
+                    tokio::time::timeout(Duration::from_secs(10), rx.recv_async()).await
+                        .map_err(|_| crate::cloud::control::OutcomeUnknown("Cancellation was acknowledged but the transfer result was lost".into()))??
+                }
+            }
+        } else if long_running {
+            rx.recv_async().await?
+        } else {
+            tokio::time::timeout(REQUEST_TIMEOUT, rx.recv_async()).await
+                .context("provider control request timed out")??
+        };
+        if long_running && response.version != VERSION {
+            return Err(crate::cloud::control::OutcomeUnknown("Provider response version changed; the transfer outcome is unknown".into()).into());
+        }
+        anyhow::ensure!(response.version == VERSION, "Cloud extension protocol mismatch: update the installed Cloud extension");
+        cleanup.cancel_on_drop = None;
+        Ok(response)
+    }
+}
+
+struct PendingRequest { id: u64, pending: Arc<Mutex<HashMap<u64, flume::Sender<Response>>>>,
+    cancel_on_drop: Option<Arc<Mutex<ChildStdin>>> }
+impl Drop for PendingRequest {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.pending.lock() { pending.remove(&self.id); }
+        if let Some(stdin) = &self.cancel_on_drop {
+            if let Ok(mut stdin) = stdin.lock() {
+                let request = Request::new(0, atlas_model::provider_protocol::Operation::CancelRequest { request_id: self.id });
+                let _ = serde_json::to_writer(&mut *stdin, &request);
+                let _ = stdin.write_all(b"\n");
+                let _ = stdin.flush();
+            }
+        }
     }
 }
 

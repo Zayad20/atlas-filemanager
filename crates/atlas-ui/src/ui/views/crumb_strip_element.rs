@@ -122,7 +122,7 @@ pub(crate) fn path_segments(path: &Path) -> Vec<CrumbSeg> {
         match comp {
             Component::Prefix(p) => {
                 cumulative.push(p.as_os_str());
-                let raw = p.as_os_str().to_string_lossy().into_owned();
+                let raw = atlas_core::util::display::display_name(Path::new(p.as_os_str()));
                 // "C:" looks better than "C:\" for the drive crumb.
                 let label = raw.trim_end_matches(['\\', '/']).to_string();
                 segments.push(CrumbSeg {

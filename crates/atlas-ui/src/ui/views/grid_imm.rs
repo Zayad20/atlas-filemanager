@@ -40,9 +40,29 @@ use crate::ui::selection_checkbox;
 use crate::ui::surface::{
     paint_rounded, paint_svg_icon, shape_text_truncated, text_origin_y, Slot,
 };
-use crate::ui::views::grid::{
-    GRID_BUILTIN_ICON, GRID_ICON_AREA, GRID_LABEL_H, GRID_TEXTURE_ICON_MAX,
-};
+pub(crate) const GRID_GAP: f32 = 16.0;
+pub(crate) const GRID_PAD: f32 = 12.0;
+pub(crate) const GRID_ICON_AREA: f32 = 0.72;
+pub(crate) const GRID_TEXTURE_ICON_MAX: f32 = 0.66;
+pub(crate) const GRID_BUILTIN_ICON: f32 = 0.54;
+pub(crate) const GRID_LABEL_H: f32 = 32.0;
+
+pub(crate) fn grid_label_bounds(
+    cell: Bounds<Pixels>,
+    icon_area_h: f32,
+    zoom: f32,
+) -> Bounds<Pixels> {
+    Bounds {
+        origin: point(
+            cell.origin.x + px(4.0 * zoom),
+            cell.origin.y + px(icon_area_h),
+        ),
+        size: size(
+            px((f32::from(cell.size.width) - 8.0 * zoom).max(0.0)),
+            px(GRID_LABEL_H * zoom),
+        ),
+    }
+}
 use atlas_model::file_entry::FileKind;
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
@@ -53,6 +73,8 @@ use gpui::{
     IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Refineable,
     ShapedLine, SharedString, Style, StyleRefinement, Styled, TextAlign, WeakEntity, Window,
 };
+use crate::ui::group_header::GROUP_BAND_H;
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::{v_flex, ActiveTheme, ElementExt};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -214,10 +236,17 @@ pub struct GridImmElement {
     colors: GridImmColors,
     font: Font,
     font_size: Pixels,
+    bands: atlas_model::grouping::RowBands,
     style: StyleRefinement,
 }
 
 impl GridImmElement {
+    /// Group header bands between rows; empty when ungrouped.
+    pub fn bands(mut self, bands: atlas_model::grouping::RowBands) -> Self {
+        self.bands = bands;
+        self
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         pane_id: TabId,
@@ -265,6 +294,7 @@ impl GridImmElement {
             colors,
             font,
             font_size,
+            bands: Default::default(),
             style: StyleRefinement::default(),
         }
     }
@@ -289,6 +319,8 @@ struct RawCellData {
     entry_idx: usize,
     rel_x: f32,
     rel_y: f32,
+    visual_w: f32,
+    visual_h: f32,
     name: String,
     path: PathBuf,
     is_dir: bool,
@@ -311,6 +343,8 @@ pub struct GridImmPreparedCell {
     pub entry_idx: usize,
     pub rel_x: f32,
     pub rel_y: f32,
+    pub visual_w: f32,
+    pub visual_h: f32,
     pub slots: GridImmCellSlots,
     pub line: ShapedLine,
     pub path: PathBuf,
@@ -424,6 +458,7 @@ impl Element for GridImmElement {
             start_idx,
             end_idx,
             total_count,
+            bands: self.bands.clone(),
         };
 
         let viewport_bounds = Bounds {
@@ -444,6 +479,7 @@ impl Element for GridImmElement {
                     visible
                         .get(pos)
                         .copied()
+                        .filter(|entry_idx| !atlas_model::grouping::is_virtual_cell(*entry_idx))
                         .map(|entry_idx| (entry_idx, model.cell_bounds(pos)))
                 })
                 .collect();
@@ -470,7 +506,7 @@ impl Element for GridImmElement {
             let mut folder_targets = Vec::new();
             if is_drag_active {
                 for pos in start_idx..end_idx {
-                    if let Some(&entry_idx) = tab_state.visible.get(pos) {
+                    if let Some(&entry_idx) = visible.get(pos) {
                         if let Some(entry) = tab_state.entries.get(entry_idx) {
                             if matches!(entry.kind(), FileKind::Dir) {
                                 let cell_b = model.cell_bounds(pos);
@@ -497,15 +533,16 @@ impl Element for GridImmElement {
             // Collect raw cell details for text shaping
             let mut items = Vec::with_capacity(end_idx.saturating_sub(start_idx));
             for pos in start_idx..end_idx {
-                let Some(&entry_idx) = tab_state.visible.get(pos) else {
+                let Some(&entry_idx) = visible.get(pos) else {
                     continue;
                 };
                 let Some(entry) = tab_state.entries.get(entry_idx) else {
                     continue;
                 };
 
-                let (_, _, rel_x, rel_y) =
+                let (row, _, rel_x, rel_y) =
                     grid_cell_projection(pos, cols, pitch_x, pitch_y, pad_x, pad_y);
+                let rel_y = rel_y + self.bands.shift(row);
                 let is_dir = matches!(entry.kind(), FileKind::Dir);
                 let selected = tab_state.selection.selected.contains(&entry_idx);
                 let cursor = tab_state.selection.keyboard_cursor == Some(entry_idx);
@@ -525,6 +562,8 @@ impl Element for GridImmElement {
                     entry_idx,
                     rel_x,
                     rel_y,
+                    visual_w: cell_w,
+                    visual_h: cell_h,
                     name: entry.name.to_string(),
                     path: entry.path(),
                     is_dir,
@@ -559,26 +598,34 @@ impl Element for GridImmElement {
                     || app.is_drag_active(has_gpui_drag),
             )
         };
-        let epoch = crate::ui::imm::motion::presentation_epoch(
-            epoch,
-            &[f32::from(bounds.size.width), cell_w, cell_h],
-        );
-        let viewport = [scroll_y, cell_h, viewport_h];
         let motion = window.use_keyed_state(
             SharedString::from(format!("grid-cell-motion-{}", pane_id.0)),
             cx,
-            |_, _| crate::ui::imm::motion::CellMotion::<PathBuf>::new(epoch, viewport),
+            |_, _| crate::ui::imm::motion::GridMotion::<PathBuf>::new(epoch),
         );
         let targets: Vec<_> = raw_cells
             .iter()
-            .map(|c| (c.path.clone(), c.pos, c.rel_x, c.rel_y))
+            .map(|c| {
+                (
+                    c.path.clone(),
+                    c.pos,
+                    crate::ui::imm::motion::GridItemBounds {
+                        x: c.rel_x,
+                        y: c.rel_y,
+                        w: cell_w,
+                        h: cell_h,
+                    },
+                )
+            })
             .collect();
-        let (positions, moving) = motion.update(cx, |state, _| {
-            state.sample(&targets, epoch, viewport, instant, now)
+        let (bounds_list, moving) = motion.update(cx, |state, _| {
+            state.sample(&targets, epoch, instant, now)
         });
-        for (cell, (_, x, y)) in raw_cells.iter_mut().zip(positions) {
-            cell.rel_x = x;
-            cell.rel_y = y;
+        for (cell, (_, b)) in raw_cells.iter_mut().zip(bounds_list) {
+            cell.rel_x = b.x;
+            cell.rel_y = b.y;
+            cell.visual_w = b.w;
+            cell.visual_h = b.h;
         }
         model.presented = raw_cells
             .iter()
@@ -587,12 +634,12 @@ impl Element for GridImmElement {
                     c.pos,
                     Bounds {
                         origin: point(bounds.origin.x + px(c.rel_x), bounds.origin.y + px(c.rel_y)),
-                        size: size(px(cell_w), px(cell_h)),
+                        size: size(px(c.visual_w), px(c.visual_h)),
                     },
                 )
             })
             .collect();
-        app_entity.update(cx, |app, _| {
+        app_entity.update(cx, |app, view_cx| {
             app.row_rects.borrow_mut().insert(
                 pane_id,
                 raw_cells
@@ -602,6 +649,8 @@ impl Element for GridImmElement {
                     .collect(),
             );
             app.grid_hit.insert(pane_id, model);
+            // Smooth wheel frames move content under a stationary marquee.
+            app.refresh_rubber_for_pane(pane_id, view_cx);
         });
         if moving {
             window.request_animation_frame();
@@ -622,16 +671,17 @@ impl Element for GridImmElement {
         });
         let mut cells = Vec::with_capacity(raw_cells.len());
         for (raw, selected_at) in raw_cells.into_iter().zip(selected_at) {
+            let item_icon_area_h = (raw.visual_h - GRID_LABEL_H * zoom_scale).max(0.0);
             let slots = grid_cell_cut(
                 raw.rel_x,
                 raw.rel_y,
-                cell_w,
-                cell_h,
-                icon_area_h,
+                raw.visual_w,
+                raw.visual_h,
+                item_icon_area_h,
                 zoom_scale,
                 raw.show_cell_check,
             );
-            let name_color = if raw.selected {
+            let name_color = if raw.selected && !raw.editing {
                 self.colors.accent_fg
             } else {
                 self.colors.fg
@@ -653,6 +703,8 @@ impl Element for GridImmElement {
                 entry_idx: raw.entry_idx,
                 rel_x: raw.rel_x,
                 rel_y: raw.rel_y,
+                visual_w: raw.visual_w,
+                visual_h: raw.visual_h,
                 slots,
                 line,
                 path: raw.path,
@@ -697,6 +749,7 @@ impl Element for GridImmElement {
             cx,
             |_, _| crate::ui::imm::motion::PresenceMotion::<PathBuf, GridImmPreparedCell>::new(),
         );
+        let viewport = [scroll_y, cell_h, viewport_h];
         let epoch = crate::ui::imm::motion::presentation_epoch(epoch, &viewport);
         let (samples, active) = presence.update(cx, |s, _| {
             s.sample(
@@ -744,9 +797,6 @@ impl Element for GridImmElement {
             return;
         }
 
-        let cell_w = self.cell_w;
-        let cell_h = self.cell_h;
-        let thumb_px = self.thumb_px;
         let zoom = self.zoom_scale;
 
         // Render visible cells with GPU hardware clipping layer
@@ -755,14 +805,14 @@ impl Element for GridImmElement {
             let abs_y = bounds.origin.y + px(cell.rel_y);
             let cell_bounds = Bounds {
                 origin: point(abs_x, abs_y),
-                size: size(px(cell_w), px(cell_h)),
+                size: size(px(cell.visual_w), px(cell.visual_h)),
             };
 
             // Hardware GPU clipping layer ensures zero bleeding into neighbor cells
             window.with_element_opacity(Some(cell.opacity * crate::ui::views::rename::cut_path_opacity(&self.app, &cell.path, cx)), |window| {
                 window.paint_layer(cell_bounds, |window| {
                     // 1. Hover/selection/blinking background highlight
-                    let bg = if cell.selected {
+                    let bg = if cell.selected && !cell.editing {
                         Some(self.colors.accent)
                     } else if cell.blinking {
                         Some(self.colors.accent.opacity(0.38))
@@ -822,13 +872,14 @@ impl Element for GridImmElement {
                                     window.with_element_opacity(
                                         Some(cell.texture_opacity),
                                         |window| {
-                                            crate::ui::thumbs::paint_thumbnail(window, cx, tex,
-                                                icon_center, thumb_px, icon_slot.h);
+                                            let visual_thumb = (cell.visual_w * 0.9).min(icon_slot.h);
+                                            crate::ui::thumbs::paint_thumbnail_state(window, cx, tex,
+                                                icon_center, visual_thumb, icon_slot.h, cell.hovered);
                                         },
                                     );
                                 }
                                 FileIcon::IconTexture(tex) => {
-                                    let sz = ((thumb_px * GRID_TEXTURE_ICON_MAX).min(icon_slot.h))
+                                    let sz = ((cell.visual_w * GRID_TEXTURE_ICON_MAX).min(icon_slot.h))
                                         .round();
                                     let half = (sz * 0.5).round();
                                     let cx_pos = f32::from(icon_center.x).round();
@@ -853,7 +904,7 @@ impl Element for GridImmElement {
                                     } else {
                                         AtlasIcon::File
                                     };
-                                    let sz = (thumb_px * GRID_BUILTIN_ICON).min(icon_slot.h);
+                                    let sz = (cell.visual_w * GRID_BUILTIN_ICON).min(icon_slot.h);
                                     let icon_bounds = Bounds {
                                         origin: point(
                                             icon_center.x - px(sz * 0.5),
@@ -861,7 +912,7 @@ impl Element for GridImmElement {
                                         ),
                                         size: size(px(sz), px(sz)),
                                     };
-                                    let icon_color = if cell.selected {
+                                    let icon_color = if cell.selected && !cell.editing {
                                         self.colors.accent_fg
                                     } else {
                                         self.colors.muted
@@ -1027,6 +1078,7 @@ impl App {
                 },
             )
         };
+        let (accent, accent_fg) = self.selection_colors(pane_id, accent, accent_fg, fg, muted);
         let font_size = window.text_style().font_size.to_pixels(window.rem_size());
         let row_font = window.text_style().font();
         let crumb_strip = self.render_crumb_strip(pane_id, &view, fg, muted, border, header_bg, cx);
@@ -1034,7 +1086,11 @@ impl App {
             .state
             .tab_states
             .get_mut(&pane_id)
-            .map_or(0, |ts| ts.visible_indices().len());
+            .map_or(0, |ts| {
+                ts.visible_indices();
+                // Collapsed groups hide every file but still show their headers.
+                ts.visible.len()
+            });
 
         if count == 0 {
             self.grid_hit.remove(&pane_id);
@@ -1109,12 +1165,26 @@ impl App {
         let cell_h_px = thumb_px * GRID_ICON_AREA + GRID_LABEL_H * zoom_scale;
         let pitch_x = thumb_px + grid_gap_px;
         let pitch_y = cell_h_px + grid_gap_px;
-        base_scroll.set_line_scroll_height(px(pitch_y));
+        // Windows sends 3 lines per standard wheel notch. A full pitch_y per line
+        // leaps 3 full rows (~500-750px) per notch. Dividing by 3 makes 1 notch
+        // advance 1 row smoothly, matching Details and List views.
+        base_scroll.set_line_scroll_height(px(pitch_y / 3.0));
+        // Headers are bands between rows, so thumbnails keep their full pitch.
+        let group_cells = self.grouped_cells(pane_id, atlas_model::grouping::GroupFlow::Wrap { cols });
+        let cells = match &group_cells {
+            Some(groups) => groups.cells.clone(),
+            None => self.state.tab_states.get(&pane_id).map(|ts| ts.visible.clone()).unwrap_or_default(),
+        };
+        let band_h = GROUP_BAND_H * zoom_scale;
+        let bands = group_cells.as_ref().map_or_else(Default::default, |groups| {
+            atlas_model::grouping::RowBands::new(groups.headers.iter().map(|header| header.cell / cols).collect(), band_h)
+        });
+        let count = cells.len();
         let rows = count.div_ceil(cols);
-        let content_h = if rows == 0 {
+        let content_h = if rows == 0 && bands.is_empty() {
             0.0
         } else {
-            grid_pad_px * 2.0 + rows as f32 * pitch_y - grid_gap_px
+            grid_pad_px * 2.0 + rows as f32 * pitch_y - grid_gap_px + bands.total()
         };
         let max_scroll = self.file_scroll_max(content_h, viewport_h);
         if scroll_y > max_scroll {
@@ -1126,12 +1196,17 @@ impl App {
         // The range is computed from the offset at render time while smooth
         // scrolling keeps moving in prepaint. Overscan one row on *both* edges so
         // scrolling up never exposes an unpainted strip at the top.
-        let start_row = ((scroll_y / pitch_y).floor().max(0.0) as usize).saturating_sub(1);
-        let end_row = ((scroll_y + viewport_h) / pitch_y).ceil() as usize + 1;
+        let start_row = bands.row_at(scroll_y - grid_pad_px, pitch_y).saturating_sub(1);
+        let end_row = bands.rows_through(scroll_y + viewport_h - grid_pad_px, pitch_y) + 1;
         let start = (start_row * cols).min(count);
         let end = ((end_row * cols).min(count)).max(start);
 
-        self.prepare_grid_visible(pane_id, start..end);
+        // Look ahead a full viewport on both sides so thumbnails are decoded
+        // before their rows scroll in, whichever way the user is heading.
+        let ahead_rows = ((viewport_h / pitch_y.max(1.0)).ceil() as usize).max(2);
+        let ahead_start = (start_row.saturating_sub(ahead_rows) * cols).min(count);
+        let ahead_end = (((end_row + ahead_rows) * cols).min(count)).max(end);
+        self.prepare_grid_cells(pane_id, &cells, start..end, ahead_start..ahead_end);
 
         let surface_colors = GridImmColors {
             fg,
@@ -1144,11 +1219,7 @@ impl App {
         let surface = GridImmElement::new(
             pane_id,
             view.downgrade(),
-            self.state
-                .tab_states
-                .get(&pane_id)
-                .map(|ts| ts.visible.clone())
-                .unwrap_or_default(),
+            cells.clone(),
             start,
             end,
             cols,
@@ -1168,14 +1239,15 @@ impl App {
             row_font.clone(),
             font_size,
         )
+        .bands(bands.clone())
         .absolute()
         .inset_0()
         .into_any_element();
 
         let mut rename_overlay = None;
-        if let Some(ts) = self.state.tab_states.get(&pane_id) {
+        if let Some(_ts) = self.state.tab_states.get(&pane_id) {
             for visible_pos in start..end {
-                let Some(&entry_idx) = ts.visible.get(visible_pos) else {
+                let Some(&entry_idx) = cells.get(visible_pos) else {
                     continue;
                 };
                 let Some(rename_input) =
@@ -1186,12 +1258,12 @@ impl App {
                 let col = visible_pos % cols;
                 let row = visible_pos / cols;
                 let cell_x = grid_pad_px + col as f32 * pitch_x;
-                let cell_y = grid_pad_px + row as f32 * pitch_y;
+                let cell_y = grid_pad_px + bands.row_top(row, pitch_y);
                 let cell_bounds = Bounds {
                     origin: point(px(cell_x), px(cell_y)),
                     size: size(px(thumb_px), px(cell_h_px)),
                 };
-                let label = crate::ui::views::grid_surface_element::grid_label_bounds(
+                let label = grid_label_bounds(
                     cell_bounds,
                     thumb_px * GRID_ICON_AREA,
                     zoom_scale,
@@ -1232,6 +1304,7 @@ impl App {
 
         let tooltip_data = self
             .grid_hover
+            .filter(|_| self.ctx_menu.is_none())
             .filter(|(hover_pane, _)| *hover_pane == pane_id)
             .and_then(|(_, entry_idx)| {
                 self.state
@@ -1249,6 +1322,23 @@ impl App {
                     })
             });
 
+        let group_overlays = group_cells.as_ref().map_or_else(Vec::new, |groups| {
+            let colors = crate::ui::group_header::GroupHeaderColors { fg, muted, border };
+            groups
+                .headers
+                .iter()
+                .enumerate()
+                .map(|(k, header)| {
+                    crate::ui::group_header::group_header(
+                        pane_id,
+                        header,
+                        &view,
+                        colors,
+                        (px(0.0), px(grid_pad_px + bands.band_top(k, pitch_y)), None, px(band_h)),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
         let scroll_view = view.clone();
         let inner = div()
             .id(("anim-grid-imm-scroll", pane_id.0))
@@ -1284,7 +1374,8 @@ impl App {
                     .relative()
                     .child(surface)
                     .when_some(rename_overlay, |el, overlay| el.child(overlay))
-                    .child(drag_layer),
+                    .child(drag_layer)
+                    .children(group_overlays),
             )
             .into_any_element();
 
@@ -1296,7 +1387,9 @@ impl App {
             v_flex()
                 .id(("pane", pane_id.0))
                 .size_full()
-                .overflow_hidden(),
+                .overflow_hidden()
+                .min_w(px(0.))
+                .min_h(px(0.)),
             &pane_view,
             pane_id,
         )
@@ -1311,11 +1404,7 @@ impl App {
                         if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
                             ts.last_pane_width = new_w;
                         }
-                        if this.is_pane_or_dock_animating() {
-                            this.defer_column_reflow(pane_id);
-                        } else {
-                            this.notify_pane(pane_id, cx);
-                        }
+                        this.notify_pane(pane_id, cx);
                     });
                 }
             }
@@ -1338,10 +1427,226 @@ impl App {
                 .rounded_bl(px(12.0))
                 .rounded_br(px(12.0))
                 .on_prepaint_child(pane_bounds_recorder(pane_id, &bounds_view))
-                .child(layout_region("pane.viewport_body", inner)),
+                .child(layout_region(
+                    "pane.viewport_body",
+                    self.transition_viewport(pane_id, inner),
+                ))
+                .vertical_scrollbar(&base_scroll),
         ))
         .into_any_element()
     }
+
+    pub(crate) fn prepare_grid_cells(
+        &mut self,
+        pane_id: TabId,
+        cells: &[usize],
+        range: std::ops::Range<usize>,
+        prefetch: std::ops::Range<usize>,
+    ) {
+        #[cfg(feature = "provider-host")]
+        if self.tab_data_for(pane_id).is_some_and(|pane| matches!(pane.location, atlas_model::location::Location::Remote { .. })) {
+            return;
+        }
+        let windows_theme = crate::ui::icons::is_windows_theme(&self.state.profiles.active().theme);
+        let mut type_icon_paths: Vec<std::path::PathBuf> = Vec::new();
+        let (to_request, to_request_ext, to_request_shell, request_folder_icon, all_visible) = {
+            let Some(ts) = self.state.tab_states.get(&pane_id) else {
+                return;
+            };
+            // Every request carries `ahead`: true for prefetch-only cells, which
+            // never take the last decode slots from what is on screen.
+            let mut imgs: Vec<(std::path::PathBuf, bool)> = Vec::new();
+            let mut exts: Vec<(
+                std::path::PathBuf,
+                String,
+                std::collections::HashMap<String, std::path::PathBuf>,
+                bool,
+            )> = Vec::new();
+            // Windows: non-native-image files routed through IShellItemImageFactory.
+            let mut shell_paths: Vec<(std::path::PathBuf, bool, bool)> = Vec::new();
+            let mut request_folder_icon = false;
+            let mut all_visible = Vec::new();
+            for vi in prefetch_order(range.clone(), prefetch) {
+                let ahead = !range.contains(&vi);
+                let Some(&entry_idx) = cells.get(vi) else {
+                    continue;
+                };
+                if atlas_model::grouping::is_virtual_cell(entry_idx) {
+                    continue;
+                }
+                let Some(entry) = ts.entries.get(entry_idx) else {
+                    continue;
+                };
+                if entry.kind() == FileKind::Dir {
+                    request_folder_icon |= windows_theme;
+                    continue;
+                }
+
+                if entry.kind() != FileKind::File {
+                    continue;
+                }
+                if windows_theme {
+                    type_icon_paths.push(entry.path());
+                }
+
+                let thumbable = is_thumbnailable(entry);
+                #[cfg(target_os = "windows")]
+                let shell_thumbable = !thumbable
+                    && entry
+                        .extension()
+                        .as_deref()
+                        .is_some_and(is_windows_shell_thumbnail_ext);
+                #[cfg(not(target_os = "windows"))]
+                let shell_thumbable = false;
+
+                if thumbable {
+                    all_visible.push(entry.path());
+                    if !self.thumb_textures.contains_key(&entry.path()) {
+                        imgs.push((entry.path(), ahead));
+                    }
+                } else if shell_thumbable {
+                    all_visible.push(entry.path());
+                    if !self.thumb_textures.contains_key(&entry.path()) {
+                        shell_paths.push((entry.path(), false, ahead));
+                    }
+                } else if self.thumb_textures.contains_key(&entry.path()) {
+                    all_visible.push(entry.path());
+                } else {
+                    let ext_cmd = entry.extension().as_deref().and_then(|ext| {
+                        self.ext_registry
+                            .thumbnailer_for(ext)
+                            .map(|cmd| (cmd.command.run.clone(), cmd.tools))
+                    });
+                    if let Some((run, tools)) = ext_cmd {
+                        all_visible.push(entry.path());
+                        exts.push((entry.path(), run, tools, ahead));
+                    }
+                }
+            }
+            (imgs, exts, shell_paths, request_folder_icon, all_visible)
+        };
+
+        // Each pane owns its slice; the decode workers see the union so one grid
+        // never cancels another pane's pending thumbnails.
+        self.thumb_wanted_by_pane.insert(pane_id, all_visible);
+        let panes = &self.state.tab_states;
+        self.thumb_wanted_by_pane.retain(|pane, _| panes.contains_key(pane));
+        {
+            let mut wanted = self.thumb_wanted.lock().unwrap();
+            wanted.clear();
+            for paths in self.thumb_wanted_by_pane.values() {
+                wanted.extend(paths.iter().cloned());
+            }
+        }
+        #[cfg(target_os = "windows")]
+        if request_folder_icon {
+            self.request_shell_folder_icon();
+        }
+        #[cfg(target_os = "windows")]
+        for path in &type_icon_paths {
+            self.request_shell_type_icon(path);
+        }
+        #[cfg(not(target_os = "windows"))]
+        drop(type_icon_paths);
+        for (path, ahead) in to_request {
+            if !(ahead && self.native_thumb_inflight + PREFETCH_HEADROOM >= MAX_NATIVE_THUMB_INFLIGHT) {
+                self.request_thumbnail(&path);
+            }
+        }
+        for (path, run, tools, ahead) in to_request_ext {
+            if !(ahead && self.ext_thumb_inflight.len() + PREFETCH_HEADROOM >= MAX_EXT_THUMB_INFLIGHT) {
+                self.request_ext_thumbnail(&path, run, tools);
+            }
+        }
+        #[cfg(target_os = "windows")]
+        for (path, allow_icon, ahead) in to_request_shell {
+            if ahead && self.ext_thumb_inflight.len() + PREFETCH_HEADROOM >= MAX_EXT_THUMB_INFLIGHT {
+                continue;
+            }
+            if allow_icon {
+                self.request_shell_thumbnail_or_icon(&path);
+            } else {
+                self.request_visible_shell_thumbnail(&path);
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        drop(to_request_shell);
+    }
+}
+
+/// Decode slots always kept free for on-screen cells while prefetching.
+const PREFETCH_HEADROOM: usize = 4;
+use crate::ui::thumbs::{MAX_EXT_THUMB_INFLIGHT, MAX_NATIVE_THUMB_INFLIGHT};
+
+/// Cells to request, nearest first: the visible range, then the prefetch margin
+/// alternating below/above so whichever direction the user scrolls is already warm.
+fn prefetch_order(
+    visible: std::ops::Range<usize>,
+    window: std::ops::Range<usize>,
+) -> Vec<usize> {
+    let mut order: Vec<usize> = visible.clone().collect();
+    let mut below = visible.end..window.end.max(visible.end);
+    let mut above = window.start.min(visible.start)..visible.start;
+    loop {
+        let (next_below, next_above) = (below.next(), above.next_back());
+        if next_below.is_none() && next_above.is_none() {
+            break;
+        }
+        order.extend(next_below);
+        order.extend(next_above);
+    }
+    order
+}
+
+/// Whether this entry should get a downscaled thumbnail (an image or audio file).
+fn is_thumbnailable(entry: &atlas_model::file_entry::FileEntry) -> bool {
+    matches!(entry.kind(), FileKind::File)
+        && entry.extension().as_deref().is_some_and(|e| {
+            atlas_model::preview_cache::is_image_ext(e)
+                || atlas_model::preview_cache::is_audio_ext(e)
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn is_windows_shell_thumbnail_ext(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "3fr"
+            | "3gp"
+            | "arw"
+            | "asf"
+            | "avi"
+            | "avif"
+            | "cr2"
+            | "cr3"
+            | "crw"
+            | "dng"
+            | "flv"
+            | "heic"
+            | "heif"
+            | "iiq"
+            | "m2ts"
+            | "m4v"
+            | "mkv"
+            | "mov"
+            | "mp4"
+            | "mpeg"
+            | "mpg"
+            | "mts"
+            | "nef"
+            | "orf"
+            | "pdf"
+            | "pef"
+            | "psd"
+            | "raf"
+            | "rw2"
+            | "srw"
+            | "tga"
+            | "ts"
+            | "vob"
+            | "webm"
+            | "wmv"
+    )
 }
 
 #[cfg(test)]
@@ -1590,5 +1895,17 @@ mod tests {
         assert!(slots.icon_slot.w >= 0.0);
         assert!(slots.name_slot.w >= 0.0);
         assert!(slots.name_slot.h >= 0.0);
+    }
+}
+
+#[cfg(test)]
+mod prefetch_tests {
+    use super::prefetch_order;
+
+    #[test]
+    fn prefetch_requests_visible_first_then_alternates_outward() {
+        assert_eq!(prefetch_order(4..6, 2..9), vec![4, 5, 6, 3, 7, 2, 8]);
+        assert_eq!(prefetch_order(0..2, 0..5), vec![0, 1, 2, 3, 4]);
+        assert_eq!(prefetch_order(3..3, 3..3), Vec::<usize>::new());
     }
 }

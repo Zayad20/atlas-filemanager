@@ -68,6 +68,7 @@ impl App {
         let close_view = view.clone();
         let primary_view = view.clone();
         let back_view = view.clone();
+        let guide_view = view.clone();
         let primary_label = if step == 2 {
             rust_i18n::t!("getting_started_primary").to_string()
         } else {
@@ -245,6 +246,36 @@ impl App {
                                                         }
                                                     }),
                                             )
+                                            .children((step == 2).then(|| {
+                                                div()
+                                                    .id("getting-started-guide")
+                                                    .px_4()
+                                                    .py_2()
+                                                    .rounded(px(8.))
+                                                    .border_1()
+                                                    .border_color(border.opacity(0.70))
+                                                    .text_sm()
+                                                    .text_color(fg)
+                                                    .cursor_pointer()
+                                                    .hover(move |h| h.bg(setup_tile()))
+                                                    .child(
+                                                        rust_i18n::t!("getting_started_guide_btn")
+                                                            .to_string(),
+                                                    )
+                                                    .on_mouse_down(MouseButton::Left, {
+                                                        let guide_view = guide_view.clone();
+                                                        move |_ev, _w, cx| {
+                                                            guide_view.update(cx, |this, cx| {
+                                                                this.submit_getting_started_profile_name(cx);
+                                                                this.process_actions([
+                                                                    Action::CloseGettingStarted,
+                                                                    Action::OpenGuide(0),
+                                                                ]);
+                                                                cx.notify();
+                                                            });
+                                                        }
+                                                    })
+                                            }))
                                             .child(
                                                 div()
                                                     .id("getting-started-primary")
@@ -539,7 +570,7 @@ impl App {
 
         let theme_list = div()
             .relative()
-            .h(px(220.))
+            .h(px(172.))
             .child(
                 v_flex()
                     .id("getting-started-theme-list")
@@ -553,10 +584,21 @@ impl App {
             .vertical_scrollbar(&self.getting_started_theme_scroll)
             .into_any_element();
 
+        let icons = v_flex()
+            .gap_2()
+            .child(category_label("getting_started_icons_category", muted))
+            .child(super::guide::icon_theme_pills(
+                &view,
+                fg,
+                muted,
+                border.opacity(0.46),
+                setup_tile(),
+            ));
+
         setup_page(
             "getting_started_theme_title",
             "getting_started_theme_desc",
-            theme_list,
+            v_flex().gap_4().child(theme_list).child(icons).into_any_element(),
             muted,
         )
     }
@@ -607,7 +649,7 @@ impl App {
         let hidden_on = self.state.settings.show_hidden;
         let sidebar_view = view.clone();
         let inspector_view = view.clone();
-        let hidden_view = view;
+        let hidden_view = view.clone();
         let sidebar = option_tile(
             "getting_started_show_sidebar",
             AtlasIcon::SidebarSimple,

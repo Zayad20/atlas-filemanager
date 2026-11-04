@@ -192,6 +192,7 @@ struct TreeRowPrepaint {
     cursor: bool,
     hovered: bool,
     is_blinking: bool,
+    editing: bool,
     icon_tex: Option<Arc<gpui::RenderImage>>,
     name_line: ShapedLine,
     size_line: Option<ShapedLine>,
@@ -220,8 +221,9 @@ fn apply_disclosure_accordion(rows: &mut [TreeRowPrepaint], row_h: f32) {
         let slot_y = row.layout.row_slot.y;
         let path = row.entry.path();
         if row.opacity < 1.0 {
-            if let Some(parent_y) = path.parent().and_then(|p| presented.get(p)).copied() {
-                row.dy = (parent_y + (slot_y - parent_y) * row.opacity) - slot_y;
+            if let Some(parent_y) = path.ancestors().skip(1).find_map(|p| presented.get(p)).copied() {
+                let opacity = row.opacity.clamp(0.0, 1.0);
+                row.dy = (parent_y + (slot_y - parent_y) * opacity) - slot_y;
                 row.clip_top = Some(parent_y + row_h);
             }
         }
@@ -232,7 +234,8 @@ fn apply_disclosure_accordion(rows: &mut [TreeRowPrepaint], row_h: f32) {
         let slot_y = row.layout.row_slot.y;
         let path = row.entry.path();
         if let Some(parent_y) = path.ancestors().skip(1).find_map(|p| presented.get(p)).copied() {
-            row.dy = (parent_y + (slot_y - parent_y) * row.opacity) - slot_y;
+            let opacity = row.opacity.clamp(0.0, 1.0);
+            row.dy = (parent_y + (slot_y - parent_y) * opacity) - slot_y;
             row.clip_top = Some(parent_y + row_h);
         }
     }
@@ -253,12 +256,7 @@ pub struct TreeImmElement {
     app: WeakEntity<App>,
     rows: Arc<[(FileEntry, usize, bool, bool)]>,
     row_h: f32,
-    #[allow(dead_code)]
-    scroll_y: f32,
-    #[allow(dead_code)]
-    viewport_h: f32,
-    start_idx: usize,
-    end_idx: usize,
+    scroll: gpui::ScrollHandle,
     zoom: f32,
     colors: TreeImmColors,
     font: Font,
@@ -274,10 +272,7 @@ impl TreeImmElement {
         app: WeakEntity<App>,
         rows: Arc<[(FileEntry, usize, bool, bool)]>,
         row_h: f32,
-        scroll_y: f32,
-        viewport_h: f32,
-        start_idx: usize,
-        end_idx: usize,
+        scroll: gpui::ScrollHandle,
         zoom: f32,
         colors: TreeImmColors,
         font: Font,
@@ -290,10 +285,7 @@ impl TreeImmElement {
             app,
             rows,
             row_h,
-            scroll_y,
-            viewport_h,
-            start_idx,
-            end_idx,
+            scroll,
             zoom,
             colors,
             font,
@@ -384,8 +376,16 @@ impl Element for TreeImmElement {
             };
         };
 
-        let start_idx = self.start_idx.min(self.rows.len());
-        let end_idx = self.end_idx.min(self.rows.len()).max(start_idx);
+        let tracked = self.scroll.bounds();
+        let viewport_h = if tracked.size.height > px(1.0) {
+            f32::from(tracked.size.height)
+        } else {
+            f32::from(bounds.size.height)
+        };
+        let scroll_y = (-f32::from(self.scroll.offset().y)).max(0.0);
+        let (start_idx, end_idx) = crate::ui::imm::scroll::live_span(
+            scroll_y, scroll_y + viewport_h, row_h, 2, self.rows.len(),
+        );
         let visible_count = end_idx.saturating_sub(start_idx);
 
         let mut prepaint_rows = Vec::with_capacity(visible_count);
@@ -416,22 +416,43 @@ impl Element for TreeImmElement {
         let motion = window.use_keyed_state(
             SharedString::from(format!("tree-row-motion-{}", pane_id.0)),
             cx,
-            |_, _| RowMotion::<PathBuf>::new(epoch, [self.scroll_y, row_h, self.viewport_h]),
+            |_, _| RowMotion::<PathBuf>::new(epoch, [scroll_y, row_h, viewport_h]),
         );
-        let journey_rows = (self.viewport_h / row_h.max(1.0)).ceil() + 2.0;
+        let journey_rows = (viewport_h / row_h.max(1.0)).ceil() + 2.0;
         let (positions, moving) = motion.update(cx, |state, _| {
             state.long_journey_rows = journey_rows;
             state.sample(
                 &targets,
                 epoch,
-                [self.scroll_y, row_h, self.viewport_h],
+                [scroll_y, row_h, viewport_h],
                 instant,
                 now,
             )
         });
         let positions: std::collections::HashMap<_, _> =
             positions.into_iter().map(|(i, y, _)| (i, y)).collect();
-        app_entity.update(cx, |this, _| {
+        app_entity.update(cx, |this, cx| {
+            let viewport_bounds = if tracked.size.height > px(1.0) {
+                tracked
+            } else {
+                bounds
+            };
+            this.pane_view_bounds.insert(pane_id, viewport_bounds);
+            this.row_rects.borrow_mut().insert(pane_id, (start_idx..end_idx).map(|i| {
+                (i, Bounds {
+                    origin: point(origin.x, origin.y + px(positions.get(&i).copied().unwrap_or(i as f32 * row_h))),
+                    size: size(bounds.size.width, px(row_h)),
+                })
+            }).collect());
+            this.refresh_rubber_for_pane(pane_id, cx);
+            for i in start_idx..end_idx {
+                let entry = &self.rows[i].0;
+                this.maybe_request_file_icon(&crate::ui::file_icons::FileIconRef {
+                    path: entry.path(),
+                    kind: entry.kind().clone(),
+                    extension: entry.extension().map(|value| SharedString::from(value.to_string())),
+                });
+            }
             let is_drag_active = this.is_drag_active(has_gpui_drag);
             if is_drag_active {
                 // Cleanly purge stale folder targets for this pane on each prepaint
@@ -503,17 +524,18 @@ impl Element for TreeImmElement {
                 let cursor = keyboard_cursor == Some(i);
                 let hovered = current_hover_row == Some(i);
                 let is_blinking = is_dir && blink_folder_path.as_ref() == Some(&entry.path());
+                let editing = crate::ui::views::rename::active_input_for_path(this, pane_id, &entry.path()).is_some();
 
                 let icon_tex = this
-                    .file_icon_for_entry(&entry.path(), &entry.kind(), entry.extension().as_deref())
+                    .row_icon_for_entry(&entry.path(), &entry.kind(), entry.extension().as_deref())
                     .texture();
 
-                let name_color = if selected {
+                let name_color = if selected && !editing {
                     colors.accent_fg
                 } else {
                     colors.fg
                 };
-                let meta_color = if selected {
+                let meta_color = if selected && !editing {
                     colors.accent_fg.opacity(0.85)
                 } else {
                     colors.muted
@@ -561,6 +583,7 @@ impl Element for TreeImmElement {
                     cursor,
                     hovered,
                     is_blinking,
+                    editing,
                     icon_tex,
                     name_line,
                     size_line,
@@ -615,7 +638,9 @@ impl Element for TreeImmElement {
             .into_iter()
             .map(|row| (row.entry.path(), row))
             .collect();
-        let epoch = presentation_epoch(epoch, &[self.scroll_y, self.viewport_h, row_h, total_w]);
+        // Scrolling resets presence (like Details/List/Grid): rows entering the span
+        // because the viewport moved must be fully opaque at once, never fade in.
+        let epoch = presentation_epoch(epoch, &[scroll_y, viewport_h, row_h, total_w]);
         let (samples, appearing) =
             presence.update(cx, |state, _| state.sample(rows, epoch, instant, now));
         let mut prepaint_rows: Vec<TreeRowPrepaint> = samples
@@ -701,7 +726,7 @@ impl Element for TreeImmElement {
                 let row_bounds = row_slot.to_bounds(origin);
 
                 // 1. Row background fill (Selection > Hover > Normal)
-                if row.selected {
+                if row.selected && !row.editing {
                     paint_rounded(window, row_bounds, 3.0 * zoom, colors.accent);
                 } else if row.interactive && (active_hover_idx == Some(row.idx) || row.hovered) {
                     paint_rounded(window, row_bounds, 3.0 * zoom, colors.hover);
@@ -731,7 +756,7 @@ impl Element for TreeImmElement {
                 }
 
                 // 2. Indentation guide lines: 1px vertical line at x + 8.0 for each depth level
-                let guide_color = if row.selected {
+                let guide_color = if row.selected && !row.editing {
                     colors.accent_fg.opacity(0.35)
                 } else {
                     colors.border.opacity(0.40)
@@ -746,7 +771,7 @@ impl Element for TreeImmElement {
 
                 // 3. Directory chevron icon
                 if let Some(ch_slot) = row.layout.chevron_slot {
-                    let chevron_color = if row.selected {
+                    let chevron_color = if row.selected && !row.editing {
                         colors.accent_fg
                     } else {
                         colors.muted
@@ -810,7 +835,7 @@ impl Element for TreeImmElement {
                     } else {
                         AtlasIcon::File
                     };
-                    let icon_color = if row.selected {
+                    let icon_color = if row.selected && !row.editing {
                         colors.accent_fg
                     } else {
                         colors.accent
@@ -828,20 +853,22 @@ impl Element for TreeImmElement {
                 }
 
                 // 5. Filename
-                let name_bounds = row.layout.name_slot.to_bounds(origin);
-                if name_bounds.size.width > px(0.0) {
-                    window.paint_layer(name_bounds, |window| {
-                        let text_x = name_bounds.origin.x;
-                        let text_y = origin.y + px(text_origin_y(row_slot.y, zoom));
-                        let _ = row.name_line.paint(
-                            point(text_x, text_y),
-                            px(row_slot.h),
-                            TextAlign::Left,
-                            None,
-                            window,
-                            cx,
-                        );
-                    });
+                if !row.editing {
+                    let name_bounds = row.layout.name_slot.to_bounds(origin);
+                    if name_bounds.size.width > px(0.0) {
+                        window.paint_layer(name_bounds, |window| {
+                            let text_x = name_bounds.origin.x;
+                            let text_y = origin.y + px(text_origin_y(row_slot.y, zoom));
+                            let _ = row.name_line.paint(
+                                point(text_x, text_y),
+                                px(row_slot.h),
+                                TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            );
+                        });
+                    }
                 }
 
                 // 6. Aligned metadata: Size
@@ -926,6 +953,7 @@ impl Element for TreeImmElement {
                                 .is_some_and(|(_, _, path, _)| path == ch_path)
                         {
                             let path = ch_path.clone();
+                            cx.stop_propagation();
                             click_view.update(cx, |this, cx| {
                                 if this.suppress_navigation_double_click(pane_id, ev.position, ev.click_count) { return; }
                                 this.activate_tab(pane_id);
@@ -950,59 +978,12 @@ impl Element for TreeImmElement {
                                 .any(|(slot, row)| *row == idx && slot.contains(lx, ly));
                             let (shift, ctrl) =
                                 (m.shift && !on_check, m.control || m.platform || on_check);
-                            let activate = ev.click_count >= 2 && !on_check;
-
+                            cx.stop_propagation();
                             click_view.update(cx, |this, cx| {
-                                if this.rename_edit.is_some() {
-                                    this.commit_rename(cx);
-                                }
-                                if this.suppress_navigation_double_click(pane_id, ev.position, ev.click_count) { return; }
-                                if this.state.settings.single_click_opens_folder(is_dir, ev.click_count, shift || ctrl) {
-                                    this.queue_tree_folder_click(pane_id, idx, path, ev.position);
-                                } else if activate {
-                                    if is_dir {
-                                        this.process_actions(vec![Action::ToggleTreeExpand(path)]);
-                                    } else {
-                                        this.spawn_open_files(vec![path]);
-                                    }
-                                } else {
-                                    this.activate_tab(pane_id);
-                                    if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
-                                        // Slow second click on the sole selected row renames,
-                                        // like every other view.
-                                        let sole = ts.selection.selected.len() == 1
-                                            && ts.selection.selected.contains(&idx);
-                                        let slow = ts.selection.slow_rename_click(
-                                            idx,
-                                            std::time::Instant::now(),
-                                            !shift && !ctrl,
-                                        );
-                                        if slow && sole {
-                                            this.pending_rename = Some((pane_id, path.clone(), false));
-                                        }
-                                        ts.selection.keyboard_cursor = Some(idx);
-                                        ts.selection.last_clicked_index = Some(idx);
-                                        if shift {
-                                            let anchor =
-                                                ts.selection.selection_anchor.unwrap_or(idx);
-                                            let (lo, hi) = (anchor.min(idx), anchor.max(idx));
-                                            ts.selection.selected.clear();
-                                            ts.selection.selected.extend(lo..=hi);
-                                        } else if ctrl {
-                                            if ts.selection.selected.contains(&idx) {
-                                                ts.selection.selected.remove(&idx);
-                                            } else {
-                                                ts.selection.selected.insert(idx);
-                                            }
-                                        } else {
-                                            ts.selection.selection_anchor = Some(idx);
-                                            ts.selection.selected.clear();
-                                            ts.selection.selected.insert(idx);
-                                        }
-                                    }
-                                }
-                                this.notify_pane(pane_id, cx);
-                                cx.notify();
+                                this.tree_entry_left_mouse_down(
+                                    pane_id, idx, path, is_dir, ev.position, shift, ctrl,
+                                    if on_check { 1 } else { ev.click_count }, cx,
+                                );
                             });
                             return;
                         }
@@ -1013,6 +994,7 @@ impl Element for TreeImmElement {
                         if row_slot.contains(lx, ly) {
                             let idx = *idx;
                             let path = path.clone();
+                            cx.stop_propagation();
                             click_view.update(cx, |this, cx| {
                                 this.activate_tab(pane_id);
                                 if let Some(ts) = this.state.tab_states.get_mut(&pane_id) {
@@ -1137,28 +1119,52 @@ impl App {
             cx,
         );
 
-        let rows: Arc<[(FileEntry, usize, bool, bool)]> = {
-            let Some(ts) = self.state.tab_states.get_mut(&pane_id) else {
+        // Scrolling re-renders the pane every frame: rebuilding (and cloning) the whole
+        // flattened tree each time made long listings stutter, so reuse it until the
+        // listing / expansion / filter fingerprint changes.
+        let fingerprint = {
+            let Some(ts) = self.state.tab_states.get(&pane_id) else {
                 return div().into_any_element();
             };
-            ts.visible_tree_rows()
-                .into_iter()
-                .map(|(e, d, exp, has)| (e.clone(), d, exp, has))
-                .collect::<Vec<_>>()
-                .into()
+            tree_fingerprint(ts)
+        };
+        let cached = self
+            .tree_rows_cache
+            .get(&pane_id)
+            .filter(|(fp, _, _)| *fp == fingerprint)
+            .map(|(_, rows, pending)| (rows.clone(), pending.clone()));
+        let (rows, pending): (Arc<[(FileEntry, usize, bool, bool)]>, Vec<PathBuf>) = match cached {
+            Some(hit) => hit,
+            None => {
+                let Some(ts) = self.state.tab_states.get_mut(&pane_id) else {
+                    return div().into_any_element();
+                };
+                let rows: Arc<[(FileEntry, usize, bool, bool)]> = ts
+                    .visible_tree_rows()
+                    .into_iter()
+                    .map(|(e, d, exp, has)| (e.clone(), d, exp, has))
+                    .collect::<Vec<_>>()
+                    .into();
+                let pending: Vec<PathBuf> = rows
+                    .iter()
+                    .filter(|(entry, _, expanded, _)| entry.kind() == FileKind::Dir && *expanded)
+                    .map(|(entry, ..)| entry.path())
+                    .collect();
+                self.tree_rows_cache
+                    .insert(pane_id, (fingerprint, rows.clone(), pending.clone()));
+                (rows, pending)
+            }
         };
 
         // Fetch children asynchronously if an expanded directory has not loaded them yet.
-        for (entry, _, is_expanded, _) in rows.iter() {
-            if entry.kind() == FileKind::Dir && *is_expanded {
-                let has_children = self
-                    .state
-                    .tab_states
-                    .get(&pane_id)
-                    .is_some_and(|ts| ts.tree.children.contains_key(&entry.path()));
-                if !has_children {
-                    self.spawn_list_tree(pane_id, entry.path());
-                }
+        for path in pending {
+            let has_children = self
+                .state
+                .tab_states
+                .get(&pane_id)
+                .is_some_and(|ts| ts.tree.children.contains_key(&path));
+            if !has_children {
+                self.spawn_list_tree(pane_id, path);
             }
         }
 
@@ -1209,8 +1215,10 @@ impl App {
             let end_idx =
                 (((scroll_y + viewport_h) / row_h).ceil() as usize + overscan_rows).min(count);
 
-            // Pre-request icons for visible entries
-            for i in start_idx..end_idx {
+            // Pre-request icons a viewport ahead of both edges: they resolve off
+            // thread and must be ready before the rows scroll into view.
+            let ahead = ((viewport_h / row_h).ceil() as usize).max(2);
+            for i in start_idx.saturating_sub(ahead)..end_idx.saturating_add(ahead).min(count) {
                 let (entry, _, _, _) = &rows[i];
                 let file_ref = crate::ui::file_icons::FileIconRef {
                     path: entry.path(),
@@ -1231,10 +1239,7 @@ impl App {
                 view.downgrade(),
                 rows.clone(),
                 row_h,
-                scroll_y,
-                viewport_h,
-                start_idx,
-                end_idx,
+                base_scroll.clone(),
                 zoom_scale,
                 colors,
                 font,
@@ -1249,6 +1254,7 @@ impl App {
 
             let tree_tooltip = self
                 .details_hover
+                .filter(|_| self.ctx_menu.is_none())
                 .and_then(|(hover_pane, entry_idx)| (hover_pane == pane_id).then_some(entry_idx))
                 .and_then(|entry_idx| rows.get(entry_idx))
                 .map(|(entry, _, _, _)| {
@@ -1344,9 +1350,13 @@ impl App {
                                 // Above the drag layer so the editor owns its clicks.
                                 .children(rename_overlay),
                         )
-                        .vertical_scrollbar(&base_scroll),
+                        // Room for the scrollbar (same as Details).
+                        .pr(crate::ui::rem_px(16.)),
                 )
-                .children(tooltip_overlay);
+                .children(tooltip_overlay)
+                // Sibling of the scroller, not a child: inside it the bar would
+                // scroll away with the content and size itself to the wrong box.
+                .vertical_scrollbar(&base_scroll);
 
             v_flex()
                 .size_full()
@@ -1366,7 +1376,7 @@ impl App {
             pane_id,
         )
         .child(crumb_strip)
-        .child(body)
+        .child(self.transition_viewport(pane_id, body))
         .into_any_element()
     }
 }
@@ -1466,4 +1476,138 @@ mod tests {
         assert_ne!(layout.phase, TreeDegradationPhase::Full);
         assert!(layout.name_slot.w >= MIN_FILENAME_W);
     }
+
+    fn test_prepaint_row(path: &str, y: f32, opacity: f32, interactive: bool) -> TreeRowPrepaint {
+        use atlas_model::file_entry::FileEntryData;
+        let entry: FileEntry = FileEntryData {
+            name: std::path::Path::new(path).file_name().unwrap_or_default().to_string_lossy().into(),
+            path: PathBuf::from(path),
+            kind: FileKind::File,
+            size: None,
+            modified: None,
+            _is_hidden: false,
+            _is_symlink: false,
+            archive_root: None,
+            recycle_info: None,
+        }.into();
+        let layout = TreeRowLayout {
+            row_slot: Slot::new(0.0, y, 400.0, 24.0),
+            chevron_slot: None,
+            icon_slot: Slot::new(0.0, y, 16.0, 16.0),
+            name_slot: Slot::new(20.0, y, 200.0, 24.0),
+            size_slot: None,
+            date_slot: None,
+            indent_guide_xs: Vec::new(),
+            phase: TreeDegradationPhase::Full,
+        };
+        TreeRowPrepaint {
+            idx: 0,
+            layout,
+            entry,
+            depth: 0,
+            is_expanded: false,
+            selected: false,
+            cursor: false,
+            hovered: false,
+            is_blinking: false,
+            editing: false,
+            icon_tex: None,
+            name_line: ShapedLine::default(),
+            size_line: None,
+            date_line: None,
+            check_slot: None,
+            selected_at: None,
+            openness: 0.0,
+            opacity,
+            interactive,
+            dy: 0.0,
+            clip_top: None,
+        }
+    }
+
+    #[test]
+    fn test_disclosure_accordion_interactive_and_leaving() {
+        let mut rows = vec![
+            // Parent folder at y=0, fully opaque
+            test_prepaint_row("C:/parent", 0.0, 1.0, true),
+            // Child 1 appearing at y=24, half-opacity (entering)
+            test_prepaint_row("C:/parent/child1", 24.0, 0.5, true),
+            // Child 2 appearing at y=48, zero-opacity (just born)
+            test_prepaint_row("C:/parent/child2", 48.0, 0.0, true),
+            // Nested grandchild appearing under child 1
+            test_prepaint_row("C:/parent/child1/sub", 72.0, 0.5, true),
+            // Sibling row without ancestor in presented, appearing
+            test_prepaint_row("D:/other/file", 96.0, 0.5, true),
+            // Leaving child collapsing into parent
+            test_prepaint_row("C:/parent/leaving", 120.0, 0.5, false),
+        ];
+
+        apply_disclosure_accordion(&mut rows, 24.0);
+
+        // Parent does not shift
+        assert_eq!(rows[0].dy, 0.0);
+        assert_eq!(rows[0].clip_top, None);
+
+        // Child 1 (opacity 0.5): parent_y = 0.0.
+        // dy = (0.0 + (24.0 - 0.0) * 0.5) - 24.0 = 12.0 - 24.0 = -12.0
+        // visual y = 24.0 - 12.0 = 12.0
+        assert_eq!(rows[1].dy, -12.0);
+        assert_eq!(rows[1].clip_top, Some(24.0));
+
+        // Child 2 (opacity 0.0): parent_y = 0.0.
+        // dy = (0.0 + (48.0 - 0.0) * 0.0) - 48.0 = -48.0
+        // visual y = 48.0 - 48.0 = 0.0 (tucked directly behind parent)
+        assert_eq!(rows[2].dy, -48.0);
+        assert_eq!(rows[2].clip_top, Some(24.0));
+
+        // Nested grandchild (under child 1, whose visual y = 12.0):
+        // parent_y = child1 visual y = 12.0.
+        // dy = (12.0 + (72.0 - 12.0) * 0.5) - 72.0 = (12.0 + 30.0) - 72.0 = 42.0 - 72.0 = -30.0
+        // visual y = 72.0 - 30.0 = 42.0
+        assert_eq!(rows[3].dy, -30.0);
+        assert_eq!(rows[3].clip_top, Some(36.0));
+
+        // Row without visible ancestor: dy stays 0.0, clip_top is None (graceful fade in place)
+        assert_eq!(rows[4].dy, 0.0);
+        assert_eq!(rows[4].clip_top, None);
+
+        // Leaving child collapses into surviving parent at y=0:
+        // dy = (0.0 + (120.0 - 0.0) * 0.5) - 120.0 = 60.0 - 120.0 = -60.0
+        assert_eq!(rows[5].dy, -60.0);
+        assert_eq!(rows[5].clip_top, Some(24.0));
+    }
+}
+
+/// Cheap, order-independent digest of everything `visible_tree_rows` reads: the
+/// root listing, filter/visibility flags, which folders are expanded and the
+/// identity (pointer + length) of each loaded child list.
+fn tree_fingerprint(ts: &atlas_model::tab::TabState) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let hash_one = |value: &dyn Fn(&mut std::collections::hash_map::DefaultHasher)| {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        value(&mut hasher);
+        hasher.finish()
+    };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    ts.entries_version.hash(&mut hasher);
+    ts.filter.hash(&mut hasher);
+    ts.show_files.hash(&mut hasher);
+    ts.show_folders.hash(&mut hasher);
+    ts.tree.expanded.len().hash(&mut hasher);
+    ts.tree.children.len().hash(&mut hasher);
+    let expanded = ts
+        .tree
+        .expanded
+        .iter()
+        .fold(0_u64, |acc, path| acc ^ hash_one(&|h| path.hash(h)));
+    let children = ts.tree.children.iter().fold(0_u64, |acc, (path, list)| {
+        acc ^ hash_one(&|h| {
+            path.hash(h);
+            (list.as_ptr() as usize).hash(h);
+            list.len().hash(h);
+        })
+    });
+    expanded.hash(&mut hasher);
+    children.hash(&mut hasher);
+    hasher.finish()
 }

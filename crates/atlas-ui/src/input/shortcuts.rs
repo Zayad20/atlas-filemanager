@@ -95,6 +95,20 @@ impl App {
             cx.notify();
             return true;
         }
+        if let Some(panel) = self.cleanup_panel.clone() {
+            if ev.keystroke.key == "escape" {
+                if panel.update(cx, |p, cx| p.escape(cx)) {
+                    self.cleanup_panel = None;
+                    window.focus(&self.focus_handle, cx);
+                }
+                cx.notify();
+                return true;
+            }
+            if panel.update(cx, |p, cx| p.handle_key(ev, window, cx)) {
+                cx.notify();
+                return true;
+            }
+        }
         if self.command_shortcut_capture.is_some() {
             return self.handle_command_shortcut_key(ev);
         }
@@ -394,6 +408,24 @@ impl App {
             }
         }
 
+        // Additive keyboard ranges mirror Ctrl+Shift pointer selection. Explicit
+        // user shortcuts above keep priority over these modifier combinations.
+        let modifiers = ev.keystroke.modifiers;
+        if modifiers.control && modifiers.shift && !modifiers.alt && !modifiers.platform {
+            match key {
+                "up" => self.nav_up(true, true),
+                "down" => self.nav_down(true, true),
+                "left" => self.nav_left(true, true),
+                "right" => self.nav_right(true, true),
+                "home" => self.nav_home(true, true),
+                "end" => self.nav_end(true, true),
+                "pageup" => self.nav_page(false, true, true),
+                "pagedown" => self.nav_page(true, true, true),
+                _ => return false,
+            }
+            return true;
+        }
+
         false
     }
 
@@ -459,6 +491,12 @@ impl App {
             "view.group-size" => Some(Action::SetGroupBy(atlas_model::tab::GroupBy::Size)),
             "view.group-type" => Some(Action::SetGroupBy(atlas_model::tab::GroupBy::Type)),
             "view.group-name" => Some(Action::SetGroupBy(atlas_model::tab::GroupBy::Name)),
+            "view.group-created" => Some(Action::SetGroupBy(atlas_model::tab::GroupBy::Created)),
+            "view.group-accessed" => Some(Action::SetGroupBy(atlas_model::tab::GroupBy::Accessed)),
+            "view.group-deleted" => Some(Action::SetGroupBy(atlas_model::tab::GroupBy::Deleted)),
+            "view.group-origin" => Some(Action::SetGroupBy(atlas_model::tab::GroupBy::Origin)),
+            "view.group-expand" => Some(Action::SetAllGroupsCollapsed(false)),
+            "view.group-collapse" => Some(Action::SetAllGroupsCollapsed(true)),
             "view.zoom-in" => Some(Action::ZoomIn),
             "view.zoom-out" => Some(Action::ZoomOut),
             "view.zoom-reset" => Some(Action::ZoomReset),
@@ -622,6 +660,7 @@ impl App {
             "ext.manager" => Some(Action::OpenExtManager),
             "sys.palette" => Some(Action::OpenPalette),
             "sys.settings" => Some(Action::OpenSettings),
+            "sys.guide" => Some(Action::OpenGuide(0)),
             _ => None,
         }
     }
@@ -633,6 +672,7 @@ impl App {
             || o.show_palette
             || o.show_ext_palette
             || o.show_settings
+            || o.show_guide
             || o.show_analyzer
             || o.transfer_conflict.is_some()
             || o.renaming_profile

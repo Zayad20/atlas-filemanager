@@ -1,6 +1,8 @@
 #![cfg(windows)]
 
 pub mod ntfs;
+pub mod cleanup;
+pub mod mft_space;
 pub mod directory;
 pub mod persistence;
 pub mod crash;
@@ -9,6 +11,11 @@ pub mod recycle;
 pub mod integration;
 pub mod metadata;
 pub mod media;
+pub mod pdf;
+pub mod process_job;
+pub mod vault_safety;
+pub mod vault_driver;
+pub mod data_protection;
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;

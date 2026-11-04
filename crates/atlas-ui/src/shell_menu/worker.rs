@@ -186,7 +186,16 @@ unsafe fn drain_requests(hwnd: HWND) {
         let req = WORKER.with(|w| {
             w.borrow()
                 .as_ref()
-                .and_then(|ws| ws.requests.lock().ok().and_then(|mut q| q.pop_front()))
+                .and_then(|ws| {
+                    ws.requests.lock().ok().and_then(|mut q| {
+                        // Real requests jump ahead of background prewarming.
+                        let pos = q
+                            .iter()
+                            .position(|r| !matches!(r, ShellMenuRequest::Prewarm { .. }))
+                            .unwrap_or(0);
+                        q.remove(pos)
+                    })
+                })
         });
         let Some(req) = req else { break };
         process(hwnd, req);
@@ -213,6 +222,13 @@ unsafe fn process(hwnd: HWND, req: ShellMenuRequest) {
         } => {
             let result = invoke(hwnd, id, item_id, screen_pt);
             push_event(ShellMenuEvent::InvokeDone { id, result });
+        }
+        ShellMenuRequest::Prewarm { key, path } => {
+            if let Some((_menu, items)) = build_menu(hwnd, 0, &[path]) {
+                if !items.is_empty() {
+                    push_event(ShellMenuEvent::Prewarmed { key, items });
+                }
+            }
         }
         ShellMenuRequest::Dismiss { id } => {
             WORKER.with(|w| {

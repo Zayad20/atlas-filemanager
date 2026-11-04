@@ -1,0 +1,252 @@
+{
+  "updated": "2026-10-31",
+  "operator": "Cuber Labs (Atlas File Manager)",
+  "contact": "support@modhyt.org",
+  "privacy-policy": {
+    "title": "Privacy Policy",
+    "description": "How Atlas File Manager and the Atlas website process local files, cloud connections, purchases and personal information.",
+    "sections": [
+      {
+        "title": "1. Who we are and how to contact us",
+        "paragraphs": [
+          "This policy covers Atlas File Manager and atlasnative.com, including the current website and its static edge version. Cuber Labs, the publisher of Atlas File Manager, operates the Atlas product and website. For privacy questions or requests, email support@modhyt.org. You do not need a Discord account to exercise your privacy rights."
+        ]
+      },
+      {
+        "title": "2. Files and information processed on your device",
+        "paragraphs": [
+          "Atlas accesses the files, folders and storage locations you browse or choose to manage. Depending on the action, this includes file contents, names, paths, sizes, timestamps, previews and other metadata. File paths and contents can contain personal information.",
+          "Local browsing, search, file operations, previews, conversion, cleanup and encryption run on your device. Atlas does not upload your local files to an Atlas server for those operations. Optional tools and external applications you choose to use have their own behavior and terms.",
+          "Atlas saves preferences, tabs and sessions, profiles, bookmarks, tags and search data locally. Cloud settings, transfer journals, temporary remote-file previews and technical diagnostic logs may also be stored locally. Logs can contain paths and error details. Do not post a log publicly without checking it for private information.",
+          "Private-folder encryption is local. Mounting a private folder as a Windows filesystem uses optional WinFsp integration. If it is missing and you choose Download and install WinFsp, Atlas downloads a pinned official installer, verifies its SHA-256 and asks Windows to run it. Windows may request administrator approval. After successful installation Atlas retries mounting the folder. Cancellation preserves your encrypted folder; a restart may sometimes be required. When you open a file with another application or copy it out of a private folder, that application or destination can retain unencrypted data. Keep independent backups and protect your passphrase."
+        ]
+      },
+      {
+        "title": "3. Cloud, network and third-party connections",
+        "paragraphs": [
+          "If you connect a cloud account, SFTP/FTP server, network share or other remote location, Atlas and its provider tools communicate with the service you selected. Listing, previewing, downloading, uploading, copying or synchronizing remote files can transmit file names, paths, metadata and file contents to or from that service. Existing connections may reconnect or mount automatically when you have enabled that option.",
+          "Authorization may involve the provider's sign-in page, OAuth tokens, server addresses or credentials. Connection information is stored locally by Atlas and its provider tools. Remove a saved connection in Atlas and revoke its authorization at the provider to stop future authorized access. Previously uploaded files remain subject to that provider's retention and deletion controls.",
+          "Use encrypted services such as HTTPS, SFTP or FTPS where available. Plain FTP does not provide transport encryption. Cloud providers, remote servers, external preview/conversion tools and applications you launch process data under their own policies. Atlas does not control those services."
+        ]
+      },
+      {
+        "title": "4. Updates, downloads and desktop diagnostics",
+        "paragraphs": [
+          "Atlas checks for updates over HTTPS when it starts. The update server receives the connection's IP address, request time and technical request information, including the Atlas version in the User-Agent. This check does not send a list of your files or their contents.",
+          "When you request an extension, icon theme or optional tool, Atlas contacts its catalog and download hosts, which may include Cloudflare, GitHub, Open VSX and the tool's publisher. Those services receive ordinary network request information. Requesting WinFsp installation contacts its official GitHub download service.",
+          "The desktop application does not currently send background usage analytics or automatically upload local diagnostic logs to Atlas. If you send a screenshot, log, file or support request yourself, we process what you send to help resolve that request. Please remove unrelated personal information before sending support material."
+        ]
+      },
+      {
+        "title": "5. Website analytics and your choices",
+        "paragraphs": [
+          "The website uses Cloudflare for hosting, security and delivery. We use PostHog and OpenPanel to measure page visits and interactions such as opening pricing, requesting access and starting checkout. Depending on the provider, technical data can include IP address, browser and operating-system information, referring page, page URL, event time and a browser/device identifier. We do not describe this information as necessarily anonymous.",
+          "Optional website analytics are disabled until you choose Allow analytics. You can choose Essential only and change your choice using Privacy choices in the footer. We also honor Global Privacy Control and Do Not Track by keeping optional analytics disabled. The preference is stored locally in your browser. Essential security, checkout and email-confirmation requests still operate when analytics are disabled.",
+          "We disable PostHog session recording, form autocapture and automatic exception capture in the website client. We do not intentionally send email addresses, payment-card data, file contents, confirmation tokens or private-folder passwords to analytics. Confirmation and unsubscribe pages do not initialize optional analytics.",
+          "We retain website analytics only for the measurement and troubleshooting purposes described here. The applicable retention period depends on the provider's project settings and legal requirements. Contact support@modhyt.org for information about the current period or a deletion request. You can block optional scripts in your browser."
+        ]
+      },
+      {
+        "title": "6. Email updates and abuse prevention",
+        "paragraphs": [
+          "If you request email updates, we process your email address, subscription preferences, consent wording and version, request date, and confirmation or unsubscribe dates. The subscription requires an explicit checkbox and email confirmation. Each marketing email includes an unsubscribe link.",
+          "Cloudflare Turnstile helps prevent abuse, Cloudflare D1 stores subscription records and hashed confirmation tokens, and Resend delivers requested confirmation messages and updates. These services may process data outside your country. Turnstile and hosting services can process IP addresses and browser information for security.",
+          "Unconfirmed subscription requests are deleted after seven days. Confirmed subscriptions are kept while active. After unsubscribe, we retain only the information needed to suppress further marketing and record the withdrawal of consent, subject to any applicable legal obligations. Short-lived rate-limit counters use a keyed daily hash of the IP address; raw IP addresses are not stored in subscription records."
+        ]
+      },
+      {
+        "title": "7. Purchases, licenses and support",
+        "paragraphs": [
+          "Website purchases are handled through Polar. Polar and its payment processors handle checkout, billing, tax and payment information under their own terms and privacy notices. Atlas may receive the buyer's email, product and order identifiers, purchase/refund status and information needed to deliver the purchased entitlement and provide support. Atlas does not receive your full payment-card number through its website checkout.",
+          "Purchases through Microsoft Store are processed by Microsoft under its terms and privacy policy. The entitlement, price and refund route for a Store purchase are those shown in the Store offer. An external website purchase is a separate transaction.",
+          "We keep purchase and support records for fulfillment, refunds, fraud prevention, accounting and applicable legal obligations. Requests to delete data may be limited where records must be retained by law. We do not sell your personal information or use it for cross-site behavioral advertising."
+        ]
+      },
+      {
+        "title": "8. Purposes, security and international processing",
+        "paragraphs": [
+          "We process information to provide the actions and communications you request, fulfill purchases, maintain security, resolve support issues, meet legal duties and, with your choice, understand website use. Where applicable, the legal bases include contract performance, consent, legal obligations and legitimate interests in service security and support.",
+          "We use HTTPS for Atlas-operated network services and access controls for service data. Local files remain subject to your Windows account permissions and device security. No storage or transmission method is risk-free. Providers may process information in Mexico, the United States or other countries; protections and available rights may differ. We use appropriate contractual safeguards where required."
+        ]
+      },
+      {
+        "title": "9. Access, deletion and other rights",
+        "paragraphs": [
+          "Depending on your location, you may request access, correction, deletion, portability or restriction of processing, object to processing, or withdraw consent. In Mexico these include rights of access, rectification, cancellation and opposition (ARCO). Email support@modhyt.org, describe the request and identify the email address or order involved. We may ask for proportionate information to verify your identity. You may also contact the competent data-protection authority.",
+          "You control local files and Atlas settings on your device. Uninstalling an application may leave user-created files, encrypted containers, downloaded tools, configuration folders or logs. Remove those separately only after backing up anything you want to keep. Disconnecting a remote account does not delete copies already stored by its provider.",
+          "Atlas is a general-purpose file utility and is not directed at children under 13. If you believe a child has supplied personal information to our website without the required authorization, contact us so we can investigate and remove it where appropriate."
+        ]
+      },
+      {
+        "title": "10. Changes and service-provider notices",
+        "paragraphs": [
+          "We update this policy when the product or its data practices change. The date above identifies this version. Material changes requiring new consent will not rely on an earlier consent."
+        ],
+        "links": [
+          {
+            "label": "Cloudflare privacy policy",
+            "href": "https://www.cloudflare.com/privacypolicy/"
+          },
+          {
+            "label": "PostHog privacy policy",
+            "href": "https://posthog.com/privacy"
+          },
+          {
+            "label": "OpenPanel privacy policy",
+            "href": "https://openpanel.dev/privacy"
+          },
+          {
+            "label": "Resend privacy policy",
+            "href": "https://resend.com/legal/privacy-policy"
+          },
+          {
+            "label": "Polar privacy policy",
+            "href": "https://polar.sh/legal/privacy-policy"
+          },
+          {
+            "label": "Microsoft privacy statement",
+            "href": "https://privacy.microsoft.com/privacystatement"
+          }
+        ]
+      }
+    ]
+  },
+  "terms-of-service": {
+    "title": "Terms of Service",
+    "description": "Terms for the Atlas website, alpha access, paid plans, purchases, third-party components and support.",
+    "sections": [
+      {
+        "title": "1. Scope and contact",
+        "paragraphs": [
+          "These terms apply to the Atlas website, alpha-access program and purchases offered by Cuber Labs, the publisher of Atlas File Manager. Contact support@modhyt.org for support, license delivery, refunds or questions about these terms. The privacy policy explains how personal information is processed.",
+          "The software license supplied with your build governs use of the application. These website terms do not replace that license, a third-party component's license, or mandatory consumer rights. If a provision conflicts with rights granted by an applicable open-source license, those license rights prevail."
+        ]
+      },
+      {
+        "title": "2. Alpha access and product availability",
+        "paragraphs": [
+          "Atlas is under active development. Windows alpha invitations are released in cohorts. Joining the free alpha does not require buying a paid plan, and a paid plan does not promise an immediate invitation unless the offer expressly says so. A downloaded free alpha version does not expire merely because the alpha program ends.",
+          "Alpha software can contain defects, incomplete functions and compatibility limitations. Back up important files before using file operations, cleanup, conversion or encryption. Review deletion and overwrite confirmations and protect encryption passphrases. Performance examples describe particular tests and are not guaranteed on every computer.",
+          "Features and operating-system support are those documented for the build you receive. Linux is in development and macOS is on the roadmap; a roadmap item is not a currently delivered feature or a guaranteed release date."
+        ]
+      },
+      {
+        "title": "3. Paid website plans and included rights",
+        "paragraphs": [
+          "Founding License is a one-time purchase covering the offer for one Windows PC, priority alpha-cohort invitation and the final 1.0 license. Lifetime Pro covers the offer for up to three Windows PCs and includes future major upgrades and Pro features as they are released. Current features, price, taxes and the selected plan are shown before payment. There is no recurring subscription for these plans.",
+          "Lifetime refers to the permanent entitlement for the purchased software versions and the upgrades expressly included in the offer. It does not guarantee perpetual hosting, indefinite support or delivery of every roadmap proposal. An unreleased Pro feature must be described as upcoming, not as available today.",
+          "Commercial use is permitted under the software license applicable to your copy. Buying a plan does not remove rights already granted by the AGPL, GPL, MPL or other applicable open-source licenses. Device counts describe paid-plan entitlements and support; they do not impose additional restrictions on copying or modifying components under their open-source licenses.",
+          "Free and Full builds may have different limits. Where the Free edition is offered, it permits one saved connection, one profile, up to 25 files per batch rename and one source file per conversion operation. A build change may be required to obtain Full features; a purchase must not be presented as an automatic in-app unlock unless that activation method is actually available. Your purchase confirmation and the offer identify the delivery method and entitlement."
+        ]
+      },
+      {
+        "title": "4. Checkout, delivery and refunds",
+        "paragraphs": [
+          "Polar handles website checkout and payment processing. Review the total amount, currency, taxes and applicable checkout terms before paying. If checkout cannot confirm the advertised offer, do not proceed; contact support@modhyt.org. Keep your order confirmation so we can help with delivery or a refund.",
+          "Website plans advertised with a 14-day money-back guarantee can be refunded by contacting support@modhyt.org within 14 days of purchase and providing the order identifier or purchase email. This guarantee is additional to mandatory consumer rights, including any applicable withdrawal or refund rights. We do not require you to post private payment information publicly.",
+          "Microsoft Store purchases are separate from purchases on this website. The Store listing specifies the price and entitlement for that channel; Microsoft handles its checkout and refund process. Do not assume that an external plan is included in a Store purchase unless its listing explicitly says so. These terms do not restrict rights granted by Microsoft's applicable customer terms."
+        ]
+      },
+      {
+        "title": "5. Third-party software and optional services",
+        "paragraphs": [
+          "Atlas includes third-party libraries, fonts, icons and tools. Their copyright notices and license terms are provided with the application and on the Third-party licenses page. They remain under their respective licenses; the Atlas website terms do not relicense them.",
+          "The repository identifies Atlas workspace code as AGPL-3.0-or-later. Components with copyleft licenses may require corresponding source and other materials to accompany distribution. The license and source information supplied with the exact release determine those rights; a plan purchase does not waive them.",
+          "Cloud accounts, external applications and downloaded extensions or conversion tools are optional and can have their own licenses, requirements and fees. You authorize data transfers when you connect a service or request an operation involving it. You are responsible for having permission to access and manage those files.",
+          "Mounting encrypted private folders on Windows uses WinFsp, an optional filesystem driver. Atlas can run without it. If you request installation, Atlas downloads the pinned official installer, verifies its SHA-256 and launches Windows Installer with a progress interface. Review WinFsp's license before choosing installation and approve any Windows administrator prompt yourself. Device policies, cancellation or a required restart can prevent immediate mounting. The driver and the Rust bindings have their own license terms."
+        ]
+      },
+      {
+        "title": "6. Acceptable use and intellectual property",
+        "paragraphs": [
+          "Use Atlas and the website lawfully. Do not use them to access files or accounts without authorization, introduce malware, attack the service or infringe another person's rights. Keep copyright and license notices where the applicable license requires them.",
+          "Atlas branding, website materials and third-party marks remain with their respective owners. This does not limit modification, redistribution, reverse engineering or other activities permitted by the software's applicable license or mandatory law. A third-party logo or resource does not imply endorsement of Atlas."
+        ]
+      },
+      {
+        "title": "7. Support, warranties and liability",
+        "paragraphs": [
+          "We provide support through support@modhyt.org and the official community. We do not promise a particular response time unless a specific support agreement provides one. Report suspected security issues privately to support@modhyt.org and avoid sending unrelated confidential files.",
+          "To the extent permitted by law and subject to your purchase terms and mandatory consumer rights, development builds and website materials are provided as available without a guarantee of uninterrupted operation or fitness for a particular purpose. Nothing in these terms excludes rights or liabilities that the law does not allow us to exclude. Applicable open-source license warranty and liability provisions continue to govern their components.",
+          "Backups, confirmation prompts and encryption do not eliminate all risks. If an operation fails, stop and contact support before repeating actions that could overwrite or delete data."
+        ]
+      },
+      {
+        "title": "8. Changes, service discontinuation and disputes",
+        "paragraphs": [
+          "The date above identifies these terms. Changes to the website do not retroactively remove a purchased entitlement, an existing open-source license right or a mandatory consumer right. Material changes to an ongoing service will be communicated where required.",
+          "If a product or service is discontinued, we will provide the notices and remedies required by law and the applicable purchase terms. A permanent license to an already delivered version is not converted into a subscription by discontinuation.",
+          "Contact support@modhyt.org first so we can try to resolve a problem. These terms do not require arbitration, waive statutory remedies or prevent you from using courts or consumer-protection authorities available under applicable law."
+        ]
+      }
+    ]
+  },
+  "third-party-licenses": {
+    "title": "Third-party licenses",
+    "description": "Copyright notices and licenses for Atlas dependencies, fonts, icons and optional tools.",
+    "sections": [
+      {
+        "title": "Notices distributed with Atlas",
+        "paragraphs": [
+          "Atlas uses third-party software and creative resources. The downloadable notices preserve the upstream copyright and license texts. The inventory also includes development and optional dependencies, so inclusion in that inventory does not mean a component ships in every build. Components remain under their respective licenses.",
+          "The application provides an offline copy from Settings → About → Third-party licenses. Notices alone do not replace any corresponding-source obligation under the AGPL, GPL or MPL. Consult the materials supplied with the exact release. Questions: support@modhyt.org."
+        ],
+        "links": [
+          {
+            "label": "Download copyright notices and license texts",
+            "href": "/legal/THIRD-PARTY-NOTICES.txt"
+          }
+        ]
+      },
+      {
+        "title": "Icons and typefaces",
+        "paragraphs": [
+          "Atlas uses Phosphor Icons under the MIT license, Geist and Geist Mono under the SIL Open Font License, and Icons8 Liquid Glass artwork under Icons8's terms. Icons8 artwork is credited in the application. Website fonts and icon libraries are also covered by the notices. No third-party provider is represented as endorsing Atlas."
+        ],
+        "links": [
+          {
+            "label": "Icons8 — icon artwork",
+            "href": "https://icons8.com"
+          },
+          {
+            "label": "Phosphor Icons",
+            "href": "https://phosphoricons.com"
+          },
+          {
+            "label": "Geist typefaces",
+            "href": "https://github.com/vercel/geist-font"
+          }
+        ]
+      },
+      {
+        "title": "Optional components",
+        "paragraphs": [
+          "WinFsp, cloud providers, icon themes and external conversion engines may be installed separately. They have their own licenses and notices. Installing a component separately does not change the license of code already distributed in Atlas.",
+          "WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos."
+        ],
+        "links": [
+          {
+            "label": "WinFsp official downloads",
+            "href": "https://winfsp.dev/rel/"
+          },
+          {
+            "label": "WinFsp source and license",
+            "href": "https://github.com/winfsp/winfsp"
+          }
+        ]
+      },
+      {
+        "title": "Bundled rclone Go dependencies",
+        "paragraphs": [
+          "The packaged rclone v1.74.4 executable records 242 Go dependencies. Their original notices, plus the Go standard-library license, are provided separately from the Rust and website dependency inventory."
+        ],
+        "links": [
+          {
+            "label": "rclone and Go dependency notices",
+            "href": "/legal/RCLONE-THIRD-PARTY-NOTICES.txt"
+          }
+        ]
+      }
+    ]
+  }
+}

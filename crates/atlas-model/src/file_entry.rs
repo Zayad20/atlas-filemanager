@@ -250,22 +250,22 @@ fn lowercase_compact(text: &str) -> CompactString {
     }
 }
 
-pub fn file_category(kind: &FileKind, ext: Option<&str>) -> String {
+pub fn file_category(kind: &FileKind, ext: Option<&str>) -> &'static str {
     match kind {
-        FileKind::Dir => rust_i18n::t!("file_kind_folder").into_owned(),
-        FileKind::Symlink => rust_i18n::t!("file_kind_symlink").into_owned(),
+        FileKind::Dir => "file_kind_folder",
+        FileKind::Symlink => "file_kind_symlink",
         FileKind::File => {
             let Some(e) = ext else {
-                return rust_i18n::t!("file_kind_file").into_owned();
+                return "file_kind_file";
             };
             match e.to_ascii_lowercase().as_str() {
                 "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "tif" | "tiff"
-                | "avif" | "heic" | "heif" | "svg" => rust_i18n::t!("file_kind_image").into_owned(),
+                | "avif" | "heic" | "heif" | "svg" => "file_kind_image",
                 "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "wma" | "opus" => {
-                    rust_i18n::t!("file_kind_audio").into_owned()
+                    "file_kind_audio"
                 }
                 "mp4" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "m4v" | "flv" => {
-                    rust_i18n::t!("file_kind_video").into_owned()
+                    "file_kind_video"
                 }
                 "rs" | "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "mts" | "cts" | "py"
                 | "pyw" | "go" | "java" | "c" | "cc" | "cpp" | "cxx" | "h" | "hpp" | "cs"
@@ -274,22 +274,22 @@ pub fn file_category(kind: &FileKind, ext: Option<&str>) -> String {
                 | "scala" | "ex" | "exs" | "clj" | "hs" | "ml" | "html" | "htm" | "xhtml"
                 | "xml" | "vue" | "svelte" | "astro" | "css" | "scss" | "sass" | "less"
                 | "json" | "jsonc" | "json5" | "yaml" | "yml" | "toml" | "sql" | "graphql"
-                | "gql" | "dockerfile" | "makefile" => rust_i18n::t!("file_kind_code").into_owned(),
+                | "gql" | "dockerfile" | "makefile" => "file_kind_code",
                 "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "tgz" | "zst" => {
-                    rust_i18n::t!("file_kind_archive").into_owned()
+                    "file_kind_archive"
                 }
                 "doc" | "docx" | "odt" | "rtf" | "pdf" | "txt" | "md" | "markdown" | "rst"
-                | "tex" => rust_i18n::t!("file_kind_document").into_owned(),
+                | "tex" => "file_kind_document",
                 "xls" | "xlsx" | "csv" | "tsv" | "ods" | "numbers" => {
-                    rust_i18n::t!("file_kind_spreadsheet").into_owned()
+                    "file_kind_spreadsheet"
                 }
                 "ppt" | "pptx" | "odp" | "key" => {
-                    rust_i18n::t!("file_kind_presentation").into_owned()
+                    "file_kind_presentation"
                 }
                 "exe" | "msi" | "app" | "dmg" | "deb" | "rpm" => {
-                    rust_i18n::t!("file_kind_application").into_owned()
+                    "file_kind_application"
                 }
-                _ => rust_i18n::t!("file_kind_file").into_owned(),
+                _ => "file_kind_file",
             }
         }
     }

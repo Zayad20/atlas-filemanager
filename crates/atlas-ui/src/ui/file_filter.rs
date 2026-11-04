@@ -57,6 +57,43 @@ impl App {
         self.file_filter_projections[&pane].visible.clone()
     }
 
+    /// Headers + entries for a grouped pane in the view's own cell flow.
+    pub(crate) fn grouped_cells(
+        &mut self,
+        pane: TabId,
+        flow: atlas_model::grouping::GroupFlow,
+    ) -> Option<Arc<atlas_model::grouping::GroupCells>> {
+        let state = self.state.tab_states.get_mut(&pane)?;
+        (state.group_by != atlas_model::tab::GroupBy::None).then(|| state.grouped_cells_shared(flow))
+    }
+
+    /// Position space of the pane's IMM view: grouped Details/List get their
+    /// header cells, everything else the plain visible order.
+    pub(crate) fn view_cells(&mut self, pane: TabId) -> Arc<Vec<usize>> {
+        let flow = match self.tab_data_for(pane).map(|tab| tab.view_mode.clone()) {
+            Some(ViewMode::Details) => Some(atlas_model::grouping::GroupFlow::Rows),
+            Some(ViewMode::Grid) => Some(atlas_model::grouping::GroupFlow::Wrap {
+                cols: self.grid_hit.get(&pane).map_or(1, |model| model.cols.max(1)),
+            }),
+            Some(ViewMode::List) => Some(atlas_model::grouping::GroupFlow::Columns {
+                rows: self.list_hit.get(&pane).map_or(2, |model| model.major_rows),
+            }),
+            _ => None,
+        };
+        match flow.and_then(|flow| self.grouped_cells(pane, flow)) {
+            Some(groups) => groups.cells.clone(),
+            None => self.flat_visible_indices(pane),
+        }
+    }
+
+    /// Cell position of the `visible_pos`-th file of the entry-only order.
+    pub(crate) fn cell_position(&mut self, pane: TabId, visible_pos: usize) -> usize {
+        let Some(entry) = self.flat_visible_indices(pane).get(visible_pos).copied() else {
+            return visible_pos;
+        };
+        self.view_cells(pane).iter().position(|cell| *cell == entry).unwrap_or(visible_pos)
+    }
+
     pub(crate) fn flat_visible_counts(&mut self, pane: TabId) -> VisibleCounts {
         self.flat_visible_indices(pane);
         self.file_filter_projections.get(&pane).map(|projection| projection.counts)

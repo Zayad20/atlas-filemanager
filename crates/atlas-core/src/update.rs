@@ -16,6 +16,11 @@ pub const RELEASES_URL: &str = match option_env!("ATLAS_RELEASES_URL") {
     None => "https://github.com/neondeex/atlas-filemanager/releases",
 };
 
+pub const SOURCE_URL: &str = match option_env!("ATLAS_SOURCE_URL") {
+    Some(url) => url,
+    None => "https://github.com/neondeex/atlas-filemanager",
+};
+
 #[cfg(not(windows))]
 const RELEASE_API: &str = match option_env!("ATLAS_RELEASE_API") {
     Some(url) => url,

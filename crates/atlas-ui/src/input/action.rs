@@ -182,6 +182,8 @@ pub enum Action {
     },
     SetGroupBy(atlas_model::tab::GroupBy),
     ToggleGroup { tab: TabId, id: String },
+    /// Open (`false`) or close (`true`) every group of the focused pane.
+    SetAllGroupsCollapsed(bool),
     OpenGotoBar,
     ClosePalette,
     OpenPalette,
@@ -213,7 +215,21 @@ pub enum Action {
     OpenConverter,
     OpenSettings,
     OpenSettingsAbout,
+    /// Activate the Polar license key currently on the clipboard.
+    ActivateLicense,
+    /// Release this device's license activation so the key can move to another PC.
+    DeactivateLicense,
+    /// Open the Premium purchase options.
+    GetPremium,
     OpenGettingStarted,
+    OpenGuide(usize),
+    CloseGuide,
+    SetGuideTopic(usize),
+    /// Close the guide and watch the user practise the topic's steps.
+    StartGuideCoach(usize),
+    StopGuideCoach,
+    /// Download + activate an Open VSX icon theme (`icon-manager.download-*` command id).
+    DownloadIconTheme(String),
     StartGettingStarted,
     CloseGettingStarted,
     OpenExtManager,

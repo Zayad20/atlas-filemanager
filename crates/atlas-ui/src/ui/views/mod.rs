@@ -11,67 +11,82 @@ use atlas_model::location::Location;
 use atlas_model::pane::TabId;
 use atlas_model::tab::LoadState;
 use gpui::prelude::*;
-use gpui::{ClickEvent, Div, Entity, MouseButton, MouseDownEvent, Stateful, Window};
+use gpui::{Div, Entity, MouseButton, MouseDownEvent, Stateful, Window};
 use gpui_component::ElementExt;
 use std::path::PathBuf;
 
 pub mod crumb_strip_element;
+#[cfg(feature = "ui-lab")]
+pub mod chrome_diagnostic;
 pub mod details;
 pub mod details_imm;
 pub mod details_element;
 pub mod details_header_element;
 pub mod details_ring;
-pub mod grid;
+#[cfg(all(feature = "ui-lab", feature = "provider-host"))]
+pub mod cloud_diagnostic;
+pub mod grid_deprecated;
 pub mod grid_imm;
-pub mod grid_surface_element;
-pub mod grouped;
-pub mod list;
+pub mod grid_surface_element_deprecated;
+#[cfg(feature = "ui-lab")]
+pub mod selection_diagnostic;
+pub mod list_deprecated;
 pub mod list_imm;
-pub mod miller;
+pub mod miller_deprecated;
 pub mod miller_imm;
+mod batch_row;
 mod rename;
 pub mod space_lens;
 pub mod tabs_bar_element;
-pub mod tree;
+pub mod tree_deprecated;
 pub mod tree_imm;
-pub mod virtual_grid;
+pub(crate) mod transition;
+#[cfg(feature = "ui-lab")]
+pub use transition::diagnostic as view_controls_diagnostic;
+pub mod virtual_grid_deprecated;
 
-/// Shared entry click handler: double-click activates, single click selects
-/// (shift/ctrl aware), and an in-flight rename is committed first. Used by the
-/// grid/list/details views (miller has its own column-based actions).
+/// Element-backed rows use the same pointer policy as the canvas renderers.
+/// Apply selection once on mouse-down; mouse-up belongs to the global gesture
+/// motor so a marquee never becomes another click or toggles a Ctrl selection.
+pub(super) fn on_entry_mouse_down(
+    view: &Entity<App>,
+    pane_id: TabId,
+    entry_idx: usize,
+) -> impl Fn(&MouseDownEvent, &mut Window, &mut gpui::App) + 'static {
+    let v = view.clone();
+    move |ev, _window, cx| {
+        let m = ev.modifiers;
+        let (shift, ctrl) = (m.shift, m.control || m.platform);
+        v.update(cx, |this, cx| {
+            this.selection_left_mouse_down(
+                crate::app::RubberTarget::Pane(pane_id),
+                Some(entry_idx),
+                ev.position,
+                shift,
+                ctrl,
+                ev.click_count,
+                cx,
+            );
+        });
+        cx.stop_propagation();
+    }
+}
+
 pub(super) fn on_entry_click(
     view: &Entity<App>,
     pane_id: TabId,
     entry_idx: usize,
-) -> impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static {
+) -> impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static {
     let v = view.clone();
     move |ev, _window, cx| {
         let m = ev.modifiers();
         let (shift, ctrl) = (m.shift, m.control || m.platform);
         let activate = ev.click_count() >= 2;
         v.update(cx, |this, cx| {
-            if this.suppress_navigation_double_click(pane_id, ev.position(), ev.click_count()) { return; }
-            let activate = activate || this.state.settings.single_click_opens_folder(
-                this.state.tab_states.get(&pane_id).and_then(|tab| tab.entries.get(entry_idx))
-                    .is_some_and(|entry| entry.kind() == atlas_model::file_entry::FileKind::Dir), ev.click_count(), shift || ctrl);
             if this.rename_edit.is_some() {
                 this.commit_rename(cx);
             }
-            if let Some(state) = this.state.tab_states.get_mut(&pane_id) {
-                let selected = state.selection.selected.contains(&entry_idx) && state.selection.selected.len() == 1;
-                let slow = state.selection.slow_rename_click(entry_idx, std::time::Instant::now(), !activate && !shift && !ctrl);
-                if slow && selected {
-                    if let Some(entry) = state.entries.get(entry_idx) {
-                        this.pending_rename = Some((pane_id, entry.path(), false));
-                    }
-                }
-            }
             if activate {
-                if ev.click_count() == 1 {
-                    this.recent_folder_navigation = Some(crate::ui::click_navigation::NavigationClick {
-                        pane: pane_id, origin: ev.position(), at: std::time::Instant::now(),
-                    });
-                }
                 this.process_actions(vec![Action::Activate {
                     tile: pane_id,
                     idx: entry_idx,
@@ -89,35 +104,29 @@ pub(super) fn on_entry_click(
     }
 }
 
+
 pub(super) fn on_pane_rubber_mouse_down(
     view: &Entity<App>,
     pane_id: TabId,
 ) -> impl Fn(&MouseDownEvent, &mut Window, &mut gpui::App) + 'static {
     let rubber_view = view.clone();
     move |ev, _window, cx| {
-        let (pos, additive) = (
-            ev.position,
-            ev.modifiers.control || ev.modifiers.platform || ev.modifiers.shift,
-        );
         rubber_view.update(cx, |this, cx| {
-            if this.suppress_navigation_double_click(pane_id, ev.position, ev.click_count) { return; }
-            if this.rename_edit.is_some() {
-                this.commit_rename(cx);
-            }
-            if ev.click_count >= 2 && !additive {
-                this.rubber = None;
-                this.pending_folder_click = None;
-                this.activate_tab(pane_id);
-                this.process_actions([Action::NavigateUp(pane_id)]);
-                this.notify_pane(pane_id, cx);
-                return;
-            }
-            this.begin_rubber(pane_id, pos, additive);
-            cx.notify();
+            this.selection_left_mouse_down(
+                crate::app::RubberTarget::Pane(pane_id),
+                None,
+                ev.position,
+                ev.modifiers.shift,
+                ev.modifiers.control || ev.modifiers.platform,
+                ev.click_count,
+                cx,
+            );
         });
         cx.stop_propagation();
     }
 }
+
+
 
 /// Shared right-click handler: select the target (keeping multi-selection when
 /// clicked inside it) and open the shell context menu at the cursor.
@@ -138,6 +147,8 @@ pub(super) fn on_entry_ctx_menu(
         cx.stop_propagation();
     }
 }
+
+
 
 /// Shared folder drop target: dim on drag-over, record the hover zone for
 /// spring-loaded navigation, and accept both intra-Atlas and external drops
@@ -188,7 +199,7 @@ pub(super) fn folder_drop_target(
 /// Shared empty-space / background interactions for a pane container, applied
 /// identically by every view renderer (grid, list, details, miller):
 /// - Left mousedown: commit any in-flight rename, start rubber-band selection
-///   (no-op in Miller; a plain click with no drag clears the selection).
+///   (Miller columns route through their own selection target).
 /// - Right mousedown: background context menu for filesystem locations.
 /// - Drops on empty space: routed through `drop_files_on_pane` (which handles
 ///   Directory/Tag/RecycleBin/Archive/Remote semantics centrally).
@@ -294,6 +305,67 @@ pub(super) fn should_suppress_loading(location: &Location) -> bool {
 }
 
 impl App {
+    /// Tree indexes refer to expanded visible rows rather than flat entries.
+    /// Keep its activation behavior here while sharing the selection model and
+    /// the pane's single rubber-band motor with every other view.
+    pub(crate) fn tree_entry_left_mouse_down(
+        &mut self,
+        pane: TabId,
+        index: usize,
+        path: PathBuf,
+        is_dir: bool,
+        pos: gpui::Point<gpui::Pixels>,
+        shift: bool,
+        ctrl: bool,
+        click_count: usize,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        self.pending_folder_click = None;
+        if self.suppress_navigation_double_click(pane, pos, click_count) {
+            return;
+        }
+        if self.rename_edit.is_some() {
+            self.commit_rename(cx);
+        }
+        if self.ctx_menu.is_some() {
+            return;
+        }
+        self.activate_tab(pane);
+        if self.state.settings.single_click_opens_folder(is_dir, click_count, shift || ctrl) {
+            self.queue_tree_folder_click(pane, index, path, pos);
+        } else if click_count >= 2 && !shift && !ctrl {
+            if is_dir {
+                self.process_actions([Action::ToggleTreeExpand(path)]);
+            } else {
+                let archive_root = self.state.tab_states.get(&pane)
+                    .and_then(|tab| tab.visible_tree_rows_snapshot().get(index).map(|row| row.0.archive_root()))
+                    .flatten();
+                self.activate_file_path(pane, path, archive_root);
+            }
+        } else {
+            let selected = self.state.tab_states.get(&pane)
+                .is_some_and(|tab| tab.selection.selected.contains(&index));
+            let selected_click = selected && self.state.tab_states.get(&pane).is_some_and(|tab| tab.selection.selected.len() > 1);
+            if (!selected || selected_click) && !shift && !ctrl {
+                self.begin_rubber(pane, pos, false);
+                if selected_click { if let Some(r) = self.rubber.as_mut() { r.selected_click = Some(index); } }
+            }
+            if let Some(tab) = self.state.tab_states.get_mut(&pane) {
+                let sole = selected && tab.selection.selected.len() == 1;
+                let slow = tab.selection.slow_rename_click(index, std::time::Instant::now(), !shift && !ctrl);
+                if slow && sole {
+                    self.pending_rename = Some((pane, path, false));
+                }
+                if !selected || shift || ctrl {
+                    let visible: Vec<_> = (0..tab.visible_tree_rows_snapshot().len()).collect();
+                    tab.selection.select(index, &visible, shift, ctrl);
+                }
+            }
+        }
+        self.notify_pane(pane, cx);
+        cx.notify();
+    }
+
     pub(super) fn empty_pane_message(
         &self,
         pane_id: TabId,

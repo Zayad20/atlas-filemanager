@@ -25,6 +25,13 @@ pub enum TagDbCmd {
         color: [u8; 3],
         profile: Option<String>,
     },
+    /// Create a definition and assign it to the picker targets in one transaction.
+    CreateAndAssignTag {
+        name: String,
+        color: [u8; 3],
+        profile: Option<String>,
+        paths: Vec<PathBuf>,
+    },
     RenameTag {
         tag: TagId,
         name: String,
@@ -44,6 +51,8 @@ pub enum TagDbCmd {
         old: PathBuf,
         new: PathBuf,
     },
+    /// Remove plaintext path references after a verified private-folder migration.
+    ForgetSubtree(PathBuf),
     // --- reads (reply via BgResult) ---
     QueryTagsForPaths(Vec<PathBuf>),
     QueryPathsForTag(TagId),
@@ -145,12 +154,16 @@ fn handle(
             color,
             profile,
         } => {
-            conn.execute(
-                "INSERT OR IGNORE INTO tags (name, color_r, color_g, color_b, profile)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![name, color[0], color[1], color[2], profile],
-            )?;
+            create_tag_with_paths(conn, &name, color, profile.as_deref(), &[])?;
             send_defs(conn, bg_tx)?;
+        }
+        TagDbCmd::CreateAndAssignTag { name, color, profile, mut paths } => {
+            paths.retain(|path| !crate::vault::live::is_private(path));
+            let tag = create_tag_with_paths(conn, &name, color, profile.as_deref(), &paths)?;
+            send_defs(conn, bg_tx)?;
+            if !paths.is_empty() {
+                let _ = bg_tx.send(BgResult::TagAssignmentComplete { tag, paths, result: Ok(()) });
+            }
         }
         TagDbCmd::DeleteTag(id) => {
             conn.execute("DELETE FROM tags WHERE id = ?1", [id.0])?;
@@ -163,7 +176,8 @@ fn handle(
             )?;
             send_defs(conn, bg_tx)?;
         }
-        TagDbCmd::AssignTag { tag, paths } => {
+        TagDbCmd::AssignTag { tag, mut paths } => {
+            paths.retain(|path| !crate::vault::live::is_private(path));
             let result = (|| -> rusqlite::Result<()> {
                 let tx = conn.unchecked_transaction()?;
                 {
@@ -187,6 +201,7 @@ fn handle(
             tx.commit()?;
         }
         TagDbCmd::RenamePath { old, new } => {
+            if crate::vault::live::is_private(&new) { return Ok(()); }
             let old_key = path_key(&old);
             let new_key = path_key(&new);
             // The path itself (a tagged file, or the moved directory if it was tagged).
@@ -201,6 +216,12 @@ fn handle(
                  WHERE path LIKE ?1 || '/%'",
                 params![old_key, new_key],
             )?;
+        }
+        TagDbCmd::ForgetSubtree(path) => {
+            conn.execute_batch("PRAGMA secure_delete = ON;")?;
+            let key = path_key(&path);
+            conn.execute("DELETE FROM file_tags WHERE path = ?1 OR substr(path, 1, length(?1) + 1) = ?1 || '/'", [key])?;
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         }
         TagDbCmd::QueryTagsForPaths(paths) => {
             let mut map: HashMap<PathBuf, Vec<TagId>> = HashMap::with_capacity(paths.len());
@@ -227,6 +248,39 @@ fn handle(
         }
     }
     Ok(())
+}
+
+fn create_tag_with_paths(
+    conn: &Connection,
+    name: &str,
+    color: [u8; 3],
+    profile: Option<&str>,
+    paths: &[PathBuf],
+) -> rusqlite::Result<TagId> {
+    let tx = conn.unchecked_transaction()?;
+    // SQLite's UNIQUE(name, profile) permits repeated NULL profiles. Match global
+    // definitions explicitly so an existing global tag is reused as well.
+    tx.execute(
+        "INSERT OR IGNORE INTO tags (name, color_r, color_g, color_b, profile)
+         SELECT ?1, ?2, ?3, ?4, ?5
+         WHERE NOT EXISTS (SELECT 1 FROM tags WHERE name = ?1 AND profile IS ?5)",
+        params![name, color[0], color[1], color[2], profile],
+    )?;
+    let tag = tx.query_row(
+        "SELECT id FROM tags WHERE name = ?1 AND profile IS ?2 ORDER BY id LIMIT 1",
+        params![name, profile],
+        |row| Ok(TagId(row.get(0)?)),
+    )?;
+    {
+        let mut statement = tx.prepare(
+            "INSERT OR IGNORE INTO file_tags (path, tag_id) VALUES (?1, ?2)",
+        )?;
+        for path in paths {
+            statement.execute(params![path_key(path), tag.0])?;
+        }
+    }
+    tx.commit()?;
+    Ok(tag)
 }
 
 fn send_defs(conn: &Connection, bg_tx: &flume::Sender<BgResult>) -> rusqlite::Result<()> {
@@ -263,6 +317,57 @@ fn path_key(p: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_from_picker_assigns_the_captured_targets_and_reuses_global_definitions() {
+        let conn = open(Path::new(":memory:")).unwrap();
+        let (tx, rx) = flume::unbounded();
+        let paths = vec![PathBuf::from("images/first.png"), PathBuf::from("images/second.png")];
+        for _ in 0..2 {
+            handle(&conn, TagDbCmd::CreateAndAssignTag {
+                name: "Art".into(), color: [120, 80, 240], profile: None, paths: paths.clone(),
+            }, &tx).unwrap();
+        }
+        let definitions = load_defs(&conn).unwrap();
+        assert_eq!(definitions.len(), 1);
+        let tag = definitions[0].id;
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM file_tags", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+        let events: Vec<_> = rx.try_iter().collect();
+        assert!(events.into_iter().any(|event| matches!(event,
+            BgResult::TagAssignmentComplete { tag: assigned, paths: targets, result: Ok(()) }
+                if assigned == tag && targets == paths
+        )));
+        handle(&conn, TagDbCmd::QueryTagsForPaths(paths.clone()), &tx).unwrap();
+        let BgResult::TagsForPaths { tags } = rx.recv().unwrap() else { panic!("Expected file tags"); };
+        assert!(paths.iter().all(|path| tags.get(path) == Some(&vec![tag])));
+    }
+
+    #[test]
+    fn sidebar_creation_creates_only_a_definition() {
+        let conn = open(Path::new(":memory:")).unwrap();
+        let (tx, rx) = flume::unbounded();
+        handle(&conn, TagDbCmd::CreateTag {
+            name: "Unassigned".into(), color: [1, 2, 3], profile: Some("Main".into()),
+        }, &tx).unwrap();
+        assert_eq!(load_defs(&conn).unwrap().len(), 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM file_tags", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        assert!(!rx.try_iter().any(|event| matches!(event, BgResult::TagAssignmentComplete { .. })));
+    }
+
+    #[test]
+    fn failed_picker_assignment_rolls_back_the_new_definition_and_all_targets() {
+        let conn = open(Path::new(":memory:")).unwrap();
+        conn.execute_batch("CREATE TRIGGER reject_second_target BEFORE INSERT ON file_tags
+            WHEN NEW.path = 'second.png' BEGIN SELECT RAISE(ABORT, 'Rejected target'); END;").unwrap();
+        let (tx, rx) = flume::unbounded();
+        assert!(handle(&conn, TagDbCmd::CreateAndAssignTag {
+            name: "Art".into(), color: [1, 2, 3], profile: None,
+            paths: vec![PathBuf::from("first.png"), PathBuf::from("second.png")],
+        }, &tx).is_err());
+        assert!(load_defs(&conn).unwrap().is_empty());
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM file_tags", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        assert!(rx.try_iter().next().is_none());
+    }
 
     #[test]
     fn assignment_acknowledges_commit_and_failed_transactions_do_not_assign() {

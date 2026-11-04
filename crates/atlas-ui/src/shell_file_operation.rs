@@ -342,7 +342,11 @@ fn execute_sta(
         let operation_api: IFileOperation =
             unsafe { CoCreateInstance(&FileOperation, None, CLSCTX_ALL)? };
         let mut flags = FOF_NOCONFIRMMKDIR | FOFX_EARLYFAILURE;
-        if !matches!(operation, Operation::Delete { recycle: false, .. }) {
+        let private = atlas_core::vault::live::is_private(operation.source()) || match &operation {
+            Operation::Copy { destination, .. } | Operation::Move { destination, .. } | Operation::Rename { destination, .. } => atlas_core::vault::live::is_private(destination),
+            Operation::Delete { .. } => false,
+        };
+        if !private && !matches!(operation, Operation::Delete { recycle: false, .. }) {
             flags |= FOF_ALLOWUNDO | FOFX_ADDUNDORECORD;
         }
         if matches!(operation, Operation::Delete { recycle: true, .. }) {

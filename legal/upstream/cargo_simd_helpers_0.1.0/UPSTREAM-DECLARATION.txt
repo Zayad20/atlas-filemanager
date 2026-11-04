@@ -1,0 +1,16 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "simd_helpers",
+  "version": "0.1.0",
+  "license": "MIT",
+  "authors": [
+    "Luca Barbato <lu_zero@gentoo.org>"
+  ],
+  "repository": "https://github.com/lu-zero/simd_helpers"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: b41497677a5498040f2eb3fc089e3c2c38c413dca64f41dc57a115e26480461d

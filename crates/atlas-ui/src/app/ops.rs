@@ -70,7 +70,122 @@ pub(crate) fn rename_target_error(from: &std::path::Path, to: &std::path::Path) 
     None
 }
 
+/// Ordered rename steps for a batch. Names may chain or swap (`1→2, 2→3`), so any
+/// file whose target is another batch member's current name first parks under a
+/// temporary name; everything else renames directly; parked files finish last.
+pub(crate) fn plan_batch_renames(
+    pairs: &[(std::path::PathBuf, std::path::PathBuf)],
+) -> Vec<(std::path::PathBuf, std::path::PathBuf)> {
+    use std::path::PathBuf;
+    let moving: Vec<&PathBuf> = pairs.iter().map(|(from, _)| from).collect();
+    let clashes = |from: &PathBuf, to: &PathBuf| {
+        from != to && moving.iter().any(|other| crate::app::ops::same_path(other, to))
+    };
+    let mut parked = Vec::new();
+    let mut direct = Vec::new();
+    let mut first = Vec::new();
+    for (index, (from, to)) in pairs.iter().enumerate() {
+        if from == to {
+            continue;
+        }
+        if clashes(from, to) {
+            let mut n = index;
+            let temp = loop {
+                let candidate = from.with_file_name(format!(".atlas-rename-{n}.tmp"));
+                if candidate.symlink_metadata().is_err() {
+                    break candidate;
+                }
+                n += pairs.len().max(1);
+            };
+            first.push((from.clone(), temp.clone()));
+            parked.push((temp, to.clone()));
+        } else {
+            direct.push((from.clone(), to.clone()));
+        }
+    }
+    first.into_iter().chain(direct).chain(parked).collect()
+}
+
+fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    transfer::paths_equal_ci(a, b)
+}
+
+#[cfg(test)]
+mod batch_plan_tests {
+    use super::plan_batch_renames;
+    use std::path::PathBuf;
+
+    fn p(name: &str) -> PathBuf {
+        PathBuf::from("dir").join(name)
+    }
+
+    #[test]
+    fn shifted_numbers_park_before_landing() {
+        let steps = plan_batch_renames(&[(p("01.png"), p("02.png")), (p("02.png"), p("03.png"))]);
+        // 01→02 lands on a member, so it parks; 02→03 is free and goes first
+        // (vacating 02) before the parked file finishes.
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[0].0, p("01.png"));
+        assert!(steps[0].1.to_string_lossy().contains(".atlas-rename-"));
+        assert_eq!(steps[1], (p("02.png"), p("03.png")));
+        assert_eq!(steps[2].1, p("02.png"));
+    }
+
+    #[test]
+    fn independent_renames_stay_direct_and_noops_vanish() {
+        let steps = plan_batch_renames(&[(p("a.png"), p("b.png")), (p("c.png"), p("c.png"))]);
+        assert_eq!(steps, vec![(p("a.png"), p("b.png"))]);
+    }
+}
+
 impl App {
+    /// Rename many files in one ordered task (see [`plan_batch_renames`]); each step
+    /// reports like a normal rename so the listing refreshes as before.
+    pub(crate) fn rename_batch(&mut self, pairs: Vec<(PathBuf, PathBuf)>) {
+        if !self.allow_edition_action(atlas_model::edition::Feature::BatchRename, pairs.len()) {
+            return;
+        }
+        let moving: Vec<PathBuf> = pairs.iter().map(|(from, _)| from.clone()).collect();
+        for (from, to) in &pairs {
+            if from == to || moving.iter().any(|other| same_path(other, to)) {
+                continue;
+            }
+            if let Some(error) = rename_target_error(from, to) {
+                self.toast_error(error);
+                return;
+            }
+        }
+        let steps = plan_batch_renames(&pairs);
+        for (from, to) in &pairs {
+            if from != to {
+                self.state.ops.undo_stack.push(UndoEntry::Rename { from: from.clone(), to: to.clone() });
+                let _ = self.tag_db_tx.send(atlas_core::fs::tag_db::TagDbCmd::RenamePath {
+                    old: from.clone(),
+                    new: to.clone(),
+                });
+            }
+        }
+        let jobs: Vec<_> = steps
+            .into_iter()
+            .map(|(from, to)| {
+                let op_id = self.state.next_op_id();
+                let affected = self.affected_tabs_for_path(&from);
+                (from, to, op_id, affected)
+            })
+            .collect();
+        let tx = self.tx.clone();
+        #[cfg(windows)]
+        let owner = self.hwnd;
+        self.rt.spawn(async move {
+            for (from, to, op_id, affected) in jobs {
+                #[cfg(windows)]
+                crate::shell_file_operation::rename_file(from, to, op_id, tx.clone(), affected, owner).await;
+                #[cfg(not(windows))]
+                atlas_core::fs::ops::rename_file(from, to, op_id, tx.clone(), affected).await;
+            }
+        });
+    }
+
     #[cfg(windows)]
     pub(crate) fn paste_shortcuts_focused(&mut self) {
         let Some(dest) = self.tab_data_for(self.state.focused_tile).and_then(|tab| tab.location.fs_dir()).map(std::path::Path::to_path_buf) else { return; };
@@ -546,6 +661,7 @@ impl App {
         to_trash: bool,
         record_undo: bool,
     ) {
+        let to_trash = to_trash && !paths.iter().any(|path| atlas_core::vault::live::is_private(path));
         if record_undo && to_trash && !paths.is_empty() {
             self.state.ops.undo_stack.push(UndoEntry::Trash {
                 paths: paths.clone(),

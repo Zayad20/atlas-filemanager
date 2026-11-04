@@ -24,6 +24,40 @@ const HEADERS: &[&str] = &[
     "addresses",
 ];
 
+fn string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct StringOrVec;
+    impl<'de> serde::de::Visitor<'de> for StringOrVec {
+        type Value = Vec<String>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string or list of strings")
+        }
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(if value.is_empty() {
+                Vec::new()
+            } else {
+                vec![value.to_owned()]
+            })
+        }
+        fn visit_seq<S>(self, mut visitor: S) -> Result<Self::Value, S::Error>
+        where
+            S: serde::de::SeqAccess<'de>,
+        {
+            let mut vec = Vec::new();
+            while let Some(elem) = visitor.next_element()? {
+                vec.push(elem);
+            }
+            Ok(vec)
+        }
+    }
+    deserializer.deserialize_any(StringOrVec)
+}
+
 #[derive(Default, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 struct Contact {
@@ -33,10 +67,13 @@ struct Contact {
     additional_names: String,
     prefix: String,
     suffix: String,
+    #[serde(deserialize_with = "string_or_vec")]
     emails: Vec<String>,
+    #[serde(deserialize_with = "string_or_vec")]
     phones: Vec<String>,
     organization: String,
     title: String,
+    #[serde(deserialize_with = "string_or_vec")]
     urls: Vec<String>,
     birthday: String,
     note: String,

@@ -36,6 +36,35 @@ mod exclusion_tests {
 }
 
 impl App {
+    /// Read created/accessed stamps for a pane grouped by those dates. The
+    /// compact entry only keeps its modification time, and a stat per file must
+    /// never run on the UI thread.
+    pub(crate) fn request_group_times(&mut self, pane: TileId) {
+        let Some(ts) = self.state.tab_states.get_mut(&pane) else { return };
+        let Some(version) = ts.entry_times_needed() else { return };
+        ts.mark_entry_times_requested(version);
+        let paths: Vec<Option<PathBuf>> = ts
+            .entries
+            .iter()
+            .map(|entry| (entry.archive_root().is_none() && entry.recycle_info().is_none()).then(|| entry.path()))
+            .collect();
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            #[allow(clippy::disallowed_methods)] // reason: runs on the blocking pool, off the UI thread
+            let times = paths
+                .into_iter()
+                .map(|path| {
+                    let meta = path.and_then(|path| std::fs::metadata(path).ok());
+                    (
+                        meta.as_ref().and_then(|meta| meta.created().ok()),
+                        meta.as_ref().and_then(|meta| meta.accessed().ok()),
+                    )
+                })
+                .collect();
+            let _ = tx.send(BgResult::GroupTimes { tab: pane, version, times });
+        });
+    }
+
     pub(crate) fn spawn_list_dir(
         &mut self,
         tab_id: TileId,
@@ -43,6 +72,7 @@ impl App {
         sort_col: atlas_model::file_entry::SortColumn,
         sort_dir: atlas_model::file_entry::SortDir,
     ) {
+        if atlas_core::vault::live::is_private(&path) && !self.owns_native_vault_path(&path) { return; }
         let folder_order = self.tab_data_for(tab_id).map_or_else(atlas_model::pane::FolderOrder::default, |td| td.folder_order);
         let is_branch_view = self.tab_data_for(tab_id).is_some_and(|td| td.is_branch_view);
         let op_id = self.state.next_op_id();
@@ -270,10 +300,19 @@ impl App {
             ));
         let tx = self.tx.clone();
         let p = path.clone();
+        let archive = self.tab_data_for(tab_id).and_then(|tab| match &tab.location {
+            Location::Archive { archive, .. } => Some(archive.clone()),
+            _ => None,
+        });
         self.rt.spawn(async move {
-            let entries = list_dir(&p, show_hidden, col, dir, folder_order)
-                .await
-                .unwrap_or_default();
+            let entries = if let Some(archive) = archive {
+                let inner = p.clone();
+                tokio::task::spawn_blocking(move || {
+                    atlas_core::fs::archive::open(&archive).and_then(|provider| provider.list(&inner).ok()).unwrap_or_default()
+                }).await.unwrap_or_default()
+            } else {
+                list_dir(&p, show_hidden, col, dir, folder_order).await.unwrap_or_default()
+            };
 
             let _ = tx.send(BgResult::TreeListed {
                 tab: tab_id,
@@ -379,7 +418,7 @@ impl App {
     /// Keyboard cursor movement inside the focused Miller column. Returns `true`
     /// when the focused pane is in Miller view (event consumed), else `false` so
     /// the flat-list `nav_apply` runs. `target` maps `(cursor, len) → new cursor`.
-    pub(crate) fn miller_nav_apply(&mut self, target: &dyn Fn(usize, usize) -> usize) -> bool {
+    pub(crate) fn miller_nav_apply(&mut self, target: &dyn Fn(usize, usize) -> usize, extend: bool, ctrl: bool) -> bool {
         let tile = self.state.focused_tile;
         let is_miller = self
             .tab_data_for(tile)
@@ -403,12 +442,20 @@ impl App {
             return true;
         }
         let next = visible[target(cur, visible.len()).min(visible.len() - 1)];
-        self.miller_select(tile, column, next, false, false);
+        if let Some(col) = self.state.tab_states.get_mut(&tile).and_then(|ts| ts.miller.columns.get_mut(column)) {
+            col.selection.navigate(next, &visible, extend, ctrl, None);
+        }
+        if !extend && !ctrl {
+            self.miller_select(tile, column, next, false, false);
+        }
+        if let Some(ts) = self.state.tab_states.get_mut(&tile) {
+            ts.selection.scroll_to_selected = true;
+        }
         true
     }
 
     /// Left in Miller view: move focus to the parent column (column - 1).
-    pub(crate) fn miller_nav_left(&mut self) -> bool {
+    pub(crate) fn miller_nav_left(&mut self, extend: bool, ctrl: bool) -> bool {
         let tile = self.state.focused_tile;
         let is_miller = self
             .tab_data_for(tile)
@@ -430,14 +477,19 @@ impl App {
             }
         };
         if let (Some(ci), Some(cur)) = (ci, cur) {
-            self.miller_select(tile, ci, cur, false, false);
+            if !extend && !ctrl {
+                self.miller_select(tile, ci, cur, false, false);
+            }
+            if let Some(ts) = self.state.tab_states.get_mut(&tile) {
+                ts.selection.scroll_to_selected = true;
+            }
         }
         true
     }
 
     /// Right in Miller view: move focus to the child column (column + 1), or
     /// expand the directory under cursor if not already open.
-    pub(crate) fn miller_nav_right(&mut self) -> bool {
+    pub(crate) fn miller_nav_right(&mut self, extend: bool, ctrl: bool) -> bool {
         let tile = self.state.focused_tile;
         let is_miller = self
             .tab_data_for(tile)
@@ -475,7 +527,16 @@ impl App {
                 ts.miller.columns.get(ci)?.selection.keyboard_cursor.filter(|i| visible.contains(i))
                     .or_else(|| visible.first().copied())
             });
-            if let Some(cursor) = cursor { self.miller_select(tile, ci, cursor, false, false); }
+            if let Some(cursor) = cursor {
+                let visible = self.state.tab_states.get(&tile).map(|ts| ts.miller_visible_indices(ci)).unwrap_or_default();
+                if let Some(col) = self.state.tab_states.get_mut(&tile).and_then(|ts| ts.miller.columns.get_mut(ci)) {
+                    col.selection.navigate(cursor, &visible, extend, ctrl, None);
+                }
+                if !extend && !ctrl { self.miller_select(tile, ci, cursor, false, false); }
+                if let Some(ts) = self.state.tab_states.get_mut(&tile) {
+                    ts.selection.scroll_to_selected = true;
+                }
+            }
         } else if has_children {
             self.miller_open_cursor();
         }
@@ -531,26 +592,13 @@ impl App {
         }
         let cur = ts.selection.keyboard_cursor.unwrap_or(0);
         let np = target(cur, len).min(len - 1);
-        ts.selection.keyboard_cursor = Some(np);
-        ts.selection.last_clicked_index = Some(np);
-        if cursor_only {
-            // Keep selected set intact
-        } else if extend {
-            let anchor = ts.selection.selection_anchor.unwrap_or(cur);
-            let (lo, hi) = (anchor.min(np), anchor.max(np));
-            ts.selection.selected.clear();
-            ts.selection.selected.extend(lo..=hi);
-        } else {
-            ts.selection.selection_anchor = Some(np);
-            ts.selection.selected.clear();
-            ts.selection.selected.insert(np);
-        }
-        ts.selection.scroll_to_selected = true;
+        let visible: Vec<_> = (0..len).collect();
+        ts.selection.navigate(np, &visible, extend, cursor_only, None);
         true
     }
 
     /// Left in Tree view: collapse folder if expanded; or move to parent folder.
-    pub(crate) fn tree_nav_left(&mut self) -> bool {
+    pub(crate) fn tree_nav_left(&mut self, extend: bool, ctrl: bool) -> bool {
         let tile = self.state.focused_tile;
         let is_tree = self
             .tab_data_for(tile)
@@ -584,17 +632,17 @@ impl App {
             }
         };
 
+        if let Some(path) = path_to_collapse {
+            // Rows below shift: keep selection on its files and the view still.
+            self.mutate_tab(tile, |ts| ts.tree.toggle_expand(&path));
+            return true;
+        }
         let Some(ts) = self.state.tab_states.get_mut(&tile) else {
             return true;
         };
-        if let Some(path) = path_to_collapse {
-            ts.tree.toggle_expand(&path);
-        } else if let Some(i) = parent_idx {
-            ts.selection.keyboard_cursor = Some(i);
-            ts.selection.selection_anchor = Some(i);
-            ts.selection.last_clicked_index = Some(i);
-            ts.selection.selected.clear();
-            ts.selection.selected.insert(i);
+        if let Some(i) = parent_idx {
+            let visible = (0..ts.visible_tree_rows().len()).collect::<Vec<_>>();
+            ts.selection.navigate(i, &visible, extend, ctrl, None);
             // Same minimal keyboard reveal as up/down; never recenter.
             ts.selection.scroll_to_selected = true;
         }
@@ -602,7 +650,7 @@ impl App {
     }
 
     /// Right in Tree view: expand folder if collapsed; or move to first child.
-    pub(crate) fn tree_nav_right(&mut self) -> bool {
+    pub(crate) fn tree_nav_right(&mut self, extend: bool, ctrl: bool) -> bool {
         let tile = self.state.focused_tile;
         let is_tree = self
             .tab_data_for(tile)
@@ -640,23 +688,20 @@ impl App {
 
         match nav_action {
             NavRight::Expand(path) => {
-                let needs_fetch = if let Some(ts) = self.state.tab_states.get_mut(&tile) {
-                    ts.tree.toggle_expand(&path);
-                    !ts.tree.children.contains_key(&path)
-                } else {
-                    false
-                };
+                self.mutate_tab(tile, |ts| ts.tree.toggle_expand(&path));
+                let needs_fetch = self
+                    .state
+                    .tab_states
+                    .get(&tile)
+                    .is_some_and(|ts| !ts.tree.children.contains_key(&path));
                 if needs_fetch {
                     self.spawn_list_tree(tile, path);
                 }
             }
             NavRight::Select(next) => {
                 if let Some(ts) = self.state.tab_states.get_mut(&tile) {
-                    ts.selection.keyboard_cursor = Some(next);
-                    ts.selection.selection_anchor = Some(next);
-                    ts.selection.last_clicked_index = Some(next);
-                    ts.selection.selected.clear();
-                    ts.selection.selected.insert(next);
+                    let visible = (0..ts.visible_tree_rows().len()).collect::<Vec<_>>();
+                    ts.selection.navigate(next, &visible, extend, ctrl, None);
                     // Same minimal keyboard reveal as up/down; never recenter.
                     ts.selection.scroll_to_selected = true;
                 }
@@ -677,7 +722,7 @@ impl App {
         }
         enum OpenCursor {
             Toggle(std::path::PathBuf),
-            OpenFile(std::path::PathBuf),
+            OpenFile(std::path::PathBuf, Option<std::path::PathBuf>),
             None,
         }
         let action = {
@@ -690,7 +735,7 @@ impl App {
                 if entry.kind() == atlas_model::file_entry::FileKind::Dir {
                     OpenCursor::Toggle(entry.path())
                 } else {
-                    OpenCursor::OpenFile(entry.path())
+                    OpenCursor::OpenFile(entry.path(), entry.archive_root())
                 }
             } else {
                 OpenCursor::None
@@ -699,18 +744,16 @@ impl App {
 
         match action {
             OpenCursor::Toggle(path) => {
-                let needs_fetch = if let Some(ts) = self.state.tab_states.get_mut(&tile) {
-                    ts.tree.toggle_expand(&path);
+                self.mutate_tab(tile, |ts| ts.tree.toggle_expand(&path));
+                let needs_fetch = self.state.tab_states.get(&tile).is_some_and(|ts| {
                     !ts.tree.children.contains_key(&path) && ts.tree.is_expanded(&path)
-                } else {
-                    false
-                };
+                });
                 if needs_fetch {
                     self.spawn_list_tree(tile, path);
                 }
             }
-            OpenCursor::OpenFile(path) => {
-                self.spawn_open_files(vec![path]);
+            OpenCursor::OpenFile(path, archive_root) => {
+                self.activate_file_path(tile, path, archive_root);
             }
             OpenCursor::None => {}
         }
@@ -837,6 +880,7 @@ impl App {
         self.rt.spawn(async move {
             let _ = tokio::task::spawn_blocking(move || {
                 for path in paths {
+                    if atlas_core::vault::is_private_path(&path) { continue; }
                     let _ = open::that(path);
                 }
             })

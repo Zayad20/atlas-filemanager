@@ -3,7 +3,24 @@ name = "atlas"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
+build = "scripts/winfsp-build.rs"
 default-run = "atlas"
+
+[[example]]
+name = "preview_review"
+required-features = ["perf-log"]
+
+[[example]]
+name = "zip_docx_diagnostic"
+required-features = ["ui-lab"]
+
+[[example]]
+name = "miller_conversion_diagnostic"
+required-features = ["ui-lab", "perf-log"]
+
+[[example]]
+name = "preview_compat_diagnostic"
+required-features = ["ui-lab", "rar"]
 
 [workspace]
 members = [
@@ -82,8 +99,12 @@ icon = ["packaging/icons/atlas.ico", "packaging/icons/atlas.png"]
 ignored = ["kamadak-exif"]
 
 [features]
+# Opt-in Free alpha limits; ordinary builds retain the full feature set.
+free = ["atlas-ui/free"]
 conversion-lab = ["atlas-ui/conversion-lab"]
-default = ["provider-host", "rar", "sevenz"]
+ui-lab = ["atlas-ui/ui-lab"]
+windows-cleanup = ["atlas-ui/windows-cleanup"]
+default = ["provider-host", "rar", "sevenz", "windows-cleanup"]
 dhat-heap = ["dhat"]
 # Host support for optional virtual-file-provider extensions. The rclone backend
 # is built only by `atlas-cloud-extension`.
@@ -125,6 +146,13 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 1
 codegen-units = 256
+
+# Native NTFS decoding is CPU-intensive even in interactive development builds.
+[profile.dev.package.atlas-win-space]
+opt-level = 2
+
+[profile.dev.package.atlas-core]
+opt-level = 1
 
 [profile.release]
 opt-level = 3

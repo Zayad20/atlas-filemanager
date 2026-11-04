@@ -4,6 +4,9 @@ mod geometry;
 pub(crate) mod lab;
 mod render;
 mod wheel;
+mod wheel_view;
+#[cfg(feature = "ui-lab")]
+pub(crate) mod crash_lab;
 
 use crate::app::App;
 use atlas_core::convert::{self, Outcome, Plan, Report, Settings, Tool, Tools};
@@ -34,9 +37,17 @@ pub(crate) struct Session {
     catalog: Vec<convert::ConversionOption>,
     phase: Phase,
     selected: usize,
+    /// Sector under the pointer: previews in the info column, never commits.
+    hovered: Option<usize>,
     settings: Settings,
-    expanded: bool,
+    /// Wheel center in window coordinates; captured from the pointer on the
+    /// first frame so the menu opens where the user is looking.
+    anchor: Option<gpui::Point<gpui::Pixels>>,
     minimized: bool,
+    /// Start of the opening animation.
+    opened: std::time::Instant,
+    /// The ring lives in its own entity so its animation never re-renders the window.
+    wheel: Option<gpui::Entity<wheel_view::WheelView>>,
     discovery: u64,
     installers: BTreeMap<Tool, ToolInstallRequest>,
     disabled_providers: BTreeMap<Tool, String>,
@@ -112,13 +123,26 @@ impl App {
         self.open_converter_for(sources);
     }
 
+    pub(crate) fn anchor_converter(&mut self, at: gpui::Point<gpui::Pixels>) {
+        if let Some(session) = self.converter.as_mut() {
+            session.anchor = Some(at);
+        }
+    }
+
     pub(crate) fn open_converter_for(&mut self, sources: Vec<PathBuf>) {
+        if sources.iter().any(|path| atlas_core::vault::live::is_private(path)) {
+            self.toast_error(rust_i18n::t!("vault_conversion_unavailable").to_string());
+            return;
+        }
         if let Some(session) = self.converter.as_mut().filter(|s| s.running()) {
             session.minimized = false;
             return;
         }
         if sources.is_empty() {
             self.toast_error(rust_i18n::t!("convert_select").into_owned());
+            return;
+        }
+        if !self.allow_conversion_action(sources.len()) {
             return;
         }
         let (tx, rx) = flume::unbounded();
@@ -128,8 +152,11 @@ impl App {
             catalog: Vec::new(),
             phase: Phase::Discovering,
             selected: 0,
+            hovered: None,
             settings: Settings::default(),
-            expanded: false,
+            anchor: None,
+            opened: std::time::Instant::now(),
+            wheel: None,
             minimized: false,
             discovery: 0,
             installers: BTreeMap::new(),
@@ -193,8 +220,8 @@ impl App {
         let managed = self.ext_registry.managed_tools();
         let wake = self.tx.clone();
         self.rt.spawn_blocking(move || {
-            let tools = Tools::discover_with(managed);
-            let catalog = convert::options(&scan_sources, &tools);
+            let tools = Tools::discover_with(managed).native_and_opus();
+            let catalog = convert::native_options(&scan_sources, &tools);
             let _ = tx.send(Event::Discovered {
                 revision,
                 tools,
@@ -206,75 +233,119 @@ impl App {
 
     pub(crate) fn drain_converter(&mut self) {
         let mut reload = false;
-        let Some(session) = self.converter.as_mut() else {
-            return;
-        };
-        while let Ok(event) = session.rx.try_recv() {
-            match event {
-                Event::Discovered {
-                    revision,
-                    tools,
-                    catalog,
-                } if revision == session.discovery && !session.running() => {
-                    let selected = session
-                        .catalog
-                        .get(session.selected)
-                        .map(|option| option.target.extension);
-                    session.tools = tools;
-                    session.catalog = catalog;
-                    session.selected = selected
-                        .and_then(|extension| {
-                            session
-                                .catalog
-                                .iter()
-                                .position(|option| option.target.extension == extension)
-                        })
-                        .unwrap_or(0);
-                    if matches!(session.phase, Phase::Discovering) {
-                        session.phase = Phase::Choosing;
-                    }
-                }
-                Event::Discovered { .. } => {}
-                Event::PackageProgress(progress) => {
-                    if let Some(package) = &mut session.package {
-                        package.progress = progress;
-                    }
-                }
-                Event::PackageFinished(result) => {
-                    let cancelled = session
-                        .package
-                        .take()
-                        .is_some_and(|package| package.cancel.load(Ordering::Relaxed));
-                    match result {
-                        Ok(_) => {
-                            session.package_error = None;
-                            reload = true;
-                        }
-                        Err(error) if !cancelled => session.package_error = Some(error),
-                        Err(_) => {}
-                    }
-                }
-                Event::Destination(path) => session.settings.output_dir = Some(path),
-                Event::Progress {
-                    done,
-                    total,
-                    current,
-                } => {
-                    if let Phase::Running {
-                        done: completed,
-                        total: count,
-                        current: path,
-                        ..
-                    } = &mut session.phase
-                    {
-                        if done >= *completed {
-                            *completed = done;
-                            *count = total;
-                            *path = current;
+        let mut toast = None;
+        let mut finished_ok = false;
+        if let Some(session) = self.converter.as_mut() {
+            while let Ok(event) = session.rx.try_recv() {
+                match event {
+                    Event::Discovered {
+                        revision,
+                        tools,
+                        catalog,
+                    } if revision == session.discovery && !session.running() => {
+                        let selected = session
+                            .catalog
+                            .get(session.selected)
+                            .map(|option| option.target.extension);
+                        session.tools = tools;
+                        session.catalog = catalog;
+                        session.selected = selected
+                            .and_then(|extension| {
+                                session
+                                    .catalog
+                                    .iter()
+                                    .position(|option| option.target.extension == extension)
+                            })
+                            .unwrap_or(0);
+                        if matches!(session.phase, Phase::Discovering) {
+                            session.phase = Phase::Choosing;
                         }
                     }
+                    Event::Discovered { .. } => {}
+                    Event::PackageProgress(progress) => {
+                        if let Some(package) = &mut session.package {
+                            package.progress = progress;
+                        }
+                    }
+                    Event::PackageFinished(result) => {
+                        let cancelled = session
+                            .package
+                            .take()
+                            .is_some_and(|package| package.cancel.load(Ordering::Relaxed));
+                        match result {
+                            Ok(_) => {
+                                session.package_error = None;
+                                reload = true;
+                            }
+                            Err(error) if !cancelled => session.package_error = Some(error),
+                            Err(_) => {}
+                        }
+                    }
+                    Event::Destination(path) => session.settings.output_dir = Some(path),
+                    Event::Progress {
+                        done,
+                        total,
+                        current,
+                    } => {
+                        if let Phase::Running {
+                            done: completed,
+                            total: count,
+                            current: path,
+                            ..
+                        } = &mut session.phase
+                        {
+                            if done >= *completed {
+                                *completed = done;
+                                *count = total;
+                                *path = current;
+                            }
+                        }
+                    }
+                    Event::Finished(report) => {
+                        let outputs = report.outputs();
+                        let errors = report.errors();
+                        let cancelled = report.cancelled();
+                        if errors.is_empty() && cancelled == 0 {
+                            let msg = if outputs.len() == 1 {
+                                let name = outputs[0]
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy();
+                                rust_i18n::t!("convert_toast_finished_single", name = name).into_owned()
+                            } else {
+                                rust_i18n::t!("convert_toast_finished_multi", count = outputs.len())
+                                    .into_owned()
+                            };
+                            toast = Some((atlas_model::overlay::ToastKind::Info, msg));
+                            finished_ok = true;
+                            break;
+                        } else if !errors.is_empty() {
+                            let err_str = errors[0].to_string();
+                            toast = Some((
+                                atlas_model::overlay::ToastKind::Error,
+                                rust_i18n::t!("convert_toast_failed", error = err_str).into_owned(),
+                            ));
+                            session.phase = Phase::Finished(report);
+                            session.minimized = false;
+                        } else {
+                            toast = Some((
+                                atlas_model::overlay::ToastKind::Info,
+                                rust_i18n::t!("convert_cancelled").into_owned(),
+                            ));
+                            finished_ok = true;
+                            break;
+                        }
+                    }
                 }
-                Event::Finished(report) => session.phase = Phase::Finished(report),
+            }
+        }
+        if finished_ok {
+            self.converter = None;
+        }
+        if let Some((kind, msg)) = toast {
+            match kind {
+                atlas_model::overlay::ToastKind::Error => self.toast_error(msg),
+                atlas_model::overlay::ToastKind::Info => self.toast_info(msg),
             }
         }
         if reload {
@@ -350,6 +421,10 @@ impl App {
     }
 
     fn start_conversion(&mut self) {
+        let count = self.converter.as_ref().map_or(0, |session| session.sources.len());
+        if !self.allow_conversion_action(count) {
+            return;
+        }
         let Some(session) = self.converter.as_mut() else {
             return;
         };
@@ -373,8 +448,21 @@ impl App {
             total: sources.len(),
             current: sources[0].clone(),
         };
+        session.minimized = true;
+
+        let count = sources.len();
+        let msg = if count == 1 {
+            let name = sources[0]
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            rust_i18n::t!("convert_toast_starting_single", name = name, ext = extension).into_owned()
+        } else {
+            rust_i18n::t!("convert_toast_starting_multi", count = count, ext = extension).into_owned()
+        };
+        self.toast_info(msg);
         self.rt.spawn_blocking(move || {
-            let report = match Plan::build(&sources, extension, settings, tools) {
+            let report = match Plan::build_native(&sources, extension, settings, tools) {
                 Ok(plan) => convert::execute(&plan, &cancel, |done, total, current| {
                     let _ = tx.send(Event::Progress {
                         done,

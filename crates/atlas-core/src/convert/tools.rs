@@ -68,6 +68,7 @@ pub struct SystemAudio {
     pub mp3: bool,
     pub aac: bool,
     pub h264: bool,
+    pub ocr: bool,
 }
 
 impl SystemAudio {
@@ -91,6 +92,12 @@ impl SystemAudio {
 pub struct Tools(pub BTreeMap<Tool, PathBuf>, pub SystemAudio);
 
 impl Tools {
+    /// Conversion wheel policy: Atlas, Windows and the small Opus encoder only.
+    /// Discovery for previews and independent validation can still see other tools.
+    pub fn native_and_opus(mut self) -> Self {
+        self.0.retain(|tool, _| *tool == Tool::Opus);
+        self
+    }
     pub fn has(&self, tool: Tool) -> bool {
         self.0.contains_key(&tool)
     }
@@ -155,6 +162,7 @@ impl Tools {
                 mp3: audio.mp3,
                 aac: audio.aac,
                 h264: audio.h264,
+                ocr: atlas_win_space::pdf::ocr_available(),
             };
         }
         for tool in Tool::ALL {

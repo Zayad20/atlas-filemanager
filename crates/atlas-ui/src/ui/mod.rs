@@ -23,11 +23,14 @@ pub fn rem_px_abs(n: f32, window: &gpui::Window) -> gpui::Pixels {
 
 pub mod breadcrumb_menu;
 pub mod chrome;
+pub mod cleanup;
 pub mod chrome_imm;
 pub mod imm;
+pub(crate) mod current_bounds;
 pub(crate) mod converter;
 pub mod dock;
 pub mod dock_host;
+pub(crate) mod dir_ring;
 pub mod drag;
 pub mod drag_hover;
 pub mod edge_autoscroll;
@@ -36,8 +39,13 @@ pub(crate) mod file_filter;
 pub mod glass;
 pub mod icons;
 pub mod inspector;
+#[cfg(feature = "ui-lab")]
+pub(crate) mod preview_lab;
+pub(crate) mod preview_image;
 pub(crate) mod preview_delay;
-pub mod inspector_imm;
+// Historical layout fixtures; the application uses the retained preview.
+#[cfg(test)]
+mod inspector_imm;
 pub mod interactions;
 pub(crate) mod click_navigation;
 pub mod layout_region;
@@ -45,6 +53,7 @@ pub(crate) mod loading_spinner;
 pub mod motion;
 pub(crate) mod operation_feedback;
 pub(crate) mod reveal;
+pub(crate) mod group_header;
 pub mod overlay_focus;
 pub mod overlays;
 pub mod palette;

@@ -1,0 +1,18 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "@cloudflare/unenv-preset",
+  "version": "2.16.2",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cloudflare/workers-sdk.git",
+    "directory": "packages/unenv-preset"
+  },
+  "homepage": "https://github.com/cloudflare/workers-sdk#readme"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: 9307fbe9f19db598b23d53bcc6f66db49239f89090f9059b98c56c4781c26f2c

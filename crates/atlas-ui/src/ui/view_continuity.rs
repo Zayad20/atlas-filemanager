@@ -182,9 +182,14 @@ impl App {
         if !matches!(mode, Some(ViewMode::Details | ViewMode::List | ViewMode::Grid))
             || self.pending_rename.is_some()
         {
-            return self.scroll_selected_into_view(pane, gpui::ScrollStrategy::Nearest);
+            let strategy = if self.pending_rename.is_some() {
+                gpui::ScrollStrategy::Center
+            } else {
+                gpui::ScrollStrategy::Nearest
+            };
+            return self.scroll_selected_into_view(pane, strategy);
         }
-        let visible = self.flat_visible_indices(pane);
+        let visible = self.view_cells(pane);
         let Some(tab) = self.state.tab_states.get_mut(&pane) else {
             return false;
         };
@@ -195,24 +200,8 @@ impl App {
         else {
             return false;
         };
-        let grouped = tab.group_by != atlas_model::tab::GroupBy::None
-            && matches!(mode, Some(ViewMode::Details | ViewMode::List));
         // (item start, item extent, pitch-free content extent, horizontal axis)
-        let (start, len, content, horizontal) = if grouped {
-            let Some(row) = tab.grouped_row_for_entry(entry) else {
-                return false;
-            };
-            let rows = tab.grouped_rows_shared().len();
-            let height = self
-                .scroll_handles
-                .get(&pane)
-                .and_then(|handle| handle.0.borrow().base_handle.line_scroll_height())
-                .map(f32::from);
-            let Some(height) = height else {
-                return false;
-            };
-            (row as f32 * height, height, rows as f32 * height, false)
-        } else {
+        let (start, len, content, horizontal) = {
             let Some(position) = visible.iter().position(|index| *index == entry) else {
                 return false;
             };
@@ -231,9 +220,9 @@ impl App {
                     let rows = visible.len().div_ceil(cols);
                     let gap = (hit.pitch_y - hit.cell_h).max(0.0);
                     (
-                        hit.pad_y + (position / cols) as f32 * hit.pitch_y,
+                        hit.pad_y + hit.bands.row_top(position / cols, hit.pitch_y),
                         hit.cell_h,
-                        hit.pad_y * 2.0 + rows as f32 * hit.pitch_y - gap,
+                        hit.pad_y * 2.0 + rows as f32 * hit.pitch_y - gap + hit.bands.total(),
                         false,
                     )
                 }
@@ -451,18 +440,22 @@ impl App {
                     .get(&pane)
                     .map(|hit| hit.cols.max(1))
                     .is_some_and(|cols| {
-                        self.scroll_grid_row_to(pane, pos / cols, gpui::ScrollStrategy::Nearest)
+                        {
+                        let cell = self.cell_position(pane, pos);
+                        self.scroll_grid_row_to(pane, cell / cols, gpui::ScrollStrategy::Nearest)
+                    }
                     }),
                 ViewMode::Details => {
                     self.details_hit.contains_key(&pane)
                         && self.scroll_details_row_to(pane, pos, gpui::ScrollStrategy::Nearest)
                 }
                 ViewMode::List => {
+                    let cell = self.cell_position(pane, pos);
                     if let (Some(_), Some(handle)) =
                         (self.list_hit.get(&pane), self.scroll_handles.get(&pane))
                     {
-                        // List consumes the visible position (column-major, horizontal).
-                        handle.scroll_to_item(pos, gpui::ScrollStrategy::Nearest);
+                        // List consumes the cell position (column-major, horizontal).
+                        handle.scroll_to_item(cell, gpui::ScrollStrategy::Nearest);
                         true
                     } else {
                         false

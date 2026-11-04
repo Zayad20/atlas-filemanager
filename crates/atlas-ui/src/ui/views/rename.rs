@@ -54,13 +54,19 @@ pub(super) fn cut_entry_opacity(app: &gpui::WeakEntity<App>, pane: TabId, index:
 pub(super) fn dim_other_entry(app: &App, pane_id: TabId, entry_idx: usize) -> bool {
     app.rename_edit
         .as_ref()
-        .is_some_and(|edit| edit.pane == pane_id && active_input(app, pane_id, entry_idx).is_none())
+        .is_some_and(|edit| {
+            edit.pane == pane_id
+                && app.state.batch_rename.is_none()
+                && active_input(app, pane_id, entry_idx).is_none()
+        })
 }
 
 pub(super) fn dim_other_path(app: &App, pane_id: TabId, path: &Path) -> bool {
     app.rename_edit
         .as_ref()
-        .is_some_and(|edit| edit.pane == pane_id && edit.path != path)
+        .is_some_and(|edit| {
+            edit.pane == pane_id && app.state.batch_rename.is_none() && edit.path != path
+        })
 }
 
 /// `max_px` and the return value are real pixels — callers pass an already
@@ -140,15 +146,14 @@ fn input_element_aligned(
 ) -> AnyElement {
     let commit_view = view.clone();
     let theme = cx.theme();
-    let background = theme.background.alpha(1.0);
     let foreground = theme.foreground;
-    let selection = theme.selection.alpha(0.38);
+    let selection = theme.selection;
     let padding = px(3.0 * f32::from(window.rem_size()) / crate::ui::BASE_PX);
     div()
         .id(("inline-rename-input", input.entity_id()))
         .w_full()
         .h(height)
-        .bg(background)
+        .bg(gpui::transparent_black())
         .text_color(foreground)
         .rounded_sm()
         .overflow_hidden()
@@ -176,6 +181,24 @@ fn input_element_aligned(
         .capture_action(window.listener_for(view, App::rename_next_action))
         .capture_action(window.listener_for(view, App::rename_previous_action))
         .capture_key_down(move |ev, window, cx| match ev.keystroke.key.as_str() {
+            key if commit_view.read(cx).state.batch_rename.is_some()
+                && !ev.keystroke.modifiers.control
+                && !ev.keystroke.modifiers.platform
+                && {
+                    let key = if ev.keystroke.key_char.as_deref() == Some("#") { "#" } else { key };
+                    commit_view.update(cx, |this, cx| {
+                        this.batch_rename_key(
+                            key,
+                            ev.keystroke.modifiers.alt,
+                            ev.keystroke.modifiers.shift,
+                            window,
+                            cx,
+                        )
+                    })
+                } =>
+            {
+                cx.stop_propagation();
+            }
             "enter" => {
                 commit_view.update(cx, App::commit_rename);
                 cx.stop_propagation();

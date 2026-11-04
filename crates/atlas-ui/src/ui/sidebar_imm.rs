@@ -31,7 +31,7 @@ use crate::ui::sidebar::{
 use atlas_model::profiles::SectionKind;
 use crate::ui::surface::{
     line_width, paint_rounded, paint_theme_icon, shape_text_truncated, text_origin_y,
-    Slot,
+    wrap_text_lines, Slot,
 };
 use atlas_model::file_entry::FileKind;
 use atlas_model::location::Location;
@@ -1632,17 +1632,23 @@ impl Element for SidebarImmElement {
                 // Empty hint or items
                 if let Some(hint_slot) = prepaint.layout.dropzone_empty_hint_slot {
                     let hint_text = rust_i18n::t!("sidebar_drop_zone_hint").to_string();
-                    let hint_line = shape_text_truncated(&hint_text, &font, px(11.0 * zoom), muted.opacity(0.8), hint_slot.w, window);
-                    let text_w = line_width(&hint_line);
-                    let h_x = hint_slot.x + (hint_slot.w - text_w) * 0.5;
-                    let _ = hint_line.paint(
-                        point(origin.x + px(h_x), origin.y + px(text_origin_y(hint_slot.y, zoom))),
-                        px(hint_slot.h),
-                        TextAlign::Left,
-                        None,
-                        window,
-                        cx,
-                    );
+                    // Wrap instead of eliding so the hint survives a narrow sidebar;
+                    // the block is centered in the slot.
+                    let line_h = 15.0 * zoom;
+                    let max_lines = ((hint_slot.h / line_h).floor() as usize).max(1);
+                    let hint_lines = wrap_text_lines(&hint_text, &font, px(11.0 * zoom), muted.opacity(0.8), hint_slot.w, max_lines, window);
+                    let top = hint_slot.y + (hint_slot.h - line_h * hint_lines.len() as f32).max(0.0) * 0.5;
+                    for (i, hint_line) in hint_lines.iter().enumerate() {
+                        let h_x = hint_slot.x + (hint_slot.w - line_width(hint_line)).max(0.0) * 0.5;
+                        let _ = hint_line.paint(
+                            point(origin.x + px(h_x), origin.y + px(text_origin_y(top + line_h * i as f32, zoom))),
+                            px(line_h),
+                            TextAlign::Left,
+                            None,
+                            window,
+                            cx,
+                        );
+                    }
                 } else {
                     for item in &prepaint.layout.dropzone_items {
                         let it_b = item.slot.to_bounds(origin);

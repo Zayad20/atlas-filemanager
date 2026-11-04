@@ -1,7 +1,7 @@
 //! Presentation-only spring. Retargeting preserves both position and velocity.
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub(crate) fn presentation_epoch(epoch: u64, viewport: &[f32]) -> u64 {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
@@ -193,6 +193,163 @@ impl<K: Eq + Hash + Clone> CellMotion<K> {
     }
 }
 
+/// 2D FLIP bounds for a grid cell.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct GridItemBounds {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GridMotionItem {
+    visual: GridItemBounds,
+    target: GridItemBounds,
+    start_delta: GridItemBounds,
+    start_time: Instant,
+    animating: bool,
+    seen_frame: u64,
+}
+
+/// 2D FLIP motion for grid cells tracking both (x, y) position and (w, h) dimensions.
+/// Animates smoothly during zoom (Ctrl+wheel / size slider), column reflow, window resize,
+/// and pane splits/spawns without snapping or jumping.
+pub(crate) struct GridMotion<K> {
+    items: HashMap<K, GridMotionItem>,
+    epoch: u64,
+    frame: u64,
+}
+
+impl<K: Eq + Hash + Clone> GridMotion<K> {
+    pub const DURATION: Duration = Duration::from_millis(180);
+
+    pub fn new(epoch: u64) -> Self {
+        Self {
+            items: HashMap::new(),
+            epoch,
+            frame: 0,
+        }
+    }
+
+    pub fn sample(
+        &mut self,
+        targets: &[(K, usize, GridItemBounds)],
+        epoch: u64,
+        instant: bool,
+        now: Instant,
+    ) -> (Vec<(usize, GridItemBounds)>, bool) {
+        let mut identities = std::collections::HashSet::with_capacity(targets.len());
+        if targets.iter().any(|(key, _, _)| !identities.insert(key)) {
+            self.items.clear();
+            self.epoch = epoch;
+            return (
+                targets
+                    .iter()
+                    .map(|(_, index, bounds)| (*index, *bounds))
+                    .collect(),
+                false,
+            );
+        }
+
+        self.frame = self.frame.wrapping_add(1);
+        let current_frame = self.frame;
+        let mut active = false;
+        let mut results = Vec::with_capacity(targets.len());
+
+        for (key, index, target) in targets {
+            let item = match self.items.get_mut(key) {
+                Some(existing) => {
+                    // A cell that was not in the previous frame left the realised
+                    // span (scrolled away). Its retained bounds predate any zoom or
+                    // reflow since, so re-entering must snap, never replay a FLIP
+                    // from that stale geometry.
+                    let stale = existing.seen_frame.wrapping_add(1) != current_frame;
+                    existing.seen_frame = current_frame;
+                    if instant || stale {
+                        existing.visual = *target;
+                        existing.target = *target;
+                        existing.animating = false;
+                    } else {
+                        let dx = existing.visual.x - target.x;
+                        let dy = existing.visual.y - target.y;
+                        let dw = existing.visual.w - target.w;
+                        let dh = existing.visual.h - target.h;
+                        let target_changed = (existing.target.x - target.x).abs() > 0.5
+                            || (existing.target.y - target.y).abs() > 0.5
+                            || (existing.target.w - target.w).abs() > 0.5
+                            || (existing.target.h - target.h).abs() > 0.5;
+
+                        if target_changed && (dx.abs() > 0.5 || dy.abs() > 0.5 || dw.abs() > 0.5 || dh.abs() > 0.5) {
+                            existing.start_delta = GridItemBounds {
+                                x: dx,
+                                y: dy,
+                                w: dw,
+                                h: dh,
+                            };
+                            existing.target = *target;
+                            existing.start_time = now;
+                            existing.animating = true;
+                            active = true;
+                        } else if existing.animating {
+                            let elapsed = now.saturating_duration_since(existing.start_time);
+                            if elapsed < Self::DURATION {
+                                let t = (elapsed.as_secs_f32() / Self::DURATION.as_secs_f32()).clamp(0.0, 1.0);
+                                let factor = 1.0 - crate::ui::motion::ease_out_quart(t);
+                                existing.visual = GridItemBounds {
+                                    x: existing.target.x + existing.start_delta.x * factor,
+                                    y: existing.target.y + existing.start_delta.y * factor,
+                                    w: (existing.target.w + existing.start_delta.w * factor).max(1.0),
+                                    h: (existing.target.h + existing.start_delta.h * factor).max(1.0),
+                                };
+                                existing.animating = true;
+                                active = true;
+                            } else {
+                                existing.visual = existing.target;
+                                existing.animating = false;
+                            }
+                        } else {
+                            existing.visual = *target;
+                            existing.target = *target;
+                        }
+                    }
+                    existing.visual
+                }
+                None => {
+                    self.items.insert(
+                        key.clone(),
+                        GridMotionItem {
+                            visual: *target,
+                            target: *target,
+                            start_delta: GridItemBounds {
+                                x: 0.0,
+                                y: 0.0,
+                                w: 0.0,
+                                h: 0.0,
+                            },
+                            start_time: now,
+                            animating: false,
+                            seen_frame: current_frame,
+                        },
+                    );
+                    *target
+                }
+            };
+
+            results.push((*index, item));
+        }
+
+        if self.frame % 30 == 0 {
+            self.items.retain(|_, item| {
+                item.animating || current_frame.saturating_sub(item.seen_frame) < 120
+            });
+        }
+
+        self.epoch = epoch;
+        (results, active)
+    }
+}
+
 /// Retains only a viewport's presentation snapshots while they enter or leave.
 /// Departing snapshots are paint-only: callers must never register their input.
 pub(crate) struct PresenceMotion<K, V> {
@@ -226,6 +383,14 @@ impl<K: Eq + Hash + Clone, V: Clone> PresenceMotion<K, V> {
         instant: bool,
         now: Instant,
     ) -> (Vec<PresenceSample<V>>, bool) {
+        let mut identities = std::collections::HashSet::with_capacity(values.len());
+        if values.iter().any(|(key, _)| !identities.insert(key)) {
+            self.items.clear();
+            self.epoch = epoch;
+            return (values.into_iter().map(|(_, value)| PresenceSample {
+                value, opacity: 1.0, interactive: true,
+            }).collect(), false);
+        }
         let reset = instant || epoch != self.epoch;
         if reset {
             self.items.clear();
@@ -348,7 +513,21 @@ impl<K: Eq + Hash + Clone> RowMotion<K> {
         instant: bool,
         now: Instant,
     ) -> (Vec<(usize, f32, f32)>, bool) {
-        let instant = instant || epoch != self.epoch || viewport != self.viewport;
+        // Providers such as Drive allow duplicate names/paths. Those are not
+        // unique FLIP identities: sharing one spring makes the rows fight over
+        // its target forever (and overlap until dragging forces instant layout).
+        // Keep every row at its own slot until the caller has unambiguous IDs.
+        let mut identities = std::collections::HashSet::with_capacity(targets.len());
+        if targets.iter().any(|(key, _, _)| !identities.insert(key)) {
+            self.rows.clear();
+            self.epoch = epoch;
+            self.viewport = viewport;
+            return (targets.iter().map(|(_, index, y)| (*index, *y, 1.0)).collect(), false);
+        }
+        let scroll_changed = (viewport[0] - self.viewport[0]).abs() > 1.0;
+        let size_changed = (viewport[1] - self.viewport[1]).abs() > 0.01
+            || (viewport[2] - self.viewport[2]).abs() > 0.01;
+        let instant = instant || epoch != self.epoch || scroll_changed || size_changed;
         let changed = !self.rows.is_empty()
             && (self.rows.len() != targets.len()
                 || targets
@@ -503,6 +682,33 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn duplicate_provider_paths_never_share_an_animated_row_position() {
+        let now = Instant::now();
+        let viewport = [0.0, 26.0, 800.0];
+        let mut motion = RowMotion::new(1, viewport);
+        motion.sample(&[("other", 0, 0.0)], 1, viewport, false, now);
+        let targets = [("duplicate", 0, 0.0), ("duplicate", 1, 26.0), ("other", 2, 52.0)];
+        for frame in 0..120 {
+            let (positions, active) = motion.sample(&targets, 1, viewport, frame == 60,
+                now + Duration::from_millis(frame * 16));
+            assert_eq!(positions, [(0, 0.0, 1.0), (1, 26.0, 1.0), (2, 52.0, 1.0)]);
+            assert!(!active, "duplicate names must not drive an endless animation");
+        }
+    }
+
+    #[test]
+    fn duplicate_presence_keys_keep_every_row_visible_and_interactive() {
+        let now = Instant::now();
+        let mut presence = PresenceMotion::new();
+        presence.sample(vec![("existing", 0)], 1, false, now);
+        let (samples, active) = presence.sample(vec![("duplicate", 1), ("duplicate", 2)], 1, false, now);
+        assert!(!active);
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples.iter().map(|sample| sample.value).collect::<Vec<_>>(), [1, 2]);
+        assert!(samples.iter().all(|sample| sample.interactive && sample.opacity == 1.0));
+    }
+
+    #[test]
     fn suspended_spring_resumes_without_consuming_idle_time() {
         let now = Instant::now();
         let mut spring = RetainedSpring::new(0.0, now);
@@ -513,6 +719,20 @@ mod tests {
         assert!(active);
         let (position, _) = spring.sample(100.0, false, resumed + Duration::from_millis(16));
         assert!(position > 0.0 && position < 100.0);
+    }
+
+    #[test]
+    fn grid_cells_reentering_after_a_zoom_snap_instead_of_animating() {
+        let now = Instant::now();
+        let small = GridItemBounds { x: 0.0, y: 0.0, w: 80.0, h: 100.0 };
+        let big = GridItemBounds { x: 0.0, y: 400.0, w: 160.0, h: 200.0 };
+        let mut motion = GridMotion::new(1);
+        motion.sample(&[("a", 0, small), ("b", 1, small)], 1, false, now);
+        // Scrolled away: only "b" is realised while the zoom changes.
+        motion.sample(&[("b", 1, big)], 1, false, now);
+        // "a" scrolls back into view at its new geometry: no replay from `small`.
+        let (cells, _) = motion.sample(&[("a", 0, big), ("b", 1, big)], 1, false, now);
+        assert_eq!(cells[0].1, big);
     }
 
     #[test]
@@ -825,6 +1045,10 @@ mod tests {
         let (positions, active) = rows.sample(&swapped, 1, viewport, false, now);
         assert!(active);
         assert_eq!(positions, [(0, 24.0, 1.0), (1, 0.0, 1.0)]);
+        let (positions_subpixel, active_subpixel) =
+            rows.sample(&swapped, 1, [0.25, 24.0, 400.0], false, now);
+        assert!(active_subpixel);
+        assert_eq!(positions_subpixel, [(0, 24.0, 1.0), (1, 0.0, 1.0)]);
         let (positions, active) = rows.sample(&swapped, 1, [50.0, 24.0, 400.0], false, now);
         assert!(!active);
         assert_eq!(positions, [(0, 0.0, 1.0), (1, 24.0, 1.0)]);
@@ -871,5 +1095,94 @@ mod tests {
         );
         let (x, _) = column.sample(260.0, false, now + Duration::from_millis(100));
         assert!(x > 260.0 && x < 380.0);
+    }
+
+    #[test]
+    fn grid_motion_animates_both_position_and_size_and_handles_retargeting() {
+        let now = Instant::now();
+        let mut motion = GridMotion::new(1);
+        let initial = [(
+            "item1",
+            0,
+            GridItemBounds {
+                x: 0.0,
+                y: 0.0,
+                w: 120.0,
+                h: 120.0,
+            },
+        )];
+        let (res, active) = motion.sample(&initial, 1, false, now);
+        assert!(!active);
+        assert_eq!(res[0].1.x, 0.0);
+        assert_eq!(res[0].1.w, 120.0);
+
+        // Zoom: change both pos and dimensions
+        let zoomed = [(
+            "item1",
+            0,
+            GridItemBounds {
+                x: 20.0,
+                y: 30.0,
+                w: 180.0,
+                h: 180.0,
+            },
+        )];
+        let (res, active) = motion.sample(&zoomed, 1, false, now);
+        assert!(active);
+        // At start of animation, visual matches previous
+        assert_eq!(res[0].1.x, 0.0);
+        assert_eq!(res[0].1.y, 0.0);
+        assert_eq!(res[0].1.w, 120.0);
+        assert_eq!(res[0].1.h, 120.0);
+
+        // Halfway
+        let midway = now + Duration::from_millis(90);
+        let (res, active) = motion.sample(&zoomed, 1, false, midway);
+        assert!(active);
+        assert!(res[0].1.x > 0.0 && res[0].1.x < 20.0);
+        assert!(res[0].1.y > 0.0 && res[0].1.y < 30.0);
+        assert!(res[0].1.w > 120.0 && res[0].1.w < 180.0);
+        assert!(res[0].1.h > 120.0 && res[0].1.h < 180.0);
+
+        // Retargeting during flight (e.g. continuous resize or wheel zoom)
+        let retargeted = [(
+            "item1",
+            0,
+            GridItemBounds {
+                x: 50.0,
+                y: 60.0,
+                w: 200.0,
+                h: 200.0,
+            },
+        )];
+        let (res, active) = motion.sample(&retargeted, 1, false, midway);
+        assert!(active);
+        // Must start from current in-flight position, not snap
+        assert!(res[0].1.x > 0.0 && res[0].1.x < 20.0);
+
+        // Settles after duration
+        let settled_time = midway + Duration::from_millis(300);
+        let (res, active) = motion.sample(&retargeted, 1, false, settled_time);
+        assert!(!active);
+        assert_eq!(res[0].1.x, 50.0);
+        assert_eq!(res[0].1.y, 60.0);
+        assert_eq!(res[0].1.w, 200.0);
+        assert_eq!(res[0].1.h, 200.0);
+
+        // Instant snaps immediately
+        let instant_target = [(
+            "item1",
+            0,
+            GridItemBounds {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+        )];
+        let (res, active) = motion.sample(&instant_target, 1, true, settled_time);
+        assert!(!active);
+        assert_eq!(res[0].1.x, 0.0);
+        assert_eq!(res[0].1.w, 100.0);
     }
 }

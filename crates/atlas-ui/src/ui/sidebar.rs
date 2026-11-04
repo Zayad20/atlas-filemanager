@@ -14,7 +14,7 @@ use crate::ui::drag_hover::{
     DragHoverDropCommand, DragHoverId, DragHoverKind,
 };
 use crate::ui::glass::{control_colors, control_hover, layer_color, GlassExt};
-use crate::ui::icons::{atlas_logo, file_type_icon, icon, is_windows_theme, theme_icon, AtlasIcon};
+use crate::ui::icons::{themed_atlas_logo, file_type_icon, icon, is_windows_theme, theme_icon, AtlasIcon};
 use crate::ui::root::DraggedFiles;
 #[cfg(all(feature = "provider-host", windows))]
 use crate::InstallWinFspForRemote;
@@ -603,6 +603,10 @@ fn atlas_launcher_content(
     let accent = cx.theme().accent;
     let accent_fg = cx.theme().accent_foreground;
     let hover = control_hover(fg);
+    // Licensed users never see the activation entries.
+    let premium = atlas_model::edition::current() == atlas_model::edition::Edition::Full;
+    let license_app = app.clone();
+    let license_popover = popover.clone();
 
     let colors = MenuColors {
         fg,
@@ -647,6 +651,34 @@ fn atlas_launcher_content(
             None,
             colors,
         ))
+        .when(!premium, |menu| {
+            menu.child(atlas_launcher_row(
+                license_app.clone(),
+                license_popover.clone(),
+                "atlas-launcher-activate-license",
+                AtlasIcon::Lock,
+                rust_i18n::t!("atlas_menu_activate_license").to_string(),
+                Some(rust_i18n::t!("atlas_menu_activate_license_hint").to_string()),
+                false,
+                false,
+                Some(Action::ActivateLicense),
+                None,
+                colors,
+            ))
+            .child(atlas_launcher_row(
+                license_app,
+                license_popover,
+                "atlas-launcher-get-premium",
+                AtlasIcon::Star,
+                rust_i18n::t!("atlas_menu_get_premium").to_string(),
+                Some(rust_i18n::t!("atlas_menu_get_premium_hint").to_string()),
+                false,
+                false,
+                Some(Action::GetPremium),
+                None,
+                colors,
+            ))
+        })
         .child(atlas_launcher_row(
             app.clone(),
             popover.clone(),
@@ -888,7 +920,7 @@ impl Selectable for AtlasLauncherTrigger {
 }
 
 impl RenderOnce for AtlasLauncherTrigger {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let fill = if self.selected { self.active } else { self.bg };
         let rename_app = self.app.clone();
         h_flex()
@@ -925,7 +957,7 @@ impl RenderOnce for AtlasLauncherTrigger {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(atlas_logo(22.0)),
+                        .child(themed_atlas_logo(22.0, cx.theme().mode.is_dark())),
                 )
             })
             .when(!self.collapsed, |s| {
@@ -1235,8 +1267,7 @@ impl Render for SidebarPanel {
                     if let Some(app) = this.app.upgrade() {
                         let path = action.path.clone();
                         app.update(cx, |app, cx| {
-                            let pane = app.state.focused_tile;
-                            app.process_actions(vec![Action::OpenSpaceLens { pane, path }]);
+                            app.open_disk_cleanup(path, cx);
                             cx.notify();
                         });
                     }
@@ -1534,9 +1565,10 @@ fn sidebar_drop_zone(
         id: SharedString::from(format!("shelf-reference-motion-{}", app.read(cx).state.profiles.active().name)),
         app: app.clone(), items: reference_items, extent: 84.0, gap: if windows_theme { 14.0 } else { 12.0 },
         horizontal: true, icon: AtlasIcon::File, color: muted, windows: windows_theme,
-        empty: Some(h_flex().w_full().h_full().items_center().justify_center().gap_2().text_xs().text_color(muted)
-            .child(icon(AtlasIcon::TrayArrowDown, 13.0, muted))
-            .child(rust_i18n::t!("sidebar_drop_zone_hint").to_string()).into_any_element()),
+        // The hint wraps (min_w 0 + flex_1) so a narrow sidebar never clips it.
+        empty: Some(h_flex().w_full().h_full().min_w(px(0.)).overflow_hidden().items_center().justify_center().gap_2().text_xs().text_color(muted)
+            .child(div().flex_none().child(icon(AtlasIcon::TrayArrowDown, 13.0, muted)))
+            .child(div().min_w(px(0.)).flex_shrink(1.0).child(rust_i18n::t!("sidebar_drop_zone_hint").to_string())).into_any_element()),
     };
     let controls = control_colors(cx.theme(), is_glass);
     let drop_bg = cx.theme().foreground.opacity(0.025);
@@ -1557,12 +1589,12 @@ fn sidebar_drop_zone(
         .overflow_hidden()
         .rounded(px(12.))
         .bg(if drag_over {
-            accent.opacity(0.12)
+            accent.opacity(0.05)
         } else {
             drop_bg
         })
-        .on_drag_over::<DraggedFiles>(move |s, _, _, _| s.bg(accent.opacity(0.12)))
-        .on_drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(accent.opacity(0.12)))
+        .on_drag_over::<DraggedFiles>(move |s, _, _, _| s.bg(accent.opacity(0.05)))
+        .on_drag_over::<gpui::ExternalPaths>(move |s, _, _, _| s.bg(accent.opacity(0.05)))
         .occlude()
         .on_scroll_wheel(cx.listener(|this, ev: &gpui::ScrollWheelEvent, window, cx| {
             let delta = ev.delta.pixel_delta(window.line_height());

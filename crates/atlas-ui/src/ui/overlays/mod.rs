@@ -34,8 +34,15 @@ impl App {
             layers.push(self.render_converter(window, cx));
         }
 
+
         if self.state.overlay.show_settings {
             layers.push(self.render_settings(window, cx));
+        }
+        if self.state.overlay.show_guide {
+            layers.push(self.render_guide(cx));
+        }
+        if self.state.overlay.guide_coach.is_some() {
+            layers.push(self.render_guide_coach(cx));
         }
         if self.state.overlay.show_getting_started {
             layers.push(self.render_getting_started(window, cx));
@@ -129,6 +136,12 @@ impl App {
         if self.ctx_menu.is_some() {
             layers.push(self.render_ctx_menu_layer(window, cx));
         }
+        if self.cleanup_panel.is_some() {
+            layers.push(self.render_disk_cleanup(cx));
+        }
+        if self.vault.is_some() {
+            layers.push(self.render_vault(window, cx));
+        }
         layers
     }
 
@@ -195,6 +208,8 @@ mod create_tag;
 mod ext_manager;
 mod ext_prompt;
 mod getting_started;
+mod guide;
+pub(crate) mod legal;
 mod properties;
 mod rename_profile;
 #[cfg(feature = "provider-host")]
@@ -205,3 +220,4 @@ pub(crate) mod settings_imm;
 pub(crate) mod toasts;
 mod transfer_conflict;
 mod transfers_bar;
+mod vault;

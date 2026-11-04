@@ -212,10 +212,13 @@ impl<T: Clone + Eq + std::hash::Hash> SelectionState<T> {
     /// Apply pointer selection in display order, shared by panes, Miller and the shelf.
     pub fn select(&mut self, item: T, visible: &[T], shift: bool, ctrl: bool) {
         self.retain_visible(visible);
+        if !visible.contains(&item) {
+            return;
+        }
         if shift {
-            let anchor = self.selection_anchor.as_ref().unwrap_or(&item);
+            let anchor = self.selection_anchor.as_ref().or(self.keyboard_cursor.as_ref()).unwrap_or(&item).clone();
             if let (Some(a), Some(b)) = (
-                visible.iter().position(|value| value == anchor),
+                visible.iter().position(|value| value == &anchor),
                 visible.iter().position(|value| value == &item),
             ) {
                 if !ctrl {
@@ -225,7 +228,7 @@ impl<T: Clone + Eq + std::hash::Hash> SelectionState<T> {
                     .extend(visible[a.min(b)..=a.max(b)].iter().cloned());
             }
             if self.selection_anchor.is_none() {
-                self.selection_anchor = Some(item.clone());
+                self.selection_anchor = Some(anchor);
             }
         } else {
             if ctrl {
@@ -240,6 +243,43 @@ impl<T: Clone + Eq + std::hash::Hash> SelectionState<T> {
         }
         self.last_clicked_index = Some(item.clone());
         self.keyboard_cursor = Some(item);
+    }
+
+    /// Move the keyboard cursor with the same anchor and modifier rules in every view.
+    /// A column-major List supplies its row count so Shift selects a visual rectangle.
+    /// Ctrl alone only moves focus; Ctrl+Shift adds the range to the current selection.
+    pub fn navigate(&mut self, item: T, visible: &[T], extend: bool, ctrl: bool, column_rows: Option<usize>) {
+        self.retain_visible(visible);
+        let Some(next) = visible.iter().position(|value| value == &item) else { return };
+        let anchor = self.selection_anchor.as_ref().or(self.keyboard_cursor.as_ref()).unwrap_or(&item).clone();
+        if extend {
+            let start = visible.iter().position(|value| value == &anchor).unwrap_or(next);
+            if !ctrl {
+                self.selected.clear();
+            }
+            if let Some(rows) = column_rows.filter(|rows| *rows > 0) {
+                let (top, bottom) = ((start % rows).min(next % rows), (start % rows).max(next % rows));
+                let (left, right) = ((start / rows).min(next / rows), (start / rows).max(next / rows));
+                for column in left..=right {
+                    let lo = column * rows + top;
+                    let hi = (column * rows + bottom + 1).min(visible.len());
+                    if lo < hi {
+                        self.selected.extend(visible[lo..hi].iter().cloned());
+                    }
+                }
+            } else {
+                self.selected.extend(visible[start.min(next)..=start.max(next)].iter().cloned());
+            }
+            self.selection_anchor = Some(anchor);
+        } else if !ctrl {
+            self.selected.clear();
+            self.selected.insert(item.clone());
+            self.selection_anchor = Some(item.clone());
+        }
+        self.keyboard_cursor = Some(item.clone());
+        self.last_clicked_index = Some(item);
+        self.last_pointer_click = None;
+        self.scroll_to_selected = true;
     }
 
     pub fn retain_visible(&mut self, visible: &[T]) {
@@ -331,6 +371,10 @@ pub struct TabState {
     grouped_visible: Arc<Vec<usize>>,
     group_cache: Option<(u64, String, bool, bool, GroupBy, chrono::NaiveDate, u64)>,
     group_revision: u64,
+    grouped_cells: Option<(usize, crate::grouping::GroupFlow, Arc<crate::grouping::GroupCells>)>,
+    /// Created/accessed stamps for the listing with this `entries_version`.
+    entry_times: Option<(u64, Arc<Vec<crate::grouping::EntryTimes>>)>,
+    entry_times_requested: Option<u64>,
     pub entries: std::sync::Arc<[FileEntry]>,
     pub filter: String,
     /// Per-pane visibility toggles, mirrored from `TabData` so the cached
@@ -390,6 +434,9 @@ impl Default for TabState {
             grouped_visible: Arc::default(),
             group_cache: None,
             group_revision: 0,
+            grouped_cells: None,
+            entry_times: None,
+            entry_times_requested: None,
             entries: std::sync::Arc::new([]),
             filter: String::new(),
             show_files: true,
@@ -458,6 +505,14 @@ impl TabState {
         rename: impl Fn(std::path::PathBuf) -> std::path::PathBuf,
         mutate: impl FnOnce(&mut Self),
     ) {
+        // A fresh navigation has no identity to restore. Building two complete
+        // path vectors and a million-entry lookup here stalled the UI thread.
+        if self.selection.selected.is_empty() && self.selection.keyboard_cursor.is_none()
+            && self.selection.selection_anchor.is_none() && self.selection.last_clicked_index.is_none() {
+            mutate(self);
+            self.selection.last_pointer_click = None;
+            return;
+        }
         let before: Vec<_> = self.selection_paths(tree).into_iter().map(rename).collect();
         let selection = self.selection.clone();
         mutate(self);
@@ -539,7 +594,7 @@ impl TabState {
             }
         };
         if let Some(index) = found {
-            selection.select(index, &[], false, false);
+            selection.select(index, &[index], false, false);
             selection.scroll_to_selected = true;
             true
         } else { false }
@@ -554,6 +609,43 @@ impl TabState {
         if self.group_by != mode || self.collapsed_groups != collapsed {
             self.group_by = mode;
             self.collapsed_groups = collapsed;
+            self.group_cache = None;
+            self.group_revision = self.group_revision.wrapping_add(1);
+        }
+    }
+
+    /// Headers and entries as one position space for the IMM views. Cached per
+    /// group snapshot and flow; the entry-only order stays in `visible_indices`.
+    pub fn grouped_cells_shared(&mut self, flow: crate::grouping::GroupFlow) -> Arc<crate::grouping::GroupCells> {
+        self.visible_indices();
+        let key = Arc::as_ptr(&self.grouped_rows) as usize;
+        if let Some((cached, cached_flow, cells)) = &self.grouped_cells {
+            if *cached == key && *cached_flow == flow {
+                return cells.clone();
+            }
+        }
+        let cells = Arc::new(crate::grouping::flow_cells(&self.grouped_rows, flow));
+        self.grouped_cells = Some((key, flow, cells.clone()));
+        cells
+    }
+
+    /// Listing version whose created/accessed stamps still have to be read for
+    /// the active grouping; `None` when nothing is missing or already requested.
+    pub fn entry_times_needed(&self) -> Option<u64> {
+        let wants = matches!(self.group_by, GroupBy::Created | GroupBy::Accessed);
+        let current = self.entry_times.as_ref().is_some_and(|(version, _)| *version == self.entries_version);
+        (wants && !current && self.entry_times_requested != Some(self.entries_version))
+            .then_some(self.entries_version)
+    }
+
+    pub fn mark_entry_times_requested(&mut self, version: u64) {
+        self.entry_times_requested = Some(version);
+    }
+
+    /// Install stamps read in the background; stale listings are dropped.
+    pub fn set_entry_times(&mut self, version: u64, times: Arc<Vec<crate::grouping::EntryTimes>>) {
+        if version == self.entries_version {
+            self.entry_times = Some((version, times));
             self.group_cache = None;
             self.group_revision = self.group_revision.wrapping_add(1);
         }
@@ -585,6 +677,15 @@ impl TabState {
             self.type_labels_version = self.entries_version;
         }
         &self.type_labels
+    }
+
+    pub fn install_type_labels(&mut self, labels: Vec<String>) {
+        self.type_labels = labels;
+        self.type_labels_version = self.entries_version;
+    }
+
+    pub fn ready_type_labels(&self) -> &[String] {
+        if self.type_labels_version == self.entries_version { &self.type_labels } else { &[] }
     }
 
     pub fn begin_navigation(&mut self) {
@@ -710,7 +811,8 @@ impl TabState {
                 && *mode == self.group_by && *day == today && *revision == self.group_revision
         });
         if !valid {
-            let (rows, order) = crate::grouping::build_groups(&self.entries, &self.visible, self.group_by, &self.collapsed_groups, today);
+            let times = self.entry_times.as_ref().filter(|(version, _)| *version == self.entries_version).map(|(_, times)| times.clone());
+            let (rows, order) = crate::grouping::build_groups(&self.entries, &self.visible, self.group_by, &self.collapsed_groups, today, times.as_deref().map(Vec::as_slice));
             self.grouped_rows = Arc::new(rows);
             self.grouped_visible = Arc::new(order);
             self.group_cache = Some((self.entries_version, self.filter.clone(), self.show_files, self.show_folders, self.group_by, today, self.group_revision));
@@ -891,6 +993,73 @@ pub fn filter_visible_entries(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn list_keyboard_shift_selects_a_rectangle_and_contracts_from_fixed_anchor() {
+        let visible = [10, 11, 12, 20, 21, 22, 30, 31];
+        let mut selection = super::SelectionState::default();
+        selection.select(11, &visible, false, false);
+        selection.navigate(21, &visible, true, false, Some(3));
+        assert_eq!(selection.selected, [11, 21].into());
+        selection.navigate(22, &visible, true, false, Some(3));
+        assert_eq!(selection.selected, [11, 12, 21, 22].into());
+        selection.navigate(31, &visible, true, false, Some(3));
+        assert_eq!(selection.selected, [11, 21, 31].into());
+        selection.navigate(10, &visible, true, false, Some(3));
+        assert_eq!(selection.selected, [10, 11].into());
+        assert_eq!(selection.selection_anchor, Some(11));
+        selection.select(12, &visible, false, false);
+        selection.navigate(31, &visible, true, false, Some(3));
+        assert_eq!(selection.selected, [11, 12, 21, 22, 31].into());
+    }
+
+    #[test]
+    fn keyboard_ctrl_moves_only_cursor_and_ctrl_shift_adds_range() {
+        let visible = [0, 1, 2, 3, 4];
+        let mut selection = super::SelectionState::default();
+        selection.select(0, &visible, false, false);
+        selection.navigate(2, &visible, false, true, None);
+        assert_eq!(selection.selected, [0].into());
+        assert_eq!(selection.keyboard_cursor, Some(2));
+        selection.select(2, &visible, false, true);
+        selection.navigate(4, &visible, true, true, None);
+        assert_eq!(selection.selected, [0, 2, 3, 4].into());
+        selection.navigate(3, &visible, true, false, None);
+        assert_eq!(selection.selected, [2, 3].into());
+    }
+
+    #[test]
+    fn clear_resets_every_focus_and_rename_state_before_next_shift() {
+        let visible = [0, 1, 2];
+        let mut selection = super::SelectionState::default();
+        selection.select(0, &visible, false, false);
+        selection.navigate(2, &visible, true, false, None);
+        selection.last_pointer_click = Some((2, std::time::Instant::now()));
+        selection.clear();
+        assert!(selection.selected.is_empty());
+        assert!(selection.keyboard_cursor.is_none());
+        assert!(selection.selection_anchor.is_none());
+        assert!(selection.last_clicked_index.is_none());
+        assert!(selection.last_pointer_click.is_none());
+        assert!(!selection.scroll_to_selected);
+        selection.navigate(1, &visible, true, false, None);
+        assert_eq!(selection.selected, [1].into());
+        selection.navigate(2, &visible, true, false, None);
+        assert_eq!(selection.selected, [1, 2].into());
+    }
+
+    #[test]
+    fn shift_uses_keyboard_cursor_when_anchor_is_missing_and_ignores_stale_hits() {
+        let visible = [0, 1, 2];
+        let mut selection = super::SelectionState::default();
+        selection.keyboard_cursor = Some(0);
+        selection.select(2, &visible, true, false);
+        assert_eq!(selection.selected, [0, 1, 2].into());
+        assert_eq!(selection.selection_anchor, Some(0));
+        selection.select(9, &visible, false, false);
+        assert_eq!(selection.selected, [0, 1, 2].into());
+        assert_eq!(selection.keyboard_cursor, Some(2));
+    }
+
     #[test]
     fn grouping_collapsed_buckets_are_excluded_from_keyboard_and_shift_selection() {
         let mut tab = super::TabState::default();

@@ -91,6 +91,9 @@ pub enum ShellMenuRequest {
     },
     /// Free the COM objects backing menu `id`.
     Dismiss { id: u64 },
+    /// Build a throwaway menu for `path` only to load third-party handlers and
+    /// seed the UI cache under `key`. Lowest priority; never blocks a real open.
+    Prewarm { key: String, path: PathBuf },
 }
 
 /// An event from the shell worker back to the UI.
@@ -107,6 +110,11 @@ pub enum ShellMenuEvent {
     InvokeDone {
         id: u64,
         result: Result<(), String>,
+    },
+    /// Result of a [`ShellMenuRequest::Prewarm`] (no live menu is kept).
+    Prewarmed {
+        key: String,
+        items: Vec<NativeMenuItem>,
     },
 }
 
@@ -138,6 +146,28 @@ impl ShellMenuHandle {
                 );
             }
         }
+    }
+
+    /// Seed the menu cache and load shell handlers ahead of the first right-click.
+    /// Representative entries live in a temp dir created off the UI thread.
+    pub fn prewarm(&self) {
+        let handle = self.clone();
+        let _ = std::thread::Builder::new()
+            .name("atlas-shell-menu-prewarm".into())
+            .spawn(move || {
+                let root = std::env::temp_dir().join("atlas-ctx-prewarm");
+                let folder = root.join("folder");
+                if std::fs::create_dir_all(&folder).is_err() {
+                    return;
+                }
+                handle.send(ShellMenuRequest::Prewarm { key: "dir".into(), path: folder });
+                for ext in ["txt", "zip", "png"] {
+                    let file = root.join(format!("a.{ext}"));
+                    if file.exists() || std::fs::write(&file, b"").is_ok() {
+                        handle.send(ShellMenuRequest::Prewarm { key: format!(".{ext}"), path: file });
+                    }
+                }
+            });
     }
 
     /// Take all pending events. Called from the App's drain loop.

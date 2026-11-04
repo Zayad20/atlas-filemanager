@@ -92,6 +92,7 @@ pub async fn list_branch_dir_with_preview(
     preview: impl Fn(Vec<FileEntry>) + Send + 'static,
 ) -> anyhow::Result<Vec<FileEntry>> {
     let dir = crate::fs::paths::normalize_wsl_unc_path(path.to_path_buf());
+    anyhow::ensure!(!crate::vault::is_private_path(&dir), "vault_access_denied");
     let entries = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<FileEntry>> {
         crate::fs::paths::ensure_wsl_ready(&dir)?;
         let mut entries = Vec::new();
@@ -177,6 +178,7 @@ pub async fn list_dir_with_preview(
 ) -> anyhow::Result<Vec<FileEntry>> {
     let folder_order = folder_order.into();
     let dir = crate::fs::paths::normalize_wsl_unc_path(path.to_path_buf());
+    anyhow::ensure!(!crate::vault::is_private_path(&dir), "vault_access_denied");
     // Native Windows queries return a 64 KiB page of cached metadata per syscall.
     // Other platforms and unsupported providers retain the portable enumerator.
     let entries = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<FileEntry>> {
@@ -190,7 +192,7 @@ pub async fn list_dir_with_preview(
             let native = atlas_win_space::directory::enumerate(&dir, |raw| {
                 let hidden = raw.attributes & (0x2 | 0x4) != 0
                     || raw.name.to_string_lossy().starts_with('.');
-                if !show_hidden && hidden {
+                if !show_hidden && hidden && !raw.name.to_string_lossy().starts_with(crate::vault::PREFIX) {
                     return;
                 }
                 let path = dir.join(&raw.name);
@@ -278,7 +280,7 @@ fn list_dir_portable(
     for raw in std::fs::read_dir(&dir)? {
         let Ok(de) = raw else { continue };
         let path = de.path();
-        if !show_hidden && crate::util::display::is_hidden(&path) {
+        if !show_hidden && crate::util::display::is_hidden(&path) && !crate::vault::is_private_path(&path) {
             continue;
         }
         let Ok(ft) = de.file_type() else { continue };
@@ -313,7 +315,7 @@ fn list_dir_portable(
                 false
             }
         };
-        if !show_hidden && is_hidden {
+        if !show_hidden && is_hidden && !crate::vault::is_private_path(&path) {
             continue;
         }
         entries.push(FileEntry::in_directory(atlas_model::file_entry::FileEntryData {

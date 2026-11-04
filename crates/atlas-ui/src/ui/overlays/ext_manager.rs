@@ -103,10 +103,7 @@ impl App {
                 .ext_registry
                 .extensions
                 .iter()
-                .filter(|e| {
-                    !e.manifest.hidden
-                        && e.manifest.kind != atlas_model::ext_model::ExtKind::ToolProvider
-                })
+                .filter(|e| !e.manifest.hidden)
                 .filter(|e| {
                     query_lower.is_empty()
                         || e.manifest.name.to_lowercase().contains(&query_lower)
@@ -700,7 +697,7 @@ impl App {
                     .border_color(border)
                     .pb_1()
                     .child(tab_btn(
-                        &rust_i18n::t!("ext_tab_installed"),
+                        &format!("{} ({})", rust_i18n::t!("ext_tab_installed"), self.ext_registry.extensions.iter().filter(|e| !e.manifest.hidden).count()),
                         ExtManagerTab::Installed,
                         view_inst,
                         accent,
@@ -708,7 +705,10 @@ impl App {
                         fg,
                     ))
                     .child(tab_btn(
-                        &rust_i18n::t!("ext_tab_marketplace"),
+                        &self.state.ext.remote.as_ref().map_or_else(
+                            || rust_i18n::t!("ext_tab_marketplace").to_string(),
+                            |list| format!("{} ({})", rust_i18n::t!("ext_tab_marketplace"), list.len()),
+                        ),
                         ExtManagerTab::Marketplace,
                         view_mkt,
                         accent,

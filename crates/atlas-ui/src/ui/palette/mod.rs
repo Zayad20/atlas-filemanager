@@ -11,10 +11,10 @@
 //! expansion, collapsed sections) lives in `atlas-model`'s `FuzzyOverlayState`.
 #![allow(dead_code)] // reason: declarative engine API; variants exist for specs to use
 
+pub(crate) mod palette_imm;
 mod render;
 mod specs;
-pub(crate) mod palette_imm;
-pub(crate) use palette_imm::PaletteImmElement;
+pub(crate) use palette_imm::{PaletteListElement, PaletteListRow};
 pub(crate) use specs::GotoSnapshot;
 
 use crate::app::App;
@@ -23,6 +23,9 @@ use crate::ui::file_icons::FileIconRef;
 use crate::ui::icons::AtlasIcon;
 use atlas_model::overlay::FuzzyOverlayState;
 use gpui::{AnyElement, Keystroke, SharedString};
+
+/// Resolved to the first visible result once the current spec has been built.
+pub(crate) const INITIAL_SELECTION: usize = usize::MAX;
 
 /// A complete palette: what to search, how rows look, and what surrounds them.
 pub(crate) struct PaletteSpec {
@@ -84,6 +87,8 @@ pub(crate) struct PaletteItem {
     pub inline_description: bool,
     /// Byte ranges of `title` matched by the query, tinted accent in render.
     pub highlight: Option<Vec<std::ops::Range<usize>>>,
+    /// Byte ranges of `description` matched by the query (inline path rows).
+    pub description_highlight: Option<Vec<std::ops::Range<usize>>>,
 }
 
 impl PaletteItem {
@@ -99,6 +104,7 @@ impl PaletteItem {
             expand: None,
             inline_description: false,
             highlight: None,
+            description_highlight: None,
         }
     }
 }

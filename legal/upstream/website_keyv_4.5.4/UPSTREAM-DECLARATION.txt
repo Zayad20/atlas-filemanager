@@ -1,0 +1,23 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "keyv",
+  "version": "4.5.4",
+  "license": "MIT",
+  "author": "Jared Wray <me@jaredwray.com> (http://jaredwray.com)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jaredwray/keyv.git"
+  },
+  "homepage": "https://github.com/jaredwray/keyv"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: e8afd30f2f2a40ef5023928b50fdaed3a3338aa7e1c4e86205413afb05e8a099
+
+License statement from README.md:
+## License
+
+MIT © Jared Wray

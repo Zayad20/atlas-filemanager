@@ -1,0 +1,17 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "unpic",
+  "version": "4.2.2",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ascorbic/unpic.git"
+  },
+  "homepage": "https://unpic.pics/lib"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: 6f8f5221f620b1e9f906a50abe764e84a21a4ffaf9d96a1eb723c891e0217e68

@@ -1,0 +1,7 @@
+dosya yöneticisi
+dosya gezgini
+disk temizleme
+sekmeler
+çift bölme
+hızlı dosya arama
+gizlilik

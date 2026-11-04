@@ -1,0 +1,7 @@
+gestionnaire de fichiers
+explorateur de fichiers
+nettoyage de disque
+onglets
+double volet
+recherche de fichiers
+espace disque

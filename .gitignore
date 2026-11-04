@@ -63,3 +63,4 @@ website/
 /target-nativeverify/
 /artifacts/*.exe
 /artifacts/*.pdb
+/artifacts/certification-runs/

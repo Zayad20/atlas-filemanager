@@ -39,12 +39,13 @@ impl EdgeDirection {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct EdgeActivation {
     pub(crate) direction: EdgeDirection,
-    /// 0 at the inside edge of the activation zone, 1 at the viewport edge.
+    /// 0 at the inside edge of the activation zone, 1 at the viewport edge;
+    /// values above 1 preserve distance beyond the edge for gentle acceleration.
     pub(crate) strength: f32,
 }
 
 /// Returns the active vertical edge only while the pointer remains inside the
-/// viewport horizontally. Keeping the pointer outside a container never scrolls it.
+/// viewport horizontally. Distance beyond the top/bottom keeps accelerating it.
 pub(crate) fn activation_at(bounds: Bounds<Pixels>, pos: Point<Pixels>) -> Option<EdgeActivation> {
     let x = f32::from(pos.x);
     let left = f32::from(bounds.left());
@@ -59,12 +60,12 @@ pub(crate) fn activation_at(bounds: Bounds<Pixels>, pos: Point<Pixels>) -> Optio
     if y < top + EDGE_ZONE {
         Some(EdgeActivation {
             direction: EdgeDirection::Up,
-            strength: ((top + EDGE_ZONE - y) / EDGE_ZONE).clamp(0.0, 1.0),
+            strength: ((top + EDGE_ZONE - y) / EDGE_ZONE).max(0.0),
         })
     } else if y > bottom - EDGE_ZONE {
         Some(EdgeActivation {
             direction: EdgeDirection::Down,
-            strength: ((y - (bottom - EDGE_ZONE)) / EDGE_ZONE).clamp(0.0, 1.0),
+            strength: ((y - (bottom - EDGE_ZONE)) / EDGE_ZONE).max(0.0),
         })
     } else {
         None
@@ -87,12 +88,12 @@ pub(crate) fn activation_at_horizontal(
     if x < left + EDGE_ZONE {
         Some(EdgeActivation {
             direction: EdgeDirection::Left,
-            strength: ((left + EDGE_ZONE - x) / EDGE_ZONE).clamp(0.0, 1.0),
+            strength: ((left + EDGE_ZONE - x) / EDGE_ZONE).max(0.0),
         })
     } else if x > right - EDGE_ZONE {
         Some(EdgeActivation {
             direction: EdgeDirection::Right,
-            strength: ((x - (right - EDGE_ZONE)) / EDGE_ZONE).clamp(0.0, 1.0),
+            strength: ((x - (right - EDGE_ZONE)) / EDGE_ZONE).max(0.0),
         })
     } else {
         None
@@ -103,7 +104,9 @@ pub(crate) fn velocity(strength: f32) -> f32 {
     let t = strength.clamp(0.0, 1.0);
     // Smoothstep avoids the perceptible speed kink at the activation boundary.
     let eased = t * t * (3.0 - 2.0 * t);
-    MIN_SPEED + (MAX_SPEED - MIN_SPEED) * eased
+    let outside = (strength - 1.0).max(0.0);
+    let extra = (outside * 140.0).min(1_300.0);
+    MIN_SPEED + (MAX_SPEED - MIN_SPEED) * eased + extra
 }
 
 pub(crate) fn next_offset(
@@ -176,6 +179,30 @@ mod tests {
         assert!(velocity(0.5) < velocity(1.0));
     }
 
+    #[test]
+    fn moving_beyond_either_edge_keeps_accelerating_on_both_axes() {
+        let bounds = Bounds::from_corners(point(px(10.0), px(20.0)), point(px(210.0), px(220.0)));
+        for (edge, near, far) in [
+            (
+                point(px(100.0), px(220.0)),
+                point(px(100.0), px(264.0)),
+                point(px(100.0), px(352.0)),
+            ),
+            (
+                point(px(100.0), px(20.0)),
+                point(px(100.0), px(-24.0)),
+                point(px(100.0), px(-112.0)),
+            ),
+        ] {
+            let speeds =
+                [edge, near, far].map(|p| velocity(activation_at(bounds, p).unwrap().strength));
+            assert!(speeds[0] < speeds[1] && speeds[1] < speeds[2]);
+        }
+        let at_edge = activation_at_horizontal(bounds, point(px(210.0), px(100.0))).unwrap();
+        let outside = activation_at_horizontal(bounds, point(px(298.0), px(100.0))).unwrap();
+        assert!(velocity(outside.strength) > velocity(at_edge.strength));
+        assert!(velocity(1000.0) <= 2400.0);
+    }
     #[test]
     fn offset_is_time_based_and_clamped() {
         let first = next_offset(0.0, 500.0, EdgeDirection::Down, 1.0, 1.0 / 60.0);

@@ -1,0 +1,17 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "hexf-parse",
+  "version": "0.2.1",
+  "license": "CC0-1.0",
+  "authors": [
+    "Kang Seonghoon <public+rust@mearie.org>"
+  ],
+  "repository": "https://github.com/lifthrasiir/hexf",
+  "homepage": "https://github.com/lifthrasiir/hexf"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: 4a56dbdbc12054fd33b7a2634a45cbbe6fe12f5e6f4081002cbfa527f7220c70

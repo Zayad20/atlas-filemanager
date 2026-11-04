@@ -1,0 +1,19 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "rust-i18n-macro",
+  "version": "3.1.5",
+  "license": "MIT",
+  "authors": [],
+  "repository": "https://github.com/longbridge/rust-i18n"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: 662f332eddb51077a89e086442bbffe1fb059b9f653f031ccb694a15a16f05f1
+
+License statement from README.md:
+## License
+
+MIT

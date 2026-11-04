@@ -30,7 +30,7 @@ pub struct RarProvider {
 impl RarProvider {
     pub fn new(path: &Path) -> anyhow::Result<Self> {
         let archive_arg = path_arg(path);
-        let output = run_unrar(&["lb", "-c-", "-p-", archive_arg.as_str()])?;
+        let output = run_unrar(&["lt", "-c-", "-p-", "-scf", archive_arg.as_str()])?;
         let listing = String::from_utf8_lossy(&output.stdout);
         let encrypted = password_required(&output.stderr)
             || listing
@@ -46,18 +46,19 @@ impl RarProvider {
             });
         }
 
+        // `lb` can report success for a non-RAR file. Technical listings also
+        // provide directory types (bare listings omit directory suffixes).
+        anyhow::ensure!(listing.lines().any(|line| line.trim().starts_with("Details: RAR")), "Invalid or unreadable RAR archive");
+
         let mut index: HashMap<String, Vec<FileEntry>> = HashMap::new();
         let mut exact_names = HashMap::new();
         index.entry(String::new()).or_default();
 
-        for line in listing.lines() {
-            let original_name = line.trim();
-            if original_name.is_empty() {
-                continue;
-            }
+        for record in technical_entries(&listing) {
+            let original_name = record.name;
             let normalized = original_name.replace('\\', "/");
             exact_names.insert(normalized.clone(), original_name.to_string());
-            let is_dir = normalized.ends_with('/');
+            let is_dir = record.is_dir;
             let inner = PathBuf::from(normalized.trim_end_matches('/'));
             let name = inner
                 .file_name()
@@ -70,8 +71,11 @@ impl RarProvider {
             let parent_key = inner.parent().map(path_to_dir_key).unwrap_or_default();
             build_synthetic_ancestors(path, &inner, &mut index);
 
-            let file_entry = make_entry(path, inner, name, is_dir, None);
-            index.entry(parent_key).or_default().push(file_entry);
+            if is_dir { index.entry(path_to_dir_key(&inner)).or_default(); }
+            let siblings = index.entry(parent_key).or_default();
+            if !siblings.iter().any(|entry| entry.path() == inner) {
+                siblings.push(make_entry(path, inner, name, is_dir, record.size));
+            }
         }
 
         Ok(Self {
@@ -103,6 +107,46 @@ impl RarProvider {
             anyhow::bail!("PasswordRequired");
         }
         Ok(output.stdout)
+    }
+}
+
+#[derive(Default)]
+struct TechnicalEntry<'a> {
+    name: &'a str,
+    is_dir: bool,
+    size: Option<u64>,
+}
+
+fn technical_entries(listing: &str) -> Vec<TechnicalEntry<'_>> {
+    let mut entries = Vec::new();
+    let mut current = TechnicalEntry::default();
+    for line in listing.lines().map(str::trim) {
+        if let Some(name) = line.strip_prefix("Name: ") {
+            if !current.name.is_empty() { entries.push(current); }
+            current = TechnicalEntry { name, ..Default::default() };
+        } else if let Some(kind) = line.strip_prefix("Type: ") {
+            current.is_dir = kind == "Directory";
+        } else if let Some(bytes) = line.strip_prefix("Size: ") {
+            current.size = bytes.parse().ok();
+        }
+    }
+    if !current.name.is_empty() { entries.push(current); }
+    entries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn technical_listing_preserves_unicode_directories_and_sizes() {
+        let entries = technical_entries("Details: RAR 5\n Name: carpeta vacía\n Type: Directory\n\n Name: niño\\日本語.txt\n Type: File\n Size: 42\n");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "carpeta vacía");
+        assert!(entries[0].is_dir);
+        assert_eq!(entries[1].name, "niño\\日本語.txt");
+        assert!(!entries[1].is_dir);
+        assert_eq!(entries[1].size, Some(42));
     }
 }
 

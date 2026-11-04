@@ -1,0 +1,18 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "@polar-sh/checkout",
+  "version": "0.3.0",
+  "license": "Apache-2.0",
+  "author": "Polar",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/polarsource/polar.git",
+    "directory": "clients/packages/checkout"
+  }
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: f3c851848182ccf9664c13e470202d60178696a9e917d822c1bac4fa8ad1e060

@@ -1,0 +1,19 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "stable-hash",
+  "version": "0.0.5",
+  "license": "MIT",
+  "author": "Shu Ding",
+  "repository": "https://github.com/shuding/stable-hash"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: 8c0b1ce6729fd4ac946735e8410236cbe838be0f3475c40e4c7fb2cad14deae5
+
+License statement from README.md:
+## License
+
+Created by Shu Ding. Released under the MIT License.

@@ -1,0 +1,5777 @@
+[
+  {
+    "key": "app_name",
+    "en": "Atlas",
+    "es": "Atlas"
+  },
+  {
+    "key": "cleanup_cancelling",
+    "en": "Cancellation requested…",
+    "es": "Cancelación solicitada…"
+  },
+  {
+    "key": "cleanup_stable_map_hint",
+    "en": "Collecting sizes. The complete map will appear without jumping.",
+    "es": "Recopilando tamaños. El mapa aparecerá completo, sin saltos."
+  },
+  {
+    "key": "cleanup_review_all",
+    "en": "Review all temporary files",
+    "es": "Revisar todos los temporales"
+  },
+  {
+    "key": "cleanup_free_action",
+    "en": "Free up space",
+    "es": "Liberar espacio"
+  },
+  {
+    "key": "cleanup_reading_mft",
+    "en": "Reading the NTFS index…",
+    "es": "Leyendo el índice NTFS…"
+  },
+  {
+    "key": "cleanup_fast_ntfs",
+    "en": "Fast NTFS",
+    "es": "NTFS rápido"
+  },
+  {
+    "key": "cleanup_mft_permission",
+    "en": "Preparing NTFS access. Confirm the Windows permission prompt if requested.",
+    "es": "Preparando lectura NTFS. Confirma el permiso en Windows si se solicita."
+  },
+  {
+    "key": "cleanup_fast_fallback",
+    "en": "MFT access is unavailable. Using the normal bulk scan.",
+    "es": "La lectura MFT no está disponible. Se está usando el escaneo normal por lotes."
+  },
+  {
+    "key": "cleanup_fast_ntfs_hint",
+    "en": "Read the MFT with an isolated reader. Windows will request administrator permission.",
+    "es": "Leer la MFT con un lector aislado. Windows pedirá permiso de administrador."
+  },
+  {
+    "key": "cleanup_local_volume",
+    "en": "Local drive",
+    "es": "Unidad local"
+  },
+  {
+    "key": "cleanup_user_temp",
+    "en": "User temporary files",
+    "es": "Temporales del usuario"
+  },
+  {
+    "key": "cleanup_history_subtitle",
+    "en": "Changes and preserved files",
+    "es": "Cambios y archivos conservados"
+  },
+  {
+    "key": "cleanup_selected_short",
+    "en": "selected for review",
+    "es": "seleccionados para revisar"
+  },
+  {
+    "key": "cleanup_analyzed_short",
+    "en": "analyzed in this location",
+    "es": "analizados en esta ubicación"
+  },
+  {
+    "key": "cleanup_contents",
+    "en": "Contents",
+    "es": "Contenido"
+  },
+  {
+    "key": "cleanup_map_hint",
+    "en": "Area represents size · Double-click to explore",
+    "es": "El área representa el tamaño · Doble clic para explorar"
+  },
+  {
+    "key": "cleanup_result_partial",
+    "en": "Cleanup finished with issues",
+    "es": "Limpieza terminada con incidencias"
+  },
+  {
+    "key": "cleanup_result_complete",
+    "en": "Cleanup complete",
+    "es": "Limpieza completada"
+  },
+  {
+    "key": "cleanup_processed",
+    "en": "processed",
+    "es": "procesados"
+  },
+  {
+    "key": "cleanup_rejected",
+    "en": "rejected",
+    "es": "rechazados"
+  },
+  {
+    "key": "cleanup_free_change",
+    "en": "Free space before → after",
+    "es": "Espacio libre antes → después"
+  },
+  {
+    "key": "cleanup_execution_pending",
+    "en": "Preview is available. Deletion is not enabled in this version yet.",
+    "es": "La vista previa está disponible. La eliminación todavía no está habilitada en esta versión."
+  },
+  {
+    "key": "cleanup_history_full",
+    "en": "Local history has reached its limit. Archive it before starting another cleanup.",
+    "es": "El historial local ha alcanzado su límite. Archívalo antes de iniciar otra limpieza."
+  },
+  {
+    "key": "cleanup_busy",
+    "en": "The analyzer is busy. Wait for the current scan or cancel it, then try again.",
+    "es": "El analizador está ocupado. Espera a que termine el análisis actual o cancélalo y vuelve a intentarlo."
+  },
+  {
+    "key": "cleanup_open",
+    "en": "Analyze and free space…",
+    "es": "Analizar y liberar espacio…"
+  },
+  {
+    "key": "cleanup_title",
+    "en": "Disk space",
+    "es": "Espacio del disco"
+  },
+  {
+    "key": "cleanup_refresh",
+    "en": "Scan again",
+    "es": "Volver a analizar"
+  },
+  {
+    "key": "cleanup_close",
+    "en": "Close",
+    "es": "Cerrar"
+  },
+  {
+    "key": "cleanup_map",
+    "en": "Map",
+    "es": "Mapa"
+  },
+  {
+    "key": "cleanup_files",
+    "en": "Large files",
+    "es": "Archivos grandes"
+  },
+  {
+    "key": "cleanup_temp",
+    "en": "Cleanup",
+    "es": "Limpieza"
+  },
+  {
+    "key": "cleanup_history",
+    "en": "Results",
+    "es": "Resultados"
+  },
+  {
+    "key": "cleanup_capacity",
+    "en": "Capacity",
+    "es": "Capacidad"
+  },
+  {
+    "key": "cleanup_free",
+    "en": "Free now",
+    "es": "Libre ahora"
+  },
+  {
+    "key": "cleanup_analyzed",
+    "en": "Logical size analyzed",
+    "es": "Tamaño lógico analizado"
+  },
+  {
+    "key": "cleanup_selected",
+    "en": "Selected",
+    "es": "Seleccionado"
+  },
+  {
+    "key": "cleanup_other",
+    "en": "Other entries",
+    "es": "Otras entradas"
+  },
+  {
+    "key": "cleanup_review_title",
+    "en": "Review permanent deletion",
+    "es": "Revisar eliminación permanente"
+  },
+  {
+    "key": "cleanup_permanent_warning",
+    "en": "These temporary files will be permanently deleted. They will not go to the Recycle Bin and cannot be restored from Atlas.",
+    "es": "Estos temporales se eliminarán permanentemente. No pasarán por la Papelera y no se podrán restaurar desde Atlas."
+  },
+  {
+    "key": "cleanup_back",
+    "en": "Back",
+    "es": "Volver"
+  },
+  {
+    "key": "cleanup_delete_reviewed",
+    "en": "Delete reviewed temporary files",
+    "es": "Eliminar los temporales revisados"
+  },
+  {
+    "key": "cleanup_up",
+    "en": "Up",
+    "es": "Subir"
+  },
+  {
+    "key": "cleanup_toggle_view",
+    "en": "Map / list",
+    "es": "Mapa / lista"
+  },
+  {
+    "key": "cleanup_temp_hint",
+    "en": "User temporary files older than 7 days. Select files to delete. Active files, links and protected data are skipped.",
+    "es": "Temporales del usuario con más de 7 días. Selecciona los archivos que quieras eliminar. Los archivos activos, enlaces y datos protegidos se omiten."
+  },
+  {
+    "key": "cleanup_files_hint",
+    "en": "Largest files in the current scan. Size does not mean a file is expendable. This view does not delete files.",
+    "es": "Archivos más grandes del análisis actual. Su tamaño no significa que sean prescindibles. Esta vista no elimina archivos."
+  },
+  {
+    "key": "cleanup_scanning",
+    "en": "Scanning…",
+    "es": "Analizando…"
+  },
+  {
+    "key": "cleanup_empty",
+    "en": "No entries to display",
+    "es": "No hay entradas para mostrar"
+  },
+  {
+    "key": "cleanup_reveal",
+    "en": "Show in Atlas",
+    "es": "Mostrar en Atlas"
+  },
+  {
+    "key": "cleanup_protect",
+    "en": "Exclude for this session",
+    "es": "Excluir de esta sesión"
+  },
+  {
+    "key": "cleanup_error",
+    "en": "The operation could not be completed",
+    "es": "No se pudo completar la operación"
+  },
+  {
+    "key": "cleanup_paused",
+    "en": "Scan paused",
+    "es": "Análisis pausado"
+  },
+  {
+    "key": "cleanup_complete",
+    "en": "Scan complete",
+    "es": "Análisis completo"
+  },
+  {
+    "key": "cleanup_partial",
+    "en": "Scan with partial coverage",
+    "es": "Análisis con cobertura parcial"
+  },
+  {
+    "key": "cleanup_cancelled",
+    "en": "Canceled",
+    "es": "Cancelado"
+  },
+  {
+    "key": "cleanup_failed",
+    "en": "Unable to scan",
+    "es": "No se pudo analizar"
+  },
+  {
+    "key": "cleanup_working",
+    "en": "Working…",
+    "es": "Procesando…"
+  },
+  {
+    "key": "cleanup_entries",
+    "en": "files",
+    "es": "archivos"
+  },
+  {
+    "key": "cleanup_skipped",
+    "en": "skipped",
+    "es": "omitidos"
+  },
+  {
+    "key": "cleanup_errors",
+    "en": "errors",
+    "es": "errores"
+  },
+  {
+    "key": "cleanup_limited",
+    "en": "Limit reached; partial results",
+    "es": "Límite alcanzado; resultados parciales"
+  },
+  {
+    "key": "cleanup_stop",
+    "en": "Cancel",
+    "es": "Cancelar"
+  },
+  {
+    "key": "cleanup_resume",
+    "en": "Resume",
+    "es": "Continuar"
+  },
+  {
+    "key": "cleanup_pause",
+    "en": "Pause",
+    "es": "Pausar"
+  },
+  {
+    "key": "cleanup_select_all",
+    "en": "Select / clear all",
+    "es": "Seleccionar / quitar todos"
+  },
+  {
+    "key": "cleanup_review",
+    "en": "Review selection",
+    "es": "Revisar selección"
+  },
+  {
+    "key": "cleanup_report",
+    "en": "Cleanup results",
+    "es": "Resultado de la limpieza"
+  },
+  {
+    "key": "cleanup_deleted",
+    "en": "Permanently deleted",
+    "es": "Eliminado permanentemente"
+  },
+  {
+    "key": "cleanup_report_hint",
+    "en": "Logical bytes deleted are shown. Other apps can also change the observed free space. The plan and journal are saved locally.",
+    "es": "Se muestran bytes lógicos eliminados. El espacio libre observado también puede cambiar por otras aplicaciones. El plan y el diario se guardan localmente."
+  },
+  {
+    "key": "cleanup_no_history",
+    "en": "No cleanup has been executed in this session",
+    "es": "Aún no se ha ejecutado una limpieza en esta sesión"
+  },
+  {
+    "key": "cleanup_no_temp_volume",
+    "en": "This user's temporary files are on a different volume. They will not be scanned or cleaned from this disk.",
+    "es": "Los temporales de este usuario están en otro volumen. No se analizarán ni limpiarán desde este disco."
+  },
+  {
+    "key": "cleanup_unavailable",
+    "en": "Location unavailable or unsupported",
+    "es": "Ubicación no disponible o no compatible"
+  },
+  {
+    "key": "cleanup_scope_changed",
+    "en": "The file, its identity or location changed; scan again.",
+    "es": "El archivo, su identidad o su ubicación han cambiado; vuelve a analizar."
+  },
+  {
+    "key": "cleanup_unsafe_link",
+    "en": "Link, shared file or unverifiable location; skipped.",
+    "es": "Enlace, archivo compartido o ubicación no verificable; se ha omitido."
+  },
+  {
+    "key": "vault_context_protect",
+    "en": "Protect with password…",
+    "es": "Proteger con contraseña…"
+  },
+  {
+    "key": "vault_context_unlock",
+    "en": "Unlock…",
+    "es": "Desbloquear…"
+  },
+  {
+    "key": "vault_locked_folder",
+    "en": "Protected folder",
+    "es": "Carpeta protegida"
+  },
+  {
+    "key": "vault_driver_missing",
+    "en": "To open this as a normal folder, install the Windows integration. Your content remains encrypted.",
+    "es": "Para abrirla como una carpeta normal, instala la integración de Windows. Tu contenido sigue cifrado."
+  },
+  {
+    "key": "vault_install_driver",
+    "en": "Install Windows integration",
+    "es": "Instalar integración de Windows"
+  },
+  {
+    "key": "vault_driver_install_failed",
+    "en": "Windows could not complete installation. Accept the installer permission or install WinFsp, then unlock again.",
+    "es": "Windows no pudo completar la instalación. Acepta el permiso del instalador o instala WinFsp y vuelve a desbloquear."
+  },
+  {
+    "key": "vault_mount_failed",
+    "en": "The virtual folder could not be opened. Lock it and try again; your content remains encrypted.",
+    "es": "No se pudo abrir la carpeta virtual. Puedes bloquearla y volver a intentarlo; el contenido sigue cifrado."
+  },
+  {
+    "key": "vault_mount_unavailable",
+    "en": "Private folder mounting is available on Windows.",
+    "es": "El montaje de carpetas privadas está disponible en Windows."
+  },
+  {
+    "key": "vault_files_open",
+    "en": "Close open files and wait for file operations to finish before locking or switching profiles.",
+    "es": "Cierra los archivos abiertos y espera a que terminen las operaciones antes de bloquear o cambiar de perfil."
+  },
+  {
+    "key": "vault_conversion_unavailable",
+    "en": "Built-in conversion is unavailable in private folders. You can open the file in its app.",
+    "es": "La conversión integrada no está disponible en carpetas privadas. Puedes abrir el archivo en su aplicación."
+  },
+  {
+    "key": "vault_locked_subtitle",
+    "en": "Locked · encrypted contents",
+    "es": "Bloqueada · contenido cifrado"
+  },
+  {
+    "key": "vault_locked_heading",
+    "en": "Your content, kept private",
+    "es": "Tu contenido, en privado"
+  },
+  {
+    "key": "vault_locked_hint",
+    "en": "Unlock with your password to view files and browse folders.",
+    "es": "Desbloquea con tu contraseña para ver los archivos y navegar por las carpetas."
+  },
+  {
+    "key": "vault_browse_hint",
+    "en": "Double-click to open a folder or preview a file. Lock closes this private session.",
+    "es": "Doble clic para abrir una carpeta o previsualizar un archivo. Bloquear cierra esta sesión privada."
+  },
+  {
+    "key": "vault_protect_title",
+    "en": "Protect folder",
+    "es": "Proteger carpeta"
+  },
+  {
+    "key": "vault_unlock_title",
+    "en": "Unlock folder",
+    "es": "Desbloquear carpeta"
+  },
+  {
+    "key": "vault_manage_title",
+    "en": "Manage access",
+    "es": "Administrar acceso"
+  },
+  {
+    "key": "vault_restore_title",
+    "en": "Remove protection",
+    "es": "Quitar protección"
+  },
+  {
+    "key": "vault_protect_description",
+    "en": "Your content, available only in the profiles you choose.",
+    "es": "Tu contenido, accesible solo desde los perfiles que elijas."
+  },
+  {
+    "key": "vault_unlock_description",
+    "en": "Enter your password to open your private space.",
+    "es": "Introduce la contraseña para abrir tu espacio privado."
+  },
+  {
+    "key": "vault_manage_description",
+    "en": "Confirm your password to save changes. A new password is optional.",
+    "es": "Confirma tu contraseña para guardar los cambios. La nueva contraseña es opcional."
+  },
+  {
+    "key": "vault_restore_description",
+    "en": "The original folder will be restored without encryption. Its contents will be visible in File Explorer and other profiles.",
+    "es": "Se restaurará la carpeta original sin cifrado. Su contenido será visible desde Explorer y otros perfiles."
+  },
+  {
+    "key": "vault_password",
+    "en": "Password",
+    "es": "Contraseña"
+  },
+  {
+    "key": "vault_confirm_password",
+    "en": "Confirm password",
+    "es": "Confirmar contraseña"
+  },
+  {
+    "key": "vault_current_password",
+    "en": "Current password",
+    "es": "Contraseña actual"
+  },
+  {
+    "key": "vault_new_password",
+    "en": "New password (optional)",
+    "es": "Nueva contraseña (opcional)"
+  },
+  {
+    "key": "vault_password_hint",
+    "en": "Use a passphrase with at least 12 characters.",
+    "es": "Usa una frase de al menos 12 caracteres."
+  },
+  {
+    "key": "vault_visible_to",
+    "en": "Visible to",
+    "es": "Visible para"
+  },
+  {
+    "key": "vault_visibility_hint",
+    "en": "Hidden from other profiles. The current profile keeps access.",
+    "es": "No aparecerá en los demás perfiles. El perfil actual conserva el acceso."
+  },
+  {
+    "key": "vault_recovery_hint",
+    "en": "Keep your password safe. It cannot be recovered if forgotten.",
+    "es": "Guarda tu contraseña. No se puede recuperar si la olvidas."
+  },
+  {
+    "key": "vault_show",
+    "en": "Show",
+    "es": "Mostrar"
+  },
+  {
+    "key": "vault_hide",
+    "en": "Hide",
+    "es": "Ocultar"
+  },
+  {
+    "key": "vault_protect_action",
+    "en": "Protect folder",
+    "es": "Proteger carpeta"
+  },
+  {
+    "key": "vault_unlock_action",
+    "en": "Unlock",
+    "es": "Desbloquear"
+  },
+  {
+    "key": "vault_save_action",
+    "en": "Save changes",
+    "es": "Guardar cambios"
+  },
+  {
+    "key": "vault_restore_action",
+    "en": "Restore without encryption",
+    "es": "Restaurar sin cifrado"
+  },
+  {
+    "key": "vault_private_session",
+    "en": "Private session",
+    "es": "Sesión privada"
+  },
+  {
+    "key": "vault_import",
+    "en": "Add files…",
+    "es": "Añadir archivos…"
+  },
+  {
+    "key": "vault_import_folder",
+    "en": "Add folder…",
+    "es": "Añadir carpeta…"
+  },
+  {
+    "key": "vault_manage",
+    "en": "Manage access…",
+    "es": "Administrar acceso…"
+  },
+  {
+    "key": "vault_back",
+    "en": "Back",
+    "es": "Volver"
+  },
+  {
+    "key": "vault_preview",
+    "en": "Preview",
+    "es": "Vista previa"
+  },
+  {
+    "key": "vault_open_folder",
+    "en": "Open folder",
+    "es": "Abrir carpeta"
+  },
+  {
+    "key": "vault_export",
+    "en": "Export unencrypted…",
+    "es": "Exportar sin cifrar…"
+  },
+  {
+    "key": "vault_empty",
+    "en": "This folder is empty",
+    "es": "Esta carpeta está vacía"
+  },
+  {
+    "key": "vault_empty_hint",
+    "en": "Add files to store them encrypted.",
+    "es": "Añade archivos para guardarlos cifrados."
+  },
+  {
+    "key": "vault_remove_protection",
+    "en": "Remove protection…",
+    "es": "Quitar protección…"
+  },
+  {
+    "key": "vault_lock",
+    "en": "Lock",
+    "es": "Bloquear"
+  },
+  {
+    "key": "vault_working",
+    "en": "Processing securely…",
+    "es": "Procesando de forma segura…"
+  },
+  {
+    "key": "vault_progress",
+    "en": "Encrypting %{done} of %{total}",
+    "es": "Cifrando %{done} de %{total}"
+  },
+  {
+    "key": "vault_access_saved",
+    "en": "Access changes saved.",
+    "es": "Los cambios de acceso se han guardado."
+  },
+  {
+    "key": "vault_imported",
+    "en": "Files encrypted. The originals were retained.",
+    "es": "Archivos cifrados. Los originales se han conservado."
+  },
+  {
+    "key": "vault_exported",
+    "en": "An unencrypted copy was saved to the selected location.",
+    "es": "Se ha guardado una copia sin cifrar en la ubicación elegida."
+  },
+  {
+    "key": "vault_restored",
+    "en": "The folder was restored without encryption.",
+    "es": "La carpeta se ha restaurado sin cifrado."
+  },
+  {
+    "key": "vault_restored_copy_retained",
+    "en": "The folder was restored. The encrypted container was also retained because it could not be removed.",
+    "es": "La carpeta se ha restaurado. También se ha conservado el contenedor cifrado porque no se pudo eliminar."
+  },
+  {
+    "key": "vault_auto_locked",
+    "en": "The private folder was locked after inactivity.",
+    "es": "La carpeta privada se ha bloqueado por inactividad."
+  },
+  {
+    "key": "vault_wrong_password",
+    "en": "Could not unlock. Check the password and the integrity of the folder.",
+    "es": "No se pudo desbloquear. Comprueba la contraseña y la integridad de la carpeta."
+  },
+  {
+    "key": "vault_access_denied",
+    "en": "This folder is unavailable to the current profile.",
+    "es": "Esta carpeta no está disponible para el perfil actual."
+  },
+  {
+    "key": "vault_password_length",
+    "en": "Use a password between 12 and 1024 characters.",
+    "es": "Usa una contraseña de entre 12 y 1024 caracteres."
+  },
+  {
+    "key": "vault_password_mismatch",
+    "en": "The passwords do not match.",
+    "es": "Las contraseñas no coinciden."
+  },
+  {
+    "key": "vault_invalid_profiles",
+    "en": "Choose valid profiles and retain access for the current profile.",
+    "es": "Selecciona perfiles válidos y conserva el acceso del perfil actual."
+  },
+  {
+    "key": "vault_in_use",
+    "en": "This folder is already open in another session. Lock it there and try again.",
+    "es": "La carpeta ya está abierta en otra sesión. Bloquéala allí y vuelve a intentarlo."
+  },
+  {
+    "key": "vault_unsafe_link",
+    "en": "The folder contains links or special items that cannot be protected. Remove them and try again.",
+    "es": "La carpeta contiene enlaces o elementos especiales que no se pueden proteger. Retíralos y vuelve a intentarlo."
+  },
+  {
+    "key": "vault_invalid_name",
+    "en": "A filename cannot be stored safely. Rename it and try again.",
+    "es": "Hay un nombre de archivo que no se puede guardar de forma segura. Renómbralo y vuelve a intentarlo."
+  },
+  {
+    "key": "vault_nested",
+    "en": "Private containers cannot be nested inside another container.",
+    "es": "No se pueden incluir contenedores privados dentro de otro contenedor."
+  },
+  {
+    "key": "vault_source_changed",
+    "en": "The folder changed during the operation. Originals were retained; also check the encrypted copy before trying again.",
+    "es": "La carpeta cambió durante la operación. Se han conservado los originales; revisa también la copia cifrada antes de volver a intentarlo."
+  },
+  {
+    "key": "vault_original_cleanup_failed",
+    "en": "The encrypted copy was verified, but some originals could not be removed. Check both locations before continuing.",
+    "es": "La copia cifrada está verificada, pero no se pudieron retirar todos los originales. Revisa ambas ubicaciones antes de continuar."
+  },
+  {
+    "key": "vault_name_exists",
+    "en": "An item with that name already exists in the private folder.",
+    "es": "Ya existe un elemento con ese nombre en la carpeta privada."
+  },
+  {
+    "key": "vault_export_exists",
+    "en": "Choose a new location. Existing files and folders are never overwritten.",
+    "es": "Elige una ubicación nueva. No se sobrescriben archivos ni carpetas existentes."
+  },
+  {
+    "key": "vault_preview_too_large",
+    "en": "Preview supports text up to 1 MB and images up to 32 MB. Export a copy to open this file.",
+    "es": "La vista previa admite texto de hasta 1 MB e imágenes de hasta 32 MB. Puedes exportar una copia para abrirla."
+  },
+  {
+    "key": "vault_preview_unsupported",
+    "en": "Preview supports text and compatible images. To open this file in another app, export an unencrypted copy.",
+    "es": "La vista previa admite texto e imágenes compatibles. Para abrir este archivo en otra aplicación, exporta una copia sin cifrar."
+  },
+  {
+    "key": "vault_cancelled",
+    "en": "Operation canceled. Check the originals before trying again.",
+    "es": "Operación cancelada. Comprueba los originales antes de volver a intentarlo."
+  },
+  {
+    "key": "vault_damaged",
+    "en": "The folder could not be verified. Keep the container and restore a backup.",
+    "es": "No se pudo verificar la carpeta. Conserva el contenedor y restaura una copia de seguridad."
+  },
+  {
+    "key": "vault_invalid_manifest",
+    "en": "The encrypted structure is invalid. Keep the container and restore a backup.",
+    "es": "La estructura cifrada no es válida. Conserva el contenedor y restaura una copia de seguridad."
+  },
+  {
+    "key": "vault_too_many_entries",
+    "en": "The folder exceeds the limit of 100,000 items or encrypted metadata.",
+    "es": "La carpeta supera el límite de 100 000 elementos o de metadatos cifrados."
+  },
+  {
+    "key": "vault_operation_failed",
+    "en": "The operation failed. Check free space and permissions, then try again.",
+    "es": "No se pudo completar la operación. Comprueba el espacio libre y los permisos, y vuelve a intentarlo."
+  },
+  {
+    "key": "group_by",
+    "en": "Group by",
+    "es": "Agrupar por"
+  },
+  {
+    "key": "folder_order_first",
+    "en": "Folders first",
+    "es": "Carpetas primero"
+  },
+  {
+    "key": "folder_order_last",
+    "en": "Folders last",
+    "es": "Carpetas al final"
+  },
+  {
+    "key": "folder_order_mixed",
+    "en": "Mix folders and files",
+    "es": "Mezclar carpetas y archivos"
+  },
+  {
+    "key": "folder_order_choose",
+    "en": "Choose folder order",
+    "es": "Elegir orden de carpetas"
+  },
+  {
+    "key": "settings_single_click_folders",
+    "en": "Open folders with a single click (files still require a double click)",
+    "es": "Abrir carpetas con un clic (los archivos requieren doble clic)"
+  },
+  {
+    "key": "settings_scroll_beyond_last",
+    "en": "Scroll space after the last item",
+    "es": "Margen de desplazamiento tras el último elemento"
+  },
+  {
+    "key": "group_none",
+    "en": "None",
+    "es": "Ninguno"
+  },
+  {
+    "key": "group_date",
+    "en": "Date modified",
+    "es": "Fecha de modificación"
+  },
+  {
+    "key": "group_created",
+    "en": "Date created",
+    "es": "Fecha de creación"
+  },
+  {
+    "key": "group_accessed",
+    "en": "Date accessed",
+    "es": "Fecha de acceso"
+  },
+  {
+    "key": "group_deleted",
+    "en": "Date deleted",
+    "es": "Fecha de eliminación"
+  },
+  {
+    "key": "group_origin",
+    "en": "Original location",
+    "es": "Ubicación original"
+  },
+  {
+    "key": "group_size",
+    "en": "Size",
+    "es": "Tamaño"
+  },
+  {
+    "key": "group_type",
+    "en": "Type",
+    "es": "Tipo"
+  },
+  {
+    "key": "group_name",
+    "en": "Name",
+    "es": "Nombre"
+  },
+  {
+    "key": "group_unknown",
+    "en": "Unknown",
+    "es": "Desconocido"
+  },
+  {
+    "key": "group_future",
+    "en": "Future",
+    "es": "Futuro"
+  },
+  {
+    "key": "group_today",
+    "en": "Today",
+    "es": "Hoy"
+  },
+  {
+    "key": "group_yesterday",
+    "en": "Yesterday",
+    "es": "Ayer"
+  },
+  {
+    "key": "group_week",
+    "en": "Earlier this week",
+    "es": "A principios de esta semana"
+  },
+  {
+    "key": "group_last_week",
+    "en": "Last week",
+    "es": "La semana pasada"
+  },
+  {
+    "key": "group_month",
+    "en": "Earlier this month",
+    "es": "A principios de este mes"
+  },
+  {
+    "key": "group_last_month",
+    "en": "Last month",
+    "es": "El mes pasado"
+  },
+  {
+    "key": "group_year",
+    "en": "Earlier this year",
+    "es": "A principios de este año"
+  },
+  {
+    "key": "group_last_year",
+    "en": "Last year",
+    "es": "El año pasado"
+  },
+  {
+    "key": "group_older",
+    "en": "A long time ago",
+    "es": "Hace mucho tiempo"
+  },
+  {
+    "key": "group_other",
+    "en": "Other",
+    "es": "Otros"
+  },
+  {
+    "key": "group_empty",
+    "en": "Empty",
+    "es": "Vacío"
+  },
+  {
+    "key": "group_tiny",
+    "en": "Tiny (< 16 KiB)",
+    "es": "Diminuto (< 16 KiB)"
+  },
+  {
+    "key": "group_small",
+    "en": "Small (16 KiB–1 MiB)",
+    "es": "Pequeño (16 KiB–1 MiB)"
+  },
+  {
+    "key": "group_medium",
+    "en": "Medium (1–128 MiB)",
+    "es": "Mediano (1–128 MiB)"
+  },
+  {
+    "key": "group_large",
+    "en": "Large (128 MiB–1 GiB)",
+    "es": "Grande (128 MiB–1 GiB)"
+  },
+  {
+    "key": "group_huge",
+    "en": "Huge (1–4 GiB)",
+    "es": "Enorme (1–4 GiB)"
+  },
+  {
+    "key": "group_gigantic",
+    "en": "Gigantic (≥ 4 GiB)",
+    "es": "Gigantesco (≥ 4 GiB)"
+  },
+  {
+    "key": "cmd_group_none",
+    "en": "Group by: None^ungroup,sections,buckets",
+    "es": "Agrupar por: Ninguno^desagrupar,secciones,grupos"
+  },
+  {
+    "key": "cmd_group_date",
+    "en": "Group by: Date modified^sections,buckets,today,yesterday,mtime",
+    "es": "Agrupar por: Fecha de modificación^secciones,grupos,hoy,ayer,mtime"
+  },
+  {
+    "key": "cmd_group_created",
+    "en": "Group by: Date created^sections,buckets,ctime,birth",
+    "es": "Agrupar por: Fecha de creación^secciones,grupos,ctime"
+  },
+  {
+    "key": "cmd_group_accessed",
+    "en": "Group by: Date accessed^sections,buckets,atime,opened",
+    "es": "Agrupar por: Fecha de acceso^secciones,grupos,atime,abierto"
+  },
+  {
+    "key": "cmd_group_deleted",
+    "en": "Group by: Date deleted^sections,buckets,recycle,trash",
+    "es": "Agrupar por: Fecha de eliminación^secciones,grupos,papelera"
+  },
+  {
+    "key": "cmd_group_origin",
+    "en": "Group by: Original location^sections,buckets,recycle,trash,folder",
+    "es": "Agrupar por: Ubicación original^secciones,grupos,papelera,carpeta"
+  },
+  {
+    "key": "cmd_group_expand",
+    "en": "Expand all groups^sections,open,unfold",
+    "es": "Expandir todos los grupos^secciones,abrir"
+  },
+  {
+    "key": "cmd_group_collapse",
+    "en": "Collapse all groups^sections,close,fold",
+    "es": "Contraer todos los grupos^secciones,cerrar"
+  },
+  {
+    "key": "cmd_group_size",
+    "en": "Group by: Size^sections,buckets,large,huge",
+    "es": "Agrupar por: Tamaño^secciones,grupos,grande,gigante"
+  },
+  {
+    "key": "cmd_group_type",
+    "en": "Group by: Type^sections,buckets,category",
+    "es": "Agrupar por: Tipo^secciones,grupos,categoría"
+  },
+  {
+    "key": "cmd_group_name",
+    "en": "Group by: Name^sections,buckets,alphabet",
+    "es": "Agrupar por: Nombre^secciones,grupos,alfabeto"
+  },
+  {
+    "key": "menu_file",
+    "en": "File",
+    "es": "Archivo"
+  },
+  {
+    "key": "menu_quit",
+    "en": "Quit",
+    "es": "Salir"
+  },
+  {
+    "key": "sidebar_tags",
+    "en": "Tags",
+    "es": "Etiquetas"
+  },
+  {
+    "key": "search_placeholder",
+    "en": "Search files...",
+    "es": "Buscar archivos..."
+  },
+  {
+    "key": "filter_placeholder",
+    "en": "Filter files...",
+    "es": "Filtrar archivos..."
+  },
+  {
+    "key": "extract_fallback_name",
+    "en": "file",
+    "es": "archivo"
+  },
+  {
+    "key": "op_copying",
+    "en": "Copying",
+    "es": "Copiando"
+  },
+  {
+    "key": "op_moving",
+    "en": "Moving",
+    "es": "Moviendo"
+  },
+  {
+    "key": "op_transfer_complete",
+    "en": "%{count} items transferred",
+    "es": "%{count} elementos transferidos"
+  },
+  {
+    "key": "err_clipboard",
+    "en": "Failed to copy to clipboard: %{e}",
+    "es": "No se pudo copiar al portapapeles: %{e}"
+  },
+  {
+    "key": "op_deleting",
+    "en": "Deleting",
+    "es": "Eliminando"
+  },
+  {
+    "key": "err_collision",
+    "en": "An item named “%{name}” already exists",
+    "es": "Ya existe un elemento llamado «%{name}»"
+  },
+  {
+    "key": "panel_file",
+    "en": "FilePanel",
+    "es": "Panel de Archivos"
+  },
+  {
+    "key": "fallback_tab_title",
+    "en": "—",
+    "es": "—"
+  },
+  {
+    "key": "root_elements",
+    "en": "%{count} element(s)",
+    "es": "%{count} elemento(s)"
+  },
+  {
+    "key": "root_open",
+    "en": "Open",
+    "es": "Abrir"
+  },
+  {
+    "key": "root_rename",
+    "en": "Rename",
+    "es": "Renombrar"
+  },
+  {
+    "key": "root_copy",
+    "en": "Copy",
+    "es": "Copiar"
+  },
+  {
+    "key": "root_cut",
+    "en": "Cut",
+    "es": "Cortar"
+  },
+  {
+    "key": "root_paste",
+    "en": "Paste",
+    "es": "Pegar"
+  },
+  {
+    "key": "root_move_to_trash",
+    "en": "Move to Recycle Bin",
+    "es": "Mover a papelera"
+  },
+  {
+    "key": "root_delete_permanently",
+    "en": "Delete permanently",
+    "es": "Eliminar permanentemente"
+  },
+  {
+    "key": "root_restore",
+    "en": "Restore",
+    "es": "Restaurar"
+  },
+  {
+    "key": "root_properties",
+    "en": "Properties",
+    "es": "Propiedades"
+  },
+  {
+    "key": "root_loading",
+    "en": "Loading…",
+    "es": "Cargando…"
+  },
+  {
+    "key": "root_error",
+    "en": "Error: %{error}",
+    "es": "Error: %{error}"
+  },
+  {
+    "key": "root_status_selection",
+    "en": "%{items} items · %{sel} selected · %{size}",
+    "es": "%{items} elementos · %{sel} seleccionados · %{size}"
+  },
+  {
+    "key": "root_status_items",
+    "en": "%{items} items",
+    "es": "%{items} elementos"
+  },
+  {
+    "key": "root_operations",
+    "en": "%{count} operations",
+    "es": "%{count} operaciones"
+  },
+  {
+    "key": "root_delete_archive_error",
+    "en": "Deleting inside archives is not available yet",
+    "es": "Eliminar dentro de archivos comprimidos no disponible todavía"
+  },
+  {
+    "key": "root_copy_archive_error",
+    "en": "Copying inside archives is not available yet",
+    "es": "Copiar dentro de archivos comprimidos no disponible todavía"
+  },
+  {
+    "key": "root_cut_archive_error",
+    "en": "Cutting inside archives is not available yet",
+    "es": "Cortar dentro de archivos comprimidos no disponible todavía"
+  },
+  {
+    "key": "root_paste_archive_error",
+    "en": "Pasting inside archives is not available yet",
+    "es": "Pegar dentro de archivos comprimidos no disponible todavía"
+  },
+  {
+    "key": "op_err_dest_recycle",
+    "en": "Can't move items into the Recycle Bin folder — use Delete instead",
+    "es": "No se puede mover elementos dentro de la carpeta de la Papelera — usa Eliminar"
+  },
+  {
+    "key": "dnd_recycle_drag_blocked",
+    "en": "Dragging out of the Recycle Bin isn't supported — use Restore",
+    "es": "Arrastrar desde la Papelera no está soportado — usa Restaurar"
+  },
+  {
+    "key": "dnd_remote_drag_blocked",
+    "en": "Dragging from cloud tabs isn't supported yet — use Copy & Paste",
+    "es": "Arrastrar desde pestañas cloud no está soportado todavía — usa Copiar y Pegar"
+  },
+  {
+    "key": "dnd_archive_drop_blocked",
+    "en": "Adding files to archives isn't available yet",
+    "es": "Añadir archivos a comprimidos no disponible todavía"
+  },
+  {
+    "key": "tags_paths_blocked",
+    "en": "Tags can only be assigned to real files and folders",
+    "es": "Las etiquetas solo se pueden asignar a archivos y carpetas reales"
+  },
+  {
+    "key": "root_cancel",
+    "en": "Cancel",
+    "es": "Cancelar"
+  },
+  {
+    "key": "root_new_folder",
+    "en": "New folder",
+    "es": "Nueva carpeta"
+  },
+  {
+    "key": "root_new_file",
+    "en": "New file",
+    "es": "Nuevo archivo"
+  },
+  {
+    "key": "root_select_all",
+    "en": "Select all",
+    "es": "Seleccionar todo"
+  },
+  {
+    "key": "tooltip_tab_close_title",
+    "en": "Close tab",
+    "es": "Cerrar pestaña"
+  },
+  {
+    "key": "window_minimize",
+    "en": "Minimize",
+    "es": "Minimizar"
+  },
+  {
+    "key": "window_maximize",
+    "en": "Maximize",
+    "es": "Maximizar"
+  },
+  {
+    "key": "window_restore",
+    "en": "Restore",
+    "es": "Restaurar"
+  },
+  {
+    "key": "window_close",
+    "en": "Close window",
+    "es": "Cerrar ventana"
+  },
+  {
+    "key": "window_drag_hint",
+    "en": "Drag to move the window. Double-click to maximize or restore.",
+    "es": "Arrastra para mover la ventana. Doble clic para maximizar o restaurar."
+  },
+  {
+    "key": "tooltip_tab_close_desc",
+    "en": "Closes the current tab.",
+    "es": "Cierra la pestaña actual."
+  },
+  {
+    "key": "tooltip_tab_new_title",
+    "en": "New tab",
+    "es": "Nueva pestaña"
+  },
+  {
+    "key": "tooltip_tab_new_desc",
+    "en": "Creates a new tab in this pane.",
+    "es": "Crea una pestaña nueva en este panel."
+  },
+  {
+    "key": "tooltip_nav_back_title",
+    "en": "Back",
+    "es": "Atrás"
+  },
+  {
+    "key": "tooltip_nav_back_desc",
+    "en": "Returns to the previous location.",
+    "es": "Vuelve a la ubicación anterior."
+  },
+  {
+    "key": "tooltip_nav_forward_title",
+    "en": "Forward",
+    "es": "Adelante"
+  },
+  {
+    "key": "tooltip_nav_forward_desc",
+    "en": "Moves to the next location.",
+    "es": "Avanza a la siguiente ubicación."
+  },
+  {
+    "key": "tooltip_nav_up_title",
+    "en": "Up",
+    "es": "Subir"
+  },
+  {
+    "key": "tooltip_nav_up_desc",
+    "en": "Opens the parent folder.",
+    "es": "Abre la carpeta superior."
+  },
+  {
+    "key": "recent_places",
+    "en": "Recent",
+    "es": "Recientes"
+  },
+  {
+    "key": "no_recent_history",
+    "en": "No recent history",
+    "es": "Sin historial reciente"
+  },
+  {
+    "key": "tooltip_bookmark_add_title",
+    "en": "Add bookmark",
+    "es": "Agregar a marcadores"
+  },
+  {
+    "key": "tooltip_bookmark_add_desc",
+    "en": "Saves this location in the sidebar.",
+    "es": "Guarda esta ubicación en la barra lateral."
+  },
+  {
+    "key": "tooltip_bookmark_active_title",
+    "en": "Bookmarked",
+    "es": "En marcadores"
+  },
+  {
+    "key": "tooltip_bookmark_active_desc",
+    "en": "This location is already saved.",
+    "es": "Esta ubicación ya está guardada."
+  },
+  {
+    "key": "tooltip_filter_files",
+    "en": "Filter files",
+    "es": "Filtrar archivos"
+  },
+  {
+    "key": "tooltip_toggle_folders",
+    "en": "Show or hide folders",
+    "es": "Mostrar u ocultar carpetas"
+  },
+  {
+    "key": "tooltip_toggle_files",
+    "en": "Show or hide files",
+    "es": "Mostrar u ocultar archivos"
+  },
+  {
+    "key": "tooltip_folders_first",
+    "en": "Put folders before files",
+    "es": "Carpetas antes que archivos"
+  },
+  {
+    "key": "sidebar_places",
+    "en": "Places",
+    "es": "Lugares"
+  },
+  {
+    "key": "sidebar_profile_placeholder",
+    "en": "Profile",
+    "es": "Perfil"
+  },
+  {
+    "key": "sidebar_profile_new",
+    "en": "New profile",
+    "es": "Nuevo perfil"
+  },
+  {
+    "key": "sidebar_profile_rename",
+    "en": "Rename profile…",
+    "es": "Renombrar perfil…"
+  },
+  {
+    "key": "sidebar_profile_duplicate",
+    "en": "Duplicate profile",
+    "es": "Duplicar perfil"
+  },
+  {
+    "key": "sidebar_profile_delete",
+    "en": "Delete profile",
+    "es": "Eliminar perfil"
+  },
+  {
+    "key": "sidebar_profile_confirm_delete",
+    "en": "Click again to delete",
+    "es": "Click otra vez para eliminar"
+  },
+  {
+    "key": "atlas_menu_profiles",
+    "en": "Profiles",
+    "es": "Perfiles"
+  },
+  {
+    "key": "atlas_menu_profiles_hint",
+    "en": "Switch, duplicate, rename",
+    "es": "Cambiar, duplicar, renombrar"
+  },
+  {
+    "key": "atlas_menu_command_palette",
+    "en": "Command Palette",
+    "es": "Paleta de comandos"
+  },
+  {
+    "key": "sidebar_all_sections_hidden",
+    "en": "All sections are hidden.",
+    "es": "Todas las secciones están ocultas."
+  },
+  {
+    "key": "sidebar_home",
+    "en": "Home",
+    "es": "Inicio"
+  },
+  {
+    "key": "sidebar_desktop",
+    "en": "Desktop",
+    "es": "Escritorio"
+  },
+  {
+    "key": "sidebar_documents",
+    "en": "Documents",
+    "es": "Documentos"
+  },
+  {
+    "key": "sidebar_downloads",
+    "en": "Downloads",
+    "es": "Descargas"
+  },
+  {
+    "key": "sidebar_pictures",
+    "en": "Pictures",
+    "es": "Imágenes"
+  },
+  {
+    "key": "sidebar_music",
+    "en": "Music",
+    "es": "Música"
+  },
+  {
+    "key": "sidebar_videos",
+    "en": "Videos",
+    "es": "Vídeos"
+  },
+  {
+    "key": "sidebar_recycle_bin",
+    "en": "Recycle Bin",
+    "es": "Papelera de reciclaje"
+  },
+  {
+    "key": "sidebar_no_bookmarks",
+    "en": "No bookmarks",
+    "es": "Sin marcadores"
+  },
+  {
+    "key": "sidebar_no_tags",
+    "en": "No tags",
+    "es": "Sin etiquetas"
+  },
+  {
+    "key": "sidebar_no_drives",
+    "en": "No mounted drives",
+    "es": "Sin unidades montadas"
+  },
+  {
+    "key": "sidebar_no_recent",
+    "en": "No recent items",
+    "es": "Sin recientes"
+  },
+  {
+    "key": "sidebar_no_cloud",
+    "en": "No network connections",
+    "es": "Sin conexiones de red"
+  },
+  {
+    "key": "sidebar_free_space",
+    "en": "%{gb} GB free",
+    "es": "%{gb} GB libres"
+  },
+  {
+    "key": "sidebar_analyze_space",
+    "en": "Analyze Space",
+    "es": "Analizar espacio"
+  },
+  {
+    "key": "sidebar_expand",
+    "en": "Expand",
+    "es": "Expandir"
+  },
+  {
+    "key": "sidebar_collapse",
+    "en": "Collapse",
+    "es": "Colapsar"
+  },
+  {
+    "key": "sidebar_hide_section",
+    "en": "Hide section",
+    "es": "Ocultar sección"
+  },
+  {
+    "key": "sidebar_move_up",
+    "en": "Move up",
+    "es": "Mover arriba"
+  },
+  {
+    "key": "sidebar_move_down",
+    "en": "Move down",
+    "es": "Mover abajo"
+  },
+  {
+    "key": "sidebar_restore_order",
+    "en": "Restore order",
+    "es": "Restaurar orden"
+  },
+  {
+    "key": "sidebar_new_global_tag",
+    "en": "New global tag",
+    "es": "Nueva etiqueta global"
+  },
+  {
+    "key": "sidebar_new_profile_tag",
+    "en": "New tag for this profile",
+    "es": "Nueva etiqueta de este perfil"
+  },
+  {
+    "key": "sidebar_bookmarks",
+    "en": "Bookmarks",
+    "es": "Marcadores"
+  },
+  {
+    "key": "sidebar_linux",
+    "en": "Linux",
+    "es": "Linux"
+  },
+  {
+    "key": "sidebar_drives",
+    "en": "Drives",
+    "es": "Unidades"
+  },
+  {
+    "key": "sidebar_cloud",
+    "en": "Network",
+    "es": "Red"
+  },
+  {
+    "key": "sidebar_recent",
+    "en": "Recent",
+    "es": "Recientes"
+  },
+  {
+    "key": "sidebar_drop_zone_empty",
+    "en": "Drop shelf",
+    "es": "Bandeja"
+  },
+  {
+    "key": "sidebar_drop_zone_count",
+    "en": "%{count} ready",
+    "es": "%{count} listo(s)"
+  },
+  {
+    "key": "sidebar_drop_zone_hint",
+    "en": "Drop files here, then navigate freely",
+    "es": "Suelta archivos aquí y navega libremente"
+  },
+  {
+    "key": "sidebar_drop_zone_ready",
+    "en": "Ready to place in the current folder",
+    "es": "Listo para poner en la carpeta actual"
+  },
+  {
+    "key": "sidebar_drop_zone_place",
+    "en": "Place",
+    "es": "Poner"
+  },
+  {
+    "key": "sidebar_drop_zone_clear",
+    "en": "Clear",
+    "es": "Limpiar"
+  },
+  {
+    "key": "inspector_no_selection",
+    "en": "No selection",
+    "es": "Sin selección"
+  },
+  {
+    "key": "inspector_size",
+    "en": "Size: %{size}",
+    "es": "Tamaño: %{size}"
+  },
+  {
+    "key": "inspector_modified",
+    "en": "Modified: %{date}",
+    "es": "Modificado: %{date}"
+  },
+  {
+    "key": "inspector_type",
+    "en": "Type: %{ext}",
+    "es": "Tipo: %{ext}"
+  },
+  {
+    "key": "inspector_loading",
+    "en": "Loading preview…",
+    "es": "Cargando vista previa…"
+  },
+  {
+    "key": "inspector_binary",
+    "en": "Binary file (%{size})",
+    "es": "Archivo binario (%{size})"
+  },
+  {
+    "key": "inspector_pdf_instructions",
+    "en": "PDF — first page · scroll: zoom · drag: pan · Space: expand",
+    "es": "PDF — primera página · scroll: zoom · arrastrar: mover · Espacio: ampliar"
+  },
+  {
+    "key": "inspector_image_instructions",
+    "en": "%{width} x %{height} px · scroll: zoom · drag: pan · Space: expand",
+    "es": "%{width} x %{height} px · scroll: zoom · arrastrar: mover · Espacio: ampliar"
+  },
+  {
+    "key": "inspector_and_more",
+    "en": "… and %{count} more",
+    "es": "… y %{count} más"
+  },
+  {
+    "key": "inspector_preview_save",
+    "en": "Save preview",
+    "es": "Guardar preview"
+  },
+  {
+    "key": "inspector_preview_copy",
+    "en": "Copy preview",
+    "es": "Copiar preview"
+  },
+  {
+    "key": "inspector_preview_zoom_out",
+    "en": "Zoom out",
+    "es": "Reducir zoom"
+  },
+  {
+    "key": "inspector_preview_zoom_fit",
+    "en": "Fit preview",
+    "es": "Ajustar preview"
+  },
+  {
+    "key": "inspector_preview_zoom_in",
+    "en": "Zoom in",
+    "es": "Aumentar zoom"
+  },
+  {
+    "key": "inspector_title",
+    "en": "Preview",
+    "es": "Vista previa"
+  },
+  {
+    "key": "inspector_open_external",
+    "en": "Open file",
+    "es": "Abrir archivo"
+  },
+  {
+    "key": "inspector_expand",
+    "en": "Expand preview",
+    "es": "Ampliar vista previa"
+  },
+  {
+    "key": "inspector_collapse",
+    "en": "Back to side panel",
+    "es": "Volver al panel"
+  },
+  {
+    "key": "inspector_close",
+    "en": "Close preview",
+    "es": "Cerrar vista previa"
+  },
+  {
+    "key": "inspector_details",
+    "en": "Details",
+    "es": "Detalles"
+  },
+  {
+    "key": "inspector_location",
+    "en": "Location",
+    "es": "Ubicación"
+  },
+  {
+    "key": "inspector_modified_label",
+    "en": "Modified",
+    "es": "Modificado"
+  },
+  {
+    "key": "inspector_type_label",
+    "en": "Type",
+    "es": "Tipo"
+  },
+  {
+    "key": "inspector_fit",
+    "en": "Fit",
+    "es": "Ajustar"
+  },
+  {
+    "key": "inspector_actual_size",
+    "en": "Actual size (100%)",
+    "es": "Tamaño real (100%)"
+  },
+  {
+    "key": "inspector_empty_hint",
+    "en": "Select a file to preview its contents.",
+    "es": "Selecciona un archivo para ver su contenido."
+  },
+  {
+    "key": "inspector_remove_tag",
+    "en": "Remove tag %{name}",
+    "es": "Quitar etiqueta %{name}"
+  },
+  {
+    "key": "hover_created",
+    "en": "Created: %{date}",
+    "es": "Creado: %{date}"
+  },
+  {
+    "key": "hover_subfolders",
+    "en": "Subfolders: %{count}",
+    "es": "Subcarpetas: %{count}"
+  },
+  {
+    "key": "hover_subfiles",
+    "en": "Subfiles: %{count}",
+    "es": "Subarchivos: %{count}"
+  },
+  {
+    "key": "hover_size",
+    "en": "Size: %{size}",
+    "es": "Tamaño: %{size}"
+  },
+  {
+    "key": "inspector_elements_count",
+    "en": "%{count} items",
+    "es": "%{count} elementos"
+  },
+  {
+    "key": "inspector_elements_selected",
+    "en": "%{count} items selected",
+    "es": "%{count} elementos seleccionados"
+  },
+  {
+    "key": "inspector_files_count",
+    "en": "%{count} files",
+    "es": "%{count} archivos"
+  },
+  {
+    "key": "inspector_folders_count",
+    "en": "%{count} folders",
+    "es": "%{count} carpetas"
+  },
+  {
+    "key": "inspector_loading_thumbnails",
+    "en": "Loading thumbnails…",
+    "es": "Cargando miniaturas…"
+  },
+  {
+    "key": "inspector_not_images",
+    "en": "+%{count} non-images",
+    "es": "+%{count} no imágenes"
+  },
+  {
+    "key": "inspector_kind_folder",
+    "en": "folder",
+    "es": "carpeta"
+  },
+  {
+    "key": "inspector_kind_image",
+    "en": "image",
+    "es": "imagen"
+  },
+  {
+    "key": "inspector_kind_file",
+    "en": "file",
+    "es": "archivo"
+  },
+  {
+    "key": "inspector_kind_items",
+    "en": "items in total",
+    "es": "elementos en total"
+  },
+  {
+    "key": "inspector_total_size",
+    "en": "Total size",
+    "es": "Tamaño total"
+  },
+  {
+    "key": "inspector_kind_folders",
+    "en": "folders",
+    "es": "carpetas"
+  },
+  {
+    "key": "inspector_kind_images",
+    "en": "images",
+    "es": "imágenes"
+  },
+  {
+    "key": "inspector_kind_files",
+    "en": "files",
+    "es": "archivos"
+  },
+  {
+    "key": "inspector_more_items",
+    "en": "and %{count} more…",
+    "es": "y %{count} más…"
+  },
+  {
+    "key": "inspector_table_shape",
+    "en": "%{rows} rows × %{cols} columns",
+    "es": "%{rows} filas × %{cols} columnas"
+  },
+  {
+    "key": "inspector_mixed_selection",
+    "en": "Mixed selection",
+    "es": "Selección mixta"
+  },
+  {
+    "key": "inspector_add_tag",
+    "en": "Add tag",
+    "es": "Añadir etiqueta"
+  },
+  {
+    "key": "tag_picker_empty",
+    "en": "Type to create a tag",
+    "es": "Escribe para crear una etiqueta"
+  },
+  {
+    "key": "tag_picker_hint_move",
+    "en": "move",
+    "es": "mover"
+  },
+  {
+    "key": "tag_picker_hint_toggle",
+    "en": "toggle",
+    "es": "alternar"
+  },
+  {
+    "key": "tag_picker_hint_close",
+    "en": "close",
+    "es": "cerrar"
+  },
+  {
+    "key": "search_tag",
+    "en": "Search tags",
+    "es": "Buscar etiquetas"
+  },
+  {
+    "key": "create_tag",
+    "en": "Create tag “%{name}”",
+    "es": "Crear etiqueta «%{name}»"
+  },
+  {
+    "key": "overlay_verb_move",
+    "en": "move",
+    "es": "mover"
+  },
+  {
+    "key": "overlay_verb_copy",
+    "en": "copy",
+    "es": "copiar"
+  },
+  {
+    "key": "overlay_folder_label",
+    "en": "(folder)",
+    "es": "(carpeta)"
+  },
+  {
+    "key": "overlay_existing_new",
+    "en": "Existing: %{existing} — New: %{new}",
+    "es": "Existente: %{existing} — Nuevo: %{new}"
+  },
+  {
+    "key": "overlay_existing_label",
+    "en": "Already there",
+    "es": "Ya existe"
+  },
+  {
+    "key": "overlay_incoming_label",
+    "en": "Incoming",
+    "es": "Nuevo"
+  },
+  {
+    "key": "overlay_keep_both_preview",
+    "en": "Keep both will create “%{name}”.",
+    "es": "Conservar ambos creará “%{name}”."
+  },
+  {
+    "key": "overlay_enter_hint",
+    "en": "(Enter)",
+    "es": "(Enter)"
+  },
+  {
+    "key": "overlay_default_action",
+    "en": "Preselected action: keep both.",
+    "es": "Acción preseleccionada: conservar ambos."
+  },
+  {
+    "key": "overlay_skip",
+    "en": "Do not copy",
+    "es": "No copiar"
+  },
+  {
+    "key": "overlay_overwrite",
+    "en": "Replace",
+    "es": "Reemplazar"
+  },
+  {
+    "key": "overlay_rename",
+    "en": "Keep both",
+    "es": "Conservar ambos"
+  },
+  {
+    "key": "overlay_and_more",
+    "en": "…and %{count} more",
+    "es": "…y %{count} más"
+  },
+  {
+    "key": "overlay_apply",
+    "en": "Apply",
+    "es": "Aplicar"
+  },
+  {
+    "key": "overlay_back",
+    "en": "Back",
+    "es": "Volver"
+  },
+  {
+    "key": "overlay_cancel",
+    "en": "Cancel",
+    "es": "Cancelar"
+  },
+  {
+    "key": "overlay_rename_all",
+    "en": "Keep both",
+    "es": "Conservar ambos"
+  },
+  {
+    "key": "overlay_overwrite_merge",
+    "en": "Replace / merge",
+    "es": "Reemplazar / combinar"
+  },
+  {
+    "key": "overlay_overwrite_all",
+    "en": "Replace",
+    "es": "Reemplazar"
+  },
+  {
+    "key": "overlay_skip_all",
+    "en": "Do not copy",
+    "es": "No copiar"
+  },
+  {
+    "key": "overlay_decide_one_by_one",
+    "en": "Review conflicts",
+    "es": "Revisar conflictos"
+  },
+  {
+    "key": "overlay_conflict_dirs_subtitle",
+    "en": "The destination already has matching names. Atlas can keep both by creating unique names; replacing a folder merges it with the existing one.",
+    "es": "La carpeta de destino ya contiene nombres iguales. Atlas puede conservar ambos creando nombres únicos; reemplazar una carpeta la combina con la existente."
+  },
+  {
+    "key": "overlay_conflict_files_subtitle",
+    "en": "The destination already has matching names. Atlas can keep both by creating unique names; replacing sends the old items to the Recycle Bin.",
+    "es": "La carpeta de destino ya contiene nombres iguales. Atlas puede conservar ambos creando nombres únicos; reemplazar envía los anteriores a la papelera."
+  },
+  {
+    "key": "overlay_elements_exist",
+    "en": "%{count} item(s) already exist(s)",
+    "es": "%{count} elemento(s) ya existe(n)"
+  },
+  {
+    "key": "overlay_close_all",
+    "en": "Close all",
+    "es": "Cerrar todos"
+  },
+  {
+    "key": "settings_inspector_global",
+    "en": "Global right panel",
+    "es": "Panel derecho global"
+  },
+  {
+    "key": "settings_inspector_tab",
+    "en": "Inside active tab",
+    "es": "Dentro de la pestaña activa"
+  },
+  {
+    "key": "settings_view_details",
+    "en": "Details",
+    "es": "Detalles"
+  },
+  {
+    "key": "settings_view_grid",
+    "en": "Grid",
+    "es": "Iconos"
+  },
+  {
+    "key": "settings_view_list",
+    "en": "List",
+    "es": "Lista"
+  },
+  {
+    "key": "settings_view_miller",
+    "en": "Columns",
+    "es": "Columnas"
+  },
+  {
+    "key": "settings_view_tree",
+    "en": "Tree",
+    "es": "Árbol"
+  },
+  {
+    "key": "view_details",
+    "en": "Details",
+    "es": "Detalles"
+  },
+  {
+    "key": "view_grid",
+    "en": "Icons",
+    "es": "Iconos"
+  },
+  {
+    "key": "view_list",
+    "en": "List",
+    "es": "Lista"
+  },
+  {
+    "key": "view_columns",
+    "en": "Columns",
+    "es": "Columnas"
+  },
+  {
+    "key": "view_tree",
+    "en": "Tree",
+    "es": "Árbol"
+  },
+  {
+    "key": "settings_title",
+    "en": "Settings",
+    "es": "Ajustes"
+  },
+  {
+    "key": "settings_general",
+    "en": "General",
+    "es": "General"
+  },
+  {
+    "key": "settings_language",
+    "en": "Language",
+    "es": "Idioma"
+  },
+  {
+    "key": "settings_zoom",
+    "en": "Global Zoom",
+    "es": "Zoom Global"
+  },
+  {
+    "key": "settings_goto_extended_index",
+    "en": "Index all drives and WSL distros for Go to (uses more memory)",
+    "es": "Indexar todos los discos y distros WSL en Ir a (usa más memoria)"
+  },
+  {
+    "key": "settings_show_hidden",
+    "en": "Show hidden files (Ctrl+.)",
+    "es": "Mostrar archivos ocultos (Ctrl+.)"
+  },
+  {
+    "key": "settings_vim_mode",
+    "en": "Vim navigation mode (hjkl, etc.)",
+    "es": "Modo de navegación Vim (hjkl, etc.)"
+  },
+  {
+    "key": "settings_show_sidebar",
+    "en": "Show sidebar (Ctrl+B)",
+    "es": "Mostrar barra lateral (Ctrl+B)"
+  },
+  {
+    "key": "settings_show_inspector",
+    "en": "Enable preview in new tabs",
+    "es": "Activar vista previa en pestañas nuevas"
+  },
+  {
+    "key": "settings_disable_animations",
+    "en": "Disable animations",
+    "es": "Desactivar animaciones"
+  },
+  {
+    "key": "settings_autosave_session",
+    "en": "Autosave session on exit",
+    "es": "Guardar sesión automáticamente al salir"
+  },
+  {
+    "key": "settings_dim_inactive_panes",
+    "en": "Dim inactive panes",
+    "es": "Atenuar paneles inactivos"
+  },
+  {
+    "key": "settings_scroll_smoothness",
+    "en": "Scroll smoothness",
+    "es": "Suavidad de scroll"
+  },
+  {
+    "key": "settings_show_titlebar",
+    "en": "Show custom window bar",
+    "es": "Mostrar barra de ventana personalizada"
+  },
+  {
+    "key": "settings_glass_opacity",
+    "en": "Glass Opacity",
+    "es": "Opacidad de cristal (Glass)"
+  },
+  {
+    "key": "settings_glass_opacity_desc",
+    "en": "Opacity for Glass panels and bars; menus keep a denser background.",
+    "es": "Opacidad de paneles y barras Glass; los menús mantienen un fondo más denso."
+  },
+  {
+    "key": "settings_glass_preset_airy",
+    "en": "Airy (55%)",
+    "es": "Translúcido (55%)"
+  },
+  {
+    "key": "settings_glass_preset_balanced",
+    "en": "Balanced (80%)",
+    "es": "Equilibrado (80%)"
+  },
+  {
+    "key": "settings_glass_preset_dense",
+    "en": "Dense (95%)",
+    "es": "Denso (95%)"
+  },
+  {
+    "key": "settings_inspector_placement",
+    "en": "Inspector placement: %{placement}",
+    "es": "Ubicación del inspector: %{placement}"
+  },
+  {
+    "key": "settings_placement_global",
+    "en": "Global",
+    "es": "Global"
+  },
+  {
+    "key": "settings_placement_tab",
+    "en": "Per tab",
+    "es": "Por pestaña"
+  },
+  {
+    "key": "settings_default_view",
+    "en": "Default view: %{view_mode}",
+    "es": "Vista por defecto: %{view_mode}"
+  },
+  {
+    "key": "settings_view_details_btn",
+    "en": "Details",
+    "es": "Detalles"
+  },
+  {
+    "key": "settings_view_grid_btn",
+    "en": "Icons",
+    "es": "Iconos"
+  },
+  {
+    "key": "settings_view_list_btn",
+    "en": "List",
+    "es": "Lista"
+  },
+  {
+    "key": "settings_view_miller_btn",
+    "en": "Columns",
+    "es": "Columnas"
+  },
+  {
+    "key": "settings_view_tree_btn",
+    "en": "Tree",
+    "es": "Árbol"
+  },
+  {
+    "key": "settings_theme",
+    "en": "Theme (per profile): %{theme}",
+    "es": "Tema (por perfil): %{theme}"
+  },
+  {
+    "key": "settings_sizes",
+    "en": "Sizes",
+    "es": "Tamaños"
+  },
+  {
+    "key": "settings_sidebar",
+    "en": "Sidebar",
+    "es": "Barra lateral"
+  },
+  {
+    "key": "settings_inspector",
+    "en": "Inspector",
+    "es": "Inspector"
+  },
+  {
+    "key": "settings_font",
+    "en": "Font",
+    "es": "Fuente"
+  },
+  {
+    "key": "settings_thumbnails",
+    "en": "Thumbnails",
+    "es": "Miniaturas"
+  },
+  {
+    "key": "settings_grid_spacing",
+    "en": "Grid Spacing",
+    "es": "Espaciado de cuadrícula"
+  },
+  {
+    "key": "settings_about",
+    "en": "About",
+    "es": "Acerca de"
+  },
+  {
+    "key": "settings_changelog",
+    "en": "What's new / changelog",
+    "es": "Novedades / historial de cambios"
+  },
+  {
+    "key": "settings_icons_by",
+    "en": "Liquid Glass Icons by",
+    "es": "Iconos Liquid Glass por"
+  },
+  {
+    "key": "tag_title_global",
+    "en": "New global tag",
+    "es": "Nueva etiqueta global"
+  },
+  {
+    "key": "tag_title_profile",
+    "en": "New profile tag",
+    "es": "Nueva etiqueta de este perfil"
+  },
+  {
+    "key": "tag_scope_global",
+    "en": "Visible in all profiles.",
+    "es": "Visible en todos los perfiles."
+  },
+  {
+    "key": "tag_scope_profile",
+    "en": "Visible only in active profile.",
+    "es": "Visible solo en el perfil activo."
+  },
+  {
+    "key": "tag_name",
+    "en": "Name",
+    "es": "Nombre"
+  },
+  {
+    "key": "tag_name_placeholder",
+    "en": "Type a name",
+    "es": "Escribe un nombre"
+  },
+  {
+    "key": "tag_color",
+    "en": "Color",
+    "es": "Color"
+  },
+  {
+    "key": "tag_cancel",
+    "en": "Cancel",
+    "es": "Cancelar"
+  },
+  {
+    "key": "tag_create",
+    "en": "Create",
+    "es": "Crear"
+  },
+  {
+    "key": "tag_save",
+    "en": "Save",
+    "es": "Guardar"
+  },
+  {
+    "key": "tag_delete",
+    "en": "Delete tag",
+    "es": "Eliminar etiqueta"
+  },
+  {
+    "key": "tag_rename",
+    "en": "Rename tag",
+    "es": "Renombrar etiqueta"
+  },
+  {
+    "key": "tag_rename_title",
+    "en": "Rename tag",
+    "es": "Renombrar etiqueta"
+  },
+  {
+    "key": "tag_rename_scope",
+    "en": "Update this tag name.",
+    "es": "Actualiza el nombre de esta etiqueta."
+  },
+  {
+    "key": "tag_global_hint",
+    "en": "Global tag — visible in every profile",
+    "es": "Etiqueta global — visible en todos los perfiles"
+  },
+  {
+    "key": "sidebar_remove_bookmark",
+    "en": "Remove from bookmarks",
+    "es": "Quitar de marcadores"
+  },
+  {
+    "key": "batch_invalid_name",
+    "en": " ⚠ invalid name",
+    "es": " ⚠ nombre inválido"
+  },
+  {
+    "key": "batch_collision",
+    "en": " ⚠ collision",
+    "es": " ⚠ colisión"
+  },
+  {
+    "key": "batch_collision_with",
+    "en": " ⚠ conflicts with “%{name}”",
+    "es": " ⚠ conflicto con “%{name}”"
+  },
+  {
+    "key": "batch_collision_duplicate",
+    "en": " ⚠ another file would also become “%{name}”",
+    "es": " ⚠ otro archivo también acabaría como “%{name}”"
+  },
+  {
+    "key": "batch_title",
+    "en": "Batch rename",
+    "es": "Renombrado por lotes"
+  },
+  {
+    "key": "batch_selected",
+    "en": "%{count} file(s) selected.",
+    "es": "%{count} archivo(s) seleccionado(s)."
+  },
+  {
+    "key": "batch_find",
+    "en": "Find",
+    "es": "Buscar"
+  },
+  {
+    "key": "batch_replace",
+    "en": "Replace",
+    "es": "Reemplazar"
+  },
+  {
+    "key": "batch_prefix",
+    "en": "Prefix",
+    "es": "Prefijo"
+  },
+  {
+    "key": "batch_suffix",
+    "en": "Suffix before extension",
+    "es": "Sufijo antes de la extensión"
+  },
+  {
+    "key": "batch_separator",
+    "en": "Separator",
+    "es": "Separador"
+  },
+  {
+    "key": "batch_and_more",
+    "en": "…and %{count} more",
+    "es": "…y %{count} más"
+  },
+  {
+    "key": "batch_cancel",
+    "en": "Cancel",
+    "es": "Cancelar"
+  },
+  {
+    "key": "batch_rename",
+    "en": "Rename",
+    "es": "Renombrar"
+  },
+  {
+    "key": "batch_mode_multicursor",
+    "en": "Multicursor",
+    "es": "Multicursor"
+  },
+  {
+    "key": "batch_multicursor_hint",
+    "en": "Type to edit all filenames simultaneously. Left/Right/Home/End to move cursors. Backspace/Delete to erase. Press # to insert numbers.",
+    "es": "Escribe para editar todos los nombres a la vez. Flechas/Inicio/Fin para mover cursores. Retroceso/Supr para borrar. Presiona # para numerar."
+  },
+  {
+    "key": "batch_cursor_stem_end",
+    "en": "| End of Name",
+    "es": "| Fin del nombre"
+  },
+  {
+    "key": "batch_cursor_start",
+    "en": "| Start",
+    "es": "| Inicio"
+  },
+  {
+    "key": "batch_insert_number",
+    "en": "# Number",
+    "es": "# Número"
+  },
+  {
+    "key": "app_archive_unsupported",
+    "en": "Unsupported archive format",
+    "es": "Formato de archivo no soportado"
+  },
+  {
+    "key": "app_path_not_exists",
+    "en": "“%{path}” no longer exists",
+    "es": "«%{path}» ya no existe"
+  },
+  {
+    "key": "fs_sync_extracting",
+    "en": "Extracting",
+    "es": "Extrayendo"
+  },
+  {
+    "key": "fs_sync_open_err",
+    "en": "Could not open “%{path}”",
+    "es": "No se pudo abrir «%{path}»"
+  },
+  {
+    "key": "fs_sync_extract_cancelled",
+    "en": "Extraction canceled (%{done} of %{total})",
+    "es": "Extracción cancelada (%{done} de %{total})"
+  },
+  {
+    "key": "fs_sync_create_err",
+    "en": "Could not create “%{path}»: %{e}",
+    "es": "No se pudo crear «%{path}»: %{e}"
+  },
+  {
+    "key": "fs_sync_zip_bomb",
+    "en": "“%{path}” skipped: possible zip-bomb",
+    "es": "«%{path}» omitido: posible zip-bomb"
+  },
+  {
+    "key": "fs_sync_write_err",
+    "en": "Error writing “%{path}»: %{e}",
+    "es": "Error escribiendo «%{path}»: %{e}"
+  },
+  {
+    "key": "fs_sync_read_err",
+    "en": "Error reading “%{path}»: %{e}",
+    "es": "Error leyendo «%{path}»: %{e}"
+  },
+  {
+    "key": "cloud_host_required",
+    "en": "Host is required",
+    "es": "Se requiere un servidor"
+  },
+  {
+    "key": "cloud_add_remote",
+    "en": "Add cloud drive",
+    "es": "Agregar nube"
+  },
+  {
+    "key": "cloud_ctx_open",
+    "en": "Open",
+    "es": "Abrir"
+  },
+  {
+    "key": "cloud_ctx_mount",
+    "en": "Mount",
+    "es": "Montar"
+  },
+  {
+    "key": "cloud_ctx_unmount",
+    "en": "Unmount",
+    "es": "Desmontar"
+  },
+  {
+    "key": "cloud_ctx_disconnect",
+    "en": "Disconnect",
+    "es": "Desconectar"
+  },
+  {
+    "key": "cloud_ctx_rename",
+    "en": "Rename…",
+    "es": "Renombrar…"
+  },
+  {
+    "key": "cloud_ctx_remove",
+    "en": "Remove",
+    "es": "Eliminar"
+  },
+  {
+    "key": "cloud_rename_title",
+    "en": "Rename connection",
+    "es": "Renombrar conexión"
+  },
+  {
+    "key": "cloud_rename_label",
+    "en": "Connection name",
+    "es": "Nombre de la conexión"
+  },
+  {
+    "key": "cloud_rename_cancel",
+    "en": "Cancel",
+    "es": "Cancelar"
+  },
+  {
+    "key": "cloud_rename_save",
+    "en": "Save",
+    "es": "Guardar"
+  },
+  {
+    "key": "cloud_status_connecting",
+    "en": "Connecting…",
+    "es": "Conectando…"
+  },
+  {
+    "key": "cloud_status_mounting",
+    "en": "Mounting…",
+    "es": "Montando…"
+  },
+  {
+    "key": "cloud_status_mounted",
+    "en": "Mounted",
+    "es": "Montado"
+  },
+  {
+    "key": "cloud_status_browse",
+    "en": "Browse",
+    "es": "Explorar"
+  },
+  {
+    "key": "cloud_status_error",
+    "en": "Error",
+    "es": "Error"
+  },
+  {
+    "key": "cloud_ctx_install_winfsp",
+    "en": "Install WinFsp for mounting…",
+    "es": "Instalar WinFsp para montar…"
+  },
+  {
+    "key": "cloud_transfers_title",
+    "en": "Transfers",
+    "es": "Transferencias"
+  },
+  {
+    "key": "cloud_cross_remote_unavailable",
+    "en": "Direct transfers between accounts are not available yet. Download the files to a local folder first.",
+    "es": "La transferencia directa entre cuentas todavía no está disponible. Descarga primero los archivos a una carpeta local."
+  },
+  {
+    "key": "cloud_preview_requires_download",
+    "en": "Download the file to preview its contents, or open the account as a mounted drive. Direct cloud previews are not available yet.",
+    "es": "Descarga el archivo para ver su contenido, o abre la cuenta como unidad montada. La vista previa directa en la nube todavía no está disponible."
+  },
+  {
+    "key": "cloud_invalid_local_name",
+    "en": "This remote name cannot be safely represented on this computer. Rename the file before downloading it.",
+    "es": "El nombre remoto no se puede representar de forma segura en este equipo. Renombra el archivo antes de descargarlo."
+  },
+  {
+    "key": "cloud_cross_remote_move_unavailable",
+    "en": "Copy the files between accounts. Moving between accounts requires verifying the copy before deleting its source.",
+    "es": "Copia los archivos entre cuentas. El movimiento entre cuentas requiere verificar la copia antes de eliminar el origen."
+  },
+  {
+    "key": "cloud_transfer_queued",
+    "en": "Queued",
+    "es": "En cola"
+  },
+  {
+    "key": "cloud_transfer_paused",
+    "en": "Paused",
+    "es": "Pausado"
+  },
+  {
+    "key": "cloud_transfer_pausing",
+    "en": "Stopping to pause…",
+    "es": "Deteniendo para pausar…"
+  },
+  {
+    "key": "cloud_transfer_running",
+    "en": "Transferring…",
+    "es": "Transfiriendo…"
+  },
+  {
+    "key": "cloud_drag_copy_only",
+    "en": "Cloud dragging supports copies. To move, use Cut and Paste within the same account.",
+    "es": "El arrastre cloud permite copiar. Para mover, usa Cortar y Pegar dentro de la misma cuenta."
+  },
+  {
+    "key": "cloud_flat_views_only",
+    "en": "This cloud location supports Details, Grid and List views.",
+    "es": "Esta ubicación cloud admite las vistas Detalles, Cuadrícula y Lista."
+  },
+  {
+    "key": "cloud_transfer_cancelling",
+    "en": "Canceling…",
+    "es": "Cancelando…"
+  },
+  {
+    "key": "cloud_transfer_cancelled",
+    "en": "Canceled",
+    "es": "Cancelado"
+  },
+  {
+    "key": "cloud_transfer_interrupted",
+    "en": "Needs review",
+    "es": "Requiere revisión"
+  },
+  {
+    "key": "cloud_transfer_done",
+    "en": "Done",
+    "es": "Listo"
+  },
+  {
+    "key": "cloud_transfer_failed",
+    "en": "Failed",
+    "es": "Falló"
+  },
+  {
+    "key": "properties_title",
+    "en": "Properties",
+    "es": "Propiedades"
+  },
+  {
+    "key": "properties_kind_folder",
+    "en": "Folder",
+    "es": "Carpeta"
+  },
+  {
+    "key": "properties_kind_file",
+    "en": "File",
+    "es": "Archivo"
+  },
+  {
+    "key": "properties_kind_symlink",
+    "en": "Symbolic link",
+    "es": "Enlace simbólico"
+  },
+  {
+    "key": "properties_type",
+    "en": "Type",
+    "es": "Tipo"
+  },
+  {
+    "key": "properties_size",
+    "en": "Size",
+    "es": "Tamaño"
+  },
+  {
+    "key": "properties_created",
+    "en": "Created",
+    "es": "Creado"
+  },
+  {
+    "key": "properties_modified",
+    "en": "Modified",
+    "es": "Modificado"
+  },
+  {
+    "key": "properties_attributes",
+    "en": "Attributes",
+    "es": "Atributos"
+  },
+  {
+    "key": "properties_readonly",
+    "en": "Read-only",
+    "es": "Solo lectura"
+  },
+  {
+    "key": "properties_symlink",
+    "en": "Symlink",
+    "es": "Symlink"
+  },
+  {
+    "key": "properties_selection_count",
+    "en": "%{count} items selected",
+    "es": "%{count} elementos seleccionados"
+  },
+  {
+    "key": "properties_files",
+    "en": "Files",
+    "es": "Archivos"
+  },
+  {
+    "key": "properties_folders",
+    "en": "Folders",
+    "es": "Carpetas"
+  },
+  {
+    "key": "properties_accessed",
+    "en": "Last accessed",
+    "es": "Último acceso"
+  },
+  {
+    "key": "properties_link_target",
+    "en": "Link target",
+    "es": "Destino del enlace"
+  },
+  {
+    "key": "properties_permissions",
+    "en": "Permissions",
+    "es": "Permisos"
+  },
+  {
+    "key": "properties_owner",
+    "en": "Owner",
+    "es": "Propietario"
+  },
+  {
+    "key": "properties_group",
+    "en": "Group",
+    "es": "Grupo"
+  },
+  {
+    "key": "properties_others",
+    "en": "Others",
+    "es": "Otros"
+  },
+  {
+    "key": "properties_mode",
+    "en": "Mode (octal)",
+    "es": "Modo (octal)"
+  },
+  {
+    "key": "properties_read",
+    "en": "Read",
+    "es": "Leer"
+  },
+  {
+    "key": "properties_write",
+    "en": "Write",
+    "es": "Escribir"
+  },
+  {
+    "key": "properties_execute",
+    "en": "Execute",
+    "es": "Ejecutar"
+  },
+  {
+    "key": "properties_symlink_permissions",
+    "en": "Link permissions cannot be edited. Open the target's properties to change its permissions.",
+    "es": "Los permisos del enlace no se pueden editar. Abre las propiedades del destino para cambiar sus permisos."
+  },
+  {
+    "key": "properties_permissions_scope",
+    "en": "Changes apply only to this item. Folder contents and special permission bits are preserved.",
+    "es": "Los cambios se aplican solo a este elemento. Se conservan los permisos especiales y los del contenido de las carpetas."
+  },
+  {
+    "key": "properties_error",
+    "en": "Could not read or apply properties: %{detail}",
+    "es": "No se pudieron leer o aplicar las propiedades: %{detail}"
+  },
+  {
+    "key": "properties_close",
+    "en": "Close",
+    "es": "Cerrar"
+  },
+  {
+    "key": "properties_apply",
+    "en": "Apply",
+    "es": "Aplicar"
+  },
+  {
+    "key": "properties_applying",
+    "en": "Applying…",
+    "es": "Aplicando…"
+  },
+  {
+    "key": "getting_started_title",
+    "en": "Make Atlas yours.",
+    "es": "Haz Atlas tuyo."
+  },
+  {
+    "key": "getting_started_subtitle",
+    "en": "A fast setup pass for the parts that change how the file manager feels.",
+    "es": "Un setup rápido para las partes que cambian cómo se siente el file manager."
+  },
+  {
+    "key": "getting_started_profile",
+    "en": "Profile-ready workspace",
+    "es": "Workspace listo por perfil"
+  },
+  {
+    "key": "getting_started_profile_desc",
+    "en": "Keep themes, sidebar, and view settings together.",
+    "es": "Mantén temas, barra lateral y vistas juntas."
+  },
+  {
+    "key": "getting_started_palette",
+    "en": "Command palette first",
+    "es": "Paleta de comandos primero"
+  },
+  {
+    "key": "getting_started_palette_desc",
+    "en": "Open setup, settings, themes, and extensions from one place.",
+    "es": "Abre setup, ajustes, temas y extensiones desde un solo lugar."
+  },
+  {
+    "key": "getting_started_extensions",
+    "en": "Starter extensions",
+    "es": "Extensiones iniciales"
+  },
+  {
+    "key": "getting_started_extensions_desc",
+    "en": "Add preview and file tools when you need them.",
+    "es": "Agrega previews y herramientas cuando las necesites."
+  },
+  {
+    "key": "getting_started_integrations",
+    "en": "Desktop integrations",
+    "es": "Integraciones de escritorio"
+  },
+  {
+    "key": "getting_started_integrations_desc",
+    "en": "Terminal command, shortcuts, and File Explorer actions live in the installer.",
+    "es": "Terminal command, shortcuts y acciones de Explorer viven en el instalador."
+  },
+  {
+    "key": "getting_started_primary",
+    "en": "Personalize experience",
+    "es": "Personalizar experiencia"
+  },
+  {
+    "key": "getting_started_next",
+    "en": "Continue",
+    "es": "Continuar"
+  },
+  {
+    "key": "getting_started_secondary",
+    "en": "Skip",
+    "es": "Saltar"
+  },
+  {
+    "key": "getting_started_loading",
+    "en": "Personalizing experience",
+    "es": "Personalizando experiencia"
+  },
+  {
+    "key": "getting_started_done",
+    "en": "Atlas is ready",
+    "es": "Atlas está listo"
+  },
+  {
+    "key": "getting_started_welcome",
+    "en": "Welcome",
+    "es": "Welcome"
+  },
+  {
+    "key": "getting_started_theme_title",
+    "en": "Choose your look.",
+    "es": "Elige tu look."
+  },
+  {
+    "key": "getting_started_theme_desc",
+    "en": "Pick a theme now. You can reopen this setup or change it from Settings later.",
+    "es": "Elige un tema ahora. Puedes volver a abrir este setup o cambiarlo desde Ajustes después."
+  },
+  {
+    "key": "getting_started_profile_name",
+    "en": "Profile name",
+    "es": "Nombre del perfil"
+  },
+  {
+    "key": "getting_started_profile_placeholder",
+    "en": "Personal",
+    "es": "Personal"
+  },
+  {
+    "key": "getting_started_workspace_title",
+    "en": "Tune the file manager.",
+    "es": "Ajusta el file manager."
+  },
+  {
+    "key": "getting_started_workspace_desc",
+    "en": "Set the default feel for browsing. Nothing here is permanent.",
+    "es": "Define cómo se siente navegar. Nada de esto es permanente."
+  },
+  {
+    "key": "getting_started_view_category",
+    "en": "View style",
+    "es": "Estilo de vista"
+  },
+  {
+    "key": "getting_started_workspace_category",
+    "en": "Workspace tools",
+    "es": "Herramientas del workspace"
+  },
+  {
+    "key": "getting_started_show_sidebar",
+    "en": "Show sidebar",
+    "es": "Mostrar barra lateral"
+  },
+  {
+    "key": "getting_started_show_inspector",
+    "en": "Enable preview",
+    "es": "Activar vista previa"
+  },
+  {
+    "key": "getting_started_show_hidden",
+    "en": "Show hidden files",
+    "es": "Mostrar archivos ocultos"
+  },
+  {
+    "key": "cloud_add_title",
+    "en": "Add Cloud Drive",
+    "es": "Agregar unidad en la nube"
+  },
+  {
+    "key": "cloud_field_name",
+    "en": "Name (optional)",
+    "es": "Nombre (opcional)"
+  },
+  {
+    "key": "cloud_field_host",
+    "en": "Host",
+    "es": "Servidor"
+  },
+  {
+    "key": "cloud_field_port",
+    "en": "Port",
+    "es": "Puerto"
+  },
+  {
+    "key": "cloud_field_user",
+    "en": "Username",
+    "es": "Usuario"
+  },
+  {
+    "key": "cloud_field_password",
+    "en": "Password",
+    "es": "Contraseña"
+  },
+  {
+    "key": "cloud_access_label",
+    "en": "Access mode",
+    "es": "Modo de acceso"
+  },
+  {
+    "key": "cloud_access_browse",
+    "en": "Browse",
+    "es": "Navegar"
+  },
+  {
+    "key": "cloud_access_mount",
+    "en": "Mount",
+    "es": "Montar"
+  },
+  {
+    "key": "cloud_connect",
+    "en": "Connect",
+    "es": "Conectar"
+  },
+  {
+    "key": "cloud_cancel",
+    "en": "Cancel",
+    "es": "Cancelar"
+  },
+  {
+    "key": "cloud_oauth_hint",
+    "en": "A browser window will open to authorize access.",
+    "es": "Se abrirá una ventana del navegador para autorizar el acceso."
+  },
+  {
+    "key": "cloud_native_hint",
+    "en": "Tip: if you already use the desktop app for Google Drive, OneDrive, iCloud, or MEGA, open that folder from Network for the fastest experience. Add a cloud drive here only when you want Atlas to connect directly.",
+    "es": "Consejo: si ya usas la app de escritorio de Google Drive, OneDrive, iCloud o MEGA, abre esa carpeta desde Red para la experiencia más rápida. Agrega una unidad aquí sólo cuando quieras que Atlas se conecte directamente."
+  },
+  {
+    "key": "cloud_downloading_rclone",
+    "en": "Downloading rclone…",
+    "es": "Descargando rclone…"
+  },
+  {
+    "key": "ext_installed",
+    "en": "Installed '%{id}'",
+    "es": "Instalado '%{id}'"
+  },
+  {
+    "key": "palette_search_files",
+    "en": "Search files and folders...",
+    "es": "Buscar archivos y carpetas…"
+  },
+  {
+    "key": "palette_search_commands",
+    "en": "Search commands...",
+    "es": "Buscar comandos…"
+  },
+  {
+    "key": "palette_search_options",
+    "en": "Select option...",
+    "es": "Seleccionar opción…"
+  },
+  {
+    "key": "palette_footer_navigate",
+    "en": "navigate",
+    "es": "navegar"
+  },
+  {
+    "key": "palette_footer_use",
+    "en": "use",
+    "es": "usar"
+  },
+  {
+    "key": "palette_footer_expand",
+    "en": "expand",
+    "es": "expandir"
+  },
+  {
+    "key": "palette_footer_split",
+    "en": "split",
+    "es": "dividir"
+  },
+  {
+    "key": "palette_footer_window",
+    "en": "window",
+    "es": "ventana"
+  },
+  {
+    "key": "palette_footer_close",
+    "en": "close",
+    "es": "cerrar"
+  },
+  {
+    "key": "palette_results_count",
+    "en": "%{count} results",
+    "es": "%{count} resultados"
+  },
+  {
+    "key": "palette_unpin_quick",
+    "en": "Unpin from Quick Access",
+    "es": "Quitar de Quick"
+  },
+  {
+    "key": "palette_pin_quick",
+    "en": "Pin to Quick Access",
+    "es": "Fijar en Quick"
+  },
+  {
+    "key": "palette_add_bookmark",
+    "en": "Add to bookmarks",
+    "es": "Añadir a marcadores"
+  },
+  {
+    "key": "palette_open_new_tab",
+    "en": "Open in new tab",
+    "es": "Abrir en pestaña nueva"
+  },
+  {
+    "key": "palette_open_right_split",
+    "en": "Open in right split",
+    "es": "Abrir en división derecha"
+  },
+  {
+    "key": "palette_open_bottom_split",
+    "en": "Open in bottom split",
+    "es": "Abrir en división inferior"
+  },
+  {
+    "key": "palette_open_new_window",
+    "en": "Open in new window",
+    "es": "Abrir en ventana nueva"
+  },
+  {
+    "key": "palette_sec_create",
+    "en": "Create",
+    "es": "Crear"
+  },
+  {
+    "key": "palette_create_folder",
+    "en": "New folder \"%{name}\"",
+    "es": "Nueva carpeta \"%{name}\""
+  },
+  {
+    "key": "palette_create_file",
+    "en": "New file \"%{name}\"",
+    "es": "Nuevo archivo \"%{name}\""
+  },
+  {
+    "key": "palette_no_results",
+    "en": "No results",
+    "es": "Sin resultados"
+  },
+  {
+    "key": "palette_searching",
+    "en": "Searching…",
+    "es": "Buscando…"
+  },
+  {
+    "key": "palette_btn_content",
+    "en": "Content",
+    "es": "Contenido"
+  },
+  {
+    "key": "palette_btn_content_tooltip",
+    "en": "Search inside file contents (grep)",
+    "es": "Buscar dentro del contenido de los archivos (grep)"
+  },
+  {
+    "key": "palette_shortcut_none",
+    "en": "None",
+    "es": "Sin atajo"
+  },
+  {
+    "key": "palette_shortcut_recording",
+    "en": "Press keys",
+    "es": "Presiona teclas"
+  },
+  {
+    "key": "palette_shortcut_edit_tooltip",
+    "en": "Click to change. Press Delete or Backspace while recording to remove.",
+    "es": "Click para cambiar. Presiona Supr o Retroceso durante la captura para removerlo."
+  },
+  {
+    "key": "palette_shortcut_recording_tooltip",
+    "en": "Press a shortcut. Esc cancels; Delete or Backspace removes it.",
+    "es": "Presiona un atajo. Esc cancela; Supr o Retroceso lo remueve."
+  },
+  {
+    "key": "palette_shortcut_reserved",
+    "en": "That shortcut is reserved by another input or system action.",
+    "es": "Ese atajo está reservado por otra entrada o acción del sistema."
+  },
+  {
+    "key": "palette_sec_content",
+    "en": "In content",
+    "es": "En contenido"
+  },
+  {
+    "key": "palette_sec_folders",
+    "en": "Folders",
+    "es": "Carpetas"
+  },
+  {
+    "key": "palette_sec_files",
+    "en": "Files",
+    "es": "Archivos"
+  },
+  {
+    "key": "palette_sec_recent",
+    "en": "Recent",
+    "es": "Recientes"
+  },
+  {
+    "key": "palette_sec_storage",
+    "en": "Storage",
+    "es": "Almacenamiento"
+  },
+  {
+    "key": "palette_sec_bookmarks",
+    "en": "Bookmarks",
+    "es": "Marcadores"
+  },
+  {
+    "key": "palette_sec_places",
+    "en": "Places",
+    "es": "Lugares"
+  },
+  {
+    "key": "palette_sec_quick",
+    "en": "Quick Access",
+    "es": "Quick"
+  },
+  {
+    "key": "palette_places_home",
+    "en": "Home",
+    "es": "Inicio"
+  },
+  {
+    "key": "palette_places_desktop",
+    "en": "Desktop",
+    "es": "Escritorio"
+  },
+  {
+    "key": "palette_places_documents",
+    "en": "Documents",
+    "es": "Documentos"
+  },
+  {
+    "key": "palette_places_downloads",
+    "en": "Downloads",
+    "es": "Descargas"
+  },
+  {
+    "key": "palette_places_pictures",
+    "en": "Pictures",
+    "es": "Imágenes"
+  },
+  {
+    "key": "palette_places_music",
+    "en": "Music",
+    "es": "Música"
+  },
+  {
+    "key": "palette_places_videos",
+    "en": "Videos",
+    "es": "Vídeos"
+  },
+  {
+    "key": "palette_cat_tabs",
+    "en": "Tabs and panes",
+    "es": "Pestañas y paneles"
+  },
+  {
+    "key": "palette_cat_nav",
+    "en": "Navigation",
+    "es": "Navegación"
+  },
+  {
+    "key": "palette_cat_selection",
+    "en": "Selection",
+    "es": "Selección"
+  },
+  {
+    "key": "palette_cat_view",
+    "en": "View",
+    "es": "Vista"
+  },
+  {
+    "key": "palette_cat_edit",
+    "en": "Editing",
+    "es": "Edición"
+  },
+  {
+    "key": "palette_cat_files",
+    "en": "Files",
+    "es": "Archivos"
+  },
+  {
+    "key": "palette_cat_profiles",
+    "en": "Profiles",
+    "es": "Perfiles"
+  },
+  {
+    "key": "palette_cat_themes",
+    "en": "Themes",
+    "es": "Temas"
+  },
+  {
+    "key": "palette_cat_ext",
+    "en": "Extensions",
+    "es": "Extensiones"
+  },
+  {
+    "key": "palette_cat_system",
+    "en": "System",
+    "es": "Sistema"
+  },
+  {
+    "key": "cmd_tab_new_title",
+    "en": "New Tab",
+    "es": "Nueva pestaña"
+  },
+  {
+    "key": "cmd_tab_new_desc",
+    "en": "Opens a new tab in the active pane.",
+    "es": "Abre una pestaña nueva en el panel activo."
+  },
+  {
+    "key": "cmd_tab_close_title",
+    "en": "Close Tab",
+    "es": "Cerrar pestaña"
+  },
+  {
+    "key": "cmd_tab_close_desc",
+    "en": "Closes the current tab; if it is the last one, closes the pane.",
+    "es": "Cierra la pestaña actual; si es la última, cierra el panel."
+  },
+  {
+    "key": "cmd_tab_next_title",
+    "en": "Select Next Tab",
+    "es": "Seleccionar pestaña siguiente"
+  },
+  {
+    "key": "cmd_tab_next_desc",
+    "en": "Selects the next tab if it exists.",
+    "es": "Selecciona la siguiente pestaña si existe."
+  },
+  {
+    "key": "cmd_tab_previous_title",
+    "en": "Select Previous Tab",
+    "es": "Seleccionar pestaña anterior"
+  },
+  {
+    "key": "cmd_tab_previous_desc",
+    "en": "Selects the previous tab if it exists.",
+    "es": "Selecciona la pestaña anterior si existe."
+  },
+  {
+    "key": "cmd_tab_move_left_title",
+    "en": "Shift Tab Left",
+    "es": "Mover pestaña a la izquierda"
+  },
+  {
+    "key": "cmd_tab_move_left_desc",
+    "en": "Moves the current tab to the left.",
+    "es": "Mueve la pestaña actual hacia la izquierda."
+  },
+  {
+    "key": "cmd_tab_move_right_title",
+    "en": "Shift Tab Right",
+    "es": "Mover pestaña a la derecha"
+  },
+  {
+    "key": "cmd_tab_move_right_desc",
+    "en": "Moves the current tab to the right.",
+    "es": "Mueve la pestaña actual hacia la derecha."
+  },
+  {
+    "key": "cmd_tab_1_title",
+    "en": "Select 1st Tab",
+    "es": "Seleccionar 1.ª pestaña"
+  },
+  {
+    "key": "cmd_tab_2_title",
+    "en": "Select 2nd Tab",
+    "es": "Seleccionar 2.ª pestaña"
+  },
+  {
+    "key": "cmd_tab_3_title",
+    "en": "Select 3rd Tab",
+    "es": "Seleccionar 3.ª pestaña"
+  },
+  {
+    "key": "cmd_tab_4_title",
+    "en": "Select 4th Tab",
+    "es": "Seleccionar 4.ª pestaña"
+  },
+  {
+    "key": "cmd_tab_5_title",
+    "en": "Select 5th Tab",
+    "es": "Seleccionar 5.ª pestaña"
+  },
+  {
+    "key": "cmd_tab_6_title",
+    "en": "Select 6th Tab",
+    "es": "Seleccionar 6.ª pestaña"
+  },
+  {
+    "key": "cmd_tab_7_title",
+    "en": "Select 7th Tab",
+    "es": "Seleccionar 7.ª pestaña"
+  },
+  {
+    "key": "cmd_tab_8_title",
+    "en": "Select 8th Tab",
+    "es": "Seleccionar 8.ª pestaña"
+  },
+  {
+    "key": "cmd_tab_9_title",
+    "en": "Select 9th Tab",
+    "es": "Seleccionar 9.ª pestaña"
+  },
+  {
+    "key": "cmd_tab_index_desc",
+    "en": "Selects the tab at that position if it exists.",
+    "es": "Selecciona la pestaña en esa posición si existe."
+  },
+  {
+    "key": "cmd_pane_split_h_title",
+    "en": "Split Horizontal",
+    "es": "Dividir horizontal"
+  },
+  {
+    "key": "cmd_pane_split_h_desc",
+    "en": "Splits the current pane in two, side by side.",
+    "es": "Divide el panel actual en dos, lado a lado."
+  },
+  {
+    "key": "cmd_pane_split_v_title",
+    "en": "Split Vertical",
+    "es": "Dividir vertical"
+  },
+  {
+    "key": "cmd_pane_split_v_desc",
+    "en": "Splits the current pane in two, one above the other.",
+    "es": "Divide el panel actual en dos, uno encima del otro."
+  },
+  {
+    "key": "cmd_pane_close_title",
+    "en": "Close Pane",
+    "es": "Cerrar panel"
+  },
+  {
+    "key": "cmd_pane_close_desc",
+    "en": "Closes the active pane.",
+    "es": "Cierra el panel activo."
+  },
+  {
+    "key": "cmd_pane_focus_next_title",
+    "en": "Focus Next Pane",
+    "es": "Enfocar siguiente panel"
+  },
+  {
+    "key": "cmd_pane_focus_next_desc",
+    "en": "Cycles focus to the next pane.",
+    "es": "Cambia el foco al siguiente panel."
+  },
+  {
+    "key": "cmd_nav_back_title",
+    "en": "Navigate Back",
+    "es": "Navegar atrás"
+  },
+  {
+    "key": "cmd_nav_back_desc",
+    "en": "Returns to the previous history location.",
+    "es": "Vuelve a la ubicación anterior del historial."
+  },
+  {
+    "key": "cmd_nav_forward_title",
+    "en": "Navigate Forward",
+    "es": "Navegar adelante"
+  },
+  {
+    "key": "cmd_nav_forward_desc",
+    "en": "Advances to the next history location.",
+    "es": "Avanza a la siguiente ubicación del historial."
+  },
+  {
+    "key": "cmd_nav_parent_title",
+    "en": "Up To Folder",
+    "es": "Subir a carpeta"
+  },
+  {
+    "key": "cmd_nav_parent_desc",
+    "en": "Opens the current folder's parent, if it exists.",
+    "es": "Abre la carpeta superior si existe."
+  },
+  {
+    "key": "cmd_nav_goto_title",
+    "en": "Open Goto Bar",
+    "es": "Abrir barra Ir a"
+  },
+  {
+    "key": "cmd_nav_goto_desc",
+    "en": "Fuzzy search for files and folders from the current location.",
+    "es": "Búsqueda difusa de archivos y carpetas desde la ubicación actual."
+  },
+  {
+    "key": "cmd_nav_refresh_title",
+    "en": "Refresh",
+    "es": "Actualizar"
+  },
+  {
+    "key": "cmd_nav_refresh_desc",
+    "en": "Reloads the current folder's contents.",
+    "es": "Recarga el contenido de la carpeta actual."
+  },
+  {
+    "key": "cmd_nav_recycle_bin_title",
+    "en": "Open Recycle Bin",
+    "es": "Abrir Papelera de reciclaje"
+  },
+  {
+    "key": "cmd_nav_recycle_bin_desc",
+    "en": "Opens the Windows Recycle Bin.",
+    "es": "Abre la Papelera de reciclaje de Windows."
+  },
+  {
+    "key": "cmd_selection_previous_title",
+    "en": "Select Previous",
+    "es": "Seleccionar anterior"
+  },
+  {
+    "key": "cmd_selection_previous_desc",
+    "en": "Selects the previous item in the list.",
+    "es": "Selecciona el elemento anterior en la lista."
+  },
+  {
+    "key": "cmd_selection_next_title",
+    "en": "Select Next",
+    "es": "Seleccionar siguiente"
+  },
+  {
+    "key": "cmd_selection_next_desc",
+    "en": "Selects the next item in the list.",
+    "es": "Selecciona el siguiente elemento en la lista."
+  },
+  {
+    "key": "cmd_selection_left_title",
+    "en": "Select Left / Parent",
+    "es": "Seleccionar izquierda / Carpeta padre"
+  },
+  {
+    "key": "cmd_selection_left_desc",
+    "en": "Selects the item to the left or moves to parent.",
+    "es": "Selecciona el elemento a la izquierda o sube a la carpeta padre."
+  },
+  {
+    "key": "cmd_selection_right_title",
+    "en": "Select Right / Open",
+    "es": "Seleccionar derecha / Abrir carpeta"
+  },
+  {
+    "key": "cmd_selection_right_desc",
+    "en": "Selects the item to the right or opens folder.",
+    "es": "Selecciona el elemento a la derecha o entra en la carpeta."
+  },
+  {
+    "key": "cmd_selection_first_title",
+    "en": "Select First",
+    "es": "Seleccionar primero"
+  },
+  {
+    "key": "cmd_selection_first_desc",
+    "en": "Selects the first item in the list.",
+    "es": "Selecciona el primer elemento de la lista."
+  },
+  {
+    "key": "cmd_selection_last_title",
+    "en": "Select Last",
+    "es": "Seleccionar último"
+  },
+  {
+    "key": "cmd_selection_last_desc",
+    "en": "Selects the last item in the list.",
+    "es": "Selecciona el último elemento de la lista."
+  },
+  {
+    "key": "cmd_selection_page_up_title",
+    "en": "Scroll Select Up",
+    "es": "Seleccionar una página arriba"
+  },
+  {
+    "key": "cmd_selection_page_up_desc",
+    "en": "Moves selection up by a page.",
+    "es": "Mueve la selección una página hacia arriba."
+  },
+  {
+    "key": "cmd_selection_page_down_title",
+    "en": "Scroll Select Down",
+    "es": "Seleccionar una página abajo"
+  },
+  {
+    "key": "cmd_selection_page_down_desc",
+    "en": "Moves selection down by a page.",
+    "es": "Mueve la selección una página hacia abajo."
+  },
+  {
+    "key": "cmd_selection_extend_previous_title",
+    "en": "Extend Select Previous",
+    "es": "Extender selección anterior"
+  },
+  {
+    "key": "cmd_selection_extend_previous_desc",
+    "en": "Extends the selection to the previous item.",
+    "es": "Extiende la selección al elemento anterior."
+  },
+  {
+    "key": "cmd_selection_extend_next_title",
+    "en": "Extend Select Next",
+    "es": "Extender selección siguiente"
+  },
+  {
+    "key": "cmd_selection_extend_next_desc",
+    "en": "Extends the selection to the next item.",
+    "es": "Extiende la selección al siguiente elemento."
+  },
+  {
+    "key": "cmd_selection_extend_left_title",
+    "en": "Extend Select Left",
+    "es": "Extender selección izquierda"
+  },
+  {
+    "key": "cmd_selection_extend_left_desc",
+    "en": "Extends the selection to the left.",
+    "es": "Extiende la selección a la izquierda."
+  },
+  {
+    "key": "cmd_selection_extend_right_title",
+    "en": "Extend Select Right",
+    "es": "Extender selección derecha"
+  },
+  {
+    "key": "cmd_selection_extend_right_desc",
+    "en": "Extends the selection to the right.",
+    "es": "Extiende la selección a la derecha."
+  },
+  {
+    "key": "cmd_selection_extend_first_title",
+    "en": "Extend Select First",
+    "es": "Extender selección al primero"
+  },
+  {
+    "key": "cmd_selection_extend_first_desc",
+    "en": "Extends the selection to the first item.",
+    "es": "Extiende la selección al primer elemento."
+  },
+  {
+    "key": "cmd_selection_extend_last_title",
+    "en": "Extend Select Last",
+    "es": "Extender selección al último"
+  },
+  {
+    "key": "cmd_selection_extend_last_desc",
+    "en": "Extends the selection to the last item.",
+    "es": "Extiende la selección al último elemento."
+  },
+  {
+    "key": "cmd_selection_extend_page_up_title",
+    "en": "Scroll Extend Select Up",
+    "es": "Extender una página arriba"
+  },
+  {
+    "key": "cmd_selection_extend_page_up_desc",
+    "en": "Extends the selection up by a page.",
+    "es": "Extiende la selección una página hacia arriba."
+  },
+  {
+    "key": "cmd_selection_extend_page_down_title",
+    "en": "Scroll Extend Select Down",
+    "es": "Extender una página abajo"
+  },
+  {
+    "key": "cmd_selection_extend_page_down_desc",
+    "en": "Extends the selection down by a page.",
+    "es": "Extiende la selección una página hacia abajo."
+  },
+  {
+    "key": "cmd_selection_cursor_previous_title",
+    "en": "Move Cursor Up",
+    "es": "Mover cursor arriba"
+  },
+  {
+    "key": "cmd_selection_cursor_previous_desc",
+    "en": "Moves keyboard cursor up without changing selection.",
+    "es": "Mueve el cursor de teclado hacia arriba sin cambiar la selección."
+  },
+  {
+    "key": "cmd_selection_cursor_next_title",
+    "en": "Move Cursor Down",
+    "es": "Mover cursor abajo"
+  },
+  {
+    "key": "cmd_selection_cursor_next_desc",
+    "en": "Moves keyboard cursor down without changing selection.",
+    "es": "Mueve el cursor de teclado hacia abajo sin cambiar la selección."
+  },
+  {
+    "key": "cmd_selection_cursor_left_title",
+    "en": "Move Cursor Left",
+    "es": "Mover cursor izquierda"
+  },
+  {
+    "key": "cmd_selection_cursor_left_desc",
+    "en": "Moves keyboard cursor left without changing selection.",
+    "es": "Mueve el cursor de teclado hacia la izquierda sin cambiar la selección."
+  },
+  {
+    "key": "cmd_selection_cursor_right_title",
+    "en": "Move Cursor Right",
+    "es": "Mover cursor derecha"
+  },
+  {
+    "key": "cmd_selection_cursor_right_desc",
+    "en": "Moves keyboard cursor right without changing selection.",
+    "es": "Mueve el cursor de teclado hacia la derecha sin cambiar la selección."
+  },
+  {
+    "key": "cmd_selection_toggle_title",
+    "en": "Toggle Selection",
+    "es": "Alternar selección"
+  },
+  {
+    "key": "cmd_selection_toggle_desc",
+    "en": "Toggles the item under cursor in or out of the selection.",
+    "es": "Alterna la selección del elemento bajo el cursor."
+  },
+  {
+    "key": "cmd_selection_open_title",
+    "en": "Activate",
+    "es": "Activar"
+  },
+  {
+    "key": "cmd_selection_open_desc",
+    "en": "Opens the focused item.",
+    "es": "Abre el elemento enfocado."
+  },
+  {
+    "key": "cmd_view_hidden_title",
+    "en": "Toggle Hidden Files",
+    "es": "Alternar archivos ocultos"
+  },
+  {
+    "key": "cmd_view_hidden_desc",
+    "en": "Shows or hides hidden files.",
+    "es": "Muestra u oculta los archivos ocultos."
+  },
+  {
+    "key": "cmd_view_vim_mode_title",
+    "en": "Vim Mode: Toggle",
+    "es": "Modo Vim: Alternar"
+  },
+  {
+    "key": "cmd_view_vim_mode_desc",
+    "en": "Toggle Vim-style navigation keys (hjkl, etc.).",
+    "es": "Alterna la navegación con teclas estilo Vim (hjkl, etc.)."
+  },
+  {
+    "key": "cmd_view_inspector_title",
+    "en": "Toggle Inspector / Preview",
+    "es": "Alternar inspector / vista previa"
+  },
+  {
+    "key": "cmd_view_inspector_desc",
+    "en": "Shows or hides the preview pane.",
+    "es": "Muestra u oculta el panel de vista previa."
+  },
+  {
+    "key": "cmd_view_branch_view_title",
+    "en": "Toggle Branch View (Flat View)",
+    "es": "Alternar vista de ramas (vista plana)"
+  },
+  {
+    "key": "cmd_view_branch_view_desc",
+    "en": "Shows all files from all subfolders in a single flat list.",
+    "es": "Muestra todos los archivos de todas las subcarpetas en una sola lista plana."
+  },
+  {
+    "key": "branch_view_badge",
+    "en": "Branch View",
+    "es": "Vista plana"
+  },
+  {
+    "key": "cmd_view_sidebar_title",
+    "en": "Toggle Sidebar",
+    "es": "Alternar barra lateral"
+  },
+  {
+    "key": "cmd_view_sidebar_desc",
+    "en": "Shows or hides the sidebar.",
+    "es": "Muestra u oculta la barra lateral."
+  },
+  {
+    "key": "cmd_view_details_title",
+    "en": "View: Details",
+    "es": "Vista: detalles"
+  },
+  {
+    "key": "cmd_view_details_desc",
+    "en": "List with size, type, and date columns.",
+    "es": "Lista con columnas de tamaño, tipo y fecha."
+  },
+  {
+    "key": "cmd_view_grid_title",
+    "en": "View: Thumbnails",
+    "es": "Vista: miniaturas"
+  },
+  {
+    "key": "cmd_view_grid_desc",
+    "en": "Icon grid with thumbnails.",
+    "es": "Cuadrícula de iconos con miniaturas."
+  },
+  {
+    "key": "cmd_view_list_title",
+    "en": "View: List",
+    "es": "Vista: lista"
+  },
+  {
+    "key": "cmd_view_list_desc",
+    "en": "Compact list of names.",
+    "es": "Lista compacta de nombres."
+  },
+  {
+    "key": "cmd_view_miller_title",
+    "en": "View: Columns (Miller)",
+    "es": "Vista: columnas (Miller)"
+  },
+  {
+    "key": "cmd_view_miller_desc",
+    "en": "Cascading columns Finder-style.",
+    "es": "Columnas en cascada estilo Finder."
+  },
+  {
+    "key": "cmd_view_tree_title",
+    "en": "View: Tree",
+    "es": "Vista: árbol"
+  },
+  {
+    "key": "cmd_view_tree_desc",
+    "en": "Hierarchical folder tree with expand/collapse.",
+    "es": "Árbol jerárquico de carpetas con expansión y contracción."
+  },
+  {
+    "key": "cmd_zoom_in_title",
+    "en": "Zoom In",
+    "es": "Ampliar"
+  },
+  {
+    "key": "cmd_zoom_in_desc",
+    "en": "Increase the UI scale.",
+    "es": "Aumentar la escala de la interfaz."
+  },
+  {
+    "key": "cmd_zoom_out_title",
+    "en": "Zoom Out",
+    "es": "Reducir"
+  },
+  {
+    "key": "cmd_zoom_out_desc",
+    "en": "Decrease the UI scale.",
+    "es": "Disminuir la escala de la interfaz."
+  },
+  {
+    "key": "cmd_zoom_reset_title",
+    "en": "Zoom Reset",
+    "es": "Restablecer zoom"
+  },
+  {
+    "key": "cmd_zoom_reset_desc",
+    "en": "Reset the UI scale to 100%.",
+    "es": "Restablecer la escala al 100%."
+  },
+  {
+    "key": "cmd_content_zoom_in_title",
+    "en": "Zoom In Content",
+    "es": "Ampliar contenido"
+  },
+  {
+    "key": "cmd_content_zoom_in_desc",
+    "en": "Increases icon size in the current folder listing.",
+    "es": "Aumenta el tamaño de iconos en la carpeta actual."
+  },
+  {
+    "key": "cmd_content_zoom_out_title",
+    "en": "Zoom Out Content",
+    "es": "Reducir contenido"
+  },
+  {
+    "key": "cmd_content_zoom_out_desc",
+    "en": "Decreases icon size in the current folder listing.",
+    "es": "Disminuye el tamaño de iconos en la carpeta actual."
+  },
+  {
+    "key": "cmd_folder_toggle_folders_first_title",
+    "en": "Toggle Folders First",
+    "es": "Alternar carpetas primero"
+  },
+  {
+    "key": "cmd_folder_toggle_folders_first_desc",
+    "en": "Toggles displaying folders before files.",
+    "es": "Alterna mostrar carpetas antes que archivos."
+  },
+  {
+    "key": "cmd_folder_toggle_files_title",
+    "en": "Toggle Files",
+    "es": "Alternar archivos"
+  },
+  {
+    "key": "cmd_folder_toggle_files_desc",
+    "en": "Toggles visibility of files in the current folder.",
+    "es": "Alterna la visibilidad de archivos en la carpeta actual."
+  },
+  {
+    "key": "cmd_folder_toggle_folders_title",
+    "en": "Toggle Folders",
+    "es": "Alternar carpetas"
+  },
+  {
+    "key": "cmd_folder_toggle_folders_desc",
+    "en": "Toggles visibility of folders in the current folder.",
+    "es": "Alterna la visibilidad de carpetas en la carpeta actual."
+  },
+  {
+    "key": "cmd_folder_search_title",
+    "en": "Filter",
+    "es": "Filtrar"
+  },
+  {
+    "key": "cmd_folder_search_desc",
+    "en": "Starts filtering current folder contents.",
+    "es": "Empieza a filtrar el contenido de la carpeta actual."
+  },
+  {
+    "key": "cmd_folder_search_subfolders_title",
+    "en": "Expanded Search",
+    "es": "Búsqueda expandida"
+  },
+  {
+    "key": "cmd_folder_search_subfolders_desc",
+    "en": "Toggles searching through subfolders.",
+    "es": "Alterna la búsqueda en subcarpetas."
+  },
+  {
+    "key": "cmd_edit_select_all_title",
+    "en": "Select All",
+    "es": "Seleccionar todo"
+  },
+  {
+    "key": "cmd_edit_select_all_desc",
+    "en": "Selects all visible items.",
+    "es": "Selecciona todos los elementos visibles."
+  },
+  {
+    "key": "cmd_edit_invert_title",
+    "en": "Invert Selection",
+    "es": "Invertir selección"
+  },
+  {
+    "key": "cmd_edit_invert_desc",
+    "en": "Inverts the current selection.",
+    "es": "Invierte la selección actual."
+  },
+  {
+    "key": "cmd_edit_undo_title",
+    "en": "Undo",
+    "es": "Deshacer"
+  },
+  {
+    "key": "cmd_edit_undo_desc",
+    "en": "Undoes the last file operation.",
+    "es": "Deshace la última operación de archivos."
+  },
+  {
+    "key": "cmd_edit_redo_title",
+    "en": "Redo",
+    "es": "Rehacer"
+  },
+  {
+    "key": "cmd_edit_redo_desc",
+    "en": "Redoes the last undone operation.",
+    "es": "Rehace la última operación deshecha."
+  },
+  {
+    "key": "cmd_edit_batch_rename_title",
+    "en": "Batch Rename",
+    "es": "Renombrado por lotes"
+  },
+  {
+    "key": "cmd_edit_batch_rename_desc",
+    "en": "Renames selected files using a pattern.",
+    "es": "Renombra los archivos seleccionados con un patrón."
+  },
+  {
+    "key": "cmd_files_rename_title",
+    "en": "Rename",
+    "es": "Renombrar"
+  },
+  {
+    "key": "cmd_files_rename_desc",
+    "en": "Renames the focused item.",
+    "es": "Renombra el elemento enfocado."
+  },
+  {
+    "key": "cmd_files_create_folder_title",
+    "en": "New Folder",
+    "es": "Nueva carpeta"
+  },
+  {
+    "key": "cmd_files_create_folder_desc",
+    "en": "Creates a new folder and starts renaming it immediately.",
+    "es": "Crea una nueva carpeta y empieza a renombrarla inmediatamente."
+  },
+  {
+    "key": "cmd_files_create_file_title",
+    "en": "New File",
+    "es": "Nuevo archivo"
+  },
+  {
+    "key": "cmd_files_create_file_desc",
+    "en": "Creates a new file and starts renaming it immediately.",
+    "es": "Crea un nuevo archivo y empieza a renombrarlo inmediatamente."
+  },
+  {
+    "key": "cmd_files_trash_title",
+    "en": "Move to Recycle Bin",
+    "es": "Mover a papelera"
+  },
+  {
+    "key": "cmd_files_trash_desc",
+    "en": "Sends the selection to the Recycle Bin.",
+    "es": "Envía la selección a la papelera."
+  },
+  {
+    "key": "cmd_files_delete_title",
+    "en": "Delete Permanently",
+    "es": "Eliminar permanentemente"
+  },
+  {
+    "key": "cmd_files_delete_desc",
+    "en": "Deletes the selection permanently, bypassing the Recycle Bin.",
+    "es": "Elimina la selección definitivamente, sin papelera."
+  },
+  {
+    "key": "cmd_files_open_dirs_tabs_title",
+    "en": "Open In New Tab",
+    "es": "Abrir en nueva pestaña"
+  },
+  {
+    "key": "cmd_files_open_dirs_tabs_desc",
+    "en": "Opens selected folders in new tabs. Files are ignored.",
+    "es": "Abre carpetas seleccionadas en pestañas nuevas. Ignora archivos."
+  },
+  {
+    "key": "cmd_files_open_window_title",
+    "en": "Open In New Window",
+    "es": "Abrir en nueva ventana"
+  },
+  {
+    "key": "cmd_files_open_window_desc",
+    "en": "Opens the selected item or current folder in a new Atlas window.",
+    "es": "Abre el elemento seleccionado o la carpeta actual en una ventana nueva de Atlas."
+  },
+  {
+    "key": "cmd_files_open_right_split_title",
+    "en": "Open In Right Split",
+    "es": "Abrir en división derecha"
+  },
+  {
+    "key": "cmd_files_open_right_split_desc",
+    "en": "Opens the selected folder in a new split to the right.",
+    "es": "Abre la carpeta seleccionada en una división a la derecha."
+  },
+  {
+    "key": "cmd_files_open_bottom_split_title",
+    "en": "Open In Bottom Split",
+    "es": "Abrir en división inferior"
+  },
+  {
+    "key": "cmd_files_open_bottom_split_desc",
+    "en": "Opens the selected folder in a new split below.",
+    "es": "Abre la carpeta seleccionada en una división abajo."
+  },
+  {
+    "key": "cmd_files_copy_path_title",
+    "en": "Copy Path",
+    "es": "Copiar ruta"
+  },
+  {
+    "key": "cmd_files_copy_desc",
+    "en": "Copies the selected items to the clipboard.",
+    "es": "Copia los elementos seleccionados al portapapeles."
+  },
+  {
+    "key": "cmd_files_cut_desc",
+    "en": "Cuts the selected items to move them.",
+    "es": "Corta los elementos seleccionados para moverlos."
+  },
+  {
+    "key": "cmd_files_paste_desc",
+    "en": "Pastes clipboard items into this folder.",
+    "es": "Pega los elementos del portapapeles en esta carpeta."
+  },
+  {
+    "key": "cmd_files_open_terminal_title",
+    "en": "Open Terminal",
+    "es": "Abrir terminal"
+  },
+  {
+    "key": "cmd_files_open_terminal_desc",
+    "en": "Opens a terminal in this folder.",
+    "es": "Abre una terminal en esta carpeta."
+  },
+  {
+    "key": "cmd_files_copy_path_desc",
+    "en": "Copies the full path of the selected item to clipboard.",
+    "es": "Copia la ruta completa del elemento seleccionado al portapapeles."
+  },
+  {
+    "key": "cmd_files_properties_title",
+    "en": "Properties",
+    "es": "Propiedades"
+  },
+  {
+    "key": "cmd_files_properties_desc",
+    "en": "Opens the properties dialog for the selected item.",
+    "es": "Abre el diálogo de propiedades del elemento seleccionado."
+  },
+  {
+    "key": "cmd_files_context_menu_title",
+    "en": "Context Menu",
+    "es": "Menú contextual"
+  },
+  {
+    "key": "cmd_files_context_menu_desc",
+    "en": "Opens the context menu for the selected item.",
+    "es": "Abre el menú contextual del elemento seleccionado."
+  },
+  {
+    "key": "profile_default_name",
+    "en": "Profile %{n}",
+    "es": "Perfil %{n}"
+  },
+  {
+    "key": "profile_copy_name",
+    "en": "%{name} copy",
+    "es": "Copia de %{name}"
+  },
+  {
+    "key": "profile_copy_name_numbered",
+    "en": "%{name} copy %{n}",
+    "es": "Copia %{n} de %{name}"
+  },
+  {
+    "key": "cmd_profile_switch_title",
+    "en": "Switch Profile: %{name}",
+    "es": "Cambiar perfil: %{name}"
+  },
+  {
+    "key": "cmd_profile_switch_desc",
+    "en": "Switches to the profile with its theme, bookmarks, and settings.",
+    "es": "Cambia al perfil con su tema, marcadores y ajustes."
+  },
+  {
+    "key": "cmd_profile_new_title",
+    "en": "New Profile",
+    "es": "Nuevo perfil"
+  },
+  {
+    "key": "cmd_profile_new_desc",
+    "en": "Creates a profile inheriting the current view, then switches to it.",
+    "es": "Crea un perfil heredando la vista actual y cambia a él."
+  },
+  {
+    "key": "cmd_profile_rename_title",
+    "en": "Rename Profile: %{name}",
+    "es": "Renombrar perfil: %{name}"
+  },
+  {
+    "key": "cmd_profile_rename_desc",
+    "en": "Renames the active profile.",
+    "es": "Renombra el perfil activo."
+  },
+  {
+    "key": "cmd_profile_delete_title",
+    "en": "Delete Profile: %{name}",
+    "es": "Eliminar perfil: %{name}"
+  },
+  {
+    "key": "cmd_profile_delete_desc",
+    "en": "Deletes the active profile and switches to another.",
+    "es": "Elimina el perfil activo y cambia a otro."
+  },
+  {
+    "key": "profile_rename_title",
+    "en": "Rename profile",
+    "es": "Renombrar perfil"
+  },
+  {
+    "key": "profile_rename_label",
+    "en": "Profile name",
+    "es": "Nombre del perfil"
+  },
+  {
+    "key": "profile_rename_cancel",
+    "en": "Cancel",
+    "es": "Cancelar"
+  },
+  {
+    "key": "profile_rename_save",
+    "en": "Save",
+    "es": "Guardar"
+  },
+  {
+    "key": "cmd_theme_switch_title",
+    "en": "Theme: %{name}",
+    "es": "Theme: %{name}"
+  },
+  {
+    "key": "cmd_theme_switch_desc",
+    "en": "Applies this theme to the active profile.",
+    "es": "Aplica este tema al perfil activo."
+  },
+  {
+    "key": "cmd_ext_icon_theme_download_title",
+    "en": "Download Icon Theme...",
+    "es": "Download Icon Theme..."
+  },
+  {
+    "key": "cmd_ext_icon_theme_download_desc",
+    "en": "Downloads a file icon theme (VSCode).",
+    "es": "Descarga un tema de iconos de archivo (VSCode)."
+  },
+  {
+    "key": "cmd_ext_icon_theme_select_title",
+    "en": "Select Icon Theme...",
+    "es": "Select Icon Theme..."
+  },
+  {
+    "key": "cmd_ext_icon_theme_select_desc",
+    "en": "Chooses the active file icon theme.",
+    "es": "Elige el tema de iconos de archivo activo."
+  },
+  {
+    "key": "cmd_sys_getting_started_title",
+    "en": "Getting Started",
+    "es": "Getting Started"
+  },
+  {
+    "key": "cmd_sys_getting_started_desc",
+    "en": "Opens the Atlas setup experience.",
+    "es": "Abre la experiencia de setup de Atlas."
+  },
+  {
+    "key": "cmd_sys_settings_title",
+    "en": "Open Settings",
+    "es": "Open Settings"
+  },
+  {
+    "key": "cmd_sys_settings_desc",
+    "en": "Opens the application settings window.",
+    "es": "Abre la ventana de ajustes del programa."
+  },
+  {
+    "key": "cmd_sys_save_session_title",
+    "en": "Save Session",
+    "es": "Guardar sesión"
+  },
+  {
+    "key": "cmd_sys_save_session_desc",
+    "en": "Persists settings, pane layout and profiles to disk now.",
+    "es": "Guarda ajustes, disposición de paneles y perfiles ahora mismo."
+  },
+  {
+    "key": "ext_manager_title",
+    "en": "Extension Manager",
+    "es": "Gestor de extensiones"
+  },
+  {
+    "key": "ext_manager_desc",
+    "en": "Browse, install, enable/disable and uninstall extensions.",
+    "es": "Navega, instala, habilita/deshabilita y desinstala extensiones."
+  },
+  {
+    "key": "ext_manager_search",
+    "en": "Search extensions...",
+    "es": "Buscar extensiones..."
+  },
+  {
+    "key": "ext_tab_installed",
+    "en": "Installed",
+    "es": "Instaladas"
+  },
+  {
+    "key": "ext_tab_marketplace",
+    "en": "Marketplace",
+    "es": "Marketplace"
+  },
+  {
+    "key": "ext_install",
+    "en": "Install",
+    "es": "Instalar"
+  },
+  {
+    "key": "ext_update",
+    "en": "Update",
+    "es": "Actualizar"
+  },
+  {
+    "key": "ext_uninstall",
+    "en": "Uninstall",
+    "es": "Desinstalar"
+  },
+  {
+    "key": "ext_reload",
+    "en": "Reload",
+    "es": "Recargar"
+  },
+  {
+    "key": "ext_install_from_file",
+    "en": "Install from file...",
+    "es": "Instalar desde archivo..."
+  },
+  {
+    "key": "ext_installing",
+    "en": "Installing...",
+    "es": "Instalando..."
+  },
+  {
+    "key": "ext_loading",
+    "en": "Loading...",
+    "es": "Cargando..."
+  },
+  {
+    "key": "ext_load_more",
+    "en": "Load more",
+    "es": "Cargar más"
+  },
+  {
+    "key": "ext_no_remote",
+    "en": "No extensions found in the marketplace.",
+    "es": "No se encontraron extensiones en el marketplace."
+  },
+  {
+    "key": "ext_no_installed",
+    "en": "No extensions installed.",
+    "es": "No hay extensiones instaladas."
+  },
+  {
+    "key": "ext_builtin_badge",
+    "en": "Built-in",
+    "es": "Integrada"
+  },
+  {
+    "key": "ext_disabled_badge",
+    "en": "Disabled",
+    "es": "Desactivada"
+  },
+  {
+    "key": "ext_prompt_run",
+    "en": "Run",
+    "es": "Ejecutar"
+  },
+  {
+    "key": "empty_folder",
+    "en": "Empty folder",
+    "es": "Carpeta vacía"
+  },
+  {
+    "key": "file_kind_folder",
+    "en": "Folder",
+    "es": "Carpeta"
+  },
+  {
+    "key": "file_kind_symlink",
+    "en": "Symlink",
+    "es": "Enlace"
+  },
+  {
+    "key": "file_kind_file",
+    "en": "File",
+    "es": "Archivo"
+  },
+  {
+    "key": "file_kind_image",
+    "en": "Image",
+    "es": "Imagen"
+  },
+  {
+    "key": "file_kind_audio",
+    "en": "Audio",
+    "es": "Audio"
+  },
+  {
+    "key": "file_kind_video",
+    "en": "Video",
+    "es": "Vídeo"
+  },
+  {
+    "key": "file_kind_code",
+    "en": "Code",
+    "es": "Código"
+  },
+  {
+    "key": "file_kind_archive",
+    "en": "Archive",
+    "es": "Comprimido"
+  },
+  {
+    "key": "file_kind_document",
+    "en": "Document",
+    "es": "Documento"
+  },
+  {
+    "key": "file_kind_spreadsheet",
+    "en": "Spreadsheet",
+    "es": "Hoja"
+  },
+  {
+    "key": "file_kind_presentation",
+    "en": "Presentation",
+    "es": "Presentación"
+  },
+  {
+    "key": "file_kind_application",
+    "en": "Application",
+    "es": "Aplicación"
+  },
+  {
+    "key": "column_name",
+    "en": "Name",
+    "es": "Nombre"
+  },
+  {
+    "key": "column_size",
+    "en": "Size",
+    "es": "Tamaño"
+  },
+  {
+    "key": "column_modified",
+    "en": "Modified",
+    "es": "Modificado"
+  },
+  {
+    "key": "column_type",
+    "en": "Type",
+    "es": "Tipo"
+  },
+  {
+    "key": "all_types",
+    "en": "All types",
+    "es": "Todos los tipos"
+  },
+  {
+    "key": "type_filter_placeholder",
+    "en": "Filter %{count} types...",
+    "es": "Filtrar %{count} tipos..."
+  },
+  {
+    "key": "miller_loading",
+    "en": "Loading…",
+    "es": "Cargando…"
+  },
+  {
+    "key": "miller_error",
+    "en": "Error",
+    "es": "Error"
+  },
+  {
+    "key": "miller_empty",
+    "en": "Empty",
+    "es": "Vacío"
+  },
+  {
+    "key": "batch_mode_find",
+    "en": "Find",
+    "es": "Buscar"
+  },
+  {
+    "key": "batch_mode_prefix",
+    "en": "Prefix",
+    "es": "Prefijo"
+  },
+  {
+    "key": "batch_mode_suffix",
+    "en": "Suffix",
+    "es": "Sufijo"
+  },
+  {
+    "key": "batch_mode_number",
+    "en": "Number",
+    "es": "Número"
+  },
+  {
+    "key": "ext_author_by",
+    "en": "by %{author}",
+    "es": "por %{author}"
+  },
+  {
+    "key": "toast_op_failed",
+    "en": "Operation failed",
+    "es": "Operación fallida"
+  },
+  {
+    "key": "op_err_gone",
+    "en": "No longer exists",
+    "es": "Ya no existe"
+  },
+  {
+    "key": "op_err_trash_unsupported",
+    "en": "Recycle Bin is not available here; use Delete permanently",
+    "es": "La papelera no está disponible aquí; usa Eliminar permanentemente"
+  },
+  {
+    "key": "op_err_permission",
+    "en": "Permission denied",
+    "es": "Permiso denegado"
+  },
+  {
+    "key": "op_err_in_use",
+    "en": "In use by another program",
+    "es": "Está en uso por otro programa"
+  },
+  {
+    "key": "op_err_disk_full",
+    "en": "Not enough disk space",
+    "es": "No hay espacio en disco"
+  },
+  {
+    "key": "op_err_path_too_long",
+    "en": "The path is too long",
+    "es": "La ruta es demasiado larga"
+  },
+  {
+    "key": "op_err_network",
+    "en": "The network location is unreachable",
+    "es": "No se puede acceder a la ubicación de red"
+  },
+  {
+    "key": "op_err_self_nested",
+    "en": "You can't copy or move a folder into itself",
+    "es": "No puedes copiar o mover una carpeta dentro de sí misma"
+  },
+  {
+    "key": "op_err_self_overwrite",
+    "en": "You can't overwrite a file with itself",
+    "es": "No puedes sobrescribir un archivo consigo mismo"
+  },
+  {
+    "key": "op_err_replace_failed",
+    "en": "Could not replace: %{detail}",
+    "es": "No se pudo reemplazar: %{detail}"
+  },
+  {
+    "key": "op_err_source_not_removed",
+    "en": "Copied, but the source could not be removed: %{detail}",
+    "es": "Se copió, pero no se pudo eliminar el origen: %{detail}"
+  },
+  {
+    "key": "op_err_disk_space",
+    "en": "Not enough disk space (%{needed} needed, %{free} free)",
+    "es": "No hay suficiente espacio en disco (se necesitan %{needed}, quedan %{free})"
+  },
+  {
+    "key": "op_err_repeated_abort",
+    "en": "Operation aborted after repeated errors",
+    "es": "Operación abortada tras errores repetidos"
+  },
+  {
+    "key": "op_err_dest_gone",
+    "en": "The destination folder “%{name}” no longer exists",
+    "es": "La carpeta de destino «%{name}» ya no existe"
+  },
+  {
+    "key": "op_cancelled",
+    "en": "Operation canceled",
+    "es": "Operación cancelada"
+  },
+  {
+    "key": "op_cancelled_partial",
+    "en": "Operation canceled (%{done} completed)",
+    "es": "Operación cancelada (%{done} completados)"
+  },
+  {
+    "key": "filename_err_empty",
+    "en": "The name can't be empty",
+    "es": "El nombre no puede estar vacío"
+  },
+  {
+    "key": "filename_err_invalid_char",
+    "en": "The name contains an invalid character: “%{ch}”",
+    "es": "El nombre contiene un carácter no válido: «%{ch}»"
+  },
+  {
+    "key": "filename_err_trailing",
+    "en": "The name can't end with a dot or a space",
+    "es": "El nombre no puede terminar en punto o espacio"
+  },
+  {
+    "key": "filename_err_reserved",
+    "en": "“%{name}” is a reserved Windows name",
+    "es": "«%{name}» es un nombre reservado de Windows"
+  },
+  {
+    "key": "op_restoring",
+    "en": "Restoring",
+    "es": "Restaurando"
+  },
+  {
+    "key": "op_emptying_bin",
+    "en": "Emptying Recycle Bin",
+    "es": "Vaciando la papelera"
+  },
+  {
+    "key": "op_err_already_exists",
+    "en": "Already exists at the destination",
+    "es": "Ya existe en el destino"
+  },
+  {
+    "key": "cmd_recycle_restore_title",
+    "en": "Restore from Recycle Bin",
+    "es": "Restaurar de la papelera"
+  },
+  {
+    "key": "cmd_recycle_restore_desc",
+    "en": "Move the selected items back to their original location",
+    "es": "Devolver los elementos seleccionados a su ubicación original"
+  },
+  {
+    "key": "cmd_recycle_purge_title",
+    "en": "Delete permanently from Recycle Bin",
+    "es": "Eliminar definitivamente de la papelera"
+  },
+  {
+    "key": "cmd_recycle_purge_desc",
+    "en": "Remove the selected recycled items forever",
+    "es": "Borrar para siempre los elementos reciclados seleccionados"
+  },
+  {
+    "key": "cmd_recycle_empty_title",
+    "en": "Empty Recycle Bin",
+    "es": "Vaciar papelera"
+  },
+  {
+    "key": "cmd_recycle_empty_desc",
+    "en": "Permanently delete everything in the Recycle Bin",
+    "es": "Eliminar definitivamente todo el contenido de la papelera"
+  },
+  {
+    "key": "op_compressing",
+    "en": "Compressing",
+    "es": "Comprimiendo"
+  },
+  {
+    "key": "cmd_files_compress_title",
+    "en": "Compress to zip",
+    "es": "Comprimir a zip"
+  },
+  {
+    "key": "cmd_files_compress_desc",
+    "en": "Create a zip archive from the selected items",
+    "es": "Crear un archivo zip con los elementos seleccionados"
+  },
+  {
+    "key": "open_with",
+    "en": "Open with",
+    "es": "Abrir con"
+  },
+  {
+    "key": "sidebar_bookmark_folders_only",
+    "en": "Only folders can be added to sidebar favorites.",
+    "es": "Solo se pueden agregar carpetas a los favoritos del sidebar."
+  },
+  {
+    "key": "dnd_intent_copy",
+    "en": "Copy here",
+    "es": "Copiar aquí"
+  },
+  {
+    "key": "dnd_intent_move",
+    "en": "Move here",
+    "es": "Mover aquí"
+  },
+  {
+    "key": "dnd_intent_trash",
+    "en": "Move to Recycle Bin",
+    "es": "Enviar a la Papelera"
+  },
+  {
+    "key": "dnd_intent_tag",
+    "en": "Assign tag",
+    "es": "Asignar etiqueta"
+  },
+  {
+    "key": "dnd_intent_bookmark",
+    "en": "Add to Favorites",
+    "es": "Añadir a Favoritos"
+  },
+  {
+    "key": "dnd_intent_stage",
+    "en": "Stage here",
+    "es": "Dejar aquí"
+  },
+  {
+    "key": "dnd_intent_blocked",
+    "en": "Cannot drop here",
+    "es": "No se puede soltar aquí"
+  },
+  {
+    "key": "op_transfer_summary",
+    "en": "%{done} completed · %{skipped} skipped · %{failed} failed",
+    "es": "%{done} completados · %{skipped} omitidos · %{failed} fallidos"
+  },
+  {
+    "key": "op_restore_complete",
+    "en": "Restored %{count} items",
+    "es": "%{count} elementos restaurados"
+  },
+  {
+    "key": "tags_assignment_complete",
+    "en": "Tag assigned to %{count} items",
+    "es": "Etiqueta asignada a %{count} elementos"
+  },
+  {
+    "key": "tags_assignment_failed",
+    "en": "Could not save the tag. Try again.",
+    "es": "No se pudo guardar la etiqueta. Vuelve a intentarlo."
+  },
+  {
+    "key": "sidebar_bookmark_remove_drop",
+    "en": "Remove from Favorites",
+    "es": "Quitar de favoritos"
+  },
+  {
+    "key": "sidebar_bookmark_removed",
+    "en": "Removed from Favorites. The folder remains in its location.",
+    "es": "Se quitó de Favoritos. La carpeta sigue en su ubicación."
+  },
+  {
+    "key": "op_results_hidden",
+    "en": "%{count} completed items are hidden by filters",
+    "es": "%{count} elementos completados están ocultos por filtros"
+  },
+  {
+    "key": "op_results_reveal",
+    "en": "Show",
+    "es": "Mostrar"
+  },
+  {
+    "key": "theme_fork",
+    "en": "Fork Theme",
+    "es": "Duplicar tema"
+  },
+  {
+    "key": "theme_active",
+    "en": "Theme: %{name}",
+    "es": "Tema: %{name}"
+  },
+  {
+    "key": "theme_editing",
+    "en": "Editing: %{name}",
+    "es": "Editando: %{name}"
+  },
+  {
+    "key": "theme_fork_description",
+    "en": "Create an editable copy of the active theme.",
+    "es": "Crea una copia editable del tema activo."
+  },
+  {
+    "key": "theme_fork_unavailable",
+    "en": "The active theme is unavailable. Select another theme and try again.",
+    "es": "El tema activo no está disponible. Elige otro tema e inténtalo de nuevo."
+  },
+  {
+    "key": "theme_save_error",
+    "en": "Could not save the theme: %{error}",
+    "es": "No se pudo guardar el tema: %{error}"
+  },
+  {
+    "key": "theme_editor_description",
+    "en": "Your copy is saved. Color changes apply when you save them.",
+    "es": "Tu copia está guardada. Los cambios de color se aplican al guardarlos."
+  },
+  {
+    "key": "theme_color_accent",
+    "en": "Accent",
+    "es": "Acento"
+  },
+  {
+    "key": "theme_color_background",
+    "en": "Window background",
+    "es": "Fondo de la ventana"
+  },
+  {
+    "key": "theme_color_foreground",
+    "en": "Text",
+    "es": "Texto"
+  },
+  {
+    "key": "theme_save",
+    "en": "Save theme",
+    "es": "Guardar tema"
+  },
+  {
+    "key": "theme_discard",
+    "en": "Discard changes",
+    "es": "Descartar cambios"
+  },
+  {
+    "key": "theme_close_editor",
+    "en": "Close editor",
+    "es": "Cerrar editor"
+  },
+  {
+    "key": "cmd_pane_left_title",
+    "en": "Focus panel to the left",
+    "es": "Enfocar panel a la izquierda"
+  },
+  {
+    "key": "cmd_pane_right_title",
+    "en": "Focus panel to the right",
+    "es": "Enfocar panel a la derecha"
+  },
+  {
+    "key": "cmd_pane_above_title",
+    "en": "Focus panel above",
+    "es": "Enfocar panel de arriba"
+  },
+  {
+    "key": "cmd_pane_below_title",
+    "en": "Focus panel below",
+    "es": "Enfocar panel de abajo"
+  },
+  {
+    "key": "cmd_pane_spatial_desc",
+    "en": "Select the nearest visible panel in this direction",
+    "es": "Seleccionar el panel visible más cercano en esta dirección"
+  },
+  {
+    "key": "cmd_pane_even_siblings_title",
+    "en": "Balance sibling panels",
+    "es": "Equilibrar paneles hermanos"
+  },
+  {
+    "key": "cmd_pane_even_siblings_desc",
+    "en": "Give equal space to panels in the current split",
+    "es": "Repartir el espacio por igual en la división actual"
+  },
+  {
+    "key": "cmd_pane_even_all_title",
+    "en": "Balance all panels",
+    "es": "Equilibrar todos los paneles"
+  },
+  {
+    "key": "cmd_pane_even_all_desc",
+    "en": "Give equal space to children of every split",
+    "es": "Repartir por igual los hijos de todas las divisiones"
+  },
+  {
+    "key": "cmd_folder_inherit_title",
+    "en": "Toggle folder view inheritance",
+    "es": "Alternar herencia de vista de carpeta"
+  },
+  {
+    "key": "cmd_folder_inherit_desc",
+    "en": "Apply this folder's view, columns and sort to subfolders",
+    "es": "Aplicar la vista, columnas y orden de esta carpeta a sus subcarpetas"
+  },
+  {
+    "key": "folder_inherit_enabled",
+    "en": "Subfolders will inherit this folder's view",
+    "es": "Las subcarpetas heredarán la vista de esta carpeta"
+  },
+  {
+    "key": "folder_inherit_disabled",
+    "en": "Subfolders will keep their own views",
+    "es": "Las subcarpetas conservarán sus propias vistas"
+  },
+  {
+    "key": "settings_character_keys",
+    "en": "When typing in a file panel",
+    "es": "Al teclear en un panel de archivos"
+  },
+  {
+    "key": "settings_type_filter",
+    "en": "Type in filter",
+    "es": "Escribir en el filtro"
+  },
+  {
+    "key": "settings_type_select",
+    "en": "Select matching item",
+    "es": "Seleccionar coincidencia"
+  },
+  {
+    "key": "settings_type_hotkey",
+    "en": "Trigger hotkey",
+    "es": "Ejecutar atajo"
+  },
+  {
+    "key": "settings_filter_sticky",
+    "en": "Keep the filter when switching folders",
+    "es": "Mantener el filtro al cambiar de carpeta"
+  },
+  {
+    "key": "breadcrumb_filter_folders",
+    "en": "Filter folders...",
+    "es": "Filtrar carpetas..."
+  },
+  {
+    "key": "footer_dirs_visible",
+    "en": "Folders listed. Click to hide.",
+    "es": "Carpetas listadas. Haz clic para ocultar."
+  },
+  {
+    "key": "footer_dirs_hidden",
+    "en": "Folders hidden by the view filter. Click to show.",
+    "es": "Carpetas ocultas por filtro de vista. Haz clic para mostrar."
+  },
+  {
+    "key": "footer_files_visible",
+    "en": "Files listed. Click to hide.",
+    "es": "Archivos listados. Haz clic para ocultar."
+  },
+  {
+    "key": "footer_files_hidden",
+    "en": "Files hidden by the view filter. Click to show.",
+    "es": "Archivos ocultos por filtro de vista. Haz clic para mostrar."
+  },
+  {
+    "key": "volume_path_updated",
+    "en": "Path automatically updated from %{from} to %{to}",
+    "es": "Ruta actualizada automáticamente de %{from} a %{to}"
+  },
+  {
+    "key": "shortcut_filename_suffix",
+    "en": "Shortcut",
+    "es": "Acceso directo"
+  },
+  {
+    "key": "shortcut_conflict",
+    "en": "Conflicts with: %{command}",
+    "es": "En conflicto con: %{command}"
+  },
+  {
+    "key": "footer_dirs",
+    "en": "%{shown}/%{total} Dirs",
+    "es": "%{shown}/%{total} Carpetas"
+  },
+  {
+    "key": "footer_files",
+    "en": "%{shown}/%{total} Files",
+    "es": "%{shown}/%{total} Archivos"
+  },
+  {
+    "key": "footer_selected_size",
+    "en": "Selected size: %{size}",
+    "es": "Tamaño seleccionado: %{size}"
+  },
+  {
+    "key": "footer_total_size",
+    "en": "Listed size: %{size}",
+    "es": "Tamaño listado: %{size}"
+  },
+  {
+    "key": "footer_listing_time",
+    "en": "Loaded in %{elapsed}",
+    "es": "Cargado en %{elapsed}"
+  },
+  {
+    "key": "cmd_paste_shortcut_title",
+    "en": "Paste shortcut",
+    "es": "Pegar acceso directo"
+  },
+  {
+    "key": "cmd_paste_shortcut_desc",
+    "en": "Create links to the files on the clipboard",
+    "es": "Crear enlaces a los archivos del portapapeles"
+  },
+  {
+    "key": "op_creating_shortcuts",
+    "en": "Creating shortcuts",
+    "es": "Creando accesos directos"
+  },
+  {
+    "key": "drop_description_move",
+    "en": "Move to %1",
+    "es": "Mover a %1"
+  },
+  {
+    "key": "drop_description_copy",
+    "en": "Copy to %1",
+    "es": "Copiar a %1"
+  },
+  {
+    "key": "preview_cloud_offline",
+    "en": "Download this cloud file to preview it",
+    "es": "Descarga este archivo de la nube para previsualizarlo"
+  },
+  {
+    "key": "settings_win_e",
+    "en": "Open Atlas with Win+E",
+    "es": "Abrir Atlas con Win+E"
+  },
+  {
+    "key": "settings_win_e_error",
+    "en": "Could not change Win+E: %{error}",
+    "es": "No se pudo cambiar Win+E: %{error}"
+  },
+  {
+    "key": "view_all_items_hidden",
+    "en": "All items are hidden by view settings",
+    "es": "Todos los elementos están ocultos por los ajustes de vista"
+  },
+  {
+    "key": "watcher_auto_refresh_disabled",
+    "en": "(Auto refresh disabled)",
+    "es": "(Actualización automática desactivada)"
+  },
+  {
+    "key": "watcher_auto_refresh_disabled_help",
+    "en": "Refresh folder. Changes in this location are refreshed manually.",
+    "es": "Actualizar carpeta. Los cambios en esta ubicación se actualizan manualmente."
+  },
+  {
+    "key": "footer_hidden_excluded",
+    "en": "Hidden and system items are excluded.",
+    "es": "Se excluyen los elementos ocultos y de sistema."
+  },
+  {
+    "key": "footer_hidden_included",
+    "en": "Hidden and system items are included.",
+    "es": "Se incluyen los elementos ocultos y de sistema."
+  },
+  {
+    "key": "convert_title",
+    "en": "Convert files",
+    "es": "Convertir archivos"
+  },
+  {
+    "key": "convert_description",
+    "en": "Convert the selection with a radial menu, preserving your originals",
+    "es": "Convertir la selección con un menú radial, sin modificar los originales"
+  },
+  {
+    "key": "convert_local_only",
+    "en": "Open a local folder to convert its files.",
+    "es": "Abre una carpeta local para convertir sus archivos."
+  },
+  {
+    "key": "convert_select",
+    "en": "Select one or more files to convert.",
+    "es": "Selecciona uno o varios archivos para convertirlos."
+  },
+  {
+    "key": "convert_close",
+    "en": "Close",
+    "es": "Cerrar"
+  },
+  {
+    "key": "convert_minimize",
+    "en": "Minimize",
+    "es": "Minimizar"
+  },
+  {
+    "key": "convert_show",
+    "en": "Show conversion",
+    "es": "Ver conversión"
+  },
+  {
+    "key": "convert_done_count",
+    "en": "%{count} created",
+    "es": "%{count} creados"
+  },
+  {
+    "key": "convert_discovering",
+    "en": "Finding local engines…",
+    "es": "Buscando motores locales…"
+  },
+  {
+    "key": "convert_previous",
+    "en": "Previous",
+    "es": "Anterior"
+  },
+  {
+    "key": "convert_next",
+    "en": "Next",
+    "es": "Siguiente"
+  },
+  {
+    "key": "convert_keep_originals",
+    "en": "Your originals are preserved.",
+    "es": "Tus originales se conservan."
+  },
+  {
+    "key": "convert_options",
+    "en": "Options",
+    "es": "Opciones"
+  },
+  {
+    "key": "convert_keys",
+    "en": "Arrows to choose · Enter to convert · Esc to close",
+    "es": "Flechas para elegir · Enter para convertir · Esc para cerrar"
+  },
+  {
+    "key": "convert_running",
+    "en": "Converting files…",
+    "es": "Convirtiendo archivos…"
+  },
+  {
+    "key": "convert_cancelling",
+    "en": "Canceling…",
+    "es": "Cancelando…"
+  },
+  {
+    "key": "convert_cancel",
+    "en": "Cancel conversion",
+    "es": "Cancelar conversión"
+  },
+  {
+    "key": "convert_cancelled",
+    "en": "Canceled",
+    "es": "Cancelado"
+  },
+  {
+    "key": "convert_background",
+    "en": "Minimize to keep working.",
+    "es": "Puedes minimizar y seguir trabajando."
+  },
+  {
+    "key": "convert_summary",
+    "en": "%{created} created · %{failed} failed · %{cancelled} canceled",
+    "es": "%{created} creados · %{failed} fallidos · %{cancelled} cancelados"
+  },
+  {
+    "key": "convert_finished",
+    "en": "Your files are ready",
+    "es": "Archivos listos"
+  },
+  {
+    "key": "convert_review",
+    "en": "Conversion results",
+    "es": "Resultados de la conversión"
+  },
+  {
+    "key": "convert_reveal",
+    "en": "Open results folder",
+    "es": "Abrir carpeta de resultados"
+  },
+  {
+    "key": "convert_again",
+    "en": "Choose another format",
+    "es": "Elegir otro formato"
+  },
+  {
+    "key": "convert_toast_starting_single",
+    "en": "Converting %{name} to .%{ext}...",
+    "es": "Convirtiendo %{name} a .%{ext}..."
+  },
+  {
+    "key": "convert_toast_starting_multi",
+    "en": "Converting %{count} files to .%{ext}...",
+    "es": "Convirtiendo %{count} archivos a .%{ext}..."
+  },
+  {
+    "key": "convert_toast_finished_single",
+    "en": "Conversion complete: %{name}",
+    "es": "Conversión completada: %{name}"
+  },
+  {
+    "key": "convert_toast_finished_multi",
+    "en": "%{count} files converted successfully",
+    "es": "%{count} archivos convertidos con éxito"
+  },
+  {
+    "key": "convert_toast_failed",
+    "en": "Conversion failed: %{error}",
+    "es": "Error en la conversión: %{error}"
+  },
+  {
+    "key": "convert_no_formats",
+    "en": "No shared output formats",
+    "es": "Sin formatos compatibles en común"
+  },
+  {
+    "key": "convert_no_formats_hint",
+    "en": "Try selecting files of the same type, or keep these files together in a ZIP.",
+    "es": "Prueba una selección del mismo tipo o guarda los archivos juntos en un ZIP."
+  },
+  {
+    "key": "convert_pack_zip",
+    "en": "Compress selection to ZIP",
+    "es": "Comprimir selección en ZIP"
+  },
+  {
+    "key": "convert_apply",
+    "en": "Convert",
+    "es": "Convertir"
+  },
+  {
+    "key": "convert_engine_needed",
+    "en": "External engine",
+    "es": "Motor externo"
+  },
+  {
+    "key": "convert_first_frame",
+    "en": "Single image: exports the first page or frame.",
+    "es": "Imagen individual: se exporta la primera página o fotograma."
+  },
+  {
+    "key": "convert_all_pages_note",
+    "en": "All pages at 300 DPI in a folder. Choosing a smaller size reduces the resolution.",
+    "es": "Todas las páginas a 300 DPI en una carpeta. Elegir un tamaño menor reduce la resolución."
+  },
+  {
+    "key": "convert_pdf_ocr_note",
+    "en": "Windows OCR on all pages. Review recognized text; preserves page breaks without rebuilding the layout. Requires an OCR language installed in Windows.",
+    "es": "OCR de Windows en todas las páginas. Revisa el texto reconocido; conserva saltos de página, sin reconstruir el diseño. Requiere un idioma OCR instalado en Windows."
+  },
+  {
+    "key": "convert_word_package_note",
+    "en": "Preserves the Word package's styles, images, tables and headers. Removes macros and digital signatures when creating DOCX.",
+    "es": "Conserva estilos, imágenes, tablas y encabezados del paquete Word. Elimina macros y firmas digitales al crear DOCX."
+  },
+  {
+    "key": "convert_first_sheet",
+    "en": "CSV and TSV export the first sheet. JSON includes every sheet.",
+    "es": "CSV y TSV exportan la primera hoja. JSON incluye todas las hojas."
+  },
+  {
+    "key": "convert_jpeg_note",
+    "en": "JPEG uses white behind transparent pixels.",
+    "es": "JPEG usa fondo blanco donde hay transparencia."
+  },
+  {
+    "key": "convert_webp_note",
+    "en": "Native WebP is lossless; the quality setting does not apply.",
+    "es": "WebP nativo sin pérdida; el ajuste de calidad no se aplica."
+  },
+  {
+    "key": "convert_pdf_text_note",
+    "en": "Preserves text without rebuilding the layout. Scanned PDFs need OCR.",
+    "es": "Conserva el texto, sin reconstruir el diseño. Un PDF escaneado necesita OCR."
+  },
+  {
+    "key": "convert_doc_text_note",
+    "en": "Exports document text without styles or images.",
+    "es": "Exporta el texto del documento, sin estilos ni imágenes."
+  },
+  {
+    "key": "convert_data_note",
+    "en": "CSV and TSV require a table; TOML cannot represent null.",
+    "es": "CSV y TSV requieren una tabla; TOML no admite valores null."
+  },
+  {
+    "key": "convert_needs",
+    "en": "Requires %{engine} installed on this computer.",
+    "es": "Necesita %{engine} instalado en este equipo."
+  },
+  {
+    "key": "convert_get_engine",
+    "en": "Get %{engine}",
+    "es": "Obtener %{engine}"
+  },
+  {
+    "key": "convert_rescan",
+    "en": "Detect engines again",
+    "es": "Volver a detectar motores"
+  },
+  {
+    "key": "convert_quality",
+    "en": "Quality",
+    "es": "Calidad"
+  },
+  {
+    "key": "convert_windows_audio_note",
+    "en": "Uses Windows codecs. MP3/AAC/M4A: up to stereo; sample rate may change. Tags and cover art are omitted.",
+    "es": "Usa codecs de Windows. MP3/AAC/M4A: hasta estéreo; puede ajustar la frecuencia. No conserva etiquetas ni carátulas."
+  },
+  {
+    "key": "convert_windows_video_note",
+    "en": "Progressive SDR MP4 with Windows H.264/AAC. First video/audio tracks, up to stereo; may deinterlace. Omits subtitles/metadata.",
+    "es": "MP4 SDR progresivo con H.264/AAC de Windows. Primera pista de vídeo/audio, hasta estéreo; puede desentrelazar. Omite subtítulos/metadatos."
+  },
+  {
+    "key": "convert_subtitle_note",
+    "en": "Keeps text and timing; omits styling and placement. LRC/SAMI without a final clear: last cue lasts 5 seconds.",
+    "es": "Conserva texto y tiempos; omite estilos y posición. LRC/SAMI sin cierre: última frase de 5 segundos."
+  },
+  {
+    "key": "convert_subtitle_linear_note",
+    "en": "LRC/SAMI require non-overlapping cues. LRC joins line breaks. Styling is omitted.",
+    "es": "LRC/SAMI requieren frases sin solaparse. LRC une los saltos de línea. Se omiten estilos."
+  },
+  {
+    "key": "convert_contacts_note",
+    "en": "Exports common contact fields. Photos, labels and custom properties remain in the original.",
+    "es": "Exporta datos de contacto comunes. Fotos, etiquetas y propiedades personalizadas permanecen en el original."
+  },
+  {
+    "key": "convert_book_note",
+    "en": "Text-based book: omits images, styling and chapter structure. Encrypted content is not converted.",
+    "es": "Libro de texto: omite imágenes, estilos y estructura de capítulos. No convierte contenido cifrado."
+  },
+  {
+    "key": "convert_pcm_note",
+    "en": "8/16/24/32-bit integer PCM: preserves samples, channels and rate. Metadata is omitted.",
+    "es": "PCM entero de 8/16/24/32 bits: conserva muestras, canales y frecuencia. Se omiten metadatos."
+  },
+  {
+    "key": "convert_flac_note",
+    "en": "Handmade lossless FLAC: 8/16/24/32-bit integer PCM, up to 8 channels. Preserves samples; omits metadata.",
+    "es": "FLAC propio sin pérdida: PCM entero de 8/16/24/32 bits, hasta 8 canales. Conserva las muestras; omite metadatos."
+  },
+  {
+    "key": "convert_opus_note",
+    "en": "Lossy audio at 48 kHz; up to 8 channels. Tags and cover art are omitted.",
+    "es": "Audio con pérdida a 48 kHz; hasta 8 canales. Se omiten etiquetas y carátulas."
+  },
+  {
+    "key": "convert_install_package",
+    "en": "Install %{engine} · %{size} · Alt+I",
+    "es": "Instalar %{engine} · %{size} · Alt+I"
+  },
+  {
+    "key": "convert_enable_package",
+    "en": "Enable %{engine} plugin · Alt+I",
+    "es": "Activar complemento de %{engine} · Alt+I"
+  },
+  {
+    "key": "convert_package_downloading",
+    "en": "Downloading %{engine} · %{amount}",
+    "es": "Descargando %{engine} · %{amount}"
+  },
+  {
+    "key": "convert_package_extracting",
+    "en": "Verifying and installing %{engine}…",
+    "es": "Verificando e instalando %{engine}…"
+  },
+  {
+    "key": "convert_package_disk",
+    "en": "Disk space after installation: %{size}",
+    "es": "Espacio después de instalar: %{size}"
+  },
+  {
+    "key": "convert_package_cancel_download",
+    "en": "Cancel download",
+    "es": "Cancelar descarga"
+  },
+  {
+    "key": "convert_package_cancel_install",
+    "en": "Cancel installation",
+    "es": "Cancelar instalación"
+  },
+  {
+    "key": "convert_package_cancelling",
+    "en": "Canceling installation…",
+    "es": "Cancelando instalación…"
+  },
+  {
+    "key": "convert_svg_pdf_note",
+    "en": "PDF contains a raster image of the SVG; vector paths are not preserved.",
+    "es": "El PDF contiene una imagen del SVG; no conserva sus trazados vectoriales."
+  },
+  {
+    "key": "convert_dimensions",
+    "en": "Maximum size",
+    "es": "Tamaño máximo"
+  },
+  {
+    "key": "convert_original",
+    "en": "Original",
+    "es": "Original"
+  },
+  {
+    "key": "convert_beside",
+    "en": "Beside each original",
+    "es": "Junto a cada original"
+  },
+  {
+    "key": "convert_folder",
+    "en": "Folder…",
+    "es": "Carpeta…"
+  },
+  {
+    "key": "convert_reset",
+    "en": "Reset",
+    "es": "Restablecer"
+  },
+  {
+    "key": "convert_options_note",
+    "en": "Size applies to images and Windows video. Existing filenames are never overwritten.",
+    "es": "El tamaño se aplica a imágenes y vídeo Windows. Los nombres existentes nunca se sobrescriben."
+  },
+  {
+    "key": "convert_engine_label",
+    "en": "Engine",
+    "es": "Motor"
+  },
+  {
+    "key": "convert_output_label",
+    "en": "Output",
+    "es": "Salida"
+  },
+  {
+    "key": "convert_destination_label",
+    "en": "Save to",
+    "es": "Guardar en"
+  },
+  {
+    "key": "convert_output_multi",
+    "en": "%{count} files · .%{ext}",
+    "es": "%{count} archivos · .%{ext}"
+  },
+  {
+    "key": "convert_keys_rings",
+    "en": "←→ rotate · ↑↓ ring · Enter convert · Esc close",
+    "es": "←→ girar · ↑↓ anillo · Enter convertir · Esc cerrar"
+  },
+  {
+    "key": "batch_inline_count",
+    "en": "%{changed} of %{count} will change",
+    "es": "%{changed} de %{count} cambiarán"
+  },
+  {
+    "key": "batch_inline_conflict",
+    "en": "Some names conflict",
+    "es": "Hay nombres en conflicto"
+  },
+  {
+    "key": "batch_hint_apply",
+    "en": "apply",
+    "es": "aplicar"
+  },
+  {
+    "key": "batch_hint_jump",
+    "en": "jump",
+    "es": "saltar"
+  },
+  {
+    "key": "batch_hint_number",
+    "en": "number",
+    "es": "numerar"
+  },
+  {
+    "key": "batch_hint_dates",
+    "en": "dates",
+    "es": "fechas"
+  },
+  {
+    "key": "batch_hint_cancel",
+    "en": "cancel",
+    "es": "cancelar"
+  },
+  {
+    "key": "cleanup_trash",
+    "en": "Move to Recycle Bin",
+    "es": "Mover a la Papelera"
+  },
+  {
+    "key": "cleanup_cat_temp",
+    "en": "Temporary files",
+    "es": "Archivos temporales"
+  },
+  {
+    "key": "cleanup_cat_browser",
+    "en": "Browser caches",
+    "es": "Cachés de navegadores"
+  },
+  {
+    "key": "cleanup_cat_crash",
+    "en": "Error reports and crash dumps",
+    "es": "Informes de errores y volcados"
+  },
+  {
+    "key": "cleanup_cat_dev",
+    "en": "Developer caches (npm, pip, yarn, cargo)",
+    "es": "Cachés de desarrollo (npm, pip, yarn, cargo)"
+  },
+  {
+    "key": "cleanup_cat_scanning",
+    "en": "Looking…",
+    "es": "Buscando…"
+  },
+  {
+    "key": "cleanup_cat_hint",
+    "en": "Files older than 7 days that apps recreate on demand. Nothing personal is included.",
+    "es": "Archivos de más de 7 días que las apps vuelven a crear solas. No incluye nada personal."
+  },
+  {
+    "key": "cleanup_clean_action",
+    "en": "Clean",
+    "es": "Limpiar"
+  },
+  {
+    "key": "cmd_sys_guide_title",
+    "en": "Feature guide",
+    "es": "Guía de funciones"
+  },
+  {
+    "key": "cmd_sys_guide_desc",
+    "en": "Learn what Atlas can do, step by step.",
+    "es": "Aprende qué puede hacer Atlas, paso a paso."
+  },
+  {
+    "key": "guide_title",
+    "en": "Atlas guide",
+    "es": "Guía de Atlas"
+  },
+  {
+    "key": "guide_try",
+    "en": "Try it now",
+    "es": "Pruébalo ahora"
+  },
+  {
+    "key": "guide_shortcut",
+    "en": "Shortcut:",
+    "es": "Atajo:"
+  },
+  {
+    "key": "guide_goto_title",
+    "en": "Find anything fast",
+    "es": "Encontrar algo rápido"
+  },
+  {
+    "key": "guide_goto_lead",
+    "en": "Jump to any folder or file by typing a few letters of its name. No clicking through folders.",
+    "es": "Salta a cualquier carpeta o archivo escribiendo unas letras de su nombre. Sin ir carpeta por carpeta."
+  },
+  {
+    "key": "guide_goto_s1",
+    "en": "Open Goto with the shortcut below, or from the Atlas menu.",
+    "es": "Abre Goto con el atajo de abajo, o desde el menú de Atlas."
+  },
+  {
+    "key": "guide_goto_s2",
+    "en": "Type part of a name. Letters do not need to be together.",
+    "es": "Escribe parte del nombre. Las letras no tienen que ir juntas."
+  },
+  {
+    "key": "guide_goto_s3",
+    "en": "Use the arrow keys to pick a result and press Enter to open it.",
+    "es": "Usa las flechas para elegir un resultado y pulsa Enter para abrirlo."
+  },
+  {
+    "key": "guide_goto_s4",
+    "en": "Press Esc to close it without doing anything.",
+    "es": "Pulsa Esc para cerrarlo sin hacer nada."
+  },
+  {
+    "key": "guide_goto_tip",
+    "en": "Tip: you can also paste a full path to go straight there.",
+    "es": "Consejo: también puedes pegar una ruta completa para ir directo."
+  },
+  {
+    "key": "guide_commands_title",
+    "en": "Do anything from the keyboard",
+    "es": "Hacer cualquier cosa con el teclado"
+  },
+  {
+    "key": "guide_commands_lead",
+    "en": "The command palette lists every action in Atlas. If you do not know where something is, search for it here.",
+    "es": "La paleta de comandos lista todas las acciones de Atlas. Si no sabes dónde está algo, búscalo aquí."
+  },
+  {
+    "key": "guide_commands_s1",
+    "en": "Open the palette with the shortcut below.",
+    "es": "Abre la paleta con el atajo de abajo."
+  },
+  {
+    "key": "guide_commands_s2",
+    "en": "Type what you want: \"grid\", \"split\", \"theme\", \"hidden\".",
+    "es": "Escribe lo que quieres: \"grid\", \"split\", \"theme\", \"hidden\"."
+  },
+  {
+    "key": "guide_commands_s3",
+    "en": "Press Enter to run it. The shortcut of each command is shown on the right.",
+    "es": "Pulsa Enter para ejecutarlo. El atajo de cada comando aparece a la derecha."
+  },
+  {
+    "key": "guide_commands_s4",
+    "en": "In Settings you can change the shortcut of almost any command.",
+    "es": "En Ajustes puedes cambiar el atajo de casi cualquier comando."
+  },
+  {
+    "key": "guide_commands_tip",
+    "en": "Tip: this is the fastest way to learn Atlas. Browse the list once.",
+    "es": "Consejo: es la forma más rápida de aprender Atlas. Recorre la lista una vez."
+  },
+  {
+    "key": "guide_views_title",
+    "en": "Change how files look",
+    "es": "Cambiar cómo se ven los archivos"
+  },
+  {
+    "key": "guide_views_lead",
+    "en": "Each pane can show its files in the way that suits the folder: photos as thumbnails, documents as a detailed list.",
+    "es": "Cada panel puede mostrar sus archivos como mejor le venga a la carpeta: fotos en miniaturas, documentos en lista detallada."
+  },
+  {
+    "key": "guide_views_s1",
+    "en": "Open the command palette and type \"View\".",
+    "es": "Abre la paleta de comandos y escribe \"View\"."
+  },
+  {
+    "key": "guide_views_s2",
+    "en": "Choose Details, List, Thumbnails, Columns (Miller) or Tree.",
+    "es": "Elige Detalles, Lista, Miniaturas, Columnas (Miller) o Árbol."
+  },
+  {
+    "key": "guide_views_s3",
+    "en": "Use \"Group by\" in the palette to group by date, size, type and more.",
+    "es": "Usa \"Group by\" en la paleta para agrupar por fecha, tamaño, tipo y más."
+  },
+  {
+    "key": "guide_views_s4",
+    "en": "Toggle the Inspector to preview the selected file next to the list.",
+    "es": "Activa el Inspector para previsualizar el archivo seleccionado junto a la lista."
+  },
+  {
+    "key": "guide_views_tip",
+    "en": "Tip: each folder can remember its own view.",
+    "es": "Consejo: cada carpeta puede recordar su propia vista."
+  },
+  {
+    "key": "guide_panes_title",
+    "en": "Work in several places at once",
+    "es": "Trabajar en varios sitios a la vez"
+  },
+  {
+    "key": "guide_panes_lead",
+    "en": "Split the window into panes and tabs to compare folders or move files between them.",
+    "es": "Divide la ventana en paneles y pestañas para comparar carpetas o mover archivos entre ellas."
+  },
+  {
+    "key": "guide_panes_s1",
+    "en": "Run \"Split Horizontal\" or \"Split Vertical\" from the command palette.",
+    "es": "Ejecuta \"Split Horizontal\" o \"Split Vertical\" desde la paleta de comandos."
+  },
+  {
+    "key": "guide_panes_s2",
+    "en": "Open folders in each pane. Click a pane to focus it.",
+    "es": "Abre carpetas en cada panel. Haz clic en un panel para enfocarlo."
+  },
+  {
+    "key": "guide_panes_s3",
+    "en": "Drag files from one pane to another to copy or move them.",
+    "es": "Arrastra archivos de un panel a otro para copiarlos o moverlos."
+  },
+  {
+    "key": "guide_panes_s4",
+    "en": "Use tabs inside a pane to keep more folders at hand.",
+    "es": "Usa las pestañas dentro de un panel para tener más carpetas a mano."
+  },
+  {
+    "key": "guide_panes_tip",
+    "en": "Tip: close a pane and the others grow to fill the space.",
+    "es": "Consejo: al cerrar un panel, los demás crecen para ocupar el espacio."
+  },
+  {
+    "key": "guide_convert_title",
+    "en": "Convert a file to another format",
+    "es": "Convertir un archivo a otro formato"
+  },
+  {
+    "key": "guide_convert_lead",
+    "en": "Turn images, audio, video and documents into other formats without leaving Atlas.",
+    "es": "Convierte imágenes, audio, vídeo y documentos a otros formatos sin salir de Atlas."
+  },
+  {
+    "key": "guide_convert_s1",
+    "en": "Select one or more files.",
+    "es": "Selecciona uno o más archivos."
+  },
+  {
+    "key": "guide_convert_s2",
+    "en": "Open Convert with the shortcut below, or from the right-click menu.",
+    "es": "Abre Convert con el atajo de abajo, o desde el menú contextual."
+  },
+  {
+    "key": "guide_convert_s3",
+    "en": "Choose the output format and options.",
+    "es": "Elige el formato de salida y las opciones."
+  },
+  {
+    "key": "guide_convert_s4",
+    "en": "Start the conversion. The result is saved next to the original.",
+    "es": "Inicia la conversión. El resultado se guarda junto al original."
+  },
+  {
+    "key": "guide_convert_tip",
+    "en": "Tip: some formats need an optional engine, which Atlas offers to install.",
+    "es": "Consejo: algunos formatos necesitan un motor opcional, que Atlas te ofrece instalar."
+  },
+  {
+    "key": "guide_analyze_title",
+    "en": "See what is using your disk",
+    "es": "Ver qué ocupa tu disco"
+  },
+  {
+    "key": "guide_analyze_lead",
+    "en": "Find the biggest folders and temporary files on a drive and free up space safely.",
+    "es": "Encuentra las carpetas más grandes y los archivos temporales de una unidad y libera espacio con seguridad."
+  },
+  {
+    "key": "guide_analyze_s1",
+    "en": "Right-click a drive in the sidebar.",
+    "es": "Haz clic derecho en una unidad de la barra lateral."
+  },
+  {
+    "key": "guide_analyze_s2",
+    "en": "Choose \"Analyze and free space…\".",
+    "es": "Elige \"Analizar y liberar espacio…\"."
+  },
+  {
+    "key": "guide_analyze_s3",
+    "en": "Explore the map: the area of each block is its size. Double-click to go deeper.",
+    "es": "Explora el mapa: el área de cada bloque es su tamaño. Doble clic para entrar."
+  },
+  {
+    "key": "guide_analyze_s4",
+    "en": "Review the suggested temporary files before anything is removed.",
+    "es": "Revisa los temporales sugeridos antes de que se elimine nada."
+  },
+  {
+    "key": "guide_analyze_tip",
+    "en": "Tip: nothing is deleted without your review.",
+    "es": "Consejo: no se borra nada sin tu revisión."
+  },
+  {
+    "key": "guide_vault_title",
+    "en": "Protect a folder with a password",
+    "es": "Proteger una carpeta con contraseña"
+  },
+  {
+    "key": "guide_vault_lead",
+    "en": "Lock a folder so its contents are unreadable without the password.",
+    "es": "Bloquea una carpeta para que su contenido sea ilegible sin la contraseña."
+  },
+  {
+    "key": "guide_vault_s1",
+    "en": "Right-click the folder you want to protect.",
+    "es": "Haz clic derecho en la carpeta que quieres proteger."
+  },
+  {
+    "key": "guide_vault_s2",
+    "en": "Choose \"Protect with password…\" and set a password.",
+    "es": "Elige \"Proteger con contraseña…\" y define una contraseña."
+  },
+  {
+    "key": "guide_vault_s3",
+    "en": "To open it again, right-click it and choose \"Unlock…\".",
+    "es": "Para abrirla de nuevo, clic derecho y \"Desbloquear…\"."
+  },
+  {
+    "key": "guide_vault_s4",
+    "en": "Keep your password safe: if it is lost, the folder cannot be recovered.",
+    "es": "Guarda bien tu contraseña: si la pierdes, la carpeta no se puede recuperar."
+  },
+  {
+    "key": "guide_vault_tip",
+    "en": "Tip: you can choose which profiles can see the protected folder.",
+    "es": "Consejo: puedes elegir qué perfiles ven la carpeta protegida."
+  },
+  {
+    "key": "guide_tags_title",
+    "en": "Organize with tags",
+    "es": "Organizar con etiquetas"
+  },
+  {
+    "key": "guide_tags_lead",
+    "en": "Tags label files wherever they are, so you can find them together later.",
+    "es": "Las etiquetas marcan archivos estén donde estén, para encontrarlos juntos después."
+  },
+  {
+    "key": "guide_tags_s1",
+    "en": "In the sidebar, open the Tags section and create a tag.",
+    "es": "En la barra lateral, abre la sección Etiquetas y crea una."
+  },
+  {
+    "key": "guide_tags_s2",
+    "en": "Select files and open the tag picker. Type a name to create or toggle a tag.",
+    "es": "Selecciona archivos y abre el selector de etiquetas. Escribe un nombre para crear o alternar una."
+  },
+  {
+    "key": "guide_tags_s3",
+    "en": "Click a tag in the sidebar to see every file that has it.",
+    "es": "Haz clic en una etiqueta de la barra lateral para ver todos los archivos que la tienen."
+  },
+  {
+    "key": "guide_tags_s4",
+    "en": "Rename or delete a tag from its right-click menu.",
+    "es": "Renombra o elimina una etiqueta desde su menú contextual."
+  },
+  {
+    "key": "guide_tags_tip",
+    "en": "Tip: a file can have many tags.",
+    "es": "Consejo: un archivo puede tener muchas etiquetas."
+  },
+  {
+    "key": "guide_cloud_title",
+    "en": "Use your cloud drives",
+    "es": "Usar tus unidades en la nube"
+  },
+  {
+    "key": "guide_cloud_lead",
+    "en": "Browse and copy files to and from cloud services as if they were folders.",
+    "es": "Explora y copia archivos desde y hacia servicios en la nube como si fueran carpetas."
+  },
+  {
+    "key": "guide_cloud_s1",
+    "en": "In the sidebar, open the Network section.",
+    "es": "En la barra lateral, abre la sección Red."
+  },
+  {
+    "key": "guide_cloud_s2",
+    "en": "Choose \"Add cloud drive\" and pick your provider.",
+    "es": "Elige \"Agregar nube\" y selecciona tu proveedor."
+  },
+  {
+    "key": "guide_cloud_s3",
+    "en": "Sign in when asked. The drive then appears in the sidebar.",
+    "es": "Inicia sesión cuando se pida. La unidad aparece luego en la barra lateral."
+  },
+  {
+    "key": "guide_cloud_s4",
+    "en": "Drag files between the cloud and your computer. Progress shows in the transfers bar.",
+    "es": "Arrastra archivos entre la nube y tu equipo. El progreso se ve en la barra de transferencias."
+  },
+  {
+    "key": "guide_cloud_tip",
+    "en": "Tip: your credentials stay on this computer.",
+    "es": "Consejo: tus credenciales se quedan en este equipo."
+  },
+  {
+    "key": "guide_themes_title",
+    "en": "Make Atlas yours",
+    "es": "Personalizar Atlas"
+  },
+  {
+    "key": "guide_themes_lead",
+    "en": "Change the theme and the file icons, per profile.",
+    "es": "Cambia el tema y los iconos de archivo, por perfil."
+  },
+  {
+    "key": "guide_themes_s1",
+    "en": "Open Settings with the shortcut below.",
+    "es": "Abre Ajustes con el atajo de abajo."
+  },
+  {
+    "key": "guide_themes_s2",
+    "en": "Pick a theme. Each profile keeps its own.",
+    "es": "Elige un tema. Cada perfil guarda el suyo."
+  },
+  {
+    "key": "guide_themes_s3",
+    "en": "Use \"Select Icon Theme…\" in the command palette to change file icons.",
+    "es": "Usa \"Select Icon Theme…\" en la paleta de comandos para cambiar los iconos."
+  },
+  {
+    "key": "guide_themes_s4",
+    "en": "Use \"Download Icon Theme…\" to get more icon sets.",
+    "es": "Usa \"Download Icon Theme…\" para conseguir más sets de iconos."
+  },
+  {
+    "key": "guide_themes_tip",
+    "en": "Tip: you can reopen the first-run setup any time from the palette: \"Getting Started\".",
+    "es": "Consejo: puedes reabrir el asistente inicial cuando quieras desde la paleta: \"Getting Started\"."
+  },
+  {
+    "key": "guide_open_link",
+    "en": "Open the full feature guide",
+    "es": "Abrir la guía completa de funciones"
+  }
+]

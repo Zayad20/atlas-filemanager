@@ -209,8 +209,19 @@ pub mod polychrome_sprite {
     }
 
     pub fn polychrome_color(sprite: PolychromeSprite, tile_position: Vec2f) -> Vec4f {
+        // Keep the bilinear footprint inside the tile: atlas tiles have no gutter, so
+        // edge fragments would otherwise blend in whatever neighbouring tile is packed
+        // next to this one (a stray line along the sprite's edge, intermittently).
+        let atlas_size = texture_dimensions(POLYCHROME_TEXTURE);
+        let texture_size = vec2f(atlas_size.x as f32, atlas_size.y as f32);
+        let tile_origin = vec2f(sprite.tile.bounds.origin.x as f32, sprite.tile.bounds.origin.y as f32);
+        let tile_size = vec2f(sprite.tile.bounds.size.x as f32, sprite.tile.bounds.size.y as f32);
+        let half_texel = vec2f(0.5, 0.5);
+        let tile_min = (tile_origin + half_texel) / texture_size;
+        let tile_max = (tile_origin + tile_size - half_texel) / texture_size;
+        let clamped_position = min(max(tile_position, tile_min), tile_max);
         let sample =
-            texture_sample_level(POLYCHROME_TEXTURE, POLYCHROME_SAMPLER, tile_position, 0.0);
+            texture_sample_level(POLYCHROME_TEXTURE, POLYCHROME_SAMPLER, clamped_position, 0.0);
         let grayscale = dot(sample.rgb(), LINEAR_RGB_LUMA_WEIGHTS);
         select(
             sample,

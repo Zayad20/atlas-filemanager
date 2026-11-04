@@ -1,0 +1,1 @@
+Snabb filhanterare med flikar, dubbla fönster, blixtsnabb sökning, diskrensning och integritet.

@@ -1,0 +1,19 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "@cloudflare/kv-asset-handler",
+  "version": "0.5.0",
+  "license": "MIT OR Apache-2.0",
+  "author": "wrangler@cloudflare.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cloudflare/workers-sdk.git",
+    "directory": "packages/kv-asset-handler"
+  },
+  "homepage": "https://github.com/cloudflare/workers-sdk#readme"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: 635bf6580f8cd6fab399627da52f18c5a4abb8038e2a7a21ba382a7c24702f73

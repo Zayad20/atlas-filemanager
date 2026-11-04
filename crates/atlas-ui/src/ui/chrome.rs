@@ -27,6 +27,9 @@ use gpui_component::{h_flex, v_flex, ActiveTheme, ElementExt, Icon, Sizable as _
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+/// Shared height of the three floating capsules (filter, branch, controls).
+const PILL_HEIGHT: f32 = 30.;
+
 impl App {
     #[allow(dead_code)]
     pub(crate) fn render_floating_search_pill(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -115,11 +118,19 @@ impl App {
                 !self.state.settings.disable_animations && !cx.reduce_motion()));
         }
         if watcher_failed {
-            tools = tools.child(div().id(SharedString::from(format!("watcher-disabled-{}", pane_id.0)))
-                .text_xs().text_color(muted).px_1()
-                .child(rust_i18n::t!("watcher_auto_refresh_disabled").into_owned())
-                .tooltip(|window, cx| gpui_component::tooltip::Tooltip::new(
-                    rust_i18n::t!("watcher_auto_refresh_disabled_help").into_owned()).build(window, cx)));
+            let app = view.clone();
+            tools = tools.child(gpui_component::button::Button::new(
+                SharedString::from(format!("watcher-refresh-{}", pane_id.0)))
+                .ghost().small().icon(Icon::empty().path(AtlasIcon::ArrowClockwise.path()))
+                .tooltip(rust_i18n::t!("watcher_auto_refresh_disabled_help").into_owned())
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, _, cx| {
+                    app.update(cx, |this, cx| {
+                        this.process_actions(vec![Action::Refresh(pane_id)]);
+                        this.notify_all_panes(cx);
+                        cx.notify();
+                    });
+                }));
         }
         for (id, title, icon) in commands {
             let app = view.clone();
@@ -501,7 +512,7 @@ impl App {
             self.refresh_search_in_place(pane_id);
         }
 
-        let (active, recursive, status, count, error) = self
+        let (active, _recursive, status, count, error) = self
             .state
             .tab_states
             .get_mut(&pane_id)
@@ -515,12 +526,6 @@ impl App {
                 )
             })
             .unwrap_or_default();
-        let selected_count = self
-            .state
-            .tab_states
-            .get(&pane_id)
-            .map(|ts| ts.selected_entries(&self.tab_data_for(pane_id).map(|tab| tab.view_mode.clone()).unwrap_or_default()).len())
-            .unwrap_or_default();
         let filtering = active && !value.trim().is_empty();
         let is_glass = self.state.profiles.active().theme.ends_with(" Glass");
         let controls = control_colors(
@@ -532,7 +537,7 @@ impl App {
         } else {
             controls.surface
         };
-        let (border, muted, fg, accent, accent_fg) = {
+        let (border, muted, _fg, accent, accent_fg) = {
             let t = cx.theme();
             (
                 t.border,
@@ -603,7 +608,6 @@ impl App {
 
         // ── Left pill: fuzzy filter (lone magnifier until active) ──
         let filter_pill: AnyElement = if active {
-            let toggle_view = view.clone();
             let close_view = view.clone();
             h_flex()
                 .id(SharedString::from(format!("filter-pill-{}", pane_id.0)))
@@ -611,10 +615,10 @@ impl App {
                 .bottom_2()
                 .left_2()
                 .px_2()
-                .py_1()
+                .h(crate::ui::rem_px(PILL_HEIGHT))
                 .gap_1()
                 .items_center()
-                .rounded_lg()
+                .rounded_xl()
                 .border_1()
                 .border_color(if filtering {
                     accent.opacity(0.8)
@@ -664,40 +668,26 @@ impl App {
                     if filtering { accent } else { muted },
                     windows_theme,
                 ))
-                .child(
-                    div()
-                        .w(crate::ui::rem_px(180.))
-                        .child(crate::ui::text_input::flat(&input).xsmall()),
-                )
-                .child(
-                    div()
-                        .id(SharedString::from(format!("filter-rec-{}", pane_id.0)))
-                        .p(crate::ui::rem_px(3.))
-                        .rounded_md()
-                        .cursor_pointer()
-                        .bg(controls.hover.opacity(0.0))
-                        .when(recursive, |s| s.bg(accent))
-                        .motion_feedback()
-                        .when(!recursive, |s| s.hover(move |s| s.bg(controls.hover)))
-                        .child(theme_icon(
-                            AtlasIcon::TreeStructure,
-                            14.0,
-                            if recursive { accent_fg } else { muted },
-                            windows_theme,
-                        ))
-                        .tooltip(|window, cx| {
-                            gpui_component::tooltip::Tooltip::new(
-                                rust_i18n::t!("search_subfolders").into_owned(),
+                .child({
+                    let field = div()
+                        .overflow_hidden()
+                        .child(div().w(crate::ui::rem_px(180.)).child(crate::ui::text_input::flat(&input).xsmall()));
+                    // The capsule grows out of the lone magnifier when it opens.
+                    if self.state.settings.disable_animations {
+                        field.w(crate::ui::rem_px(180.)).into_any_element()
+                    } else {
+                        field
+                            .with_animation(
+                                SharedString::from(format!("filter-open-{}", pane_id.0)),
+                                crate::ui::motion::animation(crate::ui::motion::MICRO_MS * 2),
+                                |this, t| {
+                                    let t = 1.0 - (1.0 - t).powi(3);
+                                    this.w(crate::ui::rem_px(180. * t)).opacity(t)
+                                },
                             )
-                            .build(window, cx)
-                        })
-                        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                            toggle_view.update(cx, |this, cx| {
-                                this.process_actions(vec![Action::ToggleSearchInSubfolders]);
-                                cx.notify();
-                            });
-                        }),
-                )
+                            .into_any_element()
+                    }
+                })
                 .child({
                     let branch_view_action = view.clone();
                     div()
@@ -769,10 +759,10 @@ impl App {
                 .bottom_2()
                 .left_2()
                 .px_1()
-                .py(crate::ui::rem_px(2.))
-                .gap(crate::ui::rem_px(2.))
+                .h(crate::ui::rem_px(PILL_HEIGHT))
+                .gap_1()
                 .items_center()
-                .rounded_full()
+                .rounded_xl()
                 .border_1()
                 .border_color(controls.border)
                 .bg(pill_surface)
@@ -783,7 +773,7 @@ impl App {
                     div()
                         .id(SharedString::from(format!("filter-btn-search-{}", pane_id.0)))
                         .p(crate::ui::rem_px(4.))
-                        .rounded_full()
+                        .rounded_md()
                         .cursor_pointer()
                         .motion_feedback()
                         .hover(move |s| s.bg(controls.hover))
@@ -821,7 +811,7 @@ impl App {
                     div()
                         .id(SharedString::from(format!("filter-btn-branch-{}", pane_id.0)))
                         .p(crate::ui::rem_px(4.))
-                        .rounded_full()
+                        .rounded_md()
                         .cursor_pointer()
                         .motion_feedback()
                         .when(is_branch_view, |s| s.bg(accent))
@@ -851,28 +841,16 @@ impl App {
 
         // ── Right pill: visibility toggles + folders-first + view selector ──
         let pane_mode = self.tab_data_for(pane_id).map(|tab| tab.view_mode.clone()).unwrap_or_default();
-        let (counts, listing_elapsed, selected_bytes) = self.state.tab_states.get_mut(&pane_id).map(|tab| {
+        let (counts, listing_elapsed) = self.state.tab_states.get_mut(&pane_id).map(|tab| {
             tab.refresh_miller_visibility();
             let counts = if pane_mode == ViewMode::Miller {
                 tab.miller.columns.get(tab.miller.focused).map_or(Default::default(), |column|
                     column.visible_counts(&tab.filter, tab.show_files, tab.show_folders))
             } else { flat_counts };
-            let bytes: u128 = tab.selected_entries(&pane_mode).into_iter()
-                .filter_map(|entry| entry.size()).map(u128::from).sum();
-            (counts, tab.listing_elapsed, bytes)
+            (counts, tab.listing_elapsed)
         }).unwrap_or_default();
-        let byte_total = if selected_count > 0 { selected_bytes } else { counts.bytes_shown };
-        let footer_width = self.pane_layout_bounds.get(&pane_id).map_or(800.0, |b| f32::from(b.size.width));
-        let footer_zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
-        let wide_footer = footer_width >= 720.0 * footer_zoom;
-        let folder_label = if footer_width >= 480.0 * footer_zoom {
-            rust_i18n::t!("footer_dirs", shown = counts.folders_shown, total = counts.folders_total).to_string()
-        } else { format!("{}/{}", counts.folders_shown, counts.folders_total) };
-        let file_label = if footer_width >= 480.0 * footer_zoom {
-            rust_i18n::t!("footer_files", shown = counts.files_shown, total = counts.files_total).to_string()
-        } else { format!("{}/{}", counts.files_shown, counts.files_total) };
-        let bytes_tooltip = atlas_core::util::display::format_exact_bytes(byte_total,
-            if rust_i18n::locale().starts_with("es") { '.' } else { ',' });
+        let folder_label = counts.folders_shown.to_string();
+        let file_label = counts.files_shown.to_string();
         let tbtn = |id: String,
                     glyph: AtlasIcon,
                     on: bool,
@@ -887,13 +865,14 @@ impl App {
                 .rounded_md()
                 .cursor_pointer()
                 .bg(controls.hover.opacity(0.0))
+                .when(on, |s| s.bg(accent.opacity(0.12)))
                 .motion_feedback()
                 .hover(move |s| s.bg(controls.hover))
                 .active(move |s| s.bg(controls.pressed))
                 .child(theme_icon(
                     glyph,
                     14.0,
-                    if on { on_color } else { controls.muted },
+                    if on { on_color } else { controls.foreground },
                     windows_theme,
                 ))
                 .tooltip(move |window, cx| {
@@ -932,7 +911,7 @@ impl App {
             let slider = cx.new(|_| {
                 SliderState::new()
                     .min(0.0)
-                    .max(22.0)
+                    .max(23.0)
                     .step(1.0)
                     .default_value(view_slider_value)
             });
@@ -944,7 +923,7 @@ impl App {
                         SliderEvent::Change(value) | SliderEvent::Release(value) => value.end(),
                     }
                     .round()
-                    .clamp(0.0, 22.0);
+                    .clamp(0.0, 23.0);
                     if this.set_pane_view_from_slider_value(pane_id, value) {
                         this.notify_pane(pane_id, cx);
                     }
@@ -969,7 +948,7 @@ impl App {
         )))
         .ghost()
         .xsmall()
-        .child(theme_icon(view_icon, 14.0, controls.muted, windows_theme))
+        .child(theme_icon(view_icon, 14.0, controls.foreground, windows_theme))
         .tooltip(format!("{} - Ctrl+scroll", view_label))
         // Anchored to the bottom so the menu opens upward, above the icon.
         .dropdown_menu_with_anchor(
@@ -991,16 +970,20 @@ impl App {
                                    view: Entity<App>,
                                    slider: Entity<SliderState>| {
                             h_flex()
+                                .id(SharedString::from(format!("view-mode-row-{}-{mode:?}", pane_id.0)))
                                 .gap_1()
                                 .items_center()
+                                .cursor_pointer()
                                 .rounded_md()
                                 .px_2()
                                 .h(px(24.0))
+                                .motion_feedback()
+                                .hover(move |this| this.bg(controls.hover))
                                 .when(active, |this| this.bg(accent.opacity(0.14)))
                                 .child(theme_icon(
                                     glyph,
                                     14.0,
-                                    if active { accent } else { muted },
+                                    if active { accent } else { controls.foreground },
                                     windows_theme,
                                 ))
                                 .child(
@@ -1051,19 +1034,20 @@ impl App {
                                         view.clone(),
                                         slider.clone(),
                                     ))
+                                    .child(div().h(px(1.0)).mx_1().bg(border.opacity(0.35)))
+                                    .child(row(
+                                        AtlasIcon::Grid,
+                                        rust_i18n::t!("view_grid").into_owned(),
+                                        ViewMode::Grid,
+                                        active_mode == ViewMode::Grid,
+                                        view.clone(),
+                                        slider.clone(),
+                                    ))
                                     .child(row(
                                         AtlasIcon::List,
                                         rust_i18n::t!("view_list").into_owned(),
                                         ViewMode::List,
                                         active_mode == ViewMode::List,
-                                        view.clone(),
-                                        slider.clone(),
-                                    ))
-                                    .child(row(
-                                        AtlasIcon::Details,
-                                        rust_i18n::t!("view_details").into_owned(),
-                                        ViewMode::Details,
-                                        active_mode == ViewMode::Details,
                                         view.clone(),
                                         slider.clone(),
                                     ))
@@ -1076,10 +1060,10 @@ impl App {
                                         slider.clone(),
                                     ))
                                     .child(row(
-                                        AtlasIcon::Grid,
-                                        rust_i18n::t!("view_grid").into_owned(),
-                                        ViewMode::Grid,
-                                        active_mode == ViewMode::Grid,
+                                        AtlasIcon::Details,
+                                        rust_i18n::t!("view_details").into_owned(),
+                                        ViewMode::Details,
+                                        active_mode == ViewMode::Details,
                                         view.clone(),
                                         slider.clone(),
                                     )),
@@ -1101,51 +1085,73 @@ impl App {
 
         let focus_view = view.clone();
         let order_click_view = view.clone();
-        let order_menu_view = view.clone();
-        let order_button = gpui_component::button::DropdownButton::new(
-            SharedString::from(format!("folder-order-{}", pane_id.0)))
-            .ghost().xsmall()
-            .tooltip(rust_i18n::t!("folder_order_choose").into_owned())
-            .button(gpui_component::button::Button::new(SharedString::from(format!("folder-order-cycle-{}", pane_id.0)))
-                .ghost().xsmall()
-                .child(theme_icon(AtlasIcon::SortAscending, 14.0, accent, windows_theme))
-                .tooltip(folder_order.label())
-                .on_click(move |_, _, cx| {
-                    order_click_view.update(cx, |this, cx| {
-                        this.activate_tab(pane_id);
-                        this.process_actions([Action::ToggleFoldersFirst(pane_id)]);
-                        this.notify_pane(pane_id, cx);
-                        cx.notify();
-                    });
-                }))
-            .dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |mut menu, _, cx| {
-                let active = order_menu_view.read(cx).tab_data_for(pane_id)
-                    .map(|pane| pane.folder_order).unwrap_or_default();
-                for order in atlas_model::pane::FolderOrder::ALL {
-                    let view = order_menu_view.clone();
-                    menu = menu.item(PopupMenuItem::new(order.label()).checked(active == order)
-                        .on_click(move |_, _, cx| {
-                            view.update(cx, |this, cx| {
-                                this.activate_tab(pane_id);
-                                this.process_actions([Action::SetFolderOrder(pane_id, order)]);
-                                this.notify_pane(pane_id, cx);
-                                cx.notify();
-                            });
-                        }));
-                }
-                menu
+        let animate_order = !self.state.settings.disable_animations;
+        let order_on = folder_order != atlas_model::pane::FolderOrder::default();
+        let order_id = format!("folder-order-{}", pane_id.0);
+        let order_icon = div()
+            .child(theme_icon(
+                AtlasIcon::SortAscending,
+                14.0,
+                if order_on { accent } else { controls.foreground },
+                windows_theme,
+            ));
+        // Restarts on every state change (the animation id carries the order), so the
+        // glyph slides in from below each time the cycle advances.
+        let order_icon = if animate_order {
+            order_icon
+                .with_animation(
+                    SharedString::from(format!("{order_id}-{folder_order:?}")),
+                    crate::ui::motion::animation(crate::ui::motion::MICRO_MS),
+                    |this, t| this.opacity(0.35 + 0.65 * t).mt(px(5.0 * (1.0 - t))),
+                )
+                .into_any_element()
+        } else {
+            order_icon.into_any_element()
+        };
+        let order_tip = format!("{}
+{}", rust_i18n::t!("folder_order_choose"), rust_i18n::t!(folder_order.label_key()));
+        let order_button = div()
+            .id(SharedString::from(order_id))
+            .flex().items_center()
+            .p(crate::ui::rem_px(4.))
+            .rounded_md()
+            .cursor_pointer()
+            .overflow_hidden()
+            .bg(controls.hover.opacity(0.0))
+            .when(order_on, |s| s.bg(accent.opacity(0.12)))
+            .motion_feedback()
+            .hover(move |s| s.bg(controls.hover))
+            .active(move |s| s.bg(controls.pressed))
+            .child(order_icon)
+            .tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(order_tip.clone()).build(window, cx)
+            })
+            .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                order_click_view.update(cx, |this, cx| {
+                    this.activate_tab(pane_id);
+                    this.process_actions([Action::ToggleFoldersFirst(pane_id)]);
+                    this.notify_pane(pane_id, cx);
+                    cx.notify();
+                });
             });
-        let animate_selection_badge = !self.state.settings.disable_animations;
+        let mut summary = rust_i18n::t!("footer_total_size",
+            size = atlas_core::util::display::format_size(counts.bytes_shown.min(u128::from(u64::MAX)) as u64)).to_string();
+        if let Some(elapsed) = listing_elapsed {
+            let elapsed = if elapsed.as_secs_f64() < 1.0 { format!("{} ms", elapsed.as_millis()) }
+                else { format!("{:.2} s", elapsed.as_secs_f64()) };
+            summary.push('\n');
+            summary.push_str(&rust_i18n::t!("footer_listing_time", elapsed = elapsed));
+        }
         let controls_pill = h_flex()
             .id(SharedString::from(format!("controls-pill-{}", pane_id.0)))
             .absolute()
             .bottom_2()
             .right_2()
             .px_1()
-            .py(crate::ui::rem_px(3.))
+            .h(crate::ui::rem_px(PILL_HEIGHT))
             .gap_1()
             .items_center()
-            .rounded_lg()
+            .rounded_xl()
             .border_1()
             .border_color(controls.border)
             .bg(pill_surface)
@@ -1159,51 +1165,14 @@ impl App {
                     this.activate_tab(pane_id);
                 });
             })
-            .children(listing_elapsed.map(|elapsed| div().text_xs().text_color(muted).px_1().child(
-                if elapsed.as_secs_f64() < 1.0 { format!("{} ms", elapsed.as_millis()) }
-                else { format!("{:.2} s", elapsed.as_secs_f64()) })))
-            .when(wide_footer, |pill| pill.child(div().id(SharedString::from(format!("footer-bytes-{}", pane_id.0)))
-                .px_1().text_xs().text_color(muted)
-                .child(atlas_core::util::display::format_size(byte_total.min(u128::from(u64::MAX)) as u64))
-                .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(bytes_tooltip.clone()).build(window, cx))))
-            .children((selected_count > 1).then(|| {
-                let badge = h_flex()
-                    .id(SharedString::from(format!("selection-count-{}", pane_id.0)))
-                    .gap_1()
-                    .items_center()
-                    .px_1()
-                    .child(theme_icon(AtlasIcon::Grid, 14.0, accent, windows_theme))
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(fg)
-                            .child(selected_count.to_string()),
-                    );
-                if animate_selection_badge {
-                    badge
-                        .with_animation(
-                            SharedString::from(format!("selection-count-appear-{}", pane_id.0)),
-                            crate::ui::motion::animation(crate::ui::motion::MICRO_MS),
-                            |this, t| this.opacity(t).ml(px(6.0 * (1.0 - t))),
-                        )
-                        .into_any_element()
-                } else {
-                    badge.into_any_element()
-                }
-            }))
-            .children((selected_count > 1).then(|| {
-                div()
-                    .w(px(1.))
-                    .h(crate::ui::rem_px(14.))
-                    .bg(border.opacity(0.35))
-            }))
+            .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(summary.clone()).build(window, cx))
             .child(tbtn(
                 format!("bb-folders-{}", pane_id.0),
                 AtlasIcon::Folder,
-                show_folders,
+                !show_folders,
                 accent,
-                format!("{}\n{}", rust_i18n::t!(if show_folders { "footer_dirs_visible" } else { "footer_dirs_hidden" }),
+                format!("{}\n{}\n{}", rust_i18n::t!("footer_dirs", shown = counts.folders_shown, total = counts.folders_total),
+                    rust_i18n::t!(if show_folders { "footer_dirs_visible" } else { "footer_dirs_hidden" }),
                     rust_i18n::t!(if self.state.settings.show_hidden { "footer_hidden_included" } else { "footer_hidden_excluded" })),
                 Action::ToggleShowFolders(pane_id),
                 view.clone(),
@@ -1211,9 +1180,10 @@ impl App {
             .child(tbtn(
                 format!("bb-files-{}", pane_id.0),
                 AtlasIcon::File,
-                show_files,
+                !show_files,
                 accent,
-                format!("{}\n{}", rust_i18n::t!(if show_files { "footer_files_visible" } else { "footer_files_hidden" }),
+                format!("{}\n{}\n{}", rust_i18n::t!("footer_files", shown = counts.files_shown, total = counts.files_total),
+                    rust_i18n::t!(if show_files { "footer_files_visible" } else { "footer_files_hidden" }),
                     rust_i18n::t!(if self.state.settings.show_hidden { "footer_hidden_included" } else { "footer_hidden_excluded" })),
                 Action::ToggleShowFiles(pane_id),
                 view.clone(),
@@ -1502,12 +1472,16 @@ fn breadcrumb(
         // Crumbs already truncate via max_w + text_ellipsis.
         .overflow_hidden();
     let mut cumulative = std::path::PathBuf::new();
+    let private_root = atlas_core::vault::live::mount_root(path);
+    let mut visible_segments = 0;
     for (i, comp) in path.components().enumerate() {
         let parent = cumulative.clone();
         cumulative.push(comp.as_os_str());
+        if private_root.as_ref().is_some_and(|root| !cumulative.starts_with(root)) { continue; }
         let raw = comp.as_os_str().to_string_lossy().into_owned();
-        let label = if raw.is_empty() { "/".to_string() } else { raw };
-        if i > 0 {
+        let label = atlas_core::vault::live::display_name(&cumulative)
+            .unwrap_or_else(|| if raw.is_empty() { "/".to_string() } else { raw });
+        if visible_segments > 0 {
             row = row.child(breadcrumb_chevron(
                 view,
                 tile,
@@ -1518,6 +1492,7 @@ fn breadcrumb(
             ));
         }
         let target = cumulative.clone();
+        visible_segments += 1;
         row = row.child(breadcrumb_segment(BreadcrumbSegmentProps {
             view: view.clone(),
             tile,
@@ -1567,7 +1542,7 @@ fn breadcrumb(
                         this.process_actions([Action::ToggleBranchView(tile)]);
                     });
                 })
-                .child(crate::ui::icons::icon(AtlasIcon::GitBranch, 12.0, fg))
+                .child(crate::ui::icons::icon(AtlasIcon::TreeStructure, 12.0, fg))
                 .child(rust_i18n::t!("branch_view_badge").to_string()),
         );
     }
@@ -1880,7 +1855,7 @@ fn remote_breadcrumb(
                 view: view.clone(),
                 tile,
                 id: SharedString::from(format!("crumb-remote-sub-{}-{}", tile.0, idx)),
-                label: comp.to_string(),
+                label: atlas_model::remote_path::file_name(comp),
                 location: Location::Remote {
                     id: id.to_string(),
                     path: path_so_far.clone(),

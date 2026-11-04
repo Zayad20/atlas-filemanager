@@ -9,6 +9,7 @@ use atlas_model::provider_protocol::{
 
 use super::provider::{Capabilities, CloudProvider, ProgressSink, RemoteEntry};
 use crate::ext::provider_sidecar::ProviderSidecar;
+use super::control::{OutcomeUnknown, TransferCancelled, TransferControl};
 
 pub struct SidecarProvider {
     sidecar: Arc<ProviderSidecar>,
@@ -17,6 +18,10 @@ pub struct SidecarProvider {
 
 impl SidecarProvider {
     pub fn spawn(extension_dir: &Path, command: &str, args: &[String]) -> anyhow::Result<Self> {
+        Self::spawn_with_progress(extension_dir, command, args, None)
+    }
+
+    pub fn spawn_with_progress(extension_dir: &Path, command: &str, args: &[String], startup_progress: Option<ProgressSink>) -> anyhow::Result<Self> {
         let (event_tx, event_rx) = flume::unbounded();
         let sidecar = Arc::new(ProviderSidecar::spawn(
             extension_dir,
@@ -37,6 +42,10 @@ impl SidecarProvider {
                         total,
                     } = event.event
                     {
+                        if transfer_id == "rclone-download" {
+                            if let Some(progress) = &startup_progress { progress(done, total); }
+                            continue;
+                        }
                         if let Some(sink) = event_progress
                             .lock()
                             .ok()
@@ -48,21 +57,28 @@ impl SidecarProvider {
                 }
             })?;
         let provider = Self { sidecar, progress };
-        provider
+        let initialized = provider
             .sidecar
             .request(Operation::Initialize {
                 data_dir: extension_dir.join("data").to_string_lossy().into_owned(),
             })
-            .context("initialize provider sidecar")?;
+            .context("Could not initialize the Cloud extension. Reinstall Cloud Drives or update Atlas and its Cloud extension together")?;
+        Self::decode(initialized)?;
         Ok(provider)
     }
 
     async fn call(&self, operation: Operation) -> anyhow::Result<serde_json::Value> {
-        let sidecar = self.sidecar.clone();
-        let response = tokio::task::spawn_blocking(move || sidecar.request(operation)).await??;
+        Self::decode(self.sidecar.request_async(operation, None).await?)
+    }
+
+    fn decode(response: atlas_model::provider_protocol::Response) -> anyhow::Result<serde_json::Value> {
         match response.result {
             ResultPayload::Ok { value } => Ok(value),
-            ResultPayload::Error { message } => anyhow::bail!(message),
+            ResultPayload::Error { message, code } => match code.as_deref() {
+                Some("cancelled") => Err(TransferCancelled.into()),
+                Some("outcome_unknown") => Err(OutcomeUnknown(message).into()),
+                _ => anyhow::bail!(message),
+            },
         }
     }
 
@@ -71,12 +87,14 @@ impl SidecarProvider {
         id: String,
         operation: Operation,
         sink: ProgressSink,
+        control: TransferControl,
     ) -> anyhow::Result<()> {
         self.progress
             .lock()
             .map_err(|_| anyhow::anyhow!("provider progress map poisoned"))?
             .insert(id.clone(), sink);
-        let result = self.call(operation).await.map(|_| ());
+        let result = self.sidecar.request_async(operation, Some(control)).await
+            .and_then(Self::decode).map(|_| ());
         self.progress.lock().ok().map(|mut sinks| sinks.remove(&id));
         result
     }
@@ -84,6 +102,7 @@ impl SidecarProvider {
 
 #[async_trait::async_trait]
 impl CloudProvider for SidecarProvider {
+    async fn prepare_shutdown(&self) -> anyhow::Result<()> { self.call(Operation::PrepareShutdown).await.map(|_| ()) }
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             can_mount: true,
@@ -144,18 +163,19 @@ impl CloudProvider for SidecarProvider {
                     is_dir: entry.is_dir,
                     size: entry.size.unwrap_or(0),
                     modified: entry.modified_unix_ms.map(|ms| ms / 1000),
-                    mime: None,
+                    mime: entry.mime,
                 })
             })
             .collect()
     }
 
-    async fn download(
+    async fn download_controlled(
         &self,
         id: &str,
         src: &str,
         dst: &Path,
         progress: ProgressSink,
+        control: TransferControl,
     ) -> anyhow::Result<()> {
         let transfer_id = uuid::Uuid::new_v4().to_string();
         self.transfer(
@@ -165,18 +185,21 @@ impl CloudProvider for SidecarProvider {
                 remote_id: id.into(),
                 source: src.into(),
                 destination: dst.to_string_lossy().into_owned(),
+                byte_limit: control.byte_limit(),
             },
             progress,
+            control,
         )
         .await
     }
 
-    async fn upload(
+    async fn upload_controlled(
         &self,
         id: &str,
         src: &Path,
         dst: &str,
         progress: ProgressSink,
+        control: TransferControl,
     ) -> anyhow::Result<()> {
         let transfer_id = uuid::Uuid::new_v4().to_string();
         self.transfer(
@@ -186,8 +209,10 @@ impl CloudProvider for SidecarProvider {
                 remote_id: id.into(),
                 source: src.to_string_lossy().into_owned(),
                 destination: dst.into(),
+                byte_limit: control.byte_limit(),
             },
             progress,
+            control,
         )
         .await
     }
@@ -202,6 +227,15 @@ impl CloudProvider for SidecarProvider {
             value["used"].as_u64().unwrap_or(0),
             value["total"].as_u64().unwrap_or(0),
         ))
+    }
+
+    async fn copy_between(&self, source_id: &str, source: &str, destination_id: &str, destination: &str,
+        progress: ProgressSink, control: TransferControl) -> anyhow::Result<()> {
+        let transfer_id = uuid::Uuid::new_v4().to_string();
+        self.transfer(transfer_id.clone(), Operation::CopyBetween {
+            transfer_id, source_id: source_id.into(), source: source.into(),
+            destination_id: destination_id.into(), destination: destination.into(),
+        }, progress, control).await
     }
 
     async fn mkdir(&self, id: &str, path: &str) -> anyhow::Result<()> {
@@ -236,19 +270,7 @@ impl CloudProvider for SidecarProvider {
     }
 
     async fn copy(&self, id: &str, from: &str, to: &str) -> anyhow::Result<()> {
-        let destination = Path::new(to)
-            .parent()
-            .unwrap_or_else(|| Path::new(""))
-            .to_string_lossy()
-            .into_owned();
-        self.call(Operation::Copy {
-            remote_id: id.into(),
-            entries: vec![EntryRef {
-                path: from.into(),
-                is_dir: false,
-            }],
-            destination,
-        })
+        self.call(Operation::CopyObject { remote_id: id.into(), from: from.into(), to: to.into() })
         .await
         .map(|_| ())
     }
@@ -297,6 +319,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    #[ignore = "requires ATLAS_CLOUD_EXTENSION_DIR with an installed provider"]
     fn real_cloud_sidecar_round_trip_when_enabled() {
         let Some(dir) = std::env::var_os("ATLAS_CLOUD_EXTENSION_DIR").map(PathBuf::from) else {
             return;

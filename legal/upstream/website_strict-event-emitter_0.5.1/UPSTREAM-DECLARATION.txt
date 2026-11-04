@@ -1,0 +1,19 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "strict-event-emitter",
+  "version": "0.5.1",
+  "license": "MIT",
+  "author": "Artem Zakharchenko <kettanaito@gmail.com>",
+  "repository": "git@github.com:open-draft/strict-event-emitter.git"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: dc958d0bfc8127388c7d651646749f7017990cb1d1aa01618a0a84915e5eff9a
+
+License statement from README.md:
+## License
+
+MIT

@@ -2,7 +2,7 @@ use crate::layout_tree::TileId;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-pub const MULTI_PREVIEW_LIMIT: usize = 4;
+pub const MULTI_PREVIEW_LIMIT: usize = 12;
 pub const DIR_PREVIEW_LIMIT: usize = 200;
 
 #[derive(Debug, Clone)]
@@ -132,6 +132,11 @@ pub fn is_image_ext(ext: &str) -> bool {
     )
 }
 
+/// 3D model formats previewed by the built-in software renderer.
+pub fn is_model_ext(ext: &str) -> bool {
+    matches!(ext, "glb" | "gltf" | "fbx" | "obj" | "stl")
+}
+
 pub fn is_audio_ext(ext: &str) -> bool {
     matches!(
         ext,
@@ -202,6 +207,9 @@ pub struct MultiPreviewState {
 pub struct PreviewState {
     pub paths: HashMap<TileId, PathBuf>,
     pub results: HashMap<TileId, PreviewResult>,
+    /// Path each entry in `results` was produced for. It lags behind `paths`
+    /// while the next preview loads, so the previous one stays on screen.
+    pub result_paths: HashMap<TileId, PathBuf>,
     pub multi: HashMap<TileId, MultiPreviewState>,
     pub metadata: HashMap<TileId, (PathBuf, Vec<(String, String)>)>,
 }
@@ -210,6 +218,7 @@ impl PreviewState {
     pub fn clear(&mut self, tab: TileId) {
         self.paths.remove(&tab);
         self.results.remove(&tab);
+        self.result_paths.remove(&tab);
         self.multi.remove(&tab);
         self.metadata.remove(&tab);
     }

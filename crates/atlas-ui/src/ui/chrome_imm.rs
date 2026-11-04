@@ -756,6 +756,20 @@ impl Element for ImmChromeElement {
 
 /// Helper function to parse path segments for ImmChromeElement with parent directory tracking
 pub(crate) fn path_to_imm_segments(path: &Path) -> Vec<ImmCrumbSeg> {
+    if let Some(root) = atlas_core::vault::live::mount_root(path) {
+        let mut current = root.clone();
+        let mut segments = vec![ImmCrumbSeg { is_ghost: false,
+            label: atlas_core::util::display::display_name(&root),
+            location: Location::Directory(root.clone()), parent_dir: None }];
+        if let Ok(relative) = path.strip_prefix(&root) {
+            for part in relative.components() {
+                let parent = current.clone(); current.push(part.as_os_str());
+                segments.push(ImmCrumbSeg { is_ghost: false, label: part.as_os_str().to_string_lossy().into_owned(),
+                    location: Location::Directory(current.clone()), parent_dir: Some(parent) });
+            }
+        }
+        return segments;
+    }
     let mut segments = Vec::new();
     let mut current = PathBuf::new();
     for comp in path.components() {
@@ -769,7 +783,7 @@ pub(crate) fn path_to_imm_segments(path: &Path) -> Vec<ImmCrumbSeg> {
                 current.push(p.as_os_str());
                 segments.push(ImmCrumbSeg {
                     is_ghost: false,
-                    label: p.as_os_str().to_string_lossy().into_owned(),
+                    label: prefix_label(p),
                     location: Location::Directory(current.clone()),
                     parent_dir: parent,
                 });
@@ -796,6 +810,14 @@ pub(crate) fn path_to_imm_segments(path: &Path) -> Vec<ImmCrumbSeg> {
         }
     }
     segments
+}
+
+fn prefix_label(prefix: std::path::PrefixComponent<'_>) -> String {
+    #[cfg(windows)]
+    if let Some(label) = atlas_core::util::display::unc_share_label(prefix.kind()) {
+        return label;
+    }
+    prefix.as_os_str().to_string_lossy().into_owned()
 }
 
 pub(crate) fn path_with_ghost_segments(path: &Path, trail: Option<&Path>) -> Vec<ImmCrumbSeg> {
@@ -825,5 +847,16 @@ mod ghost_tests {
         let segments = path_to_imm_segments(Path::new(r"C:\Users\me"));
         assert_eq!(segments[0].location, Location::Directory(PathBuf::from(r"C:\")));
         assert!(segments.iter().all(|segment| segment.location.fs_dir().unwrap().is_absolute()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wsl_crumbs_show_the_distro_and_keep_unc_navigation() {
+        let root = Path::new(r"\\wsl.localhost\Arch\");
+        let path = root.join("home").join("me");
+        let segments = path_to_imm_segments(&path);
+        assert_eq!(segments.iter().map(|s| s.label.as_str()).collect::<Vec<_>>(), ["Arch", "home", "me"]);
+        assert_eq!(segments[0].location, Location::Directory(root.into()));
+        assert_eq!(segments[2].location, Location::Directory(path));
     }
 }

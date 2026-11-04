@@ -68,6 +68,9 @@ impl App {
     /// Root splits wrap the complete surviving layout, regardless of its axis.
     /// This always produces two equal halves with the normal five-pixel seam.
     pub(crate) fn split_tab_at_root(&mut self, dragged: TileId, vertical: bool, before: bool) {
+        if self.drag_adds_pane(dragged) && !self.allow_new_pane() {
+            return;
+        }
         let Some(linear) = self.state.pane_tree.split_tab_at_root(dragged, vertical, before) else { return; };
         if !self.state.settings.disable_animations {
             self.dock_split_animations.insert(linear, DockSplitAnimation::new(vec![1.0, 1.0], if before { 0 } else { 1 }));
@@ -222,6 +225,9 @@ impl App {
     }
 
     pub(crate) fn split_pane(&mut self, tabs_container_id: TileId, vertical: bool) {
+        if !self.allow_new_pane() {
+            return;
+        }
         let _perf = crate::perf::span_detail("split_pane", || {
             format!(
                 "target={} vertical={} open={} pending={}",
@@ -383,6 +389,38 @@ impl App {
     }
 
     /// Count panes that are open and not already animating closed.
+    /// Side-by-side regions (tab containers holding at least one live tab).
+    fn split_pane_count(&self) -> usize {
+        self.state
+            .pane_tree
+            .tiles
+            .iter()
+            .filter(|(_, tile)| {
+                matches!(tile, Tile::Container(Container::Tabs(tabs))
+                    if tabs.children.iter().any(|id| {
+                        !self.pane_closing.contains_key(id) && !self.tab_closing.contains_key(id)
+                    }))
+            })
+            .count()
+    }
+
+    /// Free builds keep at most two side-by-side panes; nothing existing is closed.
+    fn allow_new_pane(&mut self) -> bool {
+        let next = self.split_pane_count() + 1;
+        self.allow_edition_action(atlas_model::edition::Feature::Panes, next)
+    }
+
+    /// Dragging the only tab of a pane into a split moves it, so no pane is added.
+    fn drag_adds_pane(&self, dragged: TileId) -> bool {
+        self.state
+            .find_tabs_container(dragged)
+            .and_then(|id| match self.state.pane_tree.tiles.get(id) {
+                Some(Tile::Container(Container::Tabs(tabs))) => Some(tabs.children.len() > 1),
+                _ => None,
+            })
+            .unwrap_or(true)
+    }
+
     fn open_pane_count(&self) -> usize {
         self.state
             .all_pane_tile_ids()
@@ -1020,6 +1058,9 @@ impl App {
         vertical: bool,
         before: bool,
     ) {
+        if self.drag_adds_pane(dragged) && !self.allow_new_pane() {
+            return;
+        }
         let Some(target_tabs) = self.resolve_tabs_container(target) else {
             return;
         };

@@ -1,6 +1,162 @@
 use super::*;
 use std::io::{Read, Write};
 
+#[test]
+fn native_policy_never_offers_or_runs_heavy_engines_even_if_installed() {
+    let mut tools = Tools::default();
+    for tool in Tool::ALL {
+        tools.0.insert(tool, PathBuf::from(tool.executable()));
+    }
+    for extension in [
+        "wav", "pdf", "docx", "pptx", "heic", "mobi", "7z", "epub", "txt",
+    ] {
+        let source = PathBuf::from(format!("fixture.{extension}"));
+        for option in native_options(&[source], &tools) {
+            assert!(
+                option
+                    .engines
+                    .iter()
+                    .all(|engine| ["Atlas", "Windows", "Windows OCR", "Opus"].contains(engine)),
+                "{extension}: {:?}",
+                option.engines
+            );
+            assert!(option.missing.iter().all(|tool| *tool == Tool::Opus));
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("test.heic");
+    std::fs::write(&source, b"fixture").unwrap();
+    assert!(Plan::build_native(&[source], "png", Settings::default(), tools).is_err());
+}
+
+#[test]
+fn word_package_conversion_preserves_styles_tables_images_headers_and_removes_macros() {
+    let dir = tempfile::tempdir().unwrap();
+    let namespace = "http://schemas.openxmlformats.org/package/2006/content-types";
+    let document = br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body><w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>Styled title</w:t></w:r></w:p><w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="6000"/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>Table cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:drawing><wp:inline><wp:extent cx="914400" cy="609600"/><wp:docPr id="1" name="Test image"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="image.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="image"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="609600"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="header"/><w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:body></w:document>"#;
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbImage::from_pixel(12, 8, image::Rgb([50, 100, 150]))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    for extension in ["docm", "dotx"] {
+        let main_type = if extension == "docm" {
+            "application/vnd.ms-word.document.macroEnabled.main+xml"
+        } else {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml"
+        };
+        let types = format!(
+            r#"<Types xmlns="{namespace}"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="{main_type}"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/word/vbaProject.bin" ContentType="application/vnd.ms-office.vbaProject"/></Types>"#
+        );
+        let relationships = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="image" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image.png"/><Relationship Id="styles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="header" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/><Relationship Id="macro" Type="http://schemas.microsoft.com/office/2006/relationships/vbaProject" Target="vbaProject.bin"/><Relationship Id="signature" Type="http://schemas.openxmlformats.org/package/2006/relationships/digital-signature/origin" Target="../_xmlsignatures/origin.sigs"/></Relationships>"#;
+        let source = dir.path().join(format!("original.{extension}"));
+        let preserved: &[(&str, &[u8])] = &[
+            ("word/document.xml", document),
+            ("_rels/.rels", br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="document" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#),
+            (
+                "word/styles.xml",
+                br#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:rPr><w:sz w:val="40"/></w:rPr></w:style></w:styles>"#,
+            ),
+            ("word/media/image.png", png.get_ref()),
+            ("word/header1.xml", br#"<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>Original header</w:t></w:r></w:p></w:hdr>"#),
+        ];
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&source).unwrap());
+        for (name, bytes) in preserved.iter().copied().chain([
+            ("[Content_Types].xml", types.as_bytes()),
+            ("word/_rels/document.xml.rels", relationships.as_slice()),
+            ("word/vbaProject.bin", b"macro".as_slice()),
+            (
+                "word/_rels/vbaProject.bin.rels",
+                b"macro signature".as_slice(),
+            ),
+            ("_xmlsignatures/origin.sigs", b"signature".as_slice()),
+        ]) {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        let original = std::fs::read(&source).unwrap();
+        let report = run(&source, "docx");
+        assert!(report.errors().is_empty(), "{:?}", report.errors());
+        let mut zip =
+            zip::ZipArchive::new(std::fs::File::open(&report.outputs()[0]).unwrap()).unwrap();
+        for (name, expected) in preserved {
+            let mut bytes = Vec::new();
+            zip.by_name(name).unwrap().read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, *expected);
+        }
+        let mut types = String::new();
+        zip.by_name("[Content_Types].xml")
+            .unwrap()
+            .read_to_string(&mut types)
+            .unwrap();
+        assert!(types.contains("wordprocessingml.document.main+xml"));
+        assert!(!types.contains("macroEnabled"));
+        let mut rels = String::new();
+        zip.by_name("word/_rels/document.xml.rels")
+            .unwrap()
+            .read_to_string(&mut rels)
+            .unwrap();
+        let rels = roxmltree::Document::parse(&rels).unwrap();
+        let rels: Vec<_> = rels
+            .descendants()
+            .filter(|n| n.tag_name().name() == "Relationship")
+            .collect();
+        assert_eq!(rels.len(), 3);
+        assert_eq!(rels[0].attribute("Id"), Some("image"));
+        assert!(!zip
+            .file_names()
+            .any(|n| n.contains("vbaProject") || n.starts_with("_xmlsignatures/")));
+        assert_eq!(std::fs::read(source).unwrap(), original);
+        if let Some(directory) = std::env::var_os("ATLAS_PAGE_TEST_ARTIFACTS") {
+            let directory = PathBuf::from(directory).join("office");
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join(format!("original.{extension}")), &original).unwrap();
+            std::fs::copy(
+                &report.outputs()[0],
+                directory.join(format!("from-{extension}.docx")),
+            )
+            .unwrap();
+        }
+    }
+}
+
+#[test]
+fn extracted_docx_preserves_tabs_and_pdf_page_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pages.docx");
+    native::extracted_document("first\tcell\n\u{c}second page", "docx", &path).unwrap();
+    let text = native::document_text(&path).unwrap();
+    assert!(text.contains("first\tcell"));
+    assert_eq!(text.matches('\u{c}').count(), 1);
+    assert!(text.contains("second page"));
+}
+
+#[test]
+fn word_packages_reject_invalid_xml_and_unsafe_paths_without_outputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let types = br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml"/></Types>"#;
+    for (index, document, extra) in [
+        (0,b"invalid XML".as_slice(), "safe.xml"),
+        (1,b"<wrong/>".as_slice(), "safe.xml"),
+        (2,br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>"#.as_slice(), "../outside.xml"),
+    ] {
+        let source = dir.path().join(format!("bad-{index}.dotx"));
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&source).unwrap());
+        for (name, bytes) in [("[Content_Types].xml",types.as_slice()),("word/document.xml",document),(extra,b"unused".as_slice())] {
+            zip.start_file(name,zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        let original = std::fs::read(&source).unwrap();
+        let report = run(&source,"docx");
+        assert_eq!(report.errors().len(),1);
+        assert!(report.outputs().is_empty());
+        assert_eq!(std::fs::read(source).unwrap(),original);
+    }
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
+}
+
 fn run(path: &Path, target: &str) -> Report {
     let plan = Plan::build(
         &[path.to_path_buf()],
@@ -769,6 +925,7 @@ fn native_image_outputs_are_decodable_and_resize_is_bounded() {
 }
 
 #[test]
+#[cfg(not(feature = "free"))]
 fn parallel_conversions_claim_distinct_names_in_a_shared_output_directory() {
     let dir = tempfile::tempdir().unwrap();
     let mut sources = Vec::new();

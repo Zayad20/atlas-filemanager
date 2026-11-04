@@ -84,7 +84,10 @@ impl App {
         if idx == self.state.profiles.active_idx || idx >= self.state.profiles.profiles.len() {
             return;
         }
+        if !self.close_native_vault(false) { return; }
         self.file_filter_projections.clear();
+        // Keys and decrypted names never cross a profile boundary.
+        self.vault = None;
 
         // Snapshot current tree + view/layout knobs into the active profile
         // before leaving, so they restore when we come back.
@@ -217,6 +220,12 @@ impl App {
     /// switch to it. The fresh profile starts with no saved tree, so the switch
     /// opens a clean home pane.
     pub(crate) fn create_profile(&mut self, name: impl Into<String>) {
+        if !self.allow_edition_action(
+            atlas_model::edition::Feature::Profiles,
+            self.state.profiles.profiles.len().saturating_add(1),
+        ) {
+            return;
+        }
         let name = name.into();
         let name = if name.trim().is_empty() {
             self.unique_profile_name()
@@ -236,7 +245,15 @@ impl App {
         let Some(source) = self.state.profiles.profiles.get(idx).cloned() else {
             return;
         };
+        if !self.allow_edition_action(
+            atlas_model::edition::Feature::Profiles,
+            self.state.profiles.profiles.len().saturating_add(1),
+        ) {
+            return;
+        }
         let mut profile = source;
+        // Copying appearance/preferences must not copy private-folder identity.
+        profile.id = atlas_model::profiles::Profile::new("").id;
         profile.name = self.unique_profile_copy_name(&profile.name);
         self.state.profiles.profiles.push(profile);
         let new_idx = self.state.profiles.profiles.len() - 1;

@@ -3,9 +3,15 @@ name = "atlas-ui"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
+build = "../../scripts/winfsp-build.rs"
 
 [features]
+free = ["atlas-model/free", "atlas-core/free"]
 conversion-lab = ["gpui/test-support", "gpui_platform/test-support"]
+ui-lab = ["gpui/test-support", "gpui_platform/test-support"]
+# Enables reviewed user-Temp deletion. The Atlas launcher enables this by default;
+# custom UI hosts can retain the analysis/preview-only configuration.
+windows-cleanup = []
 default = ["provider-host"]
 # Generic host UI for optional out-of-process virtual-file providers.
 provider-host = ["atlas-core/provider-host", "atlas-model/provider-host"]
@@ -47,6 +53,7 @@ rfd = "0.15"
 resvg = "0.45"
 lsp-types = "0.97"
 anyhow = "1"
+zeroize = "1"
 tracy-client = { version = "0.18.4", optional = true, default-features = false, features = ["enable", "only-localhost", "ondemand"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -84,3 +91,35 @@ workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+
+[[example]]
+name = "resize_diagnostic"
+required-features = ["ui-lab"]
+
+[[example]]
+name = "vault_diagnostic"
+required-features = ["ui-lab"]
+
+[[example]]
+name = "context_menu_diagnostic"
+required-features = ["ui-lab"]
+
+[[example]]
+name = "view_controls_diagnostic"
+required-features = ["ui-lab"]
+
+[[example]]
+name = "selection_diagnostic"
+required-features = ["ui-lab"]
+
+[[example]]
+name = "cloud_diagnostic"
+required-features = ["ui-lab", "provider-host"]
+
+[[example]]
+name = "chrome_diagnostic"
+required-features = ["ui-lab"]
+
+[[example]]
+name = "cleanup_diagnostic"
+required-features = ["ui-lab"]

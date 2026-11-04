@@ -193,9 +193,37 @@ pub(crate) fn build_file_any_drag(
     _window: &mut Window,
     cx: &mut gpui::App,
 ) -> AnyDrag {
-    if view.read(&*cx).rubber.is_some() {
+    if !view.update(cx, |app, _| app.prepare_selection_file_drag()) {
         tracing::info!(anchor = %anchor.display(), "dnd file drag blocked by active rubber");
         return empty_any_drag(cx);
+    }
+    #[cfg(feature = "provider-host")]
+    {
+        let source = {
+            let app = view.read(&*cx);
+            let pane = item.map_or(app.state.focused_tile, |(pane, _)| pane);
+            match app.tab_data_for(pane).map(|tab| &tab.location) {
+                Some(atlas_model::location::Location::Remote { id, .. }) => Some((pane, id.clone())),
+                _ => None,
+            }
+        };
+        if let Some((pane, account)) = source {
+            let payload = view.update(cx, |app, cx| {
+                app.pending_folder_click = None;
+                app.state.focused_tile = pane;
+                if let Some((_, index)) = item { app.ensure_drag_selection(pane, index); }
+                let mut paths = app.selected_paths_for_pane(pane);
+                if paths.is_empty() || !paths.contains(&anchor) { paths = vec![anchor.clone()]; }
+                let account_label = app.state.cloud.remotes.iter().find(|remote| remote.id == account)
+                    .map_or_else(|| account.clone(), |remote| remote.name.clone());
+                app.begin_cloud_drag();
+                cx.notify();
+                crate::ui::root::DraggedCloudFiles { account, account_label, paths }
+            });
+            let ghost = payload.clone();
+            return AnyDrag::new(payload, cx.new(|_| ghost))
+                .offset(point(px(-12.), px(-12.))).cursor_style(cursor_style);
+        }
     }
     // Recycle Bin rows carry mangled `$R` payload paths and remote rows carry
     // virtual paths — an OS drag would ship garbage. Block at the source.
@@ -207,8 +235,6 @@ pub(crate) fn build_file_any_drag(
             let pane = source_pane.unwrap_or(app.state.focused_tile);
             match app.tab_data_for(pane).map(|t| &t.location) {
                 Some(Location::RecycleBin) => Some("dnd_recycle_drag_blocked"),
-                #[cfg(feature = "provider-host")]
-                Some(Location::Remote { .. }) => Some("dnd_remote_drag_blocked"),
                 _ => None,
             }
         };

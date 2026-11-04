@@ -124,28 +124,37 @@ impl CloudRemote {
 
 pub type TransferId = u64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransferKind {
     Download,
     Upload,
+    RemoteCopy,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteSource { pub id: RemoteId, pub path: String }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransferState {
     Queued,
     Running,
     Paused,
+    Pausing,
+    Cancelling,
+    Cancelled,
+    /// The backend may have committed or still be writing. No blind retry.
+    Interrupted(String),
     Done,
     Failed(String),
 }
 
 impl TransferState {
     pub const fn is_terminal(&self) -> bool {
-        matches!(self, Self::Done | Self::Failed(_))
+        matches!(self, Self::Done | Self::Failed(_) | Self::Cancelled | Self::Interrupted(_))
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transfer {
     pub id: TransferId,
     pub kind: TransferKind,
@@ -163,6 +172,8 @@ pub struct Transfer {
     pub open_on_done: bool,
     /// After an upload completes, move the local source to trash (move-semantics).
     pub delete_source: bool,
+    #[serde(default)]
+    pub source: Option<RemoteSource>,
 }
 
 impl Transfer {
@@ -177,3 +188,7 @@ impl Transfer {
 
 /// Immutable list snapshot handed to the UI each time the manager changes.
 pub type TransferSnapshot = Vec<Transfer>;
+
+pub fn preview_key(account: &str, generation: u64, path: &std::path::Path) -> PathBuf {
+    PathBuf::from(format!("remote-preview:{account}/{generation}/{}", path.to_string_lossy()))
+}

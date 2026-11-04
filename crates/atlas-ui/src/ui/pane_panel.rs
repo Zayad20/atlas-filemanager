@@ -41,15 +41,28 @@ pub struct PaneContentView {
 }
 
 impl Render for PaneContentView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::perf::count("render.pane_content");
-        let _perf =
-            crate::perf::span_detail("pane.content.render", || format!("pane={}", self.pane_id.0));
-        if let Some(app) = self.app.upgrade() {
-            app.update(cx, |app, cx| app.render_pane(self.pane_id, window, cx))
-        } else {
-            div().into_any_element()
-        }
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let app = self.app.clone();
+        let pane_id = self.pane_id;
+        crate::ui::current_bounds::current_bounds(move |bounds, window, cx| {
+            crate::perf::count("render.pane_content");
+            let _perf = crate::perf::span_detail("pane.content.render", || {
+                format!("pane={}", pane_id.0)
+            });
+            let Some(app) = app.upgrade() else {
+                return div().into_any_element();
+            };
+            app.update(cx, |app, cx| {
+                // Column projection and virtualized contents must see the same
+                // dimensions as their shell, including the first resize frame.
+                if let Some(state) = app.state.tab_states.get_mut(&pane_id) {
+                    state.last_pane_width = f32::from(bounds.size.width);
+                    state.last_pane_height = f32::from(bounds.size.height);
+                }
+                app.render_pane(pane_id, window, cx)
+            })
+        })
+        .into_any_element()
     }
 }
 

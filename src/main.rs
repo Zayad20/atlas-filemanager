@@ -9,6 +9,8 @@
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
 fn main() {
+    #[cfg(windows)]
+    if atlas_win_space::mft_space::helper::try_run() { return; }
     // Package smoke tests must verify the ELF and version without opening a window.
     if std::env::args_os()
         .nth(1)

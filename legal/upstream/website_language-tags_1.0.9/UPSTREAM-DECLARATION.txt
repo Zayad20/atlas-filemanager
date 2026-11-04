@@ -1,0 +1,18 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "language-tags",
+  "version": "1.0.9",
+  "license": "MIT",
+  "author": "Matthew Caruana Galizia <mattcg@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/mattcg/language-tags.git"
+  },
+  "homepage": "https://github.com/mattcg/language-tags"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: 24c81125ee2c65b548fe4642fa14aae3e1b8fc548bc64c88d2ae6b94be738e36

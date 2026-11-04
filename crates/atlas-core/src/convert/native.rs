@@ -133,21 +133,51 @@ pub(super) fn extracted_document(text: &str, extension: &str, output: &Path) -> 
     };
     match extension {
         "txt" | "md" => std::fs::write(output, text)?,
-        "html" => std::fs::write(output, format!("<!doctype html>\n<html><head><meta charset=\"utf-8\"></head><body><pre>{}</pre></body></html>\n", escape(text)))?,
+        "html" => {
+            let mut file = File::create(output)?;
+            file.write_all(b"<!doctype html>\n<html><head><meta charset=\"utf-8\"></head><body>")?;
+            for (index, page) in text.split('\u{c}').enumerate() {
+                let style = if index == 0 {
+                    ""
+                } else {
+                    " style=\"break-before:page\""
+                };
+                write!(
+                    file,
+                    "<section{style}><pre>{}</pre></section>\n",
+                    escape(page)
+                )?;
+            }
+            file.write_all(b"</body></html>\n")?;
+        }
         "docx" => {
             let mut zip = zip::ZipWriter::new(File::create(output)?);
-            let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
             for (name, data) in [
                 ("[Content_Types].xml", "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>"),
                 ("_rels/.rels", "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>"),
             ] { zip.start_file(name, options)?; zip.write_all(data.as_bytes())?; }
             zip.start_file("word/document.xml", options)?;
             zip.write_all(b"<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>")?;
-            for line in text.lines() {
-                let line: String = line.chars().filter(|c| *c >= ' ' || *c == '\t').collect();
-                write!(zip, "<w:p><w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>", escape(&line))?;
+            for (page, content) in text.split('\u{c}').enumerate() {
+                if page > 0 {
+                    zip.write_all(b"<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>")?;
+                }
+                for line in content.lines() {
+                    zip.write_all(b"<w:p><w:r>")?;
+                    for (index, part) in line.split('\t').enumerate() {
+                        if index > 0 {
+                            zip.write_all(b"<w:tab/>")?;
+                        }
+                        let part: String = part.chars().filter(|c| *c >= ' ').collect();
+                        write!(zip, "<w:t xml:space=\"preserve\">{}</w:t>", escape(&part))?;
+                    }
+                    zip.write_all(b"</w:r></w:p>")?;
+                }
             }
-            zip.write_all(b"<w:sectPr/></w:body></w:document>")?; zip.finish()?;
+            zip.write_all(b"<w:sectPr/></w:body></w:document>")?;
+            zip.finish()?;
         }
         _ => bail!("Unsupported extracted-text format"),
     }
@@ -187,6 +217,13 @@ pub(super) fn document_text(source: &Path) -> Result<String> {
                 match node.tag_name().name() {
                     "t" => result.push_str(node.text().unwrap_or_default()),
                     "tab" => result.push('\t'),
+                    "br" if node
+                        .attributes()
+                        .any(|a| a.name() == "type" && a.value() == "page") =>
+                    {
+                        result.push('\u{c}')
+                    }
+                    "lastRenderedPageBreak" => result.push('\u{c}'),
                     "br" | "cr" => result.push('\n'),
                     _ => {}
                 }
@@ -260,27 +297,57 @@ pub(super) fn data(command: &Command, output: &Path) -> Result<()> {
     write_value(&value, command.target.extension, output)
 }
 
+fn as_tabular_rows<'a>(
+    value: &'a serde_json::Value,
+) -> Option<std::borrow::Cow<'a, [serde_json::Value]>> {
+    if let Some(arr) = value.as_array() {
+        return Some(std::borrow::Cow::Borrowed(arr));
+    }
+    if let Some(obj) = value.as_object() {
+        if let Some(arr) = obj.get("rows").and_then(|v| v.as_array()) {
+            return Some(std::borrow::Cow::Borrowed(arr));
+        }
+        for val in obj.values() {
+            if let Some(arr) = val.as_array() {
+                if !arr.is_empty() && arr.iter().all(|x| x.is_object()) {
+                    return Some(std::borrow::Cow::Borrowed(arr));
+                }
+            }
+        }
+        if !obj.is_empty() && obj.values().all(|v| !v.is_object() && !v.is_array()) {
+            return Some(std::borrow::Cow::Owned(vec![value.clone()]));
+        }
+    }
+    None
+}
+
 fn write_value(value: &serde_json::Value, extension: &str, output: &Path) -> Result<()> {
     let mut file = File::create(output)?;
     match extension {
         "json" => serde_json::to_writer_pretty(&mut file, value)?,
         "jsonl" => {
-            for row in value.as_array().context("JSONL requires a JSON array")? {
+            let rows = as_tabular_rows(value).context("JSONL requires a JSON array")?;
+            for row in rows.as_ref() {
                 serde_json::to_writer(&mut file, row)?;
                 writeln!(file)?;
             }
         }
-        "toml" => file.write_all(
-            toml::to_string_pretty(value)
-                .context("TOML needs a table and does not support null values")?
-                .as_bytes(),
-        )?,
+        "toml" => {
+            let toml_value = if value.is_array() {
+                serde_json::json!({ "rows": value })
+            } else {
+                value.clone()
+            };
+            file.write_all(
+                toml::to_string_pretty(&toml_value)
+                    .context("TOML needs a table and does not support null values")?
+                    .as_bytes(),
+            )?;
+        }
         "csv" | "tsv" => {
-            let rows = value
-                .as_array()
-                .context("CSV/TSV requires an array of objects")?;
+            let rows = as_tabular_rows(value).context("CSV/TSV requires an array of objects")?;
             let mut headers = BTreeSet::new();
-            for row in rows {
+            for row in rows.as_ref() {
                 headers.extend(
                     row.as_object()
                         .context("Every row must be an object")?
@@ -291,7 +358,7 @@ fn write_value(value: &serde_json::Value, extension: &str, output: &Path) -> Res
             let headers: Vec<_> = headers.into_iter().collect();
             let delimiter = if extension == "tsv" { '\t' } else { ',' };
             write_row(&mut file, &headers, delimiter)?;
-            for row in rows {
+            for row in rows.as_ref() {
                 let cells = headers
                     .iter()
                     .map(|h| match &row[h] {

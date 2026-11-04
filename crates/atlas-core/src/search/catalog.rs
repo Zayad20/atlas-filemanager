@@ -302,7 +302,7 @@ fn search_entries(entries: &[CatalogEntry], query: &SearchQuery) -> Vec<SearchRe
     entries
         .iter()
         .filter(|entry| {
-            in_scope(&entry.path, &query.scope) && matches_filters(entry, &query.filters)
+            !crate::vault::is_private_path(&entry.path) && !crate::vault::live::is_private(&entry.path) && in_scope(&entry.path, &query.scope) && matches_filters(entry, &query.filters)
         })
         .filter_map(|entry| {
             score_entry(entry, &query.text).map(|score| SearchResult {

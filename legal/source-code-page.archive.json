@@ -1,0 +1,51 @@
+{
+  "title": "Source code",
+  "description": "Matching source archives and build instructions for distributed Atlas releases.",
+  "sections": [
+    {
+      "title": "Atlas 0.1.1 — Windows package 0.1.1.0",
+      "paragraphs": [
+        "Download the release source at no additional charge. It contains the Atlas code, local vendor modifications, locked Cargo dependency sources, license notices and Windows build instructions. The desktop package links to this same release source.",
+        "Atlas workspace code is licensed under AGPL-3.0-or-later. Third-party components retain their own licenses, including the GPL-3.0 WinFsp Rust bindings. You may modify and redistribute covered code under the applicable licenses; a paid plan does not remove those rights.",
+        "For a complete packaging rebuild, extract the packaging verification materials over the main source archive. The independent bundled rclone tool and its Go modules are supplied in the two tool-source parts; extract both into the same directory. Each download has a SHA-256 receipt. These supplements include their own instructions and do not change the Atlas program source."
+      ],
+      "links": [
+        {
+          "label": "Download Atlas 0.1.1 source archive",
+          "href": "https://pub-89dd9e8d0b06444ca2f59e0dc245dbc9.r2.dev/source/atlas-0.1.1-source.zip"
+        },
+        {
+          "label": "Release source manifest and SHA-256",
+          "href": "https://pub-89dd9e8d0b06444ca2f59e0dc245dbc9.r2.dev/source/atlas-0.1.1-source.json"
+        },
+        {
+          "label": "Packaging verification materials and instructions",
+          "href": "https://pub-89dd9e8d0b06444ca2f59e0dc245dbc9.r2.dev/source/atlas-0.1.1-build-materials.zip"
+        },
+        {
+          "label": "Packaging materials SHA-256",
+          "href": "https://pub-89dd9e8d0b06444ca2f59e0dc245dbc9.r2.dev/source/atlas-0.1.1-build-materials.json"
+        },
+        {
+          "label": "rclone and Go module sources — part 1 of 2",
+          "href": "https://pub-89dd9e8d0b06444ca2f59e0dc245dbc9.r2.dev/source/atlas-0.1.1-tool-sources.part1.zip"
+        },
+        {
+          "label": "rclone and Go module sources — part 2 of 2",
+          "href": "https://pub-89dd9e8d0b06444ca2f59e0dc245dbc9.r2.dev/source/atlas-0.1.1-tool-sources.part2.zip"
+        },
+        {
+          "label": "Tool-source manifest and SHA-256 for both parts",
+          "href": "https://pub-89dd9e8d0b06444ca2f59e0dc245dbc9.r2.dev/source/atlas-0.1.1-tool-sources.json"
+        }
+      ]
+    },
+    {
+      "title": "Build inputs and separately licensed artwork",
+      "paragraphs": [
+        "The archive includes instructions and a helper to recover the exact Icons8 PNG build inputs from your matching Atlas executable or MSIX. Those artwork files remain governed by Icons8's license and are not offered as a standalone icon download. The helper checks their recorded hashes before writing them. Other included source, font and icon resources retain their own notices.",
+        "For source questions or a missing release archive, contact support@modhyt.org. Keep the source version that corresponds to your binary; a newer development snapshot may differ."
+      ]
+    }
+  ]
+}

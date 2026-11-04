@@ -7,7 +7,7 @@ use crate::ui::drag_hover::{DragHoverCommand, DragHoverId, DragHoverKind, DragHo
 use crate::ui::icons::AtlasIcon;
 use crate::ui::surface::{
     chrome_font_size_tabs, hit_first, line_width, paint_fill, paint_rounded, paint_rounded_corners,
-    paint_theme_icon, shape_text, text_origin_y, Slot,
+    paint_theme_icon, shape_text, shape_text_truncated, text_origin_y, Slot,
 };
 use atlas_model::pane::TabId;
 use gpui::ColorExt as _;
@@ -359,6 +359,9 @@ impl Element for TabsBarElement {
                 visible: true,
                 opacity: openness,
             });
+            let color = if tab.is_active { self.active_fg } else { self.tab_fg };
+            labels[i] = shape_text_truncated(&tab.label, &self.font, self.font_size,
+                color, label.w.max(0.0), window);
         }
 
         // Paint, drag starts, and reorder boundaries share this exact projection.
@@ -694,10 +697,6 @@ impl Element for TabsBarElement {
                                 *press = Some((ev.position, tab.pane_id, tab_origin))
                             });
                             tracing::debug!(pane = tab.pane_id.0, "dnd tab press");
-                            hit_view.update(cx, |this, cx| {
-                                this.process_actions(vec![Action::FocusTab(tab.pane_id)]);
-                                cx.notify();
-                            });
                         }
                     }
                     TabHit::NewTab => {
@@ -712,7 +711,7 @@ impl Element for TabsBarElement {
                 cx.stop_propagation();
             });
             let move_press = press.clone();
-            let drag_view = app_entity;
+            let drag_view = app_entity.clone();
             let hover_hitboxes = prepaint.hitboxes.clone();
             window.on_mouse_event::<MouseMoveEvent>(move |ev, phase, window, cx| {
                 if phase != DispatchPhase::Bubble {
@@ -753,7 +752,31 @@ impl Element for TabsBarElement {
                     this.state.dragging_pane = Some(pane);
                     this.state.drag_pending = false;
                     let content = this.get_or_make_file_panel(pane, cx).clone().into();
-                    let size = this.pane_view_bounds.get(&pane).map(|b| b.size);
+                    let container = this.state.find_tabs_container(pane);
+                    let size = this
+                        .pane_view_bounds
+                        .get(&pane)
+                        .map(|b| b.size)
+                        .or_else(|| {
+                            active_for_new
+                                .and_then(|a| this.pane_view_bounds.get(&a).map(|b| b.size))
+                        })
+                        .or_else(|| {
+                            container
+                                .and_then(|c| this.pane_layout_bounds.get(&c).map(|b| b.size))
+                        })
+                        .or_else(|| {
+                            active_for_new
+                                .and_then(|a| this.pane_layout_bounds.get(&a).map(|b| b.size))
+                        })
+                        .or_else(|| {
+                            this.pane_layout_bounds.get(&pane).map(|b| b.size)
+                        })
+                        .or_else(|| {
+                            this.pane_view_bounds
+                                .get(&this.state.focused_tile)
+                                .map(|b| b.size)
+                        });
                     cx.notify();
                     Some(crate::ui::dock::drag::TabDrag {
                         pane_id: pane,
@@ -775,9 +798,17 @@ impl Element for TabsBarElement {
                 window.refresh();
                 cx.stop_propagation();
             });
+            let up_press = press.clone();
+            let up_view = app_entity;
             window.on_mouse_event::<MouseUpEvent>(move |ev, _, _, cx| {
                 if ev.button == MouseButton::Left {
-                    press.update(cx, |press, _| *press = None);
+                    let clicked = up_press.update(cx, |press, _| press.take());
+                    if let Some((_, pane_id, _)) = clicked {
+                        up_view.update(cx, |this, cx| {
+                            this.process_actions(vec![Action::FocusTab(pane_id)]);
+                            cx.notify();
+                        });
+                    }
                 }
             });
         });

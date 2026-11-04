@@ -181,6 +181,9 @@ impl App {
         {
             let t = Theme::global_mut(cx);
             t.scrollbar_show = ScrollbarShow::Hover;
+            // The text caret follows the foreground: it must read on every theme
+            // (the default falls back to the accent, which can vanish on a tinted row).
+            t.caret = t.foreground;
             t.scrollbar = gpui::transparent_black();
             let base = t.scrollbar_thumb;
             t.scrollbar_thumb = gpui::hsla(

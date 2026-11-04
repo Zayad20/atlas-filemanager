@@ -40,21 +40,43 @@ pub enum Backend {
     Book,
     SystemAudio,
     SystemVideo,
+    PdfPages,
+    SystemPdfText,
+    OfficePackage,
     External(Tool),
 }
 impl Backend {
     pub fn available(self, tools: &Tools) -> bool {
         match self {
             Self::External(t) => tools.has(t),
+            Self::PdfPages => self.required_tools().iter().all(|tool| tools.has(*tool)),
+            Self::SystemPdfText => tools.1.ocr,
             Self::SystemAudio => tools.1.wave,
             Self::SystemVideo => tools.1.h264,
             _ => true,
+        }
+    }
+    pub fn required_tools(self) -> &'static [Tool] {
+        match self {
+            Self::External(Tool::Magick) => &[Tool::Magick],
+            Self::External(Tool::Ffmpeg) => &[Tool::Ffmpeg],
+            Self::External(Tool::Opus) => &[Tool::Opus],
+            Self::External(Tool::Pandoc) => &[Tool::Pandoc],
+            Self::External(Tool::Office) => &[Tool::Office],
+            Self::External(Tool::PdfText) => &[Tool::PdfText],
+            Self::External(Tool::SevenZip) => &[Tool::SevenZip],
+            Self::External(Tool::Calibre) => &[Tool::Calibre],
+            Self::PdfPages if !cfg!(windows) => &[Tool::Magick],
+            _ => &[],
         }
     }
     pub fn name(self) -> &'static str {
         match self {
             Self::External(t) => t.name(),
             Self::SystemAudio | Self::SystemVideo => "Windows",
+            Self::PdfPages if cfg!(windows) => "Windows",
+            Self::PdfPages => "ImageMagick",
+            Self::SystemPdfText => "Windows OCR",
             _ => "Atlas",
         }
     }
@@ -122,9 +144,9 @@ pub fn options(paths: &[PathBuf], tools: &Tools) -> Vec<ConversionOption> {
                 if !engines.contains(&backend.name()) {
                     engines.push(backend.name());
                 }
-                if let Backend::External(tool) = backend {
-                    if !tools.has(tool) && !missing.contains(&tool) {
-                        missing.push(tool);
+                for tool in backend.required_tools() {
+                    if !tools.has(*tool) && !missing.contains(tool) {
+                        missing.push(*tool);
                     }
                 }
             }
@@ -151,6 +173,25 @@ pub fn options(paths: &[PathBuf], tools: &Tools) -> Vec<ConversionOption> {
             .unwrap_or(preferred.len())
     });
     result
+}
+
+/// Only routes implemented by Atlas, the OS, or the optional Opus encoder.
+pub fn native_options(paths: &[PathBuf], tools: &Tools) -> Vec<ConversionOption> {
+    let native = tools.clone().native_and_opus();
+    options(paths, &native)
+        .into_iter()
+        .filter(|option| {
+            paths.iter().all(|path| {
+                extension(path) == option.target.extension
+                    || route(path, option.target, &native).is_some_and(|backend| {
+                        backend
+                            .required_tools()
+                            .iter()
+                            .all(|tool| *tool == Tool::Opus)
+                    })
+            })
+        })
+        .collect()
 }
 
 pub fn route(source: &Path, target: &Format, tools: &Tools) -> Option<Backend> {
@@ -250,15 +291,24 @@ pub fn route(source: &Path, target: &Format, tools: &Tools) -> Option<Backend> {
     if src == "md" && ["html", "txt"].contains(&dst) {
         return Some(Backend::Markdown);
     }
+    if ["docm", "dotx"].contains(&src) && dst == "docx" {
+        return Some(Backend::OfficePackage);
+    }
     if ["txt", "docx", "docm", "dotx"].contains(&src)
         && ["txt", "md", "html", "docx"].contains(&dst)
     {
         return Some(Backend::Text);
     }
     if src == "pdf" && ["docx", "txt", "md", "html"].contains(&dst) {
+        #[cfg(windows)]
+        return tools.1.ocr.then_some(Backend::SystemPdfText);
+        #[cfg(not(windows))]
         return external(Tool::PdfText);
     }
-    if src == "pdf" && ["png", "jpg", "tiff"].contains(&dst) {
+    if src == "pdf" && ["png", "jpg"].contains(&dst) {
+        return Some(Backend::PdfPages);
+    }
+    if src == "pdf" && dst == "tiff" {
         return external(Tool::Magick);
     }
     if sheets.contains(&src) && ["xlsx", "ods", "pdf", "html", "csv", "tsv"].contains(&dst) {

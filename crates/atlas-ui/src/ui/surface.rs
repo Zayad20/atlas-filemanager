@@ -214,6 +214,46 @@ pub(crate) fn shape_text_truncated(
     shape_text(&elided, font, font_size, color, window)
 }
 
+/// Greedy word-wrap into at most `max_lines` shaped lines. A word wider than
+/// `max_w` and any overflow past the last line are ellipsized.
+pub(crate) fn wrap_text_lines(
+    text: &str,
+    font: &Font,
+    font_size: Pixels,
+    color: Hsla,
+    max_w: f32,
+    max_lines: usize,
+    window: &Window,
+) -> Vec<ShapedLine> {
+    let width_of = |t: &str| line_width(&shape_text(t.to_string(), font, font_size, color, window));
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        if current.is_empty() || width_of(&candidate) <= max_w {
+            current = candidate;
+        } else {
+            lines.push(std::mem::replace(&mut current, word.to_string()));
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    let max_lines = max_lines.max(1);
+    if lines.len() > max_lines {
+        let tail = lines.split_off(max_lines - 1).join(" ");
+        lines.push(tail);
+    }
+    lines
+        .iter()
+        .map(|line| shape_text_truncated(line, font, font_size, color, max_w, window))
+        .collect()
+}
+
 #[inline]
 pub(crate) fn line_width(line: &ShapedLine) -> f32 {
     f32::from(line.width())
@@ -308,7 +348,7 @@ pub(crate) fn paint_theme_icon(
         size: size(px(sz), px(sz)),
     };
 
-    let use_fluent = windows_theme && !matches!(kind, AtlasIcon::TerminalWindow);
+    let use_fluent = windows_theme && kind.has_windows_glyph();
     if use_fluent {
         let glyph = windows_icon_glyph(kind);
         let font = fluent_icons_font();

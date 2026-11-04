@@ -3,15 +3,12 @@ use super::super::converter::{Phase, Session};
 use crate::app::App;
 use gpui::prelude::*;
 use gpui::{
-    canvas, point, px, Bounds, Context, DispatchPhase, Hsla, MouseButton, MouseDownEvent,
+    canvas, point, px, Bounds, DispatchPhase, WeakEntity, Hsla, MouseButton, MouseDownEvent,
     MouseMoveEvent, PathBuilder, Pixels, Point, Window,
 };
 use std::f32::consts::TAU;
 
-pub(super) const PAGE_SIZE: usize = 4;
-
-pub(super) use super::geometry::angle;
-use super::geometry::hit;
+use super::geometry::{hit, Ring, GAP};
 
 fn polar(center: Point<Pixels>, radius: f32, angle: f32) -> Point<Pixels> {
     point(
@@ -20,24 +17,31 @@ fn polar(center: Point<Pixels>, radius: f32, angle: f32) -> Point<Pixels> {
     )
 }
 
+/// Point `distance` px from `a` toward `b`.
+fn toward(a: Point<Pixels>, b: Point<Pixels>, distance: f32) -> Point<Pixels> {
+    let (dx, dy) = (f32::from(b.x - a.x), f32::from(b.y - a.y));
+    let t = distance / dx.hypot(dy).max(f32::EPSILON);
+    point(a.x + px(dx * t), a.y + px(dy * t))
+}
+
+/// One annular sector with a constant pixel gutter and four rounded corners.
 fn sector(
     center: Point<Pixels>,
-    radius: f32,
-    index: usize,
-    count: usize,
+    inner: f32,
+    outer: f32,
+    mid: f32,
+    step: f32,
 ) -> Option<gpui::Path<Pixels>> {
-    let step = TAU / count.max(1) as f32;
-    let start = angle(index, count) - step * 0.5 + 0.035;
-    let end = start + step - 0.07;
-    let outer = radius - 6.0;
-    let inner = radius * 0.40;
-    let corner = ((outer - inner) * 0.20).min(inner * step * 0.15);
-    let oa = start + corner / outer;
-    let ob = end - corner / outer;
-    let ia = start + corner / inner;
-    let ib = end - corner / inner;
-    // Exact circular arcs and four rounded radial corners: a constant-size
-    // command buffer, with no per-frame polygon allocations.
+    let half = step * 0.5;
+    let (os, oe) = (mid - half + GAP * 0.5 / outer, mid + half - GAP * 0.5 / outer);
+    let (is, ie) = (mid - half + GAP * 0.5 / inner, mid + half - GAP * 0.5 / inner);
+    let corner = ((outer - inner) * 0.22).min(inner * (ie - is).max(0.0) * 0.3);
+    let (oa, ob) = (os + corner / outer, oe - corner / outer);
+    let (ia, ib) = (is + corner / inner, ie - corner / inner);
+    let (o_end, i_end) = (polar(center, outer, oe), polar(center, inner, ie));
+    let (o_start, i_start) = (polar(center, outer, os), polar(center, inner, is));
+    // Exact circular arcs; quadratic-equivalent cubics round the corners.
+    // A constant-size command buffer, no per-frame polygon allocations.
     let mut path = PathBuilder::fill();
     let curve = |path: &mut PathBuilder, a: Point<Pixels>, p: Point<Pixels>, b: Point<Pixels>| {
         let c1 = point(
@@ -58,19 +62,9 @@ fn sector(
         true,
         polar(center, outer, ob),
     );
-    curve(
-        &mut path,
-        polar(center, outer, ob),
-        polar(center, outer, end),
-        polar(center, outer - corner, end),
-    );
-    path.line_to(polar(center, inner + corner, end));
-    curve(
-        &mut path,
-        polar(center, inner + corner, end),
-        polar(center, inner, end),
-        polar(center, inner, ib),
-    );
+    curve(&mut path, polar(center, outer, ob), o_end, toward(o_end, i_end, corner));
+    path.line_to(toward(i_end, o_end, corner));
+    curve(&mut path, toward(i_end, o_end, corner), i_end, polar(center, inner, ib));
     path.arc_to(
         point(px(inner), px(inner)),
         px(0.),
@@ -78,33 +72,26 @@ fn sector(
         false,
         polar(center, inner, ia),
     );
-    curve(
-        &mut path,
-        polar(center, inner, ia),
-        polar(center, inner, start),
-        polar(center, inner + corner, start),
-    );
-    path.line_to(polar(center, outer - corner, start));
-    curve(
-        &mut path,
-        polar(center, outer - corner, start),
-        polar(center, outer, start),
-        polar(center, outer, oa),
-    );
+    curve(&mut path, polar(center, inner, ia), i_start, toward(i_start, o_start, corner));
+    path.line_to(toward(o_start, i_start, corner));
+    curve(&mut path, toward(o_start, i_start, corner), o_start, polar(center, outer, oa));
     path.close();
     path.build().ok()
 }
 
+/// `rings` are in base px; `scale` fits them into the window (and zoom).
 pub(super) fn paint_wheel(
-    diameter: f32,
+    scale: f32,
+    rings: Vec<Ring>,
     selected: usize,
+    hovered: Option<usize>,
     available: Vec<bool>,
-    colors: (Hsla, Hsla, Hsla),
-    cx: &mut Context<App>,
+    colors: (Hsla, Hsla, Hsla, Hsla),
+    reveal: f32,
+    (hover, selection): (Vec<f32>, Vec<f32>),
+    view: WeakEntity<App>,
 ) -> gpui::AnyElement {
-    let count = available.len();
-    let view = cx.entity();
-    let page = selected / PAGE_SIZE;
+    let diameter = super::geometry::radius(&rings) * 2.0 * scale;
     #[cfg(feature = "conversion-lab")]
     let geometry_view = view.clone();
     canvas(
@@ -118,32 +105,68 @@ pub(super) fn paint_wheel(
             let _ = (bounds, cx);
         },
         move |bounds: Bounds<Pixels>, _, window: &mut Window, _cx| {
-            let radius = f32::from(bounds.size.width) * 0.5;
             let center = bounds.center();
-            for (index, enabled) in available.iter().enumerate() {
-                if let Some(path) = sector(center, radius, index, count) {
-                    let color = if index + page * PAGE_SIZE == selected {
-                        colors.1
-                    } else if *enabled {
+            let count = available.len().max(1);
+            for ring in &rings {
+                let step = TAU / ring.len as f32;
+                for local in 0..ring.len {
+                    let index = ring.start + local;
+                    let mid = super::geometry::angle(local, ring.len);
+                    let h = hover.get(index).copied().unwrap_or(0.);
+                    let s = selection.get(index).copied().unwrap_or(0.);
+                    // The hovered sector lifts outward a few pixels.
+                    let lift = (h * 5.0 + s * 2.0) * scale;
+                    let Some(path) = sector(
+                        center,
+                        ring.inner * scale,
+                        ring.outer * scale + lift,
+                        mid,
+                        step,
+                    ) else {
+                        continue;
+                    };
+                    let base = if available.get(index).copied().unwrap_or(false) {
                         colors.0
                     } else {
                         colors.2
                     };
-                    window.paint_path(path, color);
+                    // Sectors fade in clockwise from the pinned one.
+                    let order = (index + count - selected.min(count - 1)) % count;
+                    let alpha = super::render::sector_alpha(reveal, order, count);
+                    window.paint_path(path.clone(), gpui::ColorExt::opacity(&base, alpha));
+                    if h > 0.003 && index != selected {
+                        window.paint_path(
+                            path.clone(),
+                            gpui::ColorExt::opacity(&colors.3, alpha * h * (1. - s)),
+                        );
+                    }
+                    if s > 0.003 {
+                        window.paint_path(path, gpui::ColorExt::opacity(&colors.1, alpha * s));
+                    }
                 }
             }
+            let locate = {
+                let rings = rings.clone();
+                move |position: Point<Pixels>| {
+                    hit(
+                        f32::from(position.x - center.x) / scale,
+                        f32::from(position.y - center.y) / scale,
+                        &rings,
+                    )
+                }
+            };
+            // Hover only previews: crossing sectors on the way to the info
+            // column must not change the pinned choice.
             let hover_view = view.clone();
+            let hover_locate = locate.clone();
             window.on_mouse_event::<MouseMoveEvent>(move |ev, phase, _window, cx| {
-                if phase != DispatchPhase::Bubble || !bounds.contains(&ev.position) {
+                if phase != DispatchPhase::Bubble {
                     return;
                 }
-                let Some(index) = hit(
-                    f32::from(ev.position.x - center.x),
-                    f32::from(ev.position.y - center.y),
-                    radius,
-                    count,
-                ) else {
-                    return;
+                let index = if bounds.contains(&ev.position) {
+                    hover_locate(ev.position)
+                } else {
+                    None
                 };
                 hover_view.update(cx, |app, cx| {
                     if let Some(session) = app
@@ -151,14 +174,14 @@ pub(super) fn paint_wheel(
                         .as_mut()
                         .filter(|s| matches!(s.phase, Phase::Choosing))
                     {
-                        let selected = page * PAGE_SIZE + index;
-                        if session.selected != selected {
-                            session.selected = selected;
+                        if session.hovered != index {
+                            session.hovered = index;
                             cx.notify();
                         }
                     }
                 });
             });
+            // Click pins a format; a double click converts straight away.
             let click_view = view.clone();
             window.on_mouse_event::<MouseDownEvent>(move |ev, phase, _window, cx| {
                 if phase != DispatchPhase::Bubble
@@ -167,12 +190,7 @@ pub(super) fn paint_wheel(
                 {
                     return;
                 }
-                let Some(index) = hit(
-                    f32::from(ev.position.x - center.x),
-                    f32::from(ev.position.y - center.y),
-                    radius,
-                    count,
-                ) else {
+                let Some(index) = locate(ev.position) else {
                     return;
                 };
                 click_view.update(cx, |app, cx| {
@@ -182,8 +200,10 @@ pub(super) fn paint_wheel(
                         ..
                     }) = app.converter.as_mut()
                     {
-                        *selected = page * PAGE_SIZE + index;
-                        app.start_conversion();
+                        *selected = index;
+                        if ev.click_count >= 2 {
+                            app.start_conversion();
+                        }
                         cx.notify();
                     }
                 });

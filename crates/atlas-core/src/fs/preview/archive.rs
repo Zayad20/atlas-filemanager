@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use atlas_model::app_state::BgResult;
 use atlas_model::pane::TabId;
-use atlas_model::preview_cache::{is_audio_ext, is_image_ext, PreviewResult};
+use atlas_model::preview_cache::{
+    is_audio_ext, is_image_ext, DirPreviewEntry, PreviewResult, DIR_PREVIEW_LIMIT,
+};
 
 use super::markdown::{is_markdown_ext, parse_markdown};
 use super::text::highlight_text;
@@ -34,7 +36,11 @@ pub async fn load_archive_preview(
                 Ok(r) => r,
                 Err(e) => return PreviewResult::Error(e.to_string()),
             };
-            let cap = if is_image_ext(&ext) {
+            let cap = if matches!(ext.as_str(), "csv" | "tsv") {
+                2 * 1024 * 1024
+            } else if ext == "docx" {
+                32 * 1024 * 1024
+            } else if is_image_ext(&ext) {
                 16 * 1024 * 1024
             } else {
                 MAX_TEXT_BYTES
@@ -68,7 +74,11 @@ pub async fn load_archive_preview(
 }
 
 fn bytes_to_preview(bytes: Vec<u8>, ext: &str) -> PreviewResult {
-    if is_image_ext(ext) {
+    if ext == "docx" {
+        super::document::preview_docx_reader(std::io::Cursor::new(bytes), "")
+    } else if matches!(ext, "csv" | "tsv") {
+        crate::ext::runner::delimited_bytes(&bytes, if ext == "tsv" { b'\t' } else { b',' }, bytes.len() >= 2 * 1024 * 1024)
+    } else if is_image_ext(ext) {
         match image::load_from_memory(&bytes) {
             Ok(img) => {
                 let original_width = img.width() as usize;
@@ -126,5 +136,59 @@ fn bytes_to_preview(bytes: Vec<u8>, ext: &str) -> PreviewResult {
                 size: e.into_bytes().len() as u64,
             },
         }
+    }
+}
+
+/// Listing preview for an archive file: root entries (dirs first) plus totals
+/// over the whole tree, walked breadth-first with an entry budget.
+pub(crate) fn preview_archive_listing(archive: &std::path::Path) -> PreviewResult {
+    const WALK_BUDGET: usize = 20_000;
+    if super::is_cloud_placeholder(archive) {
+        return super::offline_preview();
+    }
+    let Some(provider) = crate::fs::archive::open(archive) else {
+        return PreviewResult::Error("Unsupported archive format".into());
+    };
+    let root = match provider.list(std::path::Path::new("")) {
+        Ok(entries) => entries,
+        Err(e) => return PreviewResult::Error(e.to_string()),
+    };
+    let (mut total_count, mut total_size) = (0usize, 0u64);
+    let mut queue: std::collections::VecDeque<PathBuf> = std::collections::VecDeque::new();
+    for entry in &root {
+        total_count += 1;
+        total_size += entry.size().unwrap_or(0);
+        if entry.kind() == atlas_model::file_entry::FileKind::Dir {
+            queue.push_back(entry.path());
+        }
+    }
+    while let Some(dir) = queue.pop_front() {
+        if total_count >= WALK_BUDGET {
+            break;
+        }
+        for entry in provider.list(&dir).unwrap_or_default() {
+            total_count += 1;
+            total_size += entry.size().unwrap_or(0);
+            if entry.kind() == atlas_model::file_entry::FileKind::Dir {
+                queue.push_back(entry.path());
+            }
+        }
+    }
+    let mut entries: Vec<DirPreviewEntry> = root
+        .iter()
+        .map(|entry| DirPreviewEntry {
+            name: entry.name.to_string(),
+            path: archive.join(entry.path()),
+            is_dir: entry.kind() == atlas_model::file_entry::FileKind::Dir,
+            size: entry.size(),
+            extension: entry.extension().map(|e| e.to_lowercase().to_string()),
+        })
+        .collect();
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    entries.truncate(DIR_PREVIEW_LIMIT);
+    PreviewResult::Dir {
+        entries,
+        total_count,
+        total_size,
     }
 }

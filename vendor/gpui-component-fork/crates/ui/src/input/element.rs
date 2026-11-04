@@ -1445,6 +1445,7 @@ impl TextElement {
 }
 
 pub(super) struct PrepaintState {
+    scroll_animating: bool,
     /// The lines of entire lines.
     last_layout: LastLayout,
     /// The lines only contains the visible lines in the viewport, based on `visible_range`.
@@ -1585,6 +1586,14 @@ impl Element for TextElement {
 
         let state = self.state.read(cx);
         let line_height = window.line_height();
+        // Advance before determining visible lines so glyphs, gutter and scrollbar
+        // all use the same offset in this frame.
+        let scroll_animating = state.mode.is_multi_line()
+            && state.scroll_handle.update_scroll_geometry(
+                bounds,
+                state.scroll_size,
+                cx.background_executor().now(),
+            );
 
         let (visible_range, visible_buffer_lines, visible_top) =
             self.calculate_visible_range(&state, line_height, bounds.size.height);
@@ -1941,6 +1950,7 @@ impl Element for TextElement {
             self.layout_fold_icons(original_x, &bounds, &last_layout, window, cx);
 
         PrepaintState {
+            scroll_animating,
             bounds,
             last_layout,
             scroll_size,
@@ -1971,6 +1981,11 @@ impl Element for TextElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        if prepaint.scroll_animating {
+            window.request_animation_frame();
+            let state = self.state.clone();
+            window.on_next_frame(move |_, cx| state.update(cx, |_, cx| cx.notify()));
+        }
         let focus_handle = self.state.read(cx).focus_handle.clone();
         let show_cursor = self.state.read(cx).show_cursor(window, cx);
         let focused = focus_handle.is_focused(window);
@@ -2240,7 +2255,11 @@ impl Element for TextElement {
             state.set_input_bounds(input_bounds, cx);
             state.last_selected_range = Some(selected_range);
             state.scroll_size = prepaint.scroll_size;
-            state.update_scroll_offset(Some(prepaint.cursor_scroll_offset), cx);
+            // A no-op set_offset cancels the wheel target. Only cursor reveal or
+            // clamping may replace the offset while a glide is in progress.
+            if state.scroll_handle.offset() != prepaint.cursor_scroll_offset {
+                state.update_scroll_offset(Some(prepaint.cursor_scroll_offset), cx);
+            }
             state.deferred_scroll_offset = None;
 
             cx.notify();

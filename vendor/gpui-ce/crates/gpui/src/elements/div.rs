@@ -4822,7 +4822,8 @@ impl ScrollHandle {
         let offset = *state.offset.borrow();
         let max = state.max_offset;
         if matches!(delta, crate::ScrollDelta::Lines(_)) && state.smooth_ease > 0.0 {
-            state.wheel_scroll.push([offset.x.into(), offset.y.into()], [pixels.x.into(), pixels.y.into()], [max.x.into(), max.y.into()], now);
+            let boost = state.smooth_boost.max(1.0);
+            state.wheel_scroll.push([offset.x.into(), offset.y.into()], [(pixels.x * boost).into(), (pixels.y * boost).into()], [max.x.into(), max.y.into()], now);
         } else {
             state.wheel_scroll.cancel();
             *state.offset.borrow_mut() = point((offset.x + pixels.x).clamp(-max.x, Pixels::ZERO),

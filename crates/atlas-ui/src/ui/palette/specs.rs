@@ -7,7 +7,7 @@ use super::{
 use crate::app::App;
 use crate::input::action::Action;
 use crate::ui::icons::AtlasIcon;
-use atlas_core::search::navigation::{filename_match_quality, path_noise};
+use atlas_core::search::navigation::{filename_match_quality, match_path_tokens, path_noise};
 use atlas_model::pane::PaneId;
 use atlas_model::settings::ViewMode;
 use gpui::prelude::*;
@@ -847,11 +847,28 @@ impl App {
                     let name_scores = self
                         .fuzzy_scorer
                         .scores(&needle, names.iter().map(String::as_str));
+                    // Multi-word queries ("emi pers") match successive path
+                    // segments; a complete in-order match outranks scattered ones.
+                    let segment_scores: Vec<Option<u32>> = if needle.split_whitespace().nth(1).is_some() {
+                        entries
+                            .iter()
+                            .map(|e| {
+                                let m = match_path_tokens(&needle, &relative_path(&e.path).to_string_lossy());
+                                m.complete.then_some(m.score)
+                            })
+                            .collect()
+                    } else {
+                        vec![None; entries.len()]
+                    };
                     let mut order: Vec<usize> = (0..entries.len()).collect();
                     order.sort_by(|&a, &b| {
-                        filename_match_quality(&names[b], &needle)
-                            .min(2)
-                            .cmp(&filename_match_quality(&names[a], &needle).min(2))
+                        segment_scores[b]
+                            .cmp(&segment_scores[a])
+                            .then_with(|| {
+                                filename_match_quality(&names[b], &needle)
+                                    .min(2)
+                                    .cmp(&filename_match_quality(&names[a], &needle).min(2))
+                            })
                             .then_with(|| noise[a].cmp(&noise[b]))
                             .then_with(|| {
                                 filename_match_quality(&names[b], &needle)
@@ -903,6 +920,12 @@ impl App {
                 }
                 let mut item = goto_index_item(entry.clone(), focused_tile, pane);
                 item.highlight = self.fuzzy_scorer.match_ranges(&needle, &item.title);
+                if item.highlight.is_none() {
+                    item.highlight = Some(match_path_tokens(&needle, &item.title).ranges);
+                }
+                if let Some(desc) = &item.description {
+                    item.description_highlight = Some(match_path_tokens(&needle, desc).ranges);
+                }
                 bucket.push(item);
             }
             let direct_path = dirs::home_dir()
@@ -1097,7 +1120,8 @@ impl App {
         if scoped {
             atlas_core::fs::index::build_index_scoped(root.clone(), injector);
         } else {
-            atlas_core::fs::index::build_index(root.clone(), injector);
+            let extended = self.goto_extended_index();
+            atlas_core::fs::index::build_goto_index(root.clone(), injector, extended);
         }
         self.goto_index_root = Some((root, scoped));
     }
@@ -1245,6 +1269,24 @@ impl App {
         sections
     }
 
+    /// Opt-in (per profile): index every drive and WSL distro for goto.
+    pub(crate) fn goto_extended_index(&self) -> bool {
+        self.state
+            .profiles
+            .active()
+            .prefs
+            .get::<bool>("goto_extended_index")
+            .unwrap_or(false)
+    }
+
+    /// Flip the per-profile extended goto index (Settings) and rebuild it.
+    pub(crate) fn set_goto_extended_index(&mut self, on: bool) {
+        self.state.profiles.active_mut().prefs.set("goto_extended_index", &on);
+        atlas_core::util::config::save_profiles(&self.state.profiles);
+        self.goto_index_root = None;
+        self.goto_snapshot = Default::default();
+    }
+
     /// The "search in content" pill at the right of the goto search row.
     /// Toggles the active profile's `search_in_content`, persists it, and
     /// restarts the search so the results switch modes immediately.
@@ -1328,6 +1370,11 @@ impl App {
         let pinned = self.state.profiles.active().pinned_commands.clone();
         let query = self.state.overlay.palette_state.query.clone();
         let searching = !query.trim().is_empty();
+        let pattern = if searching {
+            atlas_core::search::fuzzy::FuzzyScorer::parse_pattern(&query)
+        } else {
+            None
+        };
 
         // (best item score, declaration order, section) — declaration order is
         // the tie-breaker and the whole order when not searching.
@@ -1343,7 +1390,7 @@ impl App {
                     .find(|def| def.id == *id)
             })
             .collect();
-        if let Some((best, items)) = self.scored_command_items(&quick_defs, true, &pinned, &query) {
+        if let Some((best, items)) = self.scored_command_items(&quick_defs, true, &pinned, pattern.as_ref()) {
             scored.push((
                 best,
                 0,
@@ -1362,7 +1409,7 @@ impl App {
             let icon = icon.clone();
             let title = title.clone();
             let id = id;
-            if let Some((best, items)) = self.scored_command_items(&refs, false, &pinned, &query) {
+            if let Some((best, items)) = self.scored_command_items(&refs, false, &pinned, pattern.as_ref()) {
                 scored.push((
                     best,
                     decl + 1,
@@ -1402,44 +1449,34 @@ impl App {
         defs: &[&CommandDef],
         force_pinned: bool,
         pinned: &[String],
-        query: &str,
+        pattern: Option<&atlas_core::search::fuzzy::Pattern>,
     ) -> Option<(u32, Vec<PaletteItem>)> {
-        let searching = !query.trim().is_empty();
-        let title_scores = self
-            .fuzzy_scorer
-            .scores(query, defs.iter().map(|d| d.title.as_str()));
-        let scores: Vec<Option<u32>> = defs
-            .iter()
-            .enumerate()
-            .map(|(i, d)| {
-                if !searching {
-                    return None;
-                }
-                if let Some(s) = title_scores[i] {
-                    return Some(s);
-                }
-                if let Some(s) = d.aliases.iter().find_map(|alias| {
-                    self.fuzzy_scorer.scores(query, [alias.as_str()]).pop().flatten()
-                }) {
-                    return Some(s.saturating_sub(5).max(1));
-                }
-                if let Some(s) = self.fuzzy_scorer.scores(query, [d.id.as_str()]).pop().flatten() {
-                    return Some(s.saturating_sub(10).max(1));
-                }
-                if !d.description.is_empty() {
-                    if let Some(s) = self
-                        .fuzzy_scorer
-                        .scores(query, [d.description.as_ref()])
-                        .pop()
-                        .flatten()
-                    {
-                        return Some(s.saturating_sub(15).max(1));
+        let scores: Vec<Option<u32>> = if let Some(pat) = pattern {
+            defs.iter()
+                .map(|d| {
+                    if let Some(s) = self.fuzzy_scorer.score_pattern(pat, &d.title) {
+                        return Some(s);
                     }
-                }
-                None
-            })
-            .collect();
-        let order: Vec<usize> = if searching {
+                    if let Some(s) = d.aliases.iter().find_map(|alias| {
+                        self.fuzzy_scorer.score_pattern(pat, alias)
+                    }) {
+                        return Some(s.saturating_sub(5).max(1));
+                    }
+                    if let Some(s) = self.fuzzy_scorer.score_pattern(pat, &d.id) {
+                        return Some(s.saturating_sub(10).max(1));
+                    }
+                    if !d.description.is_empty() {
+                        if let Some(s) = self.fuzzy_scorer.score_pattern(pat, &d.description) {
+                            return Some(s.saturating_sub(15).max(1));
+                        }
+                    }
+                    None
+                })
+                .collect()
+        } else {
+            vec![None; defs.len()]
+        };
+        let order: Vec<usize> = if pattern.is_some() {
             let mut v: Vec<usize> = (0..defs.len()).filter(|&i| scores[i].is_some()).collect();
             v.sort_by(|&a, &b| scores[b].cmp(&scores[a]).then(a.cmp(&b)));
             v
@@ -1464,7 +1501,9 @@ impl App {
                     shortcut,
                     recording,
                 );
-                item.highlight = self.fuzzy_scorer.match_ranges(query, &item.title);
+                if let Some(pat) = pattern {
+                    item.highlight = self.fuzzy_scorer.match_ranges_pattern(pat, &item.title);
+                }
                 item
             })
             .collect();
@@ -1916,7 +1955,7 @@ impl App {
                 "view.branch-view",
                 rust_i18n::t!("cmd_view_branch_view_title"),
                 rust_i18n::t!("cmd_view_branch_view_desc"),
-                AtlasIcon::GitBranch,
+                AtlasIcon::TreeStructure,
                 Action::ToggleBranchViewFocused,
             ),
             CommandDef::new(
@@ -1996,6 +2035,36 @@ impl App {
                 "view.group-name",
                 rust_i18n::t!("cmd_group_name"), "", AtlasIcon::List,
                 Action::SetGroupBy(atlas_model::tab::GroupBy::Name),
+            ),
+            CommandDef::new(
+                "view.group-created",
+                rust_i18n::t!("cmd_group_created"), "", AtlasIcon::List,
+                Action::SetGroupBy(atlas_model::tab::GroupBy::Created),
+            ),
+            CommandDef::new(
+                "view.group-accessed",
+                rust_i18n::t!("cmd_group_accessed"), "", AtlasIcon::List,
+                Action::SetGroupBy(atlas_model::tab::GroupBy::Accessed),
+            ),
+            CommandDef::new(
+                "view.group-deleted",
+                rust_i18n::t!("cmd_group_deleted"), "", AtlasIcon::List,
+                Action::SetGroupBy(atlas_model::tab::GroupBy::Deleted),
+            ),
+            CommandDef::new(
+                "view.group-origin",
+                rust_i18n::t!("cmd_group_origin"), "", AtlasIcon::List,
+                Action::SetGroupBy(atlas_model::tab::GroupBy::Origin),
+            ),
+            CommandDef::new(
+                "view.group-expand",
+                rust_i18n::t!("cmd_group_expand"), "", AtlasIcon::List,
+                Action::SetAllGroupsCollapsed(false),
+            ),
+            CommandDef::new(
+                "view.group-collapse",
+                rust_i18n::t!("cmd_group_collapse"), "", AtlasIcon::List,
+                Action::SetAllGroupsCollapsed(true),
             ),
             CommandDef::new(
                 "view.zoom-in",
@@ -2469,11 +2538,39 @@ impl App {
                 Action::OpenGettingStarted,
             ),
             CommandDef::new(
+                "sys.guide",
+                rust_i18n::t!("cmd_sys_guide_title"),
+                rust_i18n::t!("cmd_sys_guide_desc"),
+                AtlasIcon::Lifebuoy,
+                Action::OpenGuide(0),
+            ),
+            CommandDef::new(
                 "sys.settings",
                 rust_i18n::t!("cmd_sys_settings_title"),
                 rust_i18n::t!("cmd_sys_settings_desc"),
                 AtlasIcon::Gear,
                 Action::OpenSettings,
+            ),
+            CommandDef::new(
+                "sys.get-premium",
+                rust_i18n::t!("cmd_sys_get_premium_title"),
+                rust_i18n::t!("cmd_sys_get_premium_desc"),
+                AtlasIcon::Star,
+                Action::GetPremium,
+            ),
+            CommandDef::new(
+                "sys.activate-license",
+                rust_i18n::t!("cmd_sys_activate_license_title"),
+                rust_i18n::t!("cmd_sys_activate_license_desc"),
+                AtlasIcon::Lock,
+                Action::ActivateLicense,
+            ),
+            CommandDef::new(
+                "sys.deactivate-license",
+                rust_i18n::t!("cmd_sys_deactivate_license_title"),
+                rust_i18n::t!("cmd_sys_deactivate_license_desc"),
+                AtlasIcon::Lock,
+                Action::DeactivateLicense,
             ),
             CommandDef::new(
                 "sys.save-session",

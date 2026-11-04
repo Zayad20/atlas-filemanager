@@ -125,6 +125,16 @@ pub struct FolderViewPrefs {
 impl FolderViewPrefs {
     const CAP: usize = 200;
 
+    pub fn remove_subtree(&mut self, root: &std::path::Path) {
+        self.entries.retain(|(path, _)| !path.starts_with(root));
+        self.records.retain(|record| !record.location.path.starts_with(root));
+    }
+
+    pub fn retain_paths(&mut self, mut keep: impl FnMut(&std::path::Path) -> bool) {
+        self.entries.retain(|(path, _)| keep(path));
+        self.records.retain(|record| keep(&record.location.path));
+    }
+
     pub fn get_exact(&self, path: &std::path::Path) -> Option<FolderViewPref> {
         self.entries.iter().map(|(p, v)| (p, v))
             .chain(self.records.iter().filter(|r| r.available).map(|r| (&r.location.path, &r.pref)))
@@ -348,6 +358,9 @@ pub struct Tag {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Profile {
+    /// Stable identity for private-folder grants; names and vector indices can change.
+    #[serde(default = "new_profile_id")]
+    pub id: String,
     pub name: String,
     pub bookmarks: Vec<Bookmark>,
     pub tags: Vec<Tag>,
@@ -383,6 +396,7 @@ pub struct Profile {
 impl Profile {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
+            id: new_profile_id(),
             name: name.into(),
             bookmarks: Vec::new(),
             tags: Vec::new(),
@@ -405,6 +419,28 @@ impl Profile {
     /// Persist this profile's state for feature `S` under its namespace.
     pub fn set_scoped<S: ProfileScoped>(&mut self, state: &S::State) {
         self.prefs.set(S::KEY, state);
+    }
+}
+
+fn new_profile_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+#[cfg(test)]
+mod private_identity_tests {
+    use super::*;
+    #[test]
+    fn identity_survives_rename_and_serde_and_legacy_profiles_get_distinct_ids() {
+        let mut profile = Profile::new("Personal");
+        let id = profile.id.clone(); profile.name = "Renamed".into();
+        let serialized = serde_json::to_value(&profile).unwrap();
+        let restored: Profile = serde_json::from_value(serialized.clone()).unwrap();
+        assert_eq!(restored.id, id);
+        let mut legacy = serialized; legacy.as_object_mut().unwrap().remove("id");
+        let first: Profile = serde_json::from_value(legacy.clone()).unwrap();
+        let second: Profile = serde_json::from_value(legacy).unwrap();
+        assert_ne!(first.id, second.id);
+        assert_ne!(first.id, id);
     }
 }
 
@@ -542,6 +578,8 @@ pub struct ProfileUiState {
     pub new_tag_global: bool,
     pub new_tag_name: String,
     pub new_tag_color: [u8; 3],
+    /// Targets captured when creating from a file's tag picker; empty for sidebar creation.
+    pub new_tag_paths: Vec<PathBuf>,
     pub confirming_delete_profile: Option<usize>,
     pub atlas_launcher_profiles_open: bool,
 }

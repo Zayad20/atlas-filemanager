@@ -7,9 +7,11 @@
 mod archive;
 mod audio;
 mod dir;
+pub(crate) mod document;
 mod image;
 mod linux_thumb;
 mod markdown;
+mod model3d;
 pub mod metadata;
 mod pdf;
 pub mod syntax;
@@ -20,12 +22,18 @@ pub use archive::load_archive_preview;
 pub use audio::extract_audio_thumbnail;
 pub use image::decode_svg;
 pub use linux_thumb::freedesktop_thumbnail;
+pub use model3d::model_thumbnail;
 pub use pdf::{preview_pdf_public, preview_pdf_with_pdftoppm};
 
 use std::path::PathBuf;
 
 /// Metadata-only guard for automatic reads. A failed attribute query is treated
 /// conservatively: automatic previews must never hydrate an offline cloud file.
+/// Metadata rows (resolution, duration, codec) for a video, via ffprobe.
+pub fn video_exif(path: &std::path::Path) -> Vec<(String, String)> {
+    video::video_exif(path)
+}
+
 pub fn is_cloud_placeholder(path: &std::path::Path) -> bool {
     #[cfg(windows)]
     {
@@ -53,10 +61,15 @@ pub(crate) const MAX_IMAGE_PREVIEW_EDGE: u32 = 1600;
 pub(crate) const MAX_MULTI_THUMBNAIL_EDGE: u32 = 384;
 pub(crate) const MAX_PDF_PREVIEW_EDGE: &str = "1024";
 
-/// Per-position tilt (degrees) for the multi-selection "butterfly" fan.
-const MULTI_BUTTERFLY_ANGLES: [f32; 4] = [-8.0, -3.0, 3.0, 8.0];
+/// Per-position tilt (degrees) for multi-selection thumbnails. The inspector
+/// now frames them in upright stacked cards, so they stay unrotated.
+const MULTI_BUTTERFLY_ANGLES: [f32; 4] = [0.0; 4];
 
 pub async fn load_preview(tab: TabId, path: PathBuf, tx: flume::Sender<BgResult>) {
+    if crate::vault::is_private_path(&path) {
+        let _ = tx.send(BgResult::PreviewReady { tab, path, result: PreviewResult::Binary { size: 0 } });
+        return;
+    }
     if is_cloud_placeholder(&path) {
         let _ = tx.send(BgResult::PreviewReady {
             tab,
@@ -83,6 +96,10 @@ pub async fn load_preview(tab: TabId, path: PathBuf, tx: flume::Sender<BgResult>
         tokio::task::spawn_blocking(move || image::preview_image(&p))
             .await
             .unwrap_or_else(|e| PreviewResult::Error(e.to_string()))
+    } else if crate::vault::live::is_private(&path) && (atlas_model::preview_cache::is_video_ext(&ext) || ext == "pdf") {
+        // These providers render via temporary files or OS caches. Opening in an
+        // external app remains explicit; automatic private previews stay in memory.
+        PreviewResult::Binary { size: std::fs::metadata(&path).map_or(0, |m| m.len()) }
     } else if atlas_model::preview_cache::is_video_ext(&ext) {
         let p = path.clone();
         tokio::task::spawn_blocking(move || video::preview_video(&p))
@@ -96,6 +113,21 @@ pub async fn load_preview(tab: TabId, path: PathBuf, tx: flume::Sender<BgResult>
     } else if is_audio_ext(&ext) {
         let p = path.clone();
         tokio::task::spawn_blocking(move || audio::preview_audio(&p))
+            .await
+            .unwrap_or_else(|e| PreviewResult::Error(e.to_string()))
+    } else if model3d::is_model_ext(&ext) {
+        let p = path.clone();
+        tokio::task::spawn_blocking(move || model3d::preview_model(&p))
+            .await
+            .unwrap_or_else(|e| PreviewResult::Error(e.to_string()))
+    } else if matches!(ext.as_str(), "docx" | "csv" | "tsv" | "xls" | "xlsx" | "ods" | "pptx" | "psd" | "psb") {
+        let p = path.clone();
+        tokio::task::spawn_blocking(move || crate::ext::runner::native_document_preview(&p))
+            .await
+            .unwrap_or_else(|e| PreviewResult::Error(e.to_string()))
+    } else if crate::fs::archive::is_archive_path(&path) {
+        let p = path.clone();
+        tokio::task::spawn_blocking(move || archive::preview_archive_listing(&p))
             .await
             .unwrap_or_else(|e| PreviewResult::Error(e.to_string()))
     } else if markdown::is_markdown_ext(&ext) {
@@ -128,6 +160,8 @@ pub async fn load_multi_thumbnail(
             audio::extract_audio_thumbnail(&thumbnail_path, MAX_MULTI_THUMBNAIL_EDGE)
         } else if ext == "svg" {
             image::decode_svg(&thumbnail_path, MAX_MULTI_THUMBNAIL_EDGE)
+        } else if model3d::is_model_ext(&ext) {
+            model3d::model_thumbnail(&thumbnail_path, MAX_MULTI_THUMBNAIL_EDGE)
         } else {
             image::preview_thumbnail(&thumbnail_path).ok()
         };

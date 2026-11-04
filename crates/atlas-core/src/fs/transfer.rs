@@ -692,7 +692,9 @@ async fn copy_file_chunked(
                 return Ok(FileOutcome::Cancelled);
             }
             Err(error) => {
-                tracing::debug!(?error, path = %src.display(), "CopyFile2 unavailable; using chunked fallback");
+                if !crate::vault::live::is_private(src) && !crate::vault::live::is_private(dst) {
+                    tracing::debug!(?error, path = %src.display(), "CopyFile2 unavailable; using chunked fallback");
+                }
                 ctx.bytes_done = base_bytes;
                 let _ = tokio::fs::remove_file(ext_path(dst)).await;
             }

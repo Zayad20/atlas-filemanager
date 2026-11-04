@@ -1,0 +1,18 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "yoga-layout",
+  "version": "3.2.1",
+  "license": "MIT",
+  "author": "Meta Open Source",
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:facebook/yoga.git"
+  },
+  "homepage": "https://yogalayout.dev/"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: 4b82c23413f756473143be7a2ce04bca9d1f2b43a4348098a8de19f63a0adda8

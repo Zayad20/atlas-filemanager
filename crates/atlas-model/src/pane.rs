@@ -20,10 +20,15 @@ impl FolderOrder {
     pub const fn next(self) -> Self {
         match self { Self::FoldersFirst => Self::FoldersLast, Self::FoldersLast => Self::Mixed, Self::Mixed => Self::FoldersFirst }
     }
-    pub fn label(self) -> String {
-        rust_i18n::t!(match self {
-            Self::FoldersFirst => "folder_order_first", Self::FoldersLast => "folder_order_last", Self::Mixed => "folder_order_mixed",
-        }).into_owned()
+    pub const fn label_key(self) -> &'static str {
+        match self {
+            Self::FoldersFirst => "folder_order_first",
+            Self::FoldersLast => "folder_order_last",
+            Self::Mixed => "folder_order_mixed",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        self.label_key()
     }
 }
 

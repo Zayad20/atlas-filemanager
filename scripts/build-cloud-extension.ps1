@@ -12,6 +12,7 @@ if (-not $SkipBuild) {
     Push-Location $repo
     try {
         cargo build --release --locked -p atlas-cloud-extension
+        if ($LASTEXITCODE -ne 0) { throw "Cloud extension build failed ($LASTEXITCODE)." }
     } finally {
         Pop-Location
     }
@@ -31,6 +32,13 @@ if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $sha256) {
 }
 
 $unpack = Join-Path $repo "target\extensions\rclone"
+foreach ($directory in @($unpack, $output)) {
+    $resolved = [System.IO.Path]::GetFullPath($directory)
+    $allowed = [System.IO.Path]::GetFullPath((Join-Path $repo "target\extensions")) + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $resolved.StartsWith($allowed, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to clean a directory outside target/extensions: $resolved"
+    }
+}
 Remove-Item -LiteralPath $unpack -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $output -Recurse -Force -ErrorAction SilentlyContinue
 Expand-Archive -LiteralPath $zip -DestinationPath $unpack
@@ -42,5 +50,9 @@ Copy-Item (Join-Path $repo "extensions\cloud\THIRD-PARTY-NOTICES.txt") $output
 $rclone = Get-ChildItem $unpack -Filter rclone.exe -Recurse |
     Select-Object -First 1 -ExpandProperty FullName
 Copy-Item $rclone (Join-Path $output "rclone.exe")
+
+$archive = "$output.zip"
+Compress-Archive -Path (Join-Path $output "*") -DestinationPath $archive -Force
+Write-Output "Installable Cloud package: $archive"
 
 Get-ChildItem $output

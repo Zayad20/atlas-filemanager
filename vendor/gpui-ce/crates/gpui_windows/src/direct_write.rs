@@ -78,6 +78,9 @@ struct DirectWriteState {
     fonts: Vec<FontInfo>,
     font_to_font_id: HashMap<Font, FontId>,
     font_info_cache: HashMap<usize, FontId>,
+    /// Keeps every face whose address is a `font_info_cache` key alive, so DirectWrite
+    /// cannot recycle that address for a different face (stale key => wrong glyphs).
+    font_face_keepalive: Vec<IDWriteFontFace3>,
     layout_line_scratch: Vec<u16>,
 }
 
@@ -208,6 +211,7 @@ impl DirectWriteTextSystem {
                 fonts: Vec::new(),
                 font_to_font_id: HashMap::default(),
                 font_info_cache: HashMap::default(),
+                font_face_keepalive: Vec::new(),
                 layout_line_scratch: Vec::new(),
             }),
         })
@@ -1530,13 +1534,28 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
                 || {
                     let font = font_face_to_font(font_face, &self.locale)
                         .ok_or_else(|| Error::new(DWRITE_E_NOFONT, "Failed to create font"))?;
-                    let font_id = match context.text_system.font_to_font_id.get(&font) {
-                        Some(&font_id) => font_id,
-                        None => context
-                            .text_system
-                            .select_and_cache_font(context.components, &font)
-                            .ok_or_else(|| Error::new(DWRITE_E_NOFONT, "Failed to create font"))?,
-                    };
+                    // Register the *actual* run face. Re-resolving it through `Font`
+                    // (family/weight/style) is lossy: it can land on a different physical
+                    // face (e.g. Segoe UI vs Segoe UI Variable/fallback) whose glyph ids
+                    // differ, so the shaped ids would be rasterized with the wrong face
+                    // (`…` -> `ì`, `(` -> `*`).
+                    let features = unsafe {
+                        DirectWriteState::generate_font_features(
+                            &context.components.factory,
+                            &FontFeatures::default(),
+                        )
+                    }
+                    .map_err(|_| Error::new(DWRITE_E_NOFONT, "Failed to create font features"))?;
+                    let font_id = FontId(context.text_system.fonts.len());
+                    context.text_system.fonts.push(FontInfo {
+                        font_family_h: HSTRING::from(font.family.as_str()),
+                        font_face: font_face.clone(),
+                        features,
+                        fallbacks: None,
+                        font_collection: context.text_system.system_font_collection.clone(),
+                    });
+                    // Pin the face: its address is the cache key and must not be recycled.
+                    context.text_system.font_face_keepalive.push(font_face.clone());
                     context
                         .text_system
                         .font_info_cache

@@ -1,0 +1,14 @@
+UPSTREAM PACKAGE DECLARATION
+{
+  "name": "natural-compare",
+  "version": "1.4.0",
+  "license": "MIT",
+  "author": "Lauri Rooden (https://github.com/litejs/natural-compare-lite)",
+  "repository": "git://github.com/litejs/natural-compare-lite.git"
+}
+
+This published package did not supply a standalone license file.
+Its upstream declaration is preserved above; standard license texts are attached.
+No copyright ownership or exception has been inferred.
+
+Published manifest SHA-256: 3d99911ccfa0ca34ae0c68bfd32c038b952542e55db7c649c37b11dd1573f6af

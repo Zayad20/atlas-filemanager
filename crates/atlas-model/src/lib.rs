@@ -4,12 +4,14 @@
 //! UI runtime. Moved here from the legacy `src/state` tree (Phase J); the binary
 //! re-exports it as `crate::state` via a shim so existing paths keep resolving.
 
-rust_i18n::i18n!("../atlas-ui/locales", fallback = "en");
-
 pub mod app_state;
 pub mod batch_rename;
+pub mod cleanup;
+pub mod edition;
 #[cfg(feature = "provider-host")]
 pub mod cloud_model;
+#[cfg(feature = "provider-host")]
+pub mod remote_path;
 #[cfg(feature = "provider-host")]
 pub mod cloud_state;
 pub mod ext_model;

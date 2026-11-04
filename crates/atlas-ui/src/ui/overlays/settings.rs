@@ -70,18 +70,21 @@ impl App {
         if EXPERIMENTAL_IMM_SETTINGS {
             return self.render_settings_imm(window, cx);
         }
-        let (fg, muted, border, accent, surface, accent_fg) = {
+        let (fg, muted, border, accent, surface, accent_fg, panel_bg, hover) = {
             let t = cx.theme();
             (
                 t.popover_foreground,
                 t.muted_foreground,
                 t.border,
-                t.accent,
-                t.background,
-                t.accent_foreground,
+                t.primary,
+                t.secondary,
+                t.primary_foreground,
+                t.popover,
+                t.secondary_hover,
             )
         };
         let view = cx.entity();
+        let guide_link_view = view.clone();
         let focus = self.overlay_focus(cx);
         let (smooth_ease, smooth_boost) =
             crate::app::scroll_smooth_params(self.state.settings.scroll_smoothness);
@@ -105,6 +108,8 @@ impl App {
             || setting_matches(&query_lower, &["language", "idioma", "english", "spanish"]);
         let zoom_row = show_all || setting_matches(&query_lower, &["zoom", "scale", "escala"]);
         let eco_row = show_all || setting_matches(&query_lower, &["eco", "ram", "memory"]);
+        let goto_index_row = show_all
+            || setting_matches(&query_lower, &["index", "indexar", "goto", "wsl", "drives", "discos", "search", "buscar"]);
         let hidden_row =
             show_all || setting_matches(&query_lower, &["show", "hidden", "ocultos", "files"]);
         let vim_row =
@@ -207,6 +212,7 @@ impl App {
             active_section == 1
         } else {
             eco_row
+                || goto_index_row
                 || hidden_row
                 || vim_row
                 || character_row
@@ -277,7 +283,7 @@ impl App {
                             div()
                                 .size(px(16.))
                                 .rounded_full()
-                                .bg(fg)
+                                .bg(if value { accent_fg } else { muted })
                                 .when(value, |d| d.ml(px(16.))),
                         ),
                 )
@@ -322,8 +328,8 @@ impl App {
                 .border_1()
                 .border_color(if selected { accent } else { border })
                 .cursor_pointer()
-                .when(selected, |s| s.bg(accent))
-                .when(!selected, |s| s.hover(|h| h.bg(border)))
+                .when(selected, |s| s.bg(accent).text_color(accent_fg))
+                .when(!selected, |s| s.hover(|h| h.bg(hover)))
                 .child(label.to_string())
                 .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
                     view.update(cx, |this, cx| {
@@ -410,7 +416,7 @@ impl App {
                     .border_color(if selected { accent } else { border })
                     .cursor_pointer()
                     .when(selected, |d| d.bg(accent).text_color(accent_fg))
-                    .when(!selected, |d| d.bg(surface).hover(|h| h.bg(border)))
+                    .when(!selected, |d| d.bg(surface).hover(|h| h.bg(hover)))
                     .child(name.to_string())
                     .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
                         let pick = pick.clone();
@@ -438,7 +444,7 @@ impl App {
                     .text_sm()
                     .text_color(fg)
                     .cursor_pointer()
-                    .hover(|h| h.bg(border))
+                    .hover(|h| h.bg(hover))
                     .child(
                         h_flex()
                             .gap_1()
@@ -447,7 +453,11 @@ impl App {
                             .child(label),
                     )
                     .on_mouse_down(MouseButton::Left, move |_ev, _w, _cx| {
-                        let _ = open::that(url);
+                        if url == crate::ui::overlays::legal::NOTICES_URL {
+                            crate::ui::overlays::legal::open_notices();
+                        } else {
+                            let _ = open::that(url);
+                        }
                     })
             };
 
@@ -481,7 +491,7 @@ impl App {
                     .when(selected, |row| row.bg(accent).text_color(accent_fg))
                     .when(!selected, |row| {
                         row.text_color(if show_all { fg } else { muted })
-                            .hover(|h| h.bg(border))
+                            .hover(|h| h.bg(hover))
                     })
                     .child(icon(
                         item_icon,
@@ -770,6 +780,18 @@ impl App {
                             |app| {
                                 app.state.settings.eco_mode = !app.state.settings.eco_mode;
                                 atlas_core::util::config::save_settings(&app.state.settings);
+                            },
+                            view.clone(),
+                        ))
+                    })
+                    .when(goto_index_row, |panel| {
+                        panel.child(toggle(
+                            &rust_i18n::t!("settings_goto_extended_index"),
+                            self.goto_extended_index(),
+                            "set-goto-extended-index",
+                            |app| {
+                                let on = !app.goto_extended_index();
+                                app.set_goto_extended_index(on);
                             },
                             view.clone(),
                         ))
@@ -1252,12 +1274,62 @@ impl App {
                             v_flex()
                                 .gap_2()
                                 .child(format!("Atlas {}", atlas_core::update::APP_VERSION))
+                                .child({
+                                    let guide_view = guide_link_view;
+                                    h_flex()
+                                        .id("about-guide-link")
+                                        .items_center()
+                                        .gap_2()
+                                        .cursor_pointer()
+                                        .text_sm()
+                                        .child(icon(AtlasIcon::Lifebuoy, 13., muted))
+                                        .child(rust_i18n::t!("guide_open_link").to_string())
+                                        .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
+                                            guide_view.update(cx, |this, cx| {
+                                                this.state.overlay.show_settings = false;
+                                                this.settings_input = None;
+                                                this.process_actions([Action::OpenGuide(0)]);
+                                                cx.notify();
+                                            });
+                                        })
+                                })
                                 .child(link_button(
                                     "about-changelog-link",
                                     AtlasIcon::GlobeSimple,
                                     rust_i18n::t!("settings_changelog").into_owned(),
                                     atlas_core::update::RELEASES_URL,
                                 ))
+                                .child(link_button(
+                                    "about-third-party-licenses",
+                                    AtlasIcon::GlobeSimple,
+                                    "Third-party licenses / Licencias".to_owned(),
+                                    crate::ui::overlays::legal::NOTICES_URL,
+                                ))
+                                .child(link_button(
+                                    "about-privacy-link",
+                                    AtlasIcon::GlobeSimple,
+                                    "Privacy policy".to_owned(),
+                                    "https://atlasnative.com/privacy-policy",
+                                ))
+                                .child(link_button(
+                                    "about-source-link",
+                                    AtlasIcon::GlobeSimple,
+                                    "Source code / Código fuente".to_owned(),
+                                    atlas_core::update::SOURCE_URL,
+                                ))
+                                .child(link_button(
+                                    "about-terms-link",
+                                    AtlasIcon::GlobeSimple,
+                                    "Terms of service".to_owned(),
+                                    "https://atlasnative.com/terms-of-service",
+                                ))
+                                .child(link_button(
+                                    "about-winfsp-link",
+                                    AtlasIcon::GlobeSimple,
+                                    "WinFsp - Windows File System Proxy".to_owned(),
+                                    "https://github.com/winfsp/winfsp",
+                                ))
+                                .child(div().text_xs().text_color(muted).child("Copyright (C) Bill Zissimopoulos"))
                                 .child(
                                     h_flex()
                                         .gap_2()
@@ -1332,7 +1404,7 @@ impl App {
                     .p_3()
                     .border_r_1()
                     .border_color(border)
-                    .bg(surface)
+                    .bg(panel_bg)
                     .child(
                         div()
                             .pb_2()
@@ -1392,7 +1464,21 @@ impl App {
                 .w(px(720.))
                 .h(px(panel_h))
                 .popover_style(cx)
+                .bg(panel_bg)
                 .text_color(fg)
+                .capture_action(cx.listener(
+                    |this, _: &gpui_component::input::Escape, window, cx| {
+                        this.dismiss_settings(window, cx);
+                        cx.stop_propagation();
+                    },
+                ))
+                .capture_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
+                    if ev.keystroke.key == "escape" {
+                        this.dismiss_settings(window, cx);
+                        cx.stop_propagation();
+                    }
+                }))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .overflow_hidden()
                 .occlude()
                 .relative()
@@ -1406,6 +1492,13 @@ impl App {
                 .into_any_element(),
             cx,
         )
+    }
+
+    fn dismiss_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.overlay.show_settings = false;
+        self.settings_input = None;
+        self.focus_handle.focus(window, cx);
+        cx.notify();
     }
 
     // ── batch rename ─────────────────────────────────────────────────────────
