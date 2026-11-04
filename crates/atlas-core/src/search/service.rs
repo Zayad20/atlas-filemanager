@@ -291,12 +291,18 @@ mod tests {
     use super::*;
 
     #[test]
+
+    #[ignore = "needs a built atlas-search-service executable"]
+
     fn test_find_search_service_exe() {
         let exe = find_search_service_exe();
         assert!(exe.is_some(), "should locate atlas-search-service.exe in workspace target");
     }
 
     #[test]
+
+    #[ignore = "needs the search service and real drives"]
+
     fn test_ensure_service_and_multi_drive_search() {
         let started = ensure_service_started();
         assert!(started, "search service should start and be available");

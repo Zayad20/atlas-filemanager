@@ -10,4 +10,4 @@ Source:
 - https://icons8.com/license
 
 Free use requires attribution. Atlas includes the attribution link in
-`Ajustes > Acerca de`.
+`Settings > About`.

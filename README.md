@@ -44,7 +44,7 @@ Atlas draws every pixel on the GPU and keeps your files on your machine. Folders
 - **Private folders** — password-protected folders.
 - **Disk cleanup** — find what is using space and clean it safely.
 - **Cloud and network** — Google Drive, OneDrive and other providers via rclone, plus SMB, FTP and WebDAV, right in the sidebar.
-- **Extensions** — optional, sandboxed WebAssembly extensions (icon themes, thumbnails, Pandoc, Opus, cloud drives, document previews).
+- **Extensions** — optional first-party extensions (icon themes, thumbnails, Pandoc, Opus, cloud drives, document previews).
 - **Themes and icon packs** — including VS Code icon themes.
 
 <div align="center">
@@ -63,7 +63,7 @@ Atlas draws every pixel on the GPU and keeps your files on your machine. Folders
 - **Microsoft Store (recommended):** [Atlas on the Microsoft Store](https://apps.microsoft.com/detail/9MX95D1GDMR3). Free to install; updates are automatic.
 - **Website:** [atlasnative.com](https://atlasnative.com) has the latest news, the changelog and the Linux waitlist.
 
-Atlas is free to use. An optional one-time Premium license unlocks higher limits (more panes, profiles, cloud connections and conversions); see [atlasnative.com](https://atlasnative.com/#pricing).
+Atlas is free to use. An optional one-time Premium license unlocks higher limits (more panes, profiles, cloud connections, conversions and batch rename); see [atlasnative.com](https://atlasnative.com/#pricing).
 
 ## Keyboard shortcuts
 
@@ -109,7 +109,7 @@ The first build compiles GPUI and takes a while. Useful aliases live in [`.cargo
 | `crates/atlas-ui` | The GPUI application: views, overlays, input, drag and drop |
 | `crates/atlas-win-space` | Windows disk-space and cleanup engine |
 | `crates/atlas-search-service` | Background search index service |
-| `extensions/` | First-party WebAssembly and sidecar extensions |
+| `extensions/` | First-party declarative and sidecar extensions |
 | `vendor/` | Patched forks of GPUI and gpui-component (Apache-2.0) |
 | `docs/` | Guides for contributors and extension authors |
 

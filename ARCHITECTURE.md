@@ -6,9 +6,9 @@
 2. `atlas-core` resolves real backends and background work: filesystem, cloud, extensions, and search.
 3. `atlas-ui` renders GPUI and dispatches `Action`; it does not touch the filesystem directly from render paths.
 4. All user input flows through `Action`. Background work responds through `flume` with `BgResult`.
-5. No synchronous `std::fs` on the foreground UI path. Use `tokio::fs` or `spawn_blocking` with a clear reason.
-6. No `unwrap`/`expect` in app code. Tests may use them.
-7. No `Rc<RefCell>`. Prefer `Arc`, channels, and clear ownership.
+5. Avoid synchronous `std::fs` on the foreground UI path. Prefer `tokio::fs` or `spawn_blocking`; remaining synchronous calls are legacy and being moved off the render path.
+6. Avoid `unwrap`/`expect` in app code. Tests may use them.
+7. Avoid `Rc<RefCell>`. Prefer `Arc`, channels, and clear ownership; a few UI-local views still use it.
 
 ## Workspace
 
@@ -16,6 +16,10 @@
 - `crates/atlas-model`: neutral model. IDs, serializable state, requests/results, no runtime.
 - `crates/atlas-core`: filesystem, search, cloud, extensions, tag DB, watchers, and jobs.
 - `crates/atlas-ui`: GPUI/gpui-component, textures, overlays, layout, and animations.
+- `crates/atlas-win-space`: Windows disk-space and cleanup engine.
+- `crates/atlas-search-service`: background file-index and search service.
+- `crates/atlas-publisher`: CLI to publish extension packages.
+- `crates/atlas-cloud-extension`, `crates/atlas-icon-extension`: first-party extension sidecars.
 
 Dependency direction:
 
@@ -30,7 +34,7 @@ atlas-model -> no runtime crates
 - Main renderer: `gpui` + `gpui-component`.
 - The live GPUI layer (`App`, views, input, overlays, platform glue) lives in `crates/atlas-ui`.
 - Configuration, actions, and packaging use the `atlas` name.
-- Strict lints are enabled at package/workspace level: `clippy all/pedantic/nursery = deny`, `unsafe_code = deny`, `unwrap_used/expect_used = warn`, and sync fs is banned through `clippy.toml`.
+- Lints: `unsafe_code` is denied where possible and `unwrap_used`/`expect_used` warn. Strict clippy is a cleanup goal, not a CI gate yet (see CONTRIBUTING.md).
 - `atlas-model` does not import filesystem, cloud, extension, or search runtime code. Contracts live in `cloud_model`, `ext_model`, and `preview_cache`.
 - Runtime state moved out of `AppState`: watchers, `nucleo`, and the extension registry live in `App`.
 

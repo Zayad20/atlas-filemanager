@@ -3,6 +3,8 @@ name = "atlas"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
+repository = "https://github.com/neondeex/atlas-filemanager"
+homepage = "https://atlasnative.com"
 build = "scripts/winfsp-build.rs"
 default-run = "atlas"
 
@@ -34,7 +36,7 @@ members = [
     "crates/atlas-icon-extension",
     "crates/atlas-search-service",
 ]
-exclude = ["vendor/zed-reference", "vendor/gpui-component-fork", "vendor/gpui-ce", "vendor/gpui-ce/crates/*", "vendor/gpui-ce/tooling/perf"]
+exclude = ["vendor/gpui-component-fork", "vendor/gpui-ce", "vendor/gpui-ce/crates/*", "vendor/gpui-ce/tooling/perf"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -89,7 +91,7 @@ new_without_default = "allow"
 [package.metadata.bundle]
 name = "Atlas"
 identifier = "com.atlas.Atlas"
-short_description = "Modern cross-platform file manager"
+short_description = "Native, GPU-accelerated file manager for Windows"
 category = "Utility"
 icon = ["packaging/icons/atlas.ico", "packaging/icons/atlas.png"]
 
@@ -117,7 +119,7 @@ tracy = ["atlas-ui/tracy"]
 
 [dependencies]
 dhat = { version = "0.3", optional = true }
-# FASE J: the whole gpui application layer (App entity, views, overlays, input,
+# The whole gpui application layer (App entity, views, overlays, input,
 # platform glue) lives in `atlas-ui`. This binary is a thin launcher over
 # `atlas_ui::run`. Backends/state live in atlas-core/atlas-model (transitive).
 atlas-ui = { workspace = true }
@@ -181,7 +183,6 @@ gpui-component-macros = { path = "vendor/gpui-component-fork/crates/macros" }
 # Optional local taffy perf patch. The normal build uses crates.io taffy.
 # To re-enable the counters temporarily, restore the checkout and add:
 # [patch.crates-io]
-# taffy = { path = "../taffy-patch" }
 
 [patch."https://github.com/gpui-ce/gpui-ce"]
 gpui-ce = { path = "vendor/gpui-ce/crates/gpui" }

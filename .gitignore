@@ -36,8 +36,6 @@ test_arc/
 scratch_*.py
 /test_*.rs
 
-# Internal/stale diagnostics; translate and move into docs/ before publishing.
-docs/diagnostics/
 # Machine-specific transfer benchmark results; regenerate with the harness.
 docs/transfer-benchmarks.md
 
@@ -65,7 +63,7 @@ website/
 /artifacts/*.pdb
 /artifacts/certification-runs/
 
-# Local-only: never publish
+# Local-only scratch
 /artifacts/
 /website/
 /website-edge/

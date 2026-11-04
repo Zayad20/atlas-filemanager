@@ -18,4 +18,5 @@ and legal/dependency-inventory.json. Notable components:
 - rclone (optional cloud sidecar) ................ MIT
 - All Rust crates in Cargo.lock .................. see legal/THIRD-PARTY-NOTICES.txt
 
-The Atlas name and logo are not licensed under the AGPL.
+The Atlas name, logo and the original artwork in extensions/*/icon.png and
+crates/atlas-ui/assets/illustrations are not licensed under the AGPL.
