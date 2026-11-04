@@ -64,3 +64,15 @@ website/
 /artifacts/*.exe
 /artifacts/*.pdb
 /artifacts/certification-runs/
+
+# Local-only: never publish
+/artifacts/
+/website/
+/website-edge/
+/python/
+/.playwright-cli/
+/New file*
+/patch.diff
+/profiling_summary.txt
+target*/
+leaks*.json

@@ -1,0 +1,21 @@
+Atlas
+Copyright (c) the Atlas contributors
+Licensed under the GNU Affero General Public License v3.0 or later (see LICENSE).
+
+This product includes third-party software, fonts and artwork that keep their
+own licenses. The complete, generated list is in legal/THIRD-PARTY-NOTICES.txt
+and legal/dependency-inventory.json. Notable components:
+
+- GPUI (gpui-ce fork), vendor/gpui-ce ............ Apache-2.0
+- gpui-component (modified fork) ................. Apache-2.0
+  vendor/gpui-component-fork (modified from upstream; see its LICENSE-APACHE)
+- Geist and Geist Mono fonts ..................... SIL OFL 1.1
+- Phosphor icons ................................. MIT
+- Icons8 Liquid Glass file-type icons ............ Icons8 license (attribution
+  shown in Settings > About)
+- UnRAR (bundled extractor) ...................... UnRAR license (see
+  legal/resources/UnRAR-NOTICE.txt); it is a separate program, not covered by the AGPL
+- rclone (optional cloud sidecar) ................ MIT
+- All Rust crates in Cargo.lock .................. see legal/THIRD-PARTY-NOTICES.txt
+
+The Atlas name and logo are not licensed under the AGPL.

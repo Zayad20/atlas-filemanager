@@ -1,75 +1,126 @@
 <div align="center">
 
+<img src="docs/images/logo.png" alt="Atlas" width="88" height="88">
+
 # Atlas
 
-**A modern, blazing fast file manager built with Rust and GPUI.**
+**The file manager at the speed of thought.**
 
-[![License: AGPL 3.0](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](https://opensource.org/licenses/AGPL-3.0)
+A native, GPU-accelerated, local-first file manager for Windows. Built with Rust and [GPUI](https://www.gpui.rs/).
+
+[![Website](https://img.shields.io/badge/atlasnative.com-18181B?style=for-the-badge&logo=googlechrome&logoColor=white)](https://atlasnative.com)
+[![Microsoft Store](https://img.shields.io/badge/Get_it_on-Microsoft_Store-0078D4?style=for-the-badge&logo=microsoft&logoColor=white)](https://apps.microsoft.com/detail/9MX95D1GDMR3)
+[![Discord](https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/aeAvQ27bgG)
+
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](LICENSE)
 [![Built with Rust](https://img.shields.io/badge/Built_with-Rust-orange.svg)](https://www.rust-lang.org/)
-
-[![Join Discord](https://img.shields.io/badge/Join-Discord-5865F2?logo=discord&logoColor=white&style=for-the-badge)](https://discord.gg/aeAvQ27bgG)
-[![Website](https://img.shields.io/badge/Website-atlasnative.com-18181B?style=for-the-badge)](https://atlasnative.com)
+![Status: alpha](https://img.shields.io/badge/status-alpha-ff5a1f.svg)
 
 <br>
-<br>
 
-![Atlas Screenshot](website/public/images/app-screenshot.png)
+<img src="docs/images/hero.webp" alt="Atlas grid view with file-type icons" width="860">
 
 </div>
 
-Atlas is a desktop file manager for Windows and Linux designed for modern workflows, offering native stutter-free performance, robust extensibility, and a clean interface. Our mission is to build a highly productive file management experience, prioritizing speed, local privacy, and user customization.
+<br>
+
+## Why Atlas
+
+Atlas draws every pixel on the GPU and keeps your files on your machine. Folders open instantly, scrolling stays smooth with very large directories, and everything is reachable from the keyboard.
+
+> **Status:** Atlas is in free alpha on Windows 10/11. Expect rough edges and fast iteration. A Linux build is in development; macOS is on the roadmap.
 
 ## Features
 
-- **Cross-platform**: natively supporting Windows and Linux (for now)
-- **Featherweight**: extremely low RAM consumption and minimal system footprint
-- **Native & blazing fast**: GPU-accelerated performance via Rust and GPUI
-- **All of the eyecandy**: smooth scrolling, fluid animations, and a modern interface
-- **Keyboard-first**: navigate and execute instantly via a powerful Command Palette
-- **Highly extensible** with declarative file tools, preview providers, and native sidecars
-- **Advanced multi-pane layouts**: split your view and drag-and-drop effortlessly
-- **Five built-in views**: Grid, List, Details, Tree, and Miller Columns
-- **Built-in archive manager**: native ZIP and RAR extraction/compression
-- **Smart organization**: advanced filtering and custom color tags
-- **A lot of customization**: switch between themes and user profiles instantly
-- **Cloud ready**: seamless integration with remote storage providers
-- **Native OS integration**: context menus, system drag-and-drop, and recycle bin support
-- **100% local-first**: your files never leave your machine without your permission
-- **Fast and active development**
-- and much more...
+- **Five views** — Grid, List, Details, Miller columns and Tree, chosen per pane.
+- **Tabs and split panes** — split in any direction, drag and drop between panes, reopen closed tabs.
+- **Command palette** — `Ctrl+Shift+P` runs any command; `Ctrl+K` jumps to any folder with fuzzy search.
+- **Instant search** — an indexed, fuzzy search that finds files as you type.
+- **Preview** — press `Space` to preview images, video, audio, documents, code and archives.
+- **Local conversion** — convert images, video, audio and documents from the context menu or a radial picker. Files never leave your PC.
+- **Archives as folders** — browse ZIP, RAR, 7z and TAR without extracting.
+- **Searchable context menu** — your own actions and the native Windows shell menu in one overlay.
+- **Tags, filters and profiles** — color tags, saved layouts and per-profile favorites.
+- **Private folders** — password-protected folders.
+- **Disk cleanup** — find what is using space and clean it safely.
+- **Cloud and network** — Google Drive, OneDrive and other providers via rclone, plus SMB, FTP and WebDAV, right in the sidebar.
+- **Extensions** — optional, sandboxed WebAssembly extensions (icon themes, thumbnails, Pandoc, Opus, cloud drives, document previews).
+- **Themes and icon packs** — including VS Code icon themes.
 
-## Installing and running Atlas
+<div align="center">
+<img src="docs/images/miller.webp" alt="Miller columns with a live preview pane" width="860">
+<br><sub>Miller columns with a live preview.</sub>
+<br><br>
+<img src="docs/images/convert.webp" alt="Radial format picker for local conversion" width="860">
+<br><sub>Convert files locally from a radial format picker.</sub>
+<br><br>
+<img src="docs/images/grid.webp" alt="Grid view with tabs" width="860">
+<br><sub>Tabs, breadcrumbs and a grid with real file-type icons.</sub>
+</div>
 
-Pre-built binaries for your operating system are available in the [Releases](https://github.com/neondeex/atlas-filemanager/releases) section. Simply download and run the executable.
+## Install
 
-For Linux packages, native updates, store publishing, and the tested distributions,
-see [Linux distribution](docs/linux-distribution.md).
+- **Microsoft Store (recommended):** [Atlas on the Microsoft Store](https://apps.microsoft.com/detail/9MX95D1GDMR3). Free to install; updates are automatic.
+- **Website:** [atlasnative.com](https://atlasnative.com) has the latest news, the changelog and the Linux waitlist.
 
-## Building from source
+Atlas is free to use. An optional one-time Premium license unlocks higher limits (more panes, profiles, cloud connections and conversions); see [atlasnative.com](https://atlasnative.com/#pricing).
 
-To build and run Atlas locally, ensure you have [Rust](https://rustup.rs/) installed on your machine. Our repository includes a `rust-toolchain.toml` file, so `cargo` will automatically use the correct Rust version (1.95.0+) when you run these commands:
+## Keyboard shortcuts
+
+Shortcuts can be remapped in Settings.
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+Shift+P` | Command palette |
+| `Ctrl+K` | Go to folder |
+| `Ctrl+T` / `Ctrl+W` / `Ctrl+Shift+T` | New / close / reopen tab |
+| `Ctrl+Tab`, `Ctrl+1`–`9` | Switch tab |
+| `Ctrl+Shift+S` / `Ctrl+Alt+S` | Split horizontally / vertically |
+| `F6`, `Ctrl+Alt+←→↑↓` | Move between panes |
+| `Alt+←` / `Alt+→` / `Alt+↑` | Back / forward / up |
+| `Ctrl+F`, `Ctrl+Shift+F` | Search, search in subfolders |
+| `Space`, `Ctrl+I` | Preview / inspector |
+| `F2` | Rename |
+| `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo |
+| `Ctrl+Alt+C` | Convert |
+| `Ctrl+,` | Settings |
+
+## Build from source
+
+Requirements: Windows 10/11, the MSVC build tools (Visual Studio Build Tools with the Windows SDK) and [Rust](https://rustup.rs/). The repository pins the toolchain in [`rust-toolchain.toml`](rust-toolchain.toml), so `cargo` picks the right version automatically.
 
 ```powershell
-# Run the application
-cargo run --release
+git clone https://github.com/neondeex/atlas-filemanager.git
+cd atlas-filemanager
 
-# Run checks and tests
-cargo check --workspace
-cargo test --workspace
+cargo run --release          # run Atlas
+cargo check --workspace      # type-check everything
+cargo test --workspace       # run the tests
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the workspace layout and dependency rules.
-See [Alpha build editions](docs/build-editions.md) to enable the opt-in Free limits
-with `cargo build --release --features free`.
-See [docs/extensions.md](docs/extensions.md) for extension manifests, sidecar providers,
-installation, and publishing.
+The first build compiles GPUI and takes a while. Useful aliases live in [`.cargo/config.toml`](.cargo/config.toml). To try the opt-in Free limits, see [Build editions](docs/build-editions.md).
+
+## Project layout
+
+| Path | What it holds |
+|---|---|
+| `crates/atlas-model` | Shared data types and application state |
+| `crates/atlas-core` | File system, search, preview, conversion, archives, cloud |
+| `crates/atlas-ui` | The GPUI application: views, overlays, input, drag and drop |
+| `crates/atlas-win-space` | Windows disk-space and cleanup engine |
+| `crates/atlas-search-service` | Background search index service |
+| `extensions/` | First-party WebAssembly and sidecar extensions |
+| `vendor/` | Patched forks of GPUI and gpui-component (Apache-2.0) |
+| `docs/` | Guides for contributors and extension authors |
+
+Read [ARCHITECTURE.md](ARCHITECTURE.md) for the dependency rules and [docs/extensions.md](docs/extensions.md) to write an extension.
 
 ## Contributing
 
-We welcome contributions from the community. Whether you want to fix a bug, add a new feature, or improve documentation, your help is appreciated.
-
-To get started, please join our [Discord server](https://discord.gg/aeAvQ27bgG) to discuss ideas with the community, or open an [issue](https://github.com/neondeex/atlas-filemanager/issues) to communicate your intent before creating a pull request.
+Bug reports, ideas and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first, open an [issue](https://github.com/neondeex/atlas-filemanager/issues) to discuss larger changes, and join the [Discord](https://discord.gg/aeAvQ27bgG) to talk to the developers. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## License
 
-Atlas code is licensed under the [AGPL-3.0-or-later](LICENSE).
+Atlas is licensed under the [GNU AGPL v3.0 or later](LICENSE). Third-party components keep their own licenses; see [NOTICE](NOTICE) and [`legal/THIRD-PARTY-NOTICES.txt`](legal/THIRD-PARTY-NOTICES.txt).
+
+The Atlas name and logo are not covered by the AGPL license.
