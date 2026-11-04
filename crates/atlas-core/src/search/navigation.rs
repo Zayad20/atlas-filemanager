@@ -203,13 +203,13 @@ mod tests {
     fn tokens_match_successive_path_segments() {
         let good = match_path_tokens("exa pers", r"C:\Users\Example\Personal");
         assert!(good.complete);
-        assert_eq!(good.ranges, vec![9..12, 18..22]);
+        assert_eq!(good.ranges, vec![9..12, 17..21]);
         // Wrong order, or a token that only exists earlier, does not complete.
         assert!(!match_path_tokens("pers exa", r"C:\Users\Example\Personal").complete);
         assert!(!match_path_tokens("exa zzz", r"C:\Users\Example\Personal").complete);
         // Segment prefixes outrank matches inside a word.
         let prefix = match_path_tokens("exa pers", r"C:\Users\Example\Personal");
-        let inside = match_path_tokens("exa pers", r"C:\Users\Chemin\Superstore");
+        let inside = match_path_tokens("exa pers", r"C:\Users\Hexagon\Superstore");
         assert!(inside.complete && prefix.score > inside.score);
         // Two tokens may share one segment, in order.
         assert!(match_path_tokens("foo bar", "x/foo-bar").complete);

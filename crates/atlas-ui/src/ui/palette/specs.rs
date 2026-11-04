@@ -423,7 +423,7 @@ mod goto_query_tests {
         let path = home.join("developer").join("git").join("My Project");
         assert_eq!(goto_location_label(&path, Some(home)), format!("~{0}developer{0}git", std::path::MAIN_SEPARATOR));
         assert_eq!(goto_location_label(&home.join("myproj"), Some(home)), "~");
-        assert_eq!(goto_location_label(Path::new("D:\\Projects\\legacy-app"), Some(home)), "D:\\Projects");
+        assert_eq!(goto_location_label(Path::new("D:\\Projects\\egui-app"), Some(home)), "D:\\Projects");
     }
 
     #[test]

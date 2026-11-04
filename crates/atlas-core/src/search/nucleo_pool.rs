@@ -121,10 +121,10 @@ mod tests {
         let mut pool = NucleoPool::new();
         pool.set_pattern("egui");
         pool.tick();
-        let path = PathBuf::from("developer/legacy-app");
+        let path = PathBuf::from("developer/egui-app");
         pool.injector().push(
             IndexEntry { path: path.clone(), is_dir: true },
-            |_, cols| { cols[0] = "developer/legacy-app".into(); },
+            |_, cols| { cols[0] = "developer/egui-app".into(); },
         );
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -143,8 +143,8 @@ mod tests {
     fn identical_render_queries_stay_idle_and_changed_queries_hide_old_matches() {
         let mut pool = NucleoPool::new();
         pool.injector().push(
-            IndexEntry { path: "developer/legacy-app".into(), is_dir: true },
-            |_, cols| { cols[0] = "developer/legacy-app".into(); },
+            IndexEntry { path: "developer/egui-app".into(), is_dir: true },
+            |_, cols| { cols[0] = "developer/egui-app".into(); },
         );
         pool.set_pattern("egui");
         let deadline = Instant::now() + Duration::from_secs(5);

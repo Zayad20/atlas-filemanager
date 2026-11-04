@@ -1252,7 +1252,7 @@ mod tests {
             assert_eq!(batch.generation, generation);
             assert!(batch.complete);
             assert_eq!(batch.results.len(), 1);
-            assert_eq!(batch.results[0].path, PathBuf::from(r"C:\legacy-app"));
+            assert_eq!(batch.results[0].path, PathBuf::from(r"C:\egui-app"));
             assert!(batch.results[0].is_dir);
         }
         let mut query = SearchQuery::text("my-project");
