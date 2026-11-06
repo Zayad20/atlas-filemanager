@@ -45,4 +45,4 @@ Utformad för maximal effektivitet direkt från tangentbordet:
 ### Upplev framtidens filhantering
 Uppgradera till en modern, integritetsfokuserad filhanterare byggd för ren snabbhet och arbetsro. Ladda ned **Atlas Filhanterare** idag och upplev hur smidig filhantering på Windows kan vara.
 
-Källkod (AGPL-3.0-or-later): https://github.com/neondeex/atlas-filemanager
+Källkod (AGPL-3.0-or-later): https://atlasfm.modhyt.org/source-code

@@ -46,4 +46,4 @@ Diseñado para operar eficientemente sin soltar el teclado:
 ### Descubre una Nueva Forma de Administrar tus Archivos
 Actualiza tu flujo de trabajo con un administrador de archivos moderno, centrado en la velocidad y el respeto absoluto a tu privacidad. Descarga **Atlas Administrador de Archivos** hoy mismo y transforma tu experiencia en Windows.
 
-Código fuente (AGPL-3.0-or-later): https://github.com/neondeex/atlas-filemanager
+Código fuente (AGPL-3.0-or-later): https://atlasfm.modhyt.org/source-code

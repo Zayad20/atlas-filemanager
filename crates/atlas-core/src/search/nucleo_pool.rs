@@ -158,11 +158,11 @@ mod tests {
             assert!(!pool.tick(), "an unchanged finder render must not restart matching");
             std::thread::sleep(Duration::from_millis(5));
         }
-        pool.set_pattern("myproj");
-        assert!(pool.results(1).is_empty(), "old egui matches must not appear under myproj");
+        pool.set_pattern("pexer");
+        assert!(pool.results(1).is_empty(), "old egui matches must not appear under pexer");
         pool.reset();
-        pool.set_pattern("myproj");
-        assert_eq!(pool.query.as_deref(), Some("myproj"));
+        pool.set_pattern("pexer");
+        assert_eq!(pool.query.as_deref(), Some("pexer"));
         assert!(!pool.nucleo.pattern.column_pattern(0).atoms.is_empty());
     }
 }

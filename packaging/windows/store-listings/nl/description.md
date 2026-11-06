@@ -45,4 +45,4 @@ Ontworpen voor maximale efficiëntie vanaf het toetsenbord:
 ### Ervaar de toekomst van bestandsbeheer
 Stap over op een moderne, privacyvriendelijke bestandsverkenner die is ontworpen voor pure snelheid en focus. Download **Atlas Bestandsbeheer** vandaag nog en ervaar een geheel nieuwe manier van bestandsnavigatie.
 
-Broncode (AGPL-3.0-or-later): https://github.com/neondeex/atlas-filemanager
+Broncode (AGPL-3.0-or-later): https://atlasfm.modhyt.org/source-code

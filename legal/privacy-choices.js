@@ -5,6 +5,8 @@
   const signal = () => navigator.globalPrivacyControl === true || navigator.doNotTrack === "1";
   const read = () => { try { return localStorage.getItem(key); } catch { return "essential"; } };
   const allowed = () => !excluded && !signal() && read() === "allow";
+  // Cookieless, anonymous visit measurement (OpenPanel): on by default, off with GPC/DNT or on excluded pages.
+  const measure = () => !excluded && !signal();
   let panel;
   function save(value) {
     try { localStorage.setItem(key, value); } catch { /* remain essential-only */ }
@@ -19,12 +21,12 @@
     panel.setAttribute("role", "region");
     Object.assign(panel.style, {position:"fixed",bottom:"16px",left:"16px",right:"16px",margin:"0 auto",maxWidth:"700px",zIndex:"2147483000",background:"#17191c",color:"#fff",border:"1px solid #60656c",borderRadius:"12px",padding:"20px",boxShadow:"0 8px 40px #0006",font:"14px/1.6 system-ui,sans-serif"});
     const text = document.createElement("p");
-    text.textContent = signal() ? "Your browser privacy signal is enabled. Optional analytics stay off." : "Choose whether Atlas may use PostHog and OpenPanel to measure website visits and interactions. Essential security, checkout and email services work either way.";
+    text.textContent = signal() ? "Your browser privacy signal is enabled. All optional analytics stay off." : "We count visits anonymously with OpenPanel, without cookies. PostHog analytics and session replays only run if you allow them. Essential security, checkout and email services work either way.";
     text.style.margin = "0 0 12px";
     panel.append(text);
     const actions = document.createElement("div");
     Object.assign(actions.style, {display:"flex",flexWrap:"wrap",gap:"12px",alignItems:"center"});
-    for (const [label, value] of [["Essential only", "essential"], ["Allow analytics", "allow"]]) {
+    for (const [label, value] of [["Anonymous only", "essential"], ["Allow all analytics", "allow"]]) {
       if (value === "allow" && signal()) continue;
       const button = document.createElement("button");
       button.type = "button"; button.textContent = label;
@@ -34,7 +36,7 @@
     const link = document.createElement("a"); link.href = "/privacy-policy"; link.textContent = "Read privacy policy"; link.style.color = "#fff"; link.style.textDecoration = "underline"; actions.append(link);
     panel.append(actions); document.body.append(panel);
   }
-  window.AtlasPrivacy = {allowed, show};
+  window.AtlasPrivacy = {allowed, measure, show};
   window.addEventListener("atlas:privacy-settings", show);
   window.addEventListener("storage", event => { if (event.key === key && event.newValue !== "allow") location.reload(); });
   document.addEventListener("click", event => { if (event.target.closest?.("[data-privacy-choices]")) show(); });

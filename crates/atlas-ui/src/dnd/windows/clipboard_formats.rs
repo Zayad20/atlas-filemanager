@@ -11,7 +11,7 @@ use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
 
 pub fn cf_open_window() -> u16 {
     static ID: OnceLock<u16> = OnceLock::new();
-    *ID.get_or_init(|| unsafe { RegisterClipboardFormatW(w!("Atlas-OpenWindowFormat")) as u16 })
+    *ID.get_or_init(|| unsafe { RegisterClipboardFormatW(w!("FilePilot-OpenWindowFormat")) as u16 })
 }
 
 pub fn cf_drop_description() -> u16 {

@@ -104,7 +104,7 @@ fn write(journal: &Journal) -> std::io::Result<()> {
 }
 
 pub fn upsert(transfer: PendingTransfer) {
-    let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().ok();
+    let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().or_else(atlas_model::sync::recover).ok();
     let mut journal = read();
     journal.transfers.retain(|item| item.id != transfer.id);
     journal.transfers.push(transfer);
@@ -114,7 +114,7 @@ pub fn upsert(transfer: PendingTransfer) {
 }
 
 pub fn remove(id: u64) {
-    let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().ok();
+    let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().or_else(atlas_model::sync::recover).ok();
     let mut journal = read();
     journal.transfers.retain(|item| item.id != id);
     if let Err(error) = write(&journal) {
@@ -123,12 +123,12 @@ pub fn remove(id: u64) {
 }
 
 pub fn load() -> Vec<PendingTransfer> {
-    let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().ok();
+    let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().or_else(atlas_model::sync::recover).ok();
     read().transfers
 }
 
 pub fn mark_resuming(id: u64) {
-    if let Ok(mut ids) = RESUMING.get_or_init(|| Mutex::new(HashSet::new())).lock() {
+    if let Some(mut ids) = RESUMING.get_or_init(|| Mutex::new(HashSet::new())).lock().or_else(atlas_model::sync::recover).ok() {
         ids.insert(id);
     }
 }

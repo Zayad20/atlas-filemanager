@@ -44,4 +44,4 @@ PC のストレージ容量を完全にコントロール:
 ### ファイル管理の新たなスタンダードへ
 スピードとプライバシーを徹底追求した、全く新しいファイルマネージャーへアップグレードしませんか。今すぐ **Atlas ファイルマネージャー** を手に入れて、真の快適さを体感してください。
 
-ソースコード (AGPL-3.0-or-later): https://github.com/neondeex/atlas-filemanager
+ソースコード (AGPL-3.0-or-later): https://atlasfm.modhyt.org/source-code

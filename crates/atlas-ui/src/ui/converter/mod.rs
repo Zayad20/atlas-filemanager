@@ -9,6 +9,7 @@ mod wheel_view;
 pub(crate) mod crash_lab;
 
 use crate::app::App;
+use atlas_core::convert::actions::{self, Action, ActionSettings};
 use atlas_core::convert::{self, Outcome, Plan, Report, Settings, Tool, Tools};
 use atlas_core::ext::{registry::ToolInstallRequest, tool_package};
 use atlas_model::app_state::BgResult;
@@ -31,10 +32,43 @@ pub(crate) enum Phase {
     Finished(Report),
 }
 
+/// Which side of the ring is showing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mode {
+    Convert,
+    Actions,
+}
+
+/// One Actions-ring sector: a built-in action or an extension command that
+/// opted in with `ring = true`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum RingAction {
+    Native(Action),
+    Extension {
+        ext_id: String,
+        cmd_id: String,
+        title: String,
+        extension: String,
+    },
+}
+
 pub(crate) struct Session {
     sources: Vec<PathBuf>,
     tools: Tools,
     catalog: Vec<convert::ConversionOption>,
+    mode: Mode,
+    /// The user switched sides; rescans keep their choice.
+    mode_chosen: bool,
+    actions: Vec<RingAction>,
+    /// Every discovered engine (the wheel's `tools` are policy-filtered).
+    action_tools: Tools,
+    action_settings: ActionSettings,
+    /// Provider-installed engines admitted into the wheel.
+    extra: Vec<Tool>,
+    /// Installable engines that would add formats for this selection.
+    locked: Vec<Tool>,
+    /// Extension ring commands, resolved on the UI lane at discovery time.
+    ring_extensions: Vec<RingAction>,
     phase: Phase,
     selected: usize,
     /// Sector under the pointer: previews in the info column, never commits.
@@ -64,6 +98,10 @@ enum Event {
         revision: u64,
         tools: Tools,
         catalog: Vec<convert::ConversionOption>,
+        action_tools: Tools,
+        actions: Vec<Action>,
+        extra: Vec<Tool>,
+        locked: Vec<Tool>,
     },
     PackageProgress(tool_package::Progress),
     PackageFinished(Result<PathBuf, String>),
@@ -91,6 +129,23 @@ impl Session {
     }
     fn options(&self) -> &[convert::ConversionOption] {
         &self.catalog
+    }
+    /// Sector count of the side that is showing.
+    fn len(&self) -> usize {
+        match self.mode {
+            Mode::Convert => self.catalog.len(),
+            Mode::Actions => self.actions.len(),
+        }
+    }
+    fn set_mode(&mut self, mode: Mode) {
+        if self.mode != mode {
+            self.mode = mode;
+            self.selected = 0;
+            self.hovered = None;
+            // Fresh entity: per-sector easing state belongs to the other side.
+            self.wheel = None;
+        }
+        self.mode_chosen = true;
     }
 }
 
@@ -146,10 +201,25 @@ impl App {
             return;
         }
         let (tx, rx) = flume::unbounded();
+        let ring = &self.state.settings.ring;
+        let action_settings = ActionSettings {
+            edge: ring.resize_edge.clamp(16, 16384),
+            quality: ring.compress_quality.clamp(10, 100),
+            output_dir: None,
+        };
+        let mode = if ring.open_actions { Mode::Actions } else { Mode::Convert };
         self.converter = Some(Session {
             sources,
             tools: Tools::default(),
             catalog: Vec::new(),
+            mode,
+            mode_chosen: false,
+            actions: Vec::new(),
+            action_tools: Tools::default(),
+            action_settings,
+            extra: Vec::new(),
+            locked: Vec::new(),
+            ring_extensions: Vec::new(),
             phase: Phase::Discovering,
             selected: 0,
             hovered: None,
@@ -173,9 +243,11 @@ impl App {
 
     /// Snapshot registry state on the UI lane; filesystem/codecs stay on workers.
     pub(crate) fn refresh_conversion_tools(&mut self) {
+        let ring_extensions = self.ring_extension_actions();
         let Some(session) = self.converter.as_mut().filter(|s| !s.running()) else {
             return;
         };
+        session.ring_extensions = ring_extensions;
         session.installers = Tool::ALL
             .into_iter()
             .filter_map(|tool| {
@@ -218,14 +290,34 @@ impl App {
             session.phase = Phase::Discovering;
         }
         let managed = self.ext_registry.managed_tools();
+        let installable: Vec<Tool> = session.installers.keys().copied().collect();
+        let enabled: Vec<Action> = self
+            .state
+            .settings
+            .ring
+            .actions
+            .iter()
+            .filter_map(|id| Action::from_id(id))
+            .collect();
         let wake = self.tx.clone();
         self.rt.spawn_blocking(move || {
-            let tools = Tools::discover_with(managed).native_and_opus();
-            let catalog = convert::native_options(&scan_sources, &tools);
+            let all = Tools::discover_with(managed.clone());
+            let extra: Vec<Tool> = all
+                .managed_by(&managed)
+                .into_iter()
+                .filter(|tool| *tool != Tool::Ghostscript)
+                .collect();
+            let catalog = convert::wheel_options(&scan_sources, &all, &extra);
+            let locked = convert::locked_engines(&scan_sources, &all, &extra, &installable);
+            let actions = actions::available(&scan_sources, &all, &enabled);
             let _ = tx.send(Event::Discovered {
                 revision,
-                tools,
+                tools: all.clone().native_and(&extra),
                 catalog,
+                action_tools: all,
+                actions,
+                extra,
+                locked,
             });
             let _ = wake.send(BgResult::ConversionWake);
         });
@@ -242,21 +334,47 @@ impl App {
                         revision,
                         tools,
                         catalog,
+                        action_tools,
+                        actions,
+                        extra,
+                        locked,
                     } if revision == session.discovery && !session.running() => {
                         let selected = session
                             .catalog
                             .get(session.selected)
                             .map(|option| option.target.extension);
+                        let selected_action = session.actions.get(session.selected).cloned();
                         session.tools = tools;
                         session.catalog = catalog;
-                        session.selected = selected
-                            .and_then(|extension| {
+                        session.action_tools = action_tools;
+                        session.extra = extra;
+                        session.locked = locked;
+                        session.actions = actions.into_iter().map(RingAction::Native).collect();
+                        session.actions.extend(session.ring_extensions.iter().cloned());
+                        if !session.mode_chosen {
+                            // The preferred side, unless it has nothing to offer.
+                            session.mode = match session.mode {
+                                Mode::Actions if session.actions.is_empty() => Mode::Convert,
+                                Mode::Convert
+                                    if session.catalog.is_empty() && !session.actions.is_empty() =>
+                                {
+                                    Mode::Actions
+                                }
+                                mode => mode,
+                            };
+                        }
+                        session.selected = match session.mode {
+                            Mode::Convert => selected.and_then(|extension| {
                                 session
                                     .catalog
                                     .iter()
                                     .position(|option| option.target.extension == extension)
-                            })
-                            .unwrap_or(0);
+                            }),
+                            Mode::Actions => selected_action.and_then(|action| {
+                                session.actions.iter().position(|a| *a == action)
+                            }),
+                        }
+                        .unwrap_or(0);
                         if matches!(session.phase, Phase::Discovering) {
                             session.phase = Phase::Choosing;
                         }
@@ -305,13 +423,22 @@ impl App {
                         let outputs = report.outputs();
                         let errors = report.errors();
                         let cancelled = report.cancelled();
+                        let acting = session.mode == Mode::Actions;
                         if errors.is_empty() && cancelled == 0 {
                             let msg = if outputs.len() == 1 {
                                 let name = outputs[0]
                                     .file_name()
                                     .unwrap_or_default()
                                     .to_string_lossy();
-                                rust_i18n::t!("convert_toast_finished_single", name = name).into_owned()
+                                if acting {
+                                    rust_i18n::t!("ring_toast_done_single", name = name).into_owned()
+                                } else {
+                                    rust_i18n::t!("convert_toast_finished_single", name = name)
+                                        .into_owned()
+                                }
+                            } else if acting {
+                                rust_i18n::t!("ring_toast_done_multi", count = outputs.len())
+                                    .into_owned()
                             } else {
                                 rust_i18n::t!("convert_toast_finished_multi", count = outputs.len())
                                     .into_owned()
@@ -420,7 +547,113 @@ impl App {
         }
     }
 
+    /// Extension commands for the current sources, resolved on the UI lane.
+    fn ring_extension_actions(&self) -> Vec<RingAction> {
+        let Some(session) = self.converter.as_ref() else {
+            return Vec::new();
+        };
+        self.ext_registry
+            .ring_commands(&session.sources)
+            .into_iter()
+            .map(|(ext_id, command)| {
+                let extension = self
+                    .ext_registry
+                    .get(&ext_id)
+                    .map(|e| e.manifest.name.clone())
+                    .unwrap_or_else(|| ext_id.clone());
+                RingAction::Extension {
+                    ext_id,
+                    cmd_id: command.id,
+                    title: command.title,
+                    extension,
+                }
+            })
+            .collect()
+    }
+
+    fn toggle_ring_mode(&mut self) {
+        if let Some(session) = self
+            .converter
+            .as_mut()
+            .filter(|s| matches!(s.phase, Phase::Choosing))
+        {
+            let next = match session.mode {
+                Mode::Convert => Mode::Actions,
+                Mode::Actions => Mode::Convert,
+            };
+            session.set_mode(next);
+        }
+    }
+
+    fn start_action(&mut self) {
+        let Some(session) = self.converter.as_mut() else {
+            return;
+        };
+        if !matches!(session.phase, Phase::Choosing) {
+            return;
+        }
+        let Some(action) = session.actions.get(session.selected).cloned() else {
+            return;
+        };
+        let sources = session.sources.clone();
+        let action = match action {
+            RingAction::Extension { ext_id, cmd_id, .. } => {
+                self.converter = None;
+                self.start_ext_command_for(&ext_id, &cmd_id, sources);
+                return;
+            }
+            RingAction::Native(action) => action,
+        };
+        let mut settings = session.action_settings.clone();
+        settings.output_dir = session.settings.output_dir.clone();
+        let tools = session.action_tools.clone();
+        let tx = session.tx.clone();
+        let wake = self.tx.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        session.phase = Phase::Running {
+            cancel: cancel.clone(),
+            done: 0,
+            total: sources.len(),
+            current: sources[0].clone(),
+        };
+        session.minimized = true;
+        let label = render::action_label(action);
+        let msg = if sources.len() == 1 {
+            let name = sources[0].file_name().unwrap_or_default().to_string_lossy();
+            rust_i18n::t!("ring_toast_starting_single", action = label, name = name).into_owned()
+        } else {
+            rust_i18n::t!("ring_toast_starting_multi", action = label, count = sources.len())
+                .into_owned()
+        };
+        self.toast_info(msg);
+        self.rt.spawn_blocking(move || {
+            let progress_tx = tx.clone();
+            let progress_wake = wake.clone();
+            let report = actions::execute(
+                action,
+                &sources,
+                &settings,
+                &tools,
+                &cancel,
+                |done, total, current| {
+                    let _ = progress_tx.send(Event::Progress {
+                        done,
+                        total,
+                        current: current.to_path_buf(),
+                    });
+                    let _ = progress_wake.send(BgResult::ConversionWake);
+                },
+            );
+            let _ = tx.send(Event::Finished(report));
+            let _ = wake.send(BgResult::ConversionWake);
+        });
+    }
+
     fn start_conversion(&mut self) {
+        if self.converter.as_ref().is_some_and(|s| s.mode == Mode::Actions) {
+            self.start_action();
+            return;
+        }
         let count = self.converter.as_ref().map_or(0, |session| session.sources.len());
         if !self.allow_conversion_action(count) {
             return;
@@ -439,6 +672,7 @@ impl App {
         let sources = session.sources.clone();
         let settings = session.settings.clone();
         let tools = session.tools.clone();
+        let extra = session.extra.clone();
         let tx = session.tx.clone();
         let wake = self.tx.clone();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -462,7 +696,7 @@ impl App {
         };
         self.toast_info(msg);
         self.rt.spawn_blocking(move || {
-            let report = match Plan::build_native(&sources, extension, settings, tools) {
+            let report = match Plan::build_wheel(&sources, extension, settings, tools, &extra) {
                 Ok(plan) => convert::execute(&plan, &cancel, |done, total, current| {
                     let _ = tx.send(Event::Progress {
                         done,

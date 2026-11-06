@@ -7,6 +7,7 @@
 //! notifies the view being painted, so a per-frame spin only re-renders this
 //! view and never `App` or the panes (see `palette_host.rs`).
 
+use atlas_model::clamp::ClampLenient;
 use gpui::prelude::*;
 use gpui::{
     canvas, div, img, px, Bounds, Context, CursorStyle, Entity, MouseMoveEvent, ObjectFit,
@@ -87,7 +88,7 @@ impl DirRing {
         let dt = self
             .last_frame
             .map_or(1. / 60., |t| now.duration_since(t).as_secs_f32())
-            .clamp(1. / 240., 0.05);
+            .clamp_lenient(1. / 240., 0.05);
         self.last_frame = Some(now);
         let n = self.items.len();
         if n < 2 {
@@ -106,7 +107,7 @@ impl DirRing {
             None => {
                 // Spring to the nearest card so one always rests in front.
                 let snap = (self.angle / step).round() * step;
-                let target = ((snap - self.angle) * 7.).clamp(-MAX_SPEED, MAX_SPEED);
+                let target = ((snap - self.angle) * 7.).clamp_lenient(-MAX_SPEED, MAX_SPEED);
                 self.velocity += (target - self.velocity) * ease;
                 if (snap - self.angle).abs() < 0.002 && self.velocity.abs() < 0.02 {
                     self.angle = snap;

@@ -1,5 +1,6 @@
 //! Flat breadcrumb / nav surface: measured text slots + hit map (1 layout node).
 
+use atlas_model::clamp::ClampLenient;
 use crate::app::App;
 use crate::input::action::Action;
 use crate::ui::icons::AtlasIcon;
@@ -270,7 +271,7 @@ impl Element for CrumbStripElement {
             }
             let line = shape_text(&seg.label, &self.font, self.font_size, self.fg, window);
             let text_w = line_width(&line);
-            let w = (text_w + seg_pad * 2.0).clamp(28.0 * zoom, max_seg);
+            let w = (text_w + seg_pad * 2.0).clamp_lenient(28.0 * zoom, max_seg);
             // Clip trailing crumbs if overflow
             if x + w > avail_right && i + 1 < self.segments.len() {
                 // keep going with smaller; last ones matter most — simple: shrink

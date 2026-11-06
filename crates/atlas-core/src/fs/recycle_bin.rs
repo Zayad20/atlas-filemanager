@@ -199,7 +199,8 @@ const fn from_hex_digit(b: u8) -> Option<u8> {
 #[cfg(any(not(windows), test))]
 fn parse_deletion_date(s: &str) -> Option<SystemTime> {
     let s = s.trim();
-    if s.len() < 19 {
+    // Byte-indexed below; non-ASCII input would split a char and panic.
+    if s.len() < 19 || !s.as_bytes()[..19].is_ascii() {
         return None;
     }
     let b = s.as_bytes();
@@ -240,9 +241,9 @@ fn parse_deletion_date(s: &str) -> Option<SystemTime> {
 
     let total_secs = total_days * 86_400 + (hour as i64) * 3600 + (min as i64) * 60 + (sec as i64);
     if total_secs >= 0 {
-        Some(UNIX_EPOCH + Duration::from_secs(total_secs as u64))
+        UNIX_EPOCH.checked_add(Duration::from_secs(total_secs as u64))
     } else {
-        Some(UNIX_EPOCH - Duration::from_secs((-total_secs) as u64))
+        UNIX_EPOCH.checked_sub(Duration::from_secs(total_secs.unsigned_abs()))
     }
 }
 
@@ -310,7 +311,9 @@ fn filetime_to_system_time(ft: u64) -> SystemTime {
     }
     // FILETIME: 100-ns ticks since 1601-01-01; UNIX_EPOCH: 1970-01-01
     let unix_secs = (ft / 10_000_000).saturating_sub(11_644_473_600);
-    UNIX_EPOCH + Duration::from_secs(unix_secs)
+    // A corrupt `$I` file can hold any FILETIME; overflowing `SystemTime`
+    // would panic while listing the bin.
+    UNIX_EPOCH.checked_add(Duration::from_secs(unix_secs)).unwrap_or_else(SystemTime::now)
 }
 
 /// Restore a file from the recycle bin to its original location.
@@ -540,6 +543,47 @@ fn accessible_bin_dirs() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `$I` files come straight from disk; any byte soup must parse or be
+    /// rejected, never panic (extreme FILETIMEs used to overflow SystemTime).
+    #[cfg(windows)]
+    #[test]
+    fn hostile_i_files_never_panic() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for len in 0..96 {
+            for round in 0..64 {
+                let mut data: Vec<u8> = (0..len).map(|_| next() as u8).collect();
+                if len >= 24 {
+                    data[..8].copy_from_slice(&(1 + round % 2_u64).to_le_bytes());
+                    let filetime = if round % 3 == 0 { u64::MAX } else { next() };
+                    data[16..24].copy_from_slice(&filetime.to_le_bytes());
+                }
+                let _ = parse_i_file(&data);
+            }
+        }
+    }
+
+    #[test]
+    fn hostile_deletion_dates_never_panic() {
+        for raw in [
+            "2é24-01-01T00:00:00",
+            "9999-12-31T23:59:59",
+            "-999-01-01T00:00:00",
+            "0000-01-01T00:00:00",
+            "日本語日本語日本語日",
+            "2024-13-01T00:00:00",
+            "",
+        ] {
+            let _ = parse_deletion_date(raw);
+        }
+        assert!(parse_deletion_date("2024-02-29T12:00:00").is_some());
+    }
 
     #[tokio::test]
     async fn restore_reports_only_successful_destinations_and_keeps_conflicts() {

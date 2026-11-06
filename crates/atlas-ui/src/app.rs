@@ -1,3 +1,4 @@
+use atlas_model::clamp::ClampLenient;
 use atlas_model::layout_tree::{Container, Tile, TileId};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -42,6 +43,8 @@ pub struct App {
     pub(crate) startup_started: Instant,
     pub(crate) startup_first_render_logged: bool,
     pub(crate) close_after_tab_transfer: bool,
+    /// The previous crash's report was uploaded (or is uploading) this session.
+    pub(crate) crash_report_sent: bool,
     #[cfg(windows)]
     pub(crate) pending_tab_restore: Option<(TileId, crate::dnd::windows::ole_clipboard::TabTransfer)>,
     pub(crate) tx: flume::Sender<BgResult>,
@@ -169,6 +172,8 @@ pub struct App {
     pub(crate) icon_cache: HashMap<String, crate::icon_theme::IconState>,
     /// Default Icons8 Liquid Glass GPU textures for files and folders.
     pub(crate) liquid_glass: liquid_glass::LiquidGlassCache,
+    /// The active theme is light; picks icon variants that read on light surfaces.
+    pub(crate) light_surfaces: bool,
     /// Dedicated channel for icon rasterisation results. Uses `Arc<RenderImage>` directly
     /// so GPUI types never enter atlas-model's `BgResult` enum.
     pub(crate) icon_tx: flume::Sender<(
@@ -191,6 +196,10 @@ pub struct App {
     pub(crate) pane_tabs_cache: HashMap<TileId, Entity<crate::ui::dock::render::PaneTabsView>>,
     pub(crate) pane_tabs_fp: HashMap<TileId, u64>,
     pub(crate) pane_tabs_bounds: HashMap<TileId, gpui::Bounds<gpui::Pixels>>,
+    /// The dock painted a retained FLIP frame last frame (split/close motion).
+    pub(crate) dock_flip_last_frame: bool,
+    /// Panes still reflowing to their settled geometry, a few per frame.
+    pub(crate) dock_settling: bool,
     pub(crate) sidebar_panel: Option<Entity<crate::ui::sidebar::SidebarPanel>>,
     /// Inspector body hosted in its own retained entity. Preview decoding and
     /// pane animations update App frequently, but the inspector only observes
@@ -312,7 +321,8 @@ pub struct App {
     pub(crate) settings_input: Option<Entity<InputState>>,
     pub(crate) theme_editor: Option<crate::ui::theme_editor::ThemeEditor>,
     pub(crate) theme_fork_error: Option<String>,
-    pub(crate) settings_section: usize,
+    /// Transient state of the settings palette (selection, category, picker).
+    pub(crate) settings_ui: crate::ui::settings_palette::SettingsUi,
     /// System font families are relatively expensive to enumerate, so cache
     /// them after settings first opens.
     pub(crate) settings_font_families: Option<std::sync::Arc<Vec<gpui::SharedString>>>,
@@ -341,11 +351,20 @@ pub struct App {
     /// is applied on first paint.
     pub(crate) theme_dirty: bool,
     pub(crate) theme_preview_before: Option<String>,
+    /// A Settings theme dropdown is hover-previewing; reverted when it closes.
+    pub(crate) settings_theme_previewing: bool,
+    /// Settings hover preview of the default view, applied to the focused pane.
+    pub(crate) view_preview_before: Option<(atlas_model::pane::TabId, atlas_model::settings::ViewMode)>,
+    /// Settings hover preview of the icon style (committed value).
+    pub(crate) icon_style_preview_before: Option<atlas_model::settings::IconStyle>,
     /// When set, the next render applies `settings.sidebar_width` to the left dock
     /// (per-profile sidebar width). Starts `true` so the restored width is applied
     /// once the dock exists; set again by `switch_profile`.
     pub(crate) sidebar_width_dirty: bool,
     pub(crate) sidebar_render_width: Option<f32>,
+    /// Layout the sidebar shows right now. Flips halfway through the width
+    /// spring so content never snaps to icons before the panel has narrowed.
+    pub(crate) sidebar_visual_collapsed: bool,
     pub(crate) sidebar_width_animating: bool,
 
     // ── Windows OLE drag-and-drop ──────────────────────────────────────────
@@ -360,7 +379,7 @@ pub struct App {
     #[cfg(windows)]
     pub(crate) dnd: Option<crate::dnd::windows::DndState>,
 
-    // ── Shell context menu (Atlas–style right-click) ──────────────────
+    // ── Shell context menu (File Pilot–style right-click) ──────────────────
     // STA worker that enumerates and invokes the native Windows shell menu
     // (Open with, Send to, 7-Zip, Properties, …). `None` if the worker failed.
     #[cfg(windows)]
@@ -734,7 +753,7 @@ pub(crate) fn normalize_split_shares(shares: &mut [f32]) {
     let max = shares.len() as f32;
     let scale = max / sum;
     for share in shares {
-        *share = (*share * scale).clamp(0.01, max);
+        *share = (*share * scale).clamp_lenient(0.01, max);
     }
 }
 
@@ -1021,7 +1040,7 @@ impl ColWidths {
         let minima: [f32; 4] = [120.0, 46.0, 92.0, 56.0];
         let minimum = minima[index].min(combined * 0.5);
         let maximum = (combined - minima[neighbor]).max(minimum);
-        values[index] = pixels.clamp(minimum, maximum);
+        values[index] = pixels.clamp_lenient(minimum, maximum);
         values[neighbor] = combined - values[index];
         self.name = values[0]; self.size = values[1];
         self.modified = values[2]; self.type_w = values[3];
@@ -1581,7 +1600,7 @@ impl App {
             "dnd trigger_os_drag"
         );
         if !stale.is_empty() {
-            if let Some(q) = queue.as_ref().and_then(|q| q.lock().ok()) {
+            if let Some(q) = queue.as_ref().and_then(|q| q.lock().or_else(atlas_model::sync::recover).ok()) {
                 let mut q = q;
                 for p in &stale {
                     q.push(crate::dnd::windows::DndEvent::Error(
@@ -1606,7 +1625,7 @@ impl App {
         let queue = self.dnd.as_ref().map(|d| d.action_queue.clone());
         let (paths, stale): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| p.exists());
         if !stale.is_empty() {
-            if let Some(q) = queue.as_ref().and_then(|q| q.lock().ok()) {
+            if let Some(q) = queue.as_ref().and_then(|q| q.lock().or_else(atlas_model::sync::recover).ok()) {
                 let mut q = q;
                 for p in &stale {
                     q.push(crate::dnd::windows::DndEvent::Error(
@@ -2107,6 +2126,22 @@ impl App {
         atlas_core::util::config::save_ext_enabled(&self.state.ext.enabled);
         #[cfg(feature = "provider-host")]
         atlas_core::util::config::save_cloud_remotes(&self.state.cloud.remotes);
+    }
+
+    /// Periodic crash-safety checkpoint. Quit-time autosave alone loses the
+    /// whole session when the process dies. Skipped while panes animate closed
+    /// (they would persist as ghosts) and while a vault is open (quit closes it
+    /// before saving, so its paths never reach the session file).
+    pub fn autosave_checkpoint(&mut self) {
+        if !self.state.settings.autosave_session
+            || self.close_after_tab_transfer
+            || self.vault.is_some()
+            || !self.pane_closing.is_empty()
+            || !self.tab_closing.is_empty()
+        {
+            return;
+        }
+        self.save();
     }
 
     /// Called when the window is about to close. Persists everything only if

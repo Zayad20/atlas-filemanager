@@ -353,7 +353,7 @@ impl App {
                 let (zone_pane, zone_count) = self
                     .dnd
                     .as_ref()
-                    .and_then(|d| d.zones.lock().ok())
+                    .and_then(|d| d.zones.lock().or_else(atlas_model::sync::recover).ok())
                     .map(|z| (z.hit(p.x, p.y).map(|z| TileId(z.pane_id)), z.len()))
                     .unwrap_or((None, 0));
                 let zone_dest = zone_pane.filter(|pane| self.pane_accepts_visible_drop(*pane))
@@ -1391,6 +1391,14 @@ impl App {
                 BgResult::LicenseChanged(result) => {
                     self.toast_info(result.unwrap_or_else(|error| error));
                 }
+                BgResult::CrashReportSent(result) => match result {
+                    Ok(message) => self.toast_info(message),
+                    Err(message) => {
+                        // Allow a retry once the connection is back.
+                        self.crash_report_sent = false;
+                        self.toast_error(message);
+                    }
+                },
                 BgResult::ExtRegistryFetched(result) => {
                     self.handle_ext_registry_fetched(result);
                 }

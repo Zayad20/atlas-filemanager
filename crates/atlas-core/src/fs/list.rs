@@ -520,8 +520,8 @@ mod tests {
             let preview = std::sync::Arc::new(std::sync::Mutex::new(None));
             let output = preview.clone();
             let final_batch = list_dir_with_preview(fixture.path(), true, SortColumn::Name, SortDir::Asc,
-                order, move |batch| *output.lock().unwrap() = Some(batch)).await.unwrap();
-            let first_batch = preview.lock().unwrap().take().unwrap();
+                order, move |batch| *output.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(batch)).await.unwrap();
+            let first_batch = preview.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().unwrap();
             assert_eq!(first_batch.len(), 256);
             assert_eq!(final_batch.len(), 261);
             for batch in [&first_batch, &final_batch] {

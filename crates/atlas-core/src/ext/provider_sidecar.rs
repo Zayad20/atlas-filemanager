@@ -54,7 +54,7 @@ impl ProviderSidecar {
                     if let Ok(response) = serde_json::from_str::<Response>(&line) {
                         if let Some(tx) = reader_pending
                             .lock()
-                            .ok()
+                            .or_else(atlas_model::sync::recover).ok()
                             .and_then(|mut pending| pending.remove(&response.id))
                         {
                             let _ = tx.send(response);
@@ -65,7 +65,7 @@ impl ProviderSidecar {
                         tracing::warn!(bytes = line.len(), "provider emitted invalid JSON");
                     }
                 }
-                if let Ok(mut pending) = reader_pending.lock() {
+                if let Some(mut pending) = reader_pending.lock().or_else(atlas_model::sync::recover).ok() {
                     for (id, tx) in pending.drain() {
                         let _ = tx.send(Response {
                             version: VERSION,
@@ -95,7 +95,7 @@ impl ProviderSidecar {
         let (id, rx) = self.begin_request(operation)?;
         let result = rx.recv_timeout(REQUEST_TIMEOUT)
             .with_context(|| format!("provider request {id} timed out"));
-        self.pending.lock().ok().map(|mut pending| pending.remove(&id));
+        self.pending.lock().or_else(atlas_model::sync::recover).ok().map(|mut pending| pending.remove(&id));
         let response = result?;
         anyhow::ensure!(response.version == VERSION, "Cloud extension protocol mismatch: update the installed Cloud extension");
         Ok(response)
@@ -120,7 +120,7 @@ impl ProviderSidecar {
             },
         );
         if let Err(error) = write_result {
-            self.pending.lock().ok().map(|mut p| p.remove(&id));
+            self.pending.lock().or_else(atlas_model::sync::recover).ok().map(|mut p| p.remove(&id));
             return Err(error);
         }
 
@@ -181,9 +181,9 @@ struct PendingRequest { id: u64, pending: Arc<Mutex<HashMap<u64, flume::Sender<R
     cancel_on_drop: Option<Arc<Mutex<ChildStdin>>> }
 impl Drop for PendingRequest {
     fn drop(&mut self) {
-        if let Ok(mut pending) = self.pending.lock() { pending.remove(&self.id); }
+        if let Some(mut pending) = self.pending.lock().or_else(atlas_model::sync::recover).ok() { pending.remove(&self.id); }
         if let Some(stdin) = &self.cancel_on_drop {
-            if let Ok(mut stdin) = stdin.lock() {
+            if let Some(mut stdin) = stdin.lock().or_else(atlas_model::sync::recover).ok() {
                 let request = Request::new(0, atlas_model::provider_protocol::Operation::CancelRequest { request_id: self.id });
                 let _ = serde_json::to_writer(&mut *stdin, &request);
                 let _ = stdin.write_all(b"\n");
@@ -195,7 +195,7 @@ impl Drop for PendingRequest {
 
 impl Drop for ProviderSidecar {
     fn drop(&mut self) {
-        if let Ok(mut stdin) = self.stdin.lock() {
+        if let Some(mut stdin) = self.stdin.lock().or_else(atlas_model::sync::recover).ok() {
             let request = Request::new(0, atlas_model::provider_protocol::Operation::Shutdown);
             let _ = serde_json::to_writer(&mut *stdin, &request);
             let _ = stdin.write_all(b"\n");

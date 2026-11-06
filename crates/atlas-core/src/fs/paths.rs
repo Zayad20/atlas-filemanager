@@ -78,7 +78,7 @@ pub fn list_wsl_roots() -> Vec<PathBuf> {
     let cache_arc = WSL_ROOT_CACHE
         .get_or_init(|| Arc::new(Mutex::new(None)))
         .clone();
-    let mut cache = cache_arc.lock().unwrap();
+    let mut cache = cache_arc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     if let Some((last_update, roots, is_updating)) = &mut *cache {
         if last_update.elapsed() < WSL_CACHE_TTL {
@@ -97,7 +97,7 @@ pub fn list_wsl_roots() -> Vec<PathBuf> {
                         }
                         roots
                     });
-                if let Ok(mut c) = cache_clone.lock() {
+                if let Some(mut c) = cache_clone.lock().or_else(atlas_model::sync::recover).ok() {
                     *c = Some((Instant::now(), new_roots, false));
                 }
             });
@@ -146,6 +146,11 @@ fn list_wsl_roots_command() -> Vec<PathBuf> {
     else {
         return Vec::new();
     };
+    // Windows ships a wsl.exe stub even without WSL; it prints an install hint
+    // and exits non-zero, which must not become sidebar "distros".
+    if !output.status.success() {
+        return Vec::new();
+    }
     parse_wsl_list_output(&output.stdout)
         .into_iter()
         .filter(|name| is_user_wsl_distro(name))
@@ -172,7 +177,7 @@ pub fn ensure_wsl_ready(path: &Path) -> anyhow::Result<()> {
     let cache = READY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if cache
         .lock()
-        .ok()
+        .or_else(atlas_model::sync::recover).ok()
         .and_then(|ready| ready.get(&distro.to_ascii_lowercase()).copied())
         .is_some_and(|last_ready| last_ready.elapsed() < WSL_READY_TTL)
     {
@@ -186,7 +191,7 @@ pub fn ensure_wsl_ready(path: &Path) -> anyhow::Result<()> {
     if !status.success() {
         anyhow::bail!("WSL distro {distro} is not available");
     }
-    if let Ok(mut ready) = cache.lock() {
+    if let Some(mut ready) = cache.lock().or_else(atlas_model::sync::recover).ok() {
         ready.insert(distro.to_ascii_lowercase(), Instant::now());
     }
     Ok(())
@@ -208,10 +213,18 @@ fn parse_wsl_list_output(bytes: &[u8]) -> Vec<String> {
         String::from_utf8_lossy(bytes).replace('\0', "")
     };
     text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .map(|line| line.trim().trim_start_matches('\u{feff}'))
+        .filter(|line| is_valid_wsl_distro_name(line))
         .map(ToOwned::to_owned)
         .collect()
+}
+
+/// WSL only accepts `[A-Za-z0-9._-]` distro names; anything else is a message.
+fn is_valid_wsl_distro_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
 pub fn volume_root(path: &Path) -> Option<String> {
@@ -358,6 +371,15 @@ mod tests {
             parse_wsl_list_output(&bytes),
             vec!["Arch".to_string(), "docker-desktop".to_string()]
         );
+    }
+
+    #[test]
+    fn ignores_wsl_not_installed_message() {
+        let bytes = "Windows Subsystem for Linux is not installed. You can install by running 'wsl.exe --install'.\r\nFor more information please visit https://aka.ms/wslinstall\r\n"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        assert!(parse_wsl_list_output(&bytes).is_empty());
     }
 
     #[test]

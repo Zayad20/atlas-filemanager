@@ -230,9 +230,17 @@ impl App {
             }
             OverlayClaim::ExtPrompt => {
                 self.ensure_ext_prompt_inputs(window, cx);
-                self.ext_prompt_inputs
-                    .first()
+                // Keep the field the user clicked; default to the first one.
+                let handles: Vec<FocusHandle> = self
+                    .ext_prompt_inputs
+                    .iter()
                     .map(|i| i.read(cx).focus_handle(cx))
+                    .collect();
+                handles
+                    .iter()
+                    .find(|h| h.is_focused(window))
+                    .or_else(|| handles.first())
+                    .cloned()
                     .or_else(|| Some(self.overlay_focus(cx)))
             }
             OverlayClaim::ExtManager => Some(self.ext_manager_focus_handle(window, cx)),
@@ -352,11 +360,20 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> FocusHandle {
+        // Recording a shortcut: keys must reach the root capture handler, not
+        // be typed into (or resolved as actions by) the search field.
+        if self.command_shortcut_capture.is_some() {
+            return self.overlay_focus(cx);
+        }
+        // An open choice dropdown owns the keyboard (its own search field).
+        if let Some(input) = self.settings_ui.drill.as_ref().and_then(|d| d.input.as_ref()) {
+            return input.read(cx).focus_handle(cx);
+        }
         if self.settings_input.is_none() {
             self.settings_input = Some(crate::ui::text_input::single_line(
                 window,
                 cx,
-                "Search settings",
+                rust_i18n::t!("sp_search_placeholder"),
                 "",
             ));
         }

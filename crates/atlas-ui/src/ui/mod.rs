@@ -24,8 +24,8 @@ pub fn rem_px_abs(n: f32, window: &gpui::Window) -> gpui::Pixels {
 pub mod breadcrumb_menu;
 pub mod chrome;
 pub mod cleanup;
-pub mod chrome_imm;
-pub mod imm;
+pub mod chrome_dg;
+pub mod dg;
 pub(crate) mod current_bounds;
 pub(crate) mod converter;
 pub mod dock;
@@ -45,7 +45,7 @@ pub(crate) mod preview_image;
 pub(crate) mod preview_delay;
 // Historical layout fixtures; the application uses the retained preview.
 #[cfg(test)]
-mod inspector_imm;
+mod inspector_dg;
 pub mod interactions;
 pub(crate) mod click_navigation;
 pub mod layout_region;
@@ -62,6 +62,7 @@ pub mod pane_panel;
 pub mod root;
 pub mod search_shell;
 pub mod selection_checkbox;
+pub(crate) mod settings_palette;
 pub mod shell_context_menu;
 pub mod sidebar;
 pub(crate) mod sidebar_bookmarks;
@@ -70,7 +71,7 @@ pub(crate) mod sidebar_feedback;
 pub(crate) mod sidebar_ink;
 // Historical layout fixture; production uses the composed sidebar + RowInk.
 #[cfg(test)]
-mod sidebar_imm;
+mod sidebar_dg;
 pub mod size_filter_menu;
 pub mod surface;
 pub(crate) mod tab_reorder;

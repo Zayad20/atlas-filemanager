@@ -26,6 +26,18 @@ pub fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> impl Fn(f32) -> f32 {
     }
 }
 
+// ── Dropdown reveal (Atlas fork) ────────────────────────────────────────────
+
+/// Timeline shared by popovers and popup/context menus.
+pub fn dropdown_animation() -> Animation {
+    Animation::new(Duration::from_millis(170)).with_easing(ease_out_cubic)
+}
+
+/// Fade in while dropping 6px into place.
+pub fn dropdown_appear<E: Styled>(this: E, t: f32) -> E {
+    this.opacity(t).paint_offset(point(px(0.), px(-6. * (1. - t))))
+}
+
 // ── Easing presets ──────────────────────────────────────────────────────────
 
 /// Cubic ease-out — fast start, slow end. Good for enter animations.

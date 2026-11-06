@@ -4,6 +4,7 @@ use crate::app::App;
 use crate::ui::icons::{icon, AtlasIcon};
 use atlas_model::file_entry::{FileEntry, FileKind};
 use atlas_model::pane::TabId;
+use gpui::AnimationExt as _;
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, Context, MouseButton, Pixels, Point, SharedString, Window};
 use gpui_component::StyledExt as _;
@@ -201,7 +202,12 @@ impl App {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
                     })
-                    .children(rows),
+                    .children(rows)
+                    .with_animation(
+                "size-filter-appear",
+                gpui_component::animation::dropdown_animation(),
+                gpui_component::animation::dropdown_appear,
+            ),
             )
             .into_any_element()
     }

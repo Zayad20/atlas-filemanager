@@ -52,4 +52,4 @@ Schluss mit trägen Oberflächen und überladenen Dialogen: Atlas öffnet Verzei
 ### Entwickelt für modernen Windows-Desktop
 Atlas integriert sich nahtlos in Windows 10 und Windows 11, unterstützt Tastenkürzel wie Win+E, Dark- und Light-Modi, anpassbare Designs, Liquid-Glass-Transparenzeffekte und bietet Entwicklern vollständigen Vim-Modus sowie Direktzugriff auf das Terminal.
 
-Quellcode (AGPL-3.0-or-later): https://github.com/neondeex/atlas-filemanager
+Quellcode (AGPL-3.0-or-later): https://atlasfm.modhyt.org/source-code

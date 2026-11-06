@@ -19,27 +19,27 @@ pub mod crumb_strip_element;
 #[cfg(feature = "ui-lab")]
 pub mod chrome_diagnostic;
 pub mod details;
-pub mod details_imm;
+pub mod details_dg;
 pub mod details_element;
 pub mod details_header_element;
 pub mod details_ring;
 #[cfg(all(feature = "ui-lab", feature = "provider-host"))]
 pub mod cloud_diagnostic;
 pub mod grid_deprecated;
-pub mod grid_imm;
+pub mod grid_dg;
 pub mod grid_surface_element_deprecated;
 #[cfg(feature = "ui-lab")]
 pub mod selection_diagnostic;
 pub mod list_deprecated;
-pub mod list_imm;
+pub mod list_dg;
 pub mod miller_deprecated;
-pub mod miller_imm;
+pub mod miller_dg;
 mod batch_row;
 mod rename;
 pub mod space_lens;
 pub mod tabs_bar_element;
 pub mod tree_deprecated;
-pub mod tree_imm;
+pub mod tree_dg;
 pub(crate) mod transition;
 #[cfg(feature = "ui-lab")]
 pub use transition::diagnostic as view_controls_diagnostic;

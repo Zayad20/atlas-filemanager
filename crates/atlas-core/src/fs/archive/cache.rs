@@ -45,7 +45,7 @@ pub fn get_or_open(
 
     // Fast path — hit in cache.
     {
-        let mut c = CACHE.lock().unwrap();
+        let mut c = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let hit = c.map.get(path).and_then(|e| {
             if e.mtime == fp.0 && e.len == fp.1 {
                 Some(e.provider.clone())
@@ -73,7 +73,7 @@ pub fn get_or_open(
     let provider = factory(path)?;
 
     {
-        let mut c = CACHE.lock().unwrap();
+        let mut c = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // Evict LRU if at capacity.
         if c.map.len() >= CAP {
             if let Some(lru) = c
@@ -103,7 +103,7 @@ pub fn get_or_open(
 
 /// Remove the cache entry for `path` (call after writing to an archive).
 pub fn invalidate(path: &Path) {
-    if let Ok(mut c) = CACHE.lock() {
+    if let Some(mut c) = CACHE.lock().or_else(atlas_model::sync::recover).ok() {
         c.map.remove(path);
     }
 }

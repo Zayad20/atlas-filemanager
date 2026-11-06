@@ -11,6 +11,7 @@
 //!     query with its `expand` text, e.g. a folder path), or toggles the
 //!     description lines for plain items.
 
+use atlas_model::clamp::ClampLenient;
 use super::{
     FooterHint, FooterSpec, PaletteItem, PaletteKind, PaletteSection, PaletteSpec, ShortcutHint,
 };
@@ -88,12 +89,12 @@ fn panel_geometry(
         .max(1.0);
     let min_height =
         (chrome_height + PANEL_ITEM_HEIGHT * zoom * PANEL_MIN_VISIBLE_ROWS).min(max_height);
-    let panel_height = (chrome_height + content_height).clamp(min_height, max_height);
+    let panel_height = (chrome_height + content_height).clamp_lenient(min_height, max_height);
     PanelGeometry {
         width: (PANEL_WIDTH * zoom).min((width - 2.0 * gutter).max(1.0)),
         height: panel_height,
         top: (height * PANEL_TOP_VIEWPORT_RATIO)
-            .clamp(gutter, (height - gutter - panel_height).max(gutter)),
+            .clamp_lenient(gutter, (height - gutter - panel_height).max(gutter)),
     }
 }
 
@@ -503,7 +504,7 @@ impl App {
 
         // ── rows ────────────────────────────────────────────────────────────
         // Each row's height (base px) mirrors the fixed height its element is built
-        // with, so the IMM list can position rows without measuring them.
+        // with, so the DG list can position rows without measuring them.
         let mut rows: Vec<AnyElement> = Vec::new();
         let mut row_heights: Vec<f32> = Vec::new();
         let mut gi = 0usize;
@@ -633,7 +634,7 @@ impl App {
                     scroller
                         .pr(crate::ui::rem_px(SCROLLBAR_GUTTER))
                         .child(super::PaletteListElement::new(
-                            SharedString::from(format!("{}-imm-list", spec.id)),
+                            SharedString::from(format!("{}-dg-list", spec.id)),
                             self.palette_scroll.clone(),
                             list_rows,
                             PANEL_LIST_PADDING * 0.5 * zoom,
@@ -920,7 +921,7 @@ impl App {
             .into_any_element()
     }
 
-    /// Keyboard reveal for the IMM list: scroll only when the selected row would
+    /// Keyboard reveal for the DG list: scroll only when the selected row would
     /// leave the viewport (one row of context), through the global smooth-scroll
     /// path. Returns `false` while the viewport is not laid out yet so the request
     /// is retried on the next render.
@@ -936,13 +937,13 @@ impl App {
             return false;
         }
         let heights: Vec<f32> = row_heights.iter().map(|h| h * zoom).collect();
-        let (tops, total) = super::palette_imm::row_tops(&heights, PANEL_LIST_PADDING * 0.5 * zoom);
+        let (tops, total) = super::palette_dg::row_tops(&heights, PANEL_LIST_PADDING * 0.5 * zoom);
         let Some((&top, &height)) = tops.get(selected).zip(heights.get(selected)) else {
             return true;
         };
         let offset = base.offset();
         let current = (-f32::from(offset.y)).max(0.0);
-        let target = crate::ui::imm::scroll::keyboard_target(
+        let target = crate::ui::dg::scroll::keyboard_target(
             top,
             height,
             viewport,

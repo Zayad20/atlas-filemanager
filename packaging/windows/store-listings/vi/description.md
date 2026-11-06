@@ -45,4 +45,4 @@ Thiết kế tối ưu cho trải nghiệm thao tác trực tiếp trên bàn ph
 ### Trải nghiệm tương lai của việc quản lý tệp
 Nâng cấp lên một trình quản lý tệp hiện đại, tôn trọng quyền riêng tư tuyệt đối và được tối ưu hóa cho tốc độ cùng sự tập trung. Hãy tải xuống **Atlas Trình quản lý tệp** ngay hôm nay và trải nghiệm điều hướng tệp tin hoàn toàn mới.
 
-Mã nguồn (AGPL-3.0-or-later): https://github.com/neondeex/atlas-filemanager
+Mã nguồn (AGPL-3.0-or-later): https://atlasfm.modhyt.org/source-code

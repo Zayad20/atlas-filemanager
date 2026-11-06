@@ -331,6 +331,12 @@ impl App {
         if was_active {
             let target = if del_idx == 0 { 1 } else { del_idx - 1 };
             self.switch_profile(target);
+            // switch_profile can refuse (e.g. files open in a mounted vault);
+            // never remove the profile that is still live.
+            if self.state.profiles.active_idx == del_idx {
+                self.state.profile_ui.confirming_delete_profile = None;
+                return;
+            }
         }
 
         self.state.profiles.profiles.remove(del_idx);
@@ -440,6 +446,14 @@ impl App {
             .active_mut()
             .set_scoped::<IconSelection>(&map);
         atlas_core::util::config::save_profiles(&self.state.profiles);
+        // Choosing an icon theme means "show it": native Shell icons would
+        // otherwise keep winning under the Windows themes.
+        use atlas_model::settings::IconStyle;
+        let style = if map.is_empty() { IconStyle::Auto } else { IconStyle::Theme };
+        if self.state.settings.icon_style != style {
+            self.state.settings.icon_style = style;
+            atlas_core::util::config::save_settings(&self.state.settings);
+        }
         self.apply_profile_icons();
     }
 

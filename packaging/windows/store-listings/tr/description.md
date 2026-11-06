@@ -45,4 +45,4 @@ Maksimum klavye verimliliği için tasarlandı:
 ### Dosya Yönetiminin Geleceğini Deneyimleyin
 Saf hız ve odaklanma için tasarlanmış modern, gizliliğe saygılı bir dosya yöneticisine geçin. **Atlas Dosya Yöneticisi**'ni bugün indirin ve dosya yönetimini yeniden keşfedin.
 
-Kaynak kodu (AGPL-3.0-or-later): https://github.com/neondeex/atlas-filemanager
+Kaynak kodu (AGPL-3.0-or-later): https://atlasfm.modhyt.org/source-code

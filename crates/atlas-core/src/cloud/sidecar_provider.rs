@@ -48,7 +48,7 @@ impl SidecarProvider {
                         }
                         if let Some(sink) = event_progress
                             .lock()
-                            .ok()
+                            .or_else(atlas_model::sync::recover).ok()
                             .and_then(|sinks| sinks.get(&transfer_id).cloned())
                         {
                             sink(done, total);
@@ -95,7 +95,7 @@ impl SidecarProvider {
             .insert(id.clone(), sink);
         let result = self.sidecar.request_async(operation, Some(control)).await
             .and_then(Self::decode).map(|_| ());
-        self.progress.lock().ok().map(|mut sinks| sinks.remove(&id));
+        self.progress.lock().or_else(atlas_model::sync::recover).ok().map(|mut sinks| sinks.remove(&id));
         result
     }
 }
@@ -307,7 +307,7 @@ impl CloudProvider for SidecarProvider {
             .map(|_| ());
         self.progress
             .lock()
-            .ok()
+            .or_else(atlas_model::sync::recover).ok()
             .map(|mut sinks| sinks.remove(&transfer_id));
         result
     }

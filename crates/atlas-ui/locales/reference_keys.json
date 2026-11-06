@@ -5773,5 +5773,55 @@
     "key": "guide_open_link",
     "en": "Open the full feature guide",
     "es": "Abrir la guía completa de funciones"
+  },
+  {
+    "key": "cmd_sys_crash_reports_title",
+    "en": "Open Crash Reports",
+    "es": "Abrir reportes de errores"
+  },
+  {
+    "key": "cmd_sys_crash_reports_desc",
+    "en": "Shows the folder where Atlas saves crash and error reports.",
+    "es": "Muestra la carpeta donde Atlas guarda los reportes de cierres y errores."
+  },
+  {
+    "key": "crash_previous_session",
+    "en": "Atlas closed unexpectedly last time. Help fix it: run “Send Crash Report” from the command palette.",
+    "es": "Atlas se cerró inesperadamente la última vez. Ayúdanos a arreglarlo: usa «Enviar reporte de errores» en la paleta de comandos."
+  },
+  {
+    "key": "cmd_sys_send_crash_report_title",
+    "en": "Send Crash Report",
+    "es": "Enviar reporte de errores"
+  },
+  {
+    "key": "cmd_sys_send_crash_report_desc",
+    "en": "Sends the last crash's error text to the Atlas team. Your user folder is hidden; no files are sent.",
+    "es": "Envía al equipo de Atlas el texto del error del último cierre. Tu carpeta de usuario se oculta; no se envían archivos."
+  },
+  {
+    "key": "crash_report_sending",
+    "en": "Sending crash report…",
+    "es": "Enviando reporte de errores…"
+  },
+  {
+    "key": "crash_report_sent",
+    "en": "Crash report sent. Thank you!",
+    "es": "Reporte enviado. ¡Gracias!"
+  },
+  {
+    "key": "crash_report_failed",
+    "en": "Couldn't send the crash report. Check your connection and try again.",
+    "es": "No se pudo enviar el reporte. Revisa tu conexión e inténtalo de nuevo."
+  },
+  {
+    "key": "crash_report_none",
+    "en": "There is no crash report from the last session.",
+    "es": "No hay reporte de errores de la última sesión."
+  },
+  {
+    "key": "crash_report_already_sent",
+    "en": "This crash report was already sent.",
+    "es": "Este reporte ya se envió."
   }
 ]

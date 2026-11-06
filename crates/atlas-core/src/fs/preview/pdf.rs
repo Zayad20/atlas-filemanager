@@ -9,6 +9,26 @@ use atlas_model::preview_cache::PreviewResult;
 use super::MAX_PDF_PREVIEW_EDGE;
 
 pub fn preview_pdf_public(path: &Path) -> PreviewResult {
+    // Windows ships a PDF renderer (Windows.Data.Pdf); use it so PDF preview
+    // works out of the box. pdftoppm on PATH is only the fallback.
+    #[cfg(windows)]
+    {
+        if super::is_cloud_placeholder(path) {
+            return super::offline_preview();
+        }
+        let edge = MAX_PDF_PREVIEW_EDGE.parse().unwrap_or(1024);
+        if let Ok(png) = atlas_win_space::pdf::render_first_page_png(path, edge) {
+            if let Ok(img) = image::load_from_memory(&png) {
+                let rgba = img.to_rgba8();
+                let (width, height) = rgba.dimensions();
+                return PreviewResult::Pdf {
+                    rgba: rgba.into_raw(),
+                    width: width as usize,
+                    height: height as usize,
+                };
+            }
+        }
+    }
     preview_pdf(path, Path::new("pdftoppm"))
 }
 

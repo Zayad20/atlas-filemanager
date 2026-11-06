@@ -90,6 +90,17 @@ impl FileIcon {
 }
 
 impl App {
+    /// True when file rows should use native Windows Shell icons. Follows the
+    /// user's icon style; `Auto` ties it to the "Atlas Windows" themes.
+    pub(crate) fn native_file_icons(&self) -> bool {
+        use atlas_model::settings::IconStyle;
+        match self.state.settings.icon_style {
+            IconStyle::Auto => is_windows_theme(&self.state.profiles.active().theme),
+            IconStyle::Windows => cfg!(windows),
+            IconStyle::Theme => false,
+        }
+    }
+
     pub(crate) fn file_icon_ref_for_path(path: PathBuf, is_dir: bool) -> FileIconRef {
         let kind = if is_dir {
             FileKind::Dir
@@ -116,7 +127,7 @@ impl App {
         extension: Option<&str>,
     ) -> FileIcon {
         #[cfg(target_os = "windows")]
-        if is_windows_theme(&self.state.profiles.active().theme) {
+        if self.native_file_icons() {
             let tex = if matches!(kind, FileKind::Dir) {
                 self.shell_folder_icon()
             } else {
@@ -148,13 +159,13 @@ impl App {
             return FileIcon::PreviewTexture(tex);
         }
         #[cfg(target_os = "windows")]
-        if matches!(kind, FileKind::Dir) && is_windows_theme(&self.state.profiles.active().theme) {
+        if matches!(kind, FileKind::Dir) && self.native_file_icons() {
             if let Some(tex) = self.shell_folder_icon() {
                 return FileIcon::IconTexture(IconTexture::Multi(tex));
             }
         }
         #[cfg(target_os = "windows")]
-        if !matches!(kind, FileKind::Dir) && is_windows_theme(&self.state.profiles.active().theme) {
+        if !matches!(kind, FileKind::Dir) && self.native_file_icons() {
             if let Some(tex) = self.shell_type_icon(path) {
                 return FileIcon::IconTexture(IconTexture::Multi(tex));
             }
@@ -168,7 +179,7 @@ impl App {
 
     pub(crate) fn maybe_request_file_icon(&mut self, file: &FileIconRef) {
         #[cfg(target_os = "windows")]
-        if is_windows_theme(&self.state.profiles.active().theme) {
+        if self.native_file_icons() {
             if matches!(file.kind, FileKind::Dir) {
                 self.request_shell_folder_icon();
             } else {

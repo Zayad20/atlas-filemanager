@@ -1,6 +1,7 @@
 //! Pane interactions: rubber-band selection, inline rename, type-to-filter, ctrl-scroll.
 #![allow(clippy::too_many_lines)] // reason: cohesive UI block kept whole
 
+use atlas_model::clamp::ClampLenient;
 use crate::app::{App, RubberTarget};
 use crate::input::action::Action;
 use crate::ui::edge_autoscroll;
@@ -136,7 +137,7 @@ impl App {
         true
     }
 
-    fn set_pane_grid_thumbnail_size(&mut self, pane_id: TabId, thumbnail_size: f32) -> bool {
+    pub(crate) fn set_pane_grid_thumbnail_size(&mut self, pane_id: TabId, thumbnail_size: f32) -> bool {
         if self.tab_data_for(pane_id).is_some_and(|pane| pane.view_mode != ViewMode::Grid) {
             self.capture_view_selection(pane_id);
         }
@@ -175,6 +176,62 @@ impl App {
         self.save_folder_view_pref(folder_pref_write);
         self.reload_flat_entries_if_needed(pane_id, &ViewMode::Grid);
         true
+    }
+
+    /// Show `mode` in the focused pane without persisting a folder preference.
+    pub(crate) fn preview_pane_view(&mut self, mode: ViewMode) {
+        let pane_id = self.state.focused_tile;
+        #[cfg(feature = "provider-host")]
+        if matches!(mode, ViewMode::Tree | ViewMode::Miller)
+            && self.tab_data_for(pane_id).is_some_and(|pane| matches!(pane.location, atlas_model::location::Location::Remote { .. })) {
+            return;
+        }
+        let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(pane_id) else {
+            return;
+        };
+        if self.view_preview_before.is_none() {
+            self.view_preview_before = Some((pane_id, pane.view_mode.clone()));
+        }
+        if pane.view_mode != mode {
+            pane.view_mode = mode.clone();
+            self.dirty_panes.insert(pane_id);
+            self.reload_flat_entries_if_needed(pane_id, &mode);
+        }
+    }
+
+    pub(crate) fn restore_pane_view_preview(&mut self) {
+        let Some((pane_id, mode)) = self.view_preview_before.take() else {
+            return;
+        };
+        if let Some(Tile::Pane(pane)) = self.state.pane_tree.tiles.get_mut(pane_id) {
+            if pane.view_mode != mode {
+                pane.view_mode = mode.clone();
+                self.dirty_panes.insert(pane_id);
+                self.reload_flat_entries_if_needed(pane_id, &mode);
+            }
+        }
+    }
+
+    pub(crate) fn preview_icon_style(&mut self, style: atlas_model::settings::IconStyle) {
+        if self.icon_style_preview_before.is_none() {
+            self.icon_style_preview_before = Some(self.state.settings.icon_style);
+        }
+        if self.state.settings.icon_style != style {
+            self.state.settings.icon_style = style;
+            self.apply_profile_icons();
+            self.relist_panes(|_| true);
+        }
+    }
+
+    pub(crate) fn restore_icon_style_preview(&mut self) {
+        let Some(style) = self.icon_style_preview_before.take() else {
+            return;
+        };
+        if self.state.settings.icon_style != style {
+            self.state.settings.icon_style = style;
+            self.apply_profile_icons();
+            self.relist_panes(|_| true);
+        }
     }
 
     fn reload_flat_entries_if_needed(&mut self, pane_id: TabId, mode: &ViewMode) {
@@ -250,8 +307,8 @@ impl App {
             return pos;
         };
         gpui::point(
-            gpui::px(f32::from(pos.x).clamp(f32::from(bounds.left()), f32::from(bounds.right()))),
-            gpui::px(f32::from(pos.y).clamp(f32::from(bounds.top()), f32::from(bounds.bottom()))),
+            gpui::px(f32::from(pos.x).clamp_lenient(f32::from(bounds.left()), f32::from(bounds.right()))),
+            gpui::px(f32::from(pos.y).clamp_lenient(f32::from(bounds.top()), f32::from(bounds.bottom()))),
         )
     }
 
@@ -260,8 +317,8 @@ impl App {
         pos: gpui::Point<gpui::Pixels>,
     ) -> gpui::Point<gpui::Pixels> {
         gpui::point(
-            gpui::px(f32::from(pos.x).clamp(f32::from(bounds.left()), f32::from(bounds.right()))),
-            gpui::px(f32::from(pos.y).clamp(f32::from(bounds.top()), f32::from(bounds.bottom()))),
+            gpui::px(f32::from(pos.x).clamp_lenient(f32::from(bounds.left()), f32::from(bounds.right()))),
+            gpui::px(f32::from(pos.y).clamp_lenient(f32::from(bounds.top()), f32::from(bounds.bottom()))),
         )
     }
 
@@ -801,7 +858,7 @@ impl App {
             let model = match mode { ViewMode::Grid => self.grid_hit.get(&pane), ViewMode::List => self.list_hit.get(&pane), _ => None };
             if let Some(model) = model { return selection_geometry::grid_hits(model, rl, rr, rt, rb); }
             if mode == ViewMode::Tree {
-                let row_h = crate::ui::views::tree_imm::TREE_ROW_H * zoom;
+                let row_h = crate::ui::views::tree_dg::TREE_ROW_H * zoom;
                 let count = self.state.tab_states.get(&pane).map_or(0, |ts| ts.visible_tree_rows_snapshot().len());
                 if rr > 0.0 { hits.extend(selection_geometry::row_span(rt, rb, row_h, count)); }
                 return hits;
@@ -821,8 +878,8 @@ impl App {
                 let gap = self.state.settings.grid_spacing.clamp(4.0, 48.0) * zoom;
                 let pad = (self.state.settings.grid_spacing.clamp(4.0, 48.0) * 0.75).round().max(4.0) * zoom;
                 let thumb = thumbnail_size * zoom;
-                let cell_h = thumb * crate::ui::views::grid_imm::GRID_ICON_AREA
-                    + crate::ui::views::grid_imm::GRID_LABEL_H * zoom;
+                let cell_h = thumb * crate::ui::views::grid_dg::GRID_ICON_AREA
+                    + crate::ui::views::grid_dg::GRID_LABEL_H * zoom;
                 let pane_w = ts.last_pane_width.max(thumb + 1.0);
                 let inner = (pane_w - 2.0 * pad).max(thumb);
                 let cols = (((inner + gap) / (thumb + gap)).floor() as usize).max(1);
@@ -911,7 +968,7 @@ impl App {
         let horizontal = self.rubber_scrolls_horizontally(target);
         let max = f32::from(if horizontal { handle.max_offset().x } else { handle.max_offset().y });
         let cur = f32::from(if horizontal { offset.x } else { offset.y });
-        let next = (cur + delta_y).clamp(-max, 0.0);
+        let next = (cur + delta_y).clamp_lenient(-max, 0.0);
         if (next - cur).abs() < 0.5 {
             return false;
         }
@@ -1085,8 +1142,8 @@ impl App {
 
         let fallback_gap = self.state.settings.grid_spacing.clamp(4.0, 48.0);
         let fallback_pad = (fallback_gap * 0.75).round().max(4.0);
-        let fallback_h = pane_data.thumbnail_size * crate::ui::views::grid_imm::GRID_ICON_AREA
-            + crate::ui::views::grid_imm::GRID_LABEL_H;
+        let fallback_h = pane_data.thumbnail_size * crate::ui::views::grid_dg::GRID_ICON_AREA
+            + crate::ui::views::grid_dg::GRID_LABEL_H;
         // Hit geometry is measured in the same zoom-scaled pixels as the
         // viewport. Recomputing unscaled dimensions can scroll a visible edit away.
         let (pad, row_pitch, row_h) = self.grid_hit.get(&pane).map_or(
@@ -1126,7 +1183,7 @@ impl App {
                 }
             }
         }
-        .clamp(0.0, max_scroll);
+        .clamp_lenient(0.0, max_scroll);
 
         self.set_keyboard_scroll_offset(&base, gpui::point(offset.x, gpui::px(-target)));
         true
@@ -1186,7 +1243,7 @@ impl App {
                 }
             }
         }
-        .clamp(0.0, max_scroll);
+        .clamp_lenient(0.0, max_scroll);
 
         self.set_keyboard_scroll_offset(&base, gpui::point(offset.x, gpui::px(-target)));
         true
@@ -1841,7 +1898,7 @@ impl App {
     /// True when the keyboard belongs to a text field or a managed modal, so the
     /// window-level type-to-filter must not steal the key. Uses gpui-component's
     /// own focus bookkeeping (`has_focused_input`) for component inputs, plus
-    /// the IMM menu's native input handle, which is not an `InputState` entity.
+    /// the DG menu's native input handle, which is not an `InputState` entity.
     pub(crate) fn any_text_input_focused(
         &self,
         window: &mut Window,
@@ -1865,7 +1922,7 @@ impl App {
         cx: &mut Context<Self>,
     ) {
         // The menu owns typing from the moment it opens, including the frame
-        // before its IMM input handler is painted or while focus is restored.
+        // before its DG input handler is painted or while focus is restored.
         if self.ctx_menu.is_some() {
             return;
         }
@@ -2237,7 +2294,7 @@ pub(crate) fn rubber_layer(view: Entity<App>) -> impl gpui::IntoElement {
                                     shares[left] = total_share / 2.0;
                                 } else {
                                     shares[left] = (resize.start_shares[left] + share_delta)
-                                        .clamp(min_share, total_share - min_share);
+                                        .clamp_lenient(min_share, total_share - min_share);
                                 }
                                 shares[right] = (total_share - shares[left]).max(0.0);
                                 if let Some(atlas_model::layout_tree::Tile::Container(

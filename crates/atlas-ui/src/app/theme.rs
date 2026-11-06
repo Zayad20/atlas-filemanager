@@ -45,6 +45,34 @@ fn material_color(mut color: gpui::Hsla, alpha: f32) -> gpui::Hsla {
     color
 }
 
+/// Dark Glass canvas alpha = BASE + opacity * SCALE. The floor keeps the
+/// lowest density close to the solid theme: below it a saturated wallpaper
+/// floods the sides and the dark panes read as slabs cut out of it.
+const DARK_CANVAS_BASE: f32 = 0.40;
+const DARK_CANVAS_SCALE: f32 = 0.25;
+/// Light Glass canvas alpha = BASE + opacity * SCALE (sides of the window).
+/// Light ink reads well through thin white, so the sides stay as airy as the
+/// dark presets instead of a near-opaque white sheet.
+const LIGHT_CANVAS_BASE: f32 = 0.22;
+const LIGHT_CANVAS_SCALE: f32 = 0.50;
+/// Pane alpha on top of the canvas = BASE + SPAN * opacity^PANE_CURVE.
+/// The curve keeps the low end almost flat and lets density rise gently.
+const DARK_PANE_BASE: f32 = 0.14;
+const DARK_PANE_SPAN: f32 = 0.24;
+const LIGHT_PANE_BASE: f32 = 0.18;
+const LIGHT_PANE_SPAN: f32 = 0.40;
+const PANE_CURVE: f32 = 1.5;
+
+/// The lowest and highest canvas alpha the Glass opacity setting can produce,
+/// so floating controls can follow the same density within their own range.
+pub(crate) fn glass_canvas_range(dark: bool) -> (f32, f32) {
+    if dark {
+        (DARK_CANVAS_BASE + 0.2 * DARK_CANVAS_SCALE, DARK_CANVAS_BASE + DARK_CANVAS_SCALE)
+    } else {
+        (LIGHT_CANVAS_BASE + 0.2 * LIGHT_CANVAS_SCALE, LIGHT_CANVAS_BASE + LIGHT_CANVAS_SCALE)
+    }
+}
+
 fn apply_frosted_material(colors: &mut ThemeColor, mode: ThemeMode, opacity: f32) {
     let opacity = if opacity.is_finite() {
         opacity.clamp(0.20, 1.0)
@@ -53,22 +81,29 @@ fn apply_frosted_material(colors: &mut ThemeColor, mode: ThemeMode, opacity: f32
     };
     // One backing tint; panes are the main material. Internal strips and controls
     // use small overlay weights so nested backgrounds don't wash out the frost.
-    colors.background = material_color(colors.background, opacity * 0.18);
-    let content_opacity = if mode.is_dark() {
-        opacity
+    // The window canvas carries the sidebar and preview directly, so its tint
+    // is the visible frost; the Glass opacity setting scales it.
+    // Light ink needs a denser canvas than dark ink to stay readable over a
+    // blurred (mid-tone) wallpaper; both scale with the Glass opacity setting.
+    let canvas = if mode.is_dark() {
+        DARK_CANVAS_BASE + opacity * DARK_CANVAS_SCALE
     } else {
-        opacity.max(0.80)
+        LIGHT_CANVAS_BASE + opacity * LIGHT_CANVAS_SCALE
+    };
+    colors.background = material_color(colors.background, canvas);
+    // Pane cards sit on that canvas, so their visible density compounds with
+    // it. Keep them one step above the sides (containers that still let the
+    // wallpaper through), not an opaque slab next to translucent sides.
+    let weighted = opacity.powf(PANE_CURVE);
+    let content_opacity = if mode.is_dark() {
+        DARK_PANE_BASE + DARK_PANE_SPAN * weighted
+    } else {
+        LIGHT_PANE_BASE + LIGHT_PANE_SPAN * weighted
     };
     colors.list = material_color(colors.list, content_opacity);
     colors.table = material_color(colors.table, content_opacity);
-    colors.sidebar = material_color(
-        colors.sidebar,
-        if mode.is_dark() {
-            opacity * 0.85
-        } else {
-            content_opacity
-        },
-    );
+    // Sidebar and preview have no surface of their own: they are the canvas.
+    colors.sidebar = material_color(colors.sidebar, canvas);
     colors.title_bar = material_color(colors.title_bar, opacity * 0.18);
     colors.tab_bar = material_color(colors.tab_bar, opacity * 0.12);
     colors.tab_active = material_color(colors.tab_active, opacity * 0.32);
@@ -93,6 +128,37 @@ fn apply_frosted_material(colors: &mut ThemeColor, mode: ThemeMode, opacity: f32
     colors.title_bar_border = gpui::transparent_black();
     colors.window_border = gpui::transparent_black();
 }
+
+/// Solid themes with a translucent canvas (Atlas Ember): the opacity setting
+/// still drives the canvas and the pane cards, weighted so the low end opens
+/// the cards up noticeably while 100% keeps the theme's opaque cards. Chrome
+/// and control colours stay exactly as the theme defines them.
+fn apply_translucent_solid_material(colors: &mut ThemeColor, opacity: f32) {
+    let opacity = if opacity.is_finite() {
+        opacity.clamp(0.20, 1.0)
+    } else {
+        atlas_model::settings::default_glass_opacity()
+    };
+    let canvas = (SOLID_CANVAS_BASE + SOLID_CANVAS_SCALE * opacity).min(colors.background.alpha);
+    colors.background = material_color(colors.background, canvas);
+    let pane = SOLID_PANE_BASE + SOLID_PANE_SPAN * opacity.powf(PANE_CURVE);
+    for c in [
+        &mut colors.list,
+        &mut colors.table,
+        &mut colors.list_even,
+        &mut colors.table_even,
+        &mut colors.list_head,
+        &mut colors.table_head,
+        &mut colors.tab_bar,
+    ] {
+        *c = material_color(*c, c.alpha.min(pane));
+    }
+}
+
+const SOLID_CANVAS_BASE: f32 = 0.45;
+const SOLID_CANVAS_SCALE: f32 = 0.45;
+const SOLID_PANE_BASE: f32 = 0.22;
+const SOLID_PANE_SPAN: f32 = 0.78;
 
 impl App {
     /// Suffix that marks a theme as the translucent "Glass" variant of a base
@@ -166,6 +232,21 @@ impl App {
         }
 
         Theme::global_mut(cx).apply_config(&config);
+        let light = !config.mode.is_dark();
+        if self.light_surfaces != light {
+            self.light_surfaces = light;
+            // Cached rows/tabs painted the other icon variant.
+            self.relist_panes(|_| true);
+        }
+        // Solid themes may still use a translucent canvas (e.g. Atlas Ember's
+        // sidebar/preview): blur the desktop behind it, keep the cards opaque.
+        if !wants_backdrop && Theme::global(cx).colors.background.alpha < 0.999 {
+            window.set_background_appearance(WindowBackgroundAppearance::Blurred);
+            apply_translucent_solid_material(
+                &mut Theme::global_mut(cx).colors,
+                self.state.settings.glass_opacity,
+            );
+        }
         if wants_backdrop {
             apply_frosted_material(
                 &mut Theme::global_mut(cx).colors,
@@ -261,12 +342,17 @@ mod gpui_ce_tests {
             apply_frosted_material(&mut theme.colors, config.mode, 0.8);
             let initial = serde_json::to_value(theme.colors).unwrap();
             apply_frosted_material(&mut theme.colors, config.mode, 0.4);
+            // Sides are the canvas; a pane composited on it is one step denser,
+            // never an opaque slab next to translucent sides.
+            assert_eq!(theme.colors.sidebar.alpha, theme.colors.background.alpha, "{}", config.name);
+            let canvas = theme.colors.background.alpha;
+            let pane = 1.0 - (1.0 - canvas) * (1.0 - theme.colors.list.alpha);
             if config.mode.is_dark() {
-                assert!(theme.colors.list.alpha < 0.8, "{}", config.name);
-                assert!(theme.colors.sidebar.alpha < theme.colors.list.alpha);
+                assert!(pane > canvas + 0.1, "{}", config.name);
+                assert!(pane < 0.85, "{}", config.name);
             } else {
-                assert_eq!(theme.colors.list.alpha, 0.80, "{}", config.name);
-                assert_eq!(theme.colors.sidebar.alpha, theme.colors.list.alpha);
+                // Light keeps a readability floor; the pane is still a step above.
+                assert!(pane > canvas + 0.05, "{}", config.name);
             }
             assert!(theme.colors.tab_bar.alpha < theme.colors.sidebar.alpha);
             assert!(theme.colors.popover.alpha > 0.9);
@@ -294,6 +380,30 @@ mod gpui_ce_tests {
                 serde_json::to_value(palette).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn translucent_solid_theme_panes_follow_the_opacity_setting() {
+        use super::apply_translucent_solid_material;
+        let themes: ThemeSet =
+            serde_json::from_str(include_str!("../../assets/themes/atlas-themes.json")).unwrap();
+        let config = std::rc::Rc::new(
+            themes.themes.into_iter().find(|t| t.name.as_ref() == "Atlas Ember").unwrap(),
+        );
+        let at = |opacity: f32| {
+            let mut theme = gpui_component::Theme::default();
+            theme.apply_config(&config);
+            apply_translucent_solid_material(&mut theme.colors, opacity);
+            theme.colors
+        };
+        let (low, mid, full) = (at(0.2), at(0.6), at(1.0));
+        assert!(low.list.alpha < mid.list.alpha && mid.list.alpha < full.list.alpha);
+        assert!(low.background.alpha < full.background.alpha);
+        // Weighted: the low half of the slider opens the cards up the most.
+        assert!(low.list.alpha < 0.35);
+        assert!((full.list.alpha - 1.0).abs() < 1e-4);
+        assert_eq!(low.list.lightness, full.list.lightness);
+        assert_eq!(low.foreground, full.foreground);
     }
 
     #[test]
@@ -353,8 +463,95 @@ mod gpui_ce_tests {
                 assert!(controls.hover.alpha > theme.colors.border.alpha * 0.42);
                 assert!(controls.pressed.alpha > controls.hover.alpha);
                 if !config.mode.is_dark() {
-                    assert!(theme.colors.list.alpha >= 0.80);
-                    assert!(theme.colors.sidebar.alpha >= 0.80);
+                    // What the eye sees: sides = canvas; panes = list over canvas.
+                    let canvas = theme.colors.background.alpha;
+                    let pane = 1.0 - (1.0 - canvas) * (1.0 - theme.colors.list.alpha);
+                    // Readability itself is proven by the contrast test; here the
+                    // light material must stay translucent yet layered.
+                    assert!(canvas < 0.85 && pane > canvas, "{}", config.name);
+                    assert_eq!(theme.colors.sidebar.alpha, canvas);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn panes_and_capsules_follow_the_glass_slider_gently() {
+        let themes: ThemeSet =
+            serde_json::from_str(include_str!("../../assets/themes/atlas-themes.json")).unwrap();
+        for config in themes.themes.into_iter().filter(|t| t.name.ends_with(" Glass")) {
+            let config = std::rc::Rc::new(config);
+            let mut previous: Option<(f32, f32)> = None;
+            for opacity in [0.2, 0.4, 0.6, 0.8, 1.0] {
+                let mut theme = gpui_component::Theme::default();
+                theme.apply_config(&config);
+                apply_frosted_material(&mut theme.colors, config.mode, opacity);
+                let canvas = theme.colors.background.alpha;
+                let pane = 1.0 - (1.0 - canvas) * (1.0 - theme.colors.list.alpha);
+                let capsule = crate::ui::glass::control_colors(&theme, true).surface.alpha;
+                assert!(capsule >= 0.54, "{}: capsule keeps a backing", config.name);
+                if let Some((prev_pane, prev_capsule)) = previous {
+                    assert!(pane > prev_pane, "{} @{opacity}: pane must densify", config.name);
+                    assert!(pane - prev_pane < 0.12, "{} @{opacity}: pane step too abrupt", config.name);
+                    assert!(capsule > prev_capsule, "{} @{opacity}: capsule must adapt", config.name);
+                    assert!(capsule - prev_capsule < 0.06, "{} @{opacity}: capsule step too abrupt", config.name);
+                }
+                previous = Some((pane, capsule));
+            }
+        }
+    }
+
+    #[test]
+    fn dark_glass_text_stays_readable_over_a_bright_wallpaper() {
+        fn composite(color: gpui::Rgba, base: gpui::Rgba) -> gpui::Rgba {
+            gpui::Rgba::new(
+                color.red * color.alpha + base.red * (1.0 - color.alpha),
+                color.green * color.alpha + base.green * (1.0 - color.alpha),
+                color.blue * color.alpha + base.blue * (1.0 - color.alpha),
+                1.0,
+            )
+        }
+        fn luminance(color: gpui::Rgba) -> f32 {
+            let linear = |v: f32| {
+                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * linear(color.red) + 0.7152 * linear(color.green) + 0.0722 * linear(color.blue)
+        }
+        fn contrast(a: gpui::Rgba, b: gpui::Rgba) -> f32 {
+            let (la, lb) = (luminance(a) + 0.05, luminance(b) + 0.05);
+            la.max(lb) / la.min(lb)
+        }
+        let themes: ThemeSet =
+            serde_json::from_str(include_str!("../../assets/themes/atlas-themes.json")).unwrap();
+        for config in themes
+            .themes
+            .into_iter()
+            .filter(|t| t.mode.is_dark() && t.name.ends_with(" Glass"))
+        {
+            let config = std::rc::Rc::new(config);
+            let mut theme = gpui_component::Theme::default();
+            theme.apply_config(&config);
+            // Some palettes ship low-contrast muted ink by design (Dracula's
+            // comment color); glass must preserve most of it, not exceed it.
+            let solid = theme.colors.background.to_rgb();
+            let solid_muted = contrast(composite(theme.muted_foreground.to_rgb(), solid), solid);
+            let muted_floor = (solid_muted * 0.85).min(3.0);
+            // Over a blurred, fairly bright wallpaper: primary text must read even
+            // at the lowest density; secondary text at the default density.
+            let wallpaper = gpui::Rgba::new(0.45, 0.45, 0.45, 1.0);
+            for (opacity, check_muted) in [(0.2, false), (0.8, true)] {
+                let mut theme = gpui_component::Theme::default();
+                theme.apply_config(&config);
+                apply_frosted_material(&mut theme.colors, config.mode, opacity);
+                let canvas = composite(theme.colors.background.to_rgb(), wallpaper);
+                let pane = composite(theme.colors.list.to_rgb(), canvas);
+                for surface in [canvas, pane] {
+                    let fg = composite(theme.foreground.to_rgb(), surface);
+                    let muted = composite(theme.muted_foreground.to_rgb(), surface);
+                    assert!(contrast(fg, surface) >= 4.5, "{} @{opacity}: text {}", config.name, contrast(fg, surface));
+                    if check_muted {
+                        assert!(contrast(muted, surface) >= muted_floor, "{} @{opacity}: muted {} < {muted_floor}", config.name, contrast(muted, surface));
+                    }
                 }
             }
         }
@@ -391,13 +588,21 @@ mod gpui_ce_tests {
                 apply_frosted_material(&mut theme.colors, config.mode, 0.2);
             }
             let base = if glass {
-                gpui::black().to_rgb()
+                // The OS blur averages a wallpaper toward a mid tone; light ink
+                // must read on that, not on the pathological pure-black case.
+                gpui::Rgba::new(0.5, 0.5, 0.5, 1.0)
             } else {
                 theme.background.to_rgb()
             };
             let controls = crate::ui::glass::control_colors(&theme, glass);
-            for surface in [theme.colors.list, theme.sidebar] {
-                let surface = composite(surface.to_rgb(), base);
+            // Glass panes are composited on the canvas, which is what the eye sees.
+            let pane_base = if glass {
+                composite(theme.colors.background.to_rgb(), base)
+            } else {
+                base
+            };
+            for (surface, under) in [(theme.colors.list, pane_base), (theme.sidebar, base)] {
+                let surface = composite(surface.to_rgb(), under);
                 let hovered = composite(
                     crate::ui::glass::control_hover(theme.foreground).to_rgb(),
                     surface,

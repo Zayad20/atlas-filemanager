@@ -44,4 +44,4 @@ Projetado para usuários avançados que valorizam a agilidade:
 ### Descubra o Futuro do Gerenciamento de Arquivos
 Eleve sua experiência de uso com um gerenciador moderno, veloz e focado na sua privacidade. Baixe o **Atlas Gerenciador de Arquivos** e redescubra a produtividade no Windows.
 
-Código-fonte (AGPL-3.0-or-later): https://github.com/neondeex/atlas-filemanager
+Código-fonte (AGPL-3.0-or-later): https://atlasfm.modhyt.org/source-code

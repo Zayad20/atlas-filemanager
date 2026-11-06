@@ -11,10 +11,14 @@ use std::path::PathBuf;
 
 #[path = "preview_lab/settings_scroll.rs"]
 mod settings_scroll;
+#[path = "preview_lab/settings_palette.rs"]
+mod settings_palette;
 
 #[path = "preview_lab/zip_docx.rs"]
 mod zip_docx;
 
+#[path = "preview_lab/brand_flow.rs"]
+mod brand_flow;
 #[path = "preview_lab/compat.rs"]
 mod compat;
 
@@ -213,6 +217,14 @@ pub(crate) fn install(view: &Entity<App>, window: &mut Window, cx: &mut gpui::Ap
     }
     if std::env::var_os("ATLAS_MILLER_CONVERT_LAB").is_some() {
         crate::ui::converter::crash_lab::install(view, window, cx, directory);
+        return;
+    }
+    if std::env::var_os("ATLAS_BRAND_FLOW_LAB").is_some() {
+        brand_flow::install(view, window, cx, directory);
+        return;
+    }
+    if std::env::var_os("ATLAS_SETTINGS_PALETTE_LAB").is_some() {
+        settings_palette::install(view, window, cx, directory);
         return;
     }
     if std::env::var_os("ATLAS_SETTINGS_SCROLL_LAB").is_some() {

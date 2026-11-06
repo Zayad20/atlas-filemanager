@@ -3,7 +3,7 @@ rclone v1.74.4 — additional Go dependency notices
 These are the modules recorded in the shipped Windows executable. Original
 module notices are preserved below. Dependencies retain their own licenses.
 Source and the verification manifest are available without charge at:
-https://github.com/neondeex/atlas-filemanager
+https://atlasfm.modhyt.org/source-code
 
 Go standard library, toolchain go1.26.5:
 https://github.com/golang/go/blob/go1.26.5/LICENSE

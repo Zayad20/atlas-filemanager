@@ -1,6 +1,7 @@
-use super::{geometry, wheel_view, Phase};
+use super::{geometry, wheel_view, Mode, Phase, RingAction};
 use crate::app::App;
 use crate::ui::icons::{icon, AtlasIcon};
+use atlas_core::convert::actions::Action;
 use atlas_core::convert::{Backend, ConversionOption, Tool, Tools};
 use gpui::prelude::*;
 use gpui::ColorExt as _;
@@ -96,6 +97,50 @@ fn value_button(
         )
         .child(label)
         .into_any_element()
+}
+
+/// Full, localized action name (toasts, info column, apply button).
+pub(super) fn action_label(action: Action) -> String {
+    text(match action {
+        Action::Resize => "ring_action_resize",
+        Action::RotateRight => "ring_action_rotate_right",
+        Action::RotateLeft => "ring_action_rotate_left",
+        Action::StripMetadata => "ring_action_strip",
+        Action::Compress => "ring_action_compress",
+        Action::CompressPdf => "ring_action_compress_pdf",
+    })
+}
+
+/// Sector label: a few characters that fit a ring cell.
+fn action_short(action: &RingAction) -> SharedString {
+    match action {
+        RingAction::Native(action) => text(match action {
+            Action::Resize => "ring_short_resize",
+            Action::RotateRight => "ring_short_rotate_right",
+            Action::RotateLeft => "ring_short_rotate_left",
+            Action::StripMetadata => "ring_short_strip",
+            Action::Compress => "ring_short_compress",
+            Action::CompressPdf => "ring_short_compress_pdf",
+        })
+        .into(),
+        RingAction::Extension { title, .. } => title.trim_end_matches('…').to_string().into(),
+    }
+}
+
+fn action_title(action: &RingAction) -> String {
+    match action {
+        RingAction::Native(action) => action_label(*action),
+        RingAction::Extension { title, .. } => title.trim_end_matches('…').to_string(),
+    }
+}
+
+fn action_engine(action: &RingAction) -> String {
+    match action {
+        RingAction::Native(action) => action
+            .tool()
+            .map_or_else(|| "Atlas".to_string(), |tool| tool.name().to_string()),
+        RingAction::Extension { extension, .. } => extension.clone(),
+    }
 }
 
 fn short_label(option: &ConversionOption) -> &'static str {
@@ -280,7 +325,7 @@ impl App {
         if self
             .converter
             .as_ref()
-            .is_some_and(|s| matches!(s.phase, Phase::Choosing) && !s.options().is_empty())
+            .is_some_and(|s| matches!(s.phase, Phase::Choosing) && s.len() > 0)
         {
             self.start_conversion();
         }
@@ -290,8 +335,11 @@ impl App {
             return false;
         };
         let choosing = matches!(session.phase, Phase::Choosing);
-        let count = session.options().len();
+        let count = session.len();
         let key = event.keystroke.key.as_str();
+        let plain = !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.platform;
         // Keyboard takes over from a stale pointer preview.
         self.converter.as_mut().unwrap().hovered = None;
         match key {
@@ -302,6 +350,7 @@ impl App {
             "i" if choosing && event.keystroke.modifiers.alt => {
                 self.activate_selected_conversion_engine()
             }
+            "m" if choosing && plain => self.toggle_ring_mode(),
             _ if !choosing || count == 0 => {}
             "left" | "right" | "up" | "down" | "pageup" | "pagedown" | "tab" | "home"
             | "end" => {
@@ -450,7 +499,7 @@ impl App {
         // Every option gets a sector; rings grow outward and the card scales
         // down to the window, so nothing ever pages or spills off-screen.
         let count = match session.phase {
-            Phase::Choosing => session.options().len(),
+            Phase::Choosing => session.len(),
             _ => 0,
         };
         let rings = geometry::rings(count.max(1));
@@ -634,6 +683,13 @@ impl App {
             }
         };
 
+        let header = self.render_conversion_header(cx);
+        let choosing_now = matches!(
+            self.converter.as_ref().map(|s| &s.phase),
+            Some(Phase::Choosing)
+        );
+        // Filename row (+ mode switch while choosing) and the gap below it.
+        let header_h = (if choosing_now { 64.0 } else { 30.0 }) * zoom;
         let (body, footer) = self.render_conversion_info(cx);
         // The scroll area gets an explicit height: a scrollable never shrinks
         // under flex, and the primary action must stay inside the card.
@@ -668,13 +724,15 @@ impl App {
             .when(!place.stack, |s| s.w(px(place.info_w)))
             .h(px(place.info_h))
             .justify_between()
+            .child(header)
             .child(
                 div()
                     .id("convert-info")
                     .w_full()
-                    .h(px((place.info_h - footer_h - 2.0 * inner_pad).max(40.0)))
+                    .h(px((place.info_h - footer_h - header_h - 2.0 * inner_pad).max(40.0)))
                     .overflow_y_scrollbar()
-                    .child(body),
+                    // Gutter so an appearing scrollbar never covers the values.
+                    .child(div().w_full().pr(px(10.0 * zoom)).child(body)),
             )
             .children(footer);
 
@@ -773,8 +831,25 @@ impl App {
     ) -> AnyElement {
         let diameter = geometry::radius(&rings) * 2.0 * scale;
         let session = self.converter.as_ref().unwrap();
+        if session.mode == Mode::Actions && session.actions.is_empty() {
+            return v_flex()
+                .size(px(diameter))
+                .items_center()
+                .justify_center()
+                .gap_3()
+                .child(
+                    div()
+                        .max_w(px(diameter * 0.8))
+                        .text_sm()
+                        .text_center()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .child(text("ring_no_actions")),
+                )
+                .child(button("ring-to-convert", text("ring_mode_convert"), cx, App::toggle_ring_mode))
+                .into_any_element();
+        }
         let options = session.options();
-        if options.is_empty() {
+        if session.mode == Mode::Convert && options.is_empty() {
             return v_flex()
                 .size(px(diameter))
                 .items_center()
@@ -805,17 +880,29 @@ impl App {
                 ))
                 .into_any_element();
         }
-        let selected = session.selected.min(options.len() - 1);
-        let props = wheel_view::WheelProps {
-            scale,
-            options: options
+        let entries: Vec<wheel_view::WheelOption> = match session.mode {
+            Mode::Convert => options
                 .iter()
                 .map(|o| wheel_view::WheelOption {
-                    label: short_label(o),
+                    label: short_label(o).into(),
                     available: o.available(),
                     engine: o.engines.first().copied().unwrap_or("").to_string(),
                 })
                 .collect(),
+            Mode::Actions => session
+                .actions
+                .iter()
+                .map(|a| wheel_view::WheelOption {
+                    label: action_short(a),
+                    available: true,
+                    engine: action_engine(a),
+                })
+                .collect(),
+        };
+        let selected = session.selected.min(entries.len() - 1);
+        let props = wheel_view::WheelProps {
+            scale,
+            options: entries,
             selected,
             hovered: session.hovered,
             glass: is_glass,
@@ -838,23 +925,14 @@ impl App {
         view.into_any_element()
     }
 
-    /// Always-visible side column: what is converted, how, where it lands and
-    /// the settings that matter for this route. The footer (primary action)
-    /// is returned apart so it stays pinned outside the scroll area.
-    fn render_conversion_info(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> (AnyElement, Option<AnyElement>) {
+    /// Pinned top of the info column: source, close button and the
+    /// Convert / Actions switch. Kept out of the scroll area so the scrollbar
+    /// never covers (or steals clicks from) the close button.
+    fn render_conversion_header(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let session = self.converter.as_ref().unwrap();
-        let (fg, muted, accent, accent_fg, danger) = {
+        let (fg, muted, accent) = {
             let t = cx.theme();
-            (
-                t.foreground,
-                t.muted_foreground,
-                t.accent,
-                t.accent_foreground,
-                t.danger,
-            )
+            (t.foreground, t.muted_foreground, t.accent)
         };
         let filename = session
             .sources
@@ -868,7 +946,7 @@ impl App {
         } else {
             filename
         };
-        let mut column = v_flex().w_full().gap_2().child(
+        let mut header = v_flex().w_full().gap_2().child(
             h_flex()
                 .w_full()
                 .items_center()
@@ -913,8 +991,37 @@ impl App {
                 ),
         );
 
-        let options = session.options();
+        if matches!(session.phase, Phase::Choosing) {
+            header = header.child(self.render_ring_mode_switch(cx));
+        }
+        header.into_any_element()
+    }
+
+    /// Always-visible side column: what is converted, how, where it lands and
+    /// the settings that matter for this route. The footer (primary action)
+    /// is returned apart so it stays pinned outside the scroll area.
+    fn render_conversion_info(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> (AnyElement, Option<AnyElement>) {
+        let session = self.converter.as_ref().unwrap();
+        let (fg, muted, accent, accent_fg, danger) = {
+            let t = cx.theme();
+            (
+                t.foreground,
+                t.muted_foreground,
+                t.accent,
+                t.accent_foreground,
+                t.danger,
+            )
+        };
+        let mut column = v_flex().w_full().gap_2();
         let choosing = matches!(session.phase, Phase::Choosing);
+        let session = self.converter.as_ref().unwrap();
+        if choosing && session.mode == Mode::Actions {
+            return self.render_action_info(column, cx);
+        }
+        let options = session.options();
         let shown = session.hovered.unwrap_or(session.selected);
         let Some(option) = options
             .get(shown.min(options.len().saturating_sub(1)))
@@ -928,7 +1035,13 @@ impl App {
             if let Some(hint) = hint {
                 column = column.child(div().text_xs().text_color(muted).child(text(hint)));
             }
-            if session.running() {
+            let running = session.running();
+            if choosing {
+                if let Some(locked) = self.render_locked_engines(cx) {
+                    column = column.child(locked);
+                }
+            }
+            if running {
                 column = column
                     .child(button("convert-minimize", text("convert_minimize"), cx, |app| {
                         if let Some(s) = &mut app.converter {
@@ -1047,9 +1160,12 @@ impl App {
         if !enabled || session.package.is_some() || session.package_error.is_some() {
             column = column.child(self.render_conversion_detail(cx));
         }
+        if let Some(locked) = self.render_locked_engines(cx) {
+            column = column.child(locked);
+        }
 
         let session = self.converter.as_ref().unwrap();
-        let multi_ring = geometry::rings(session.options().len()).len() > 1;
+        let multi_ring = geometry::rings(session.len()).len() > 1;
         let footer = v_flex()
             .w_full()
             .gap_1()
@@ -1092,6 +1208,252 @@ impl App {
                     } else {
                         "convert_keys"
                     })),
+            )
+            .into_any_element();
+        (column.into_any_element(), Some(footer))
+    }
+
+    /// Convert / Actions switch at the top of the info column (key: M).
+    fn render_ring_mode_switch(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let session = self.converter.as_ref().unwrap();
+        let (fg, muted, accent) = {
+            let t = cx.theme();
+            (t.foreground, t.muted_foreground, t.accent)
+        };
+        let current = session.mode;
+        let counts = [session.catalog.len(), session.actions.len()];
+        let mut row = h_flex().w_full().gap_1().p_0p5().rounded_lg().bg(fg.opacity(0.05));
+        for (index, (mode, id, key)) in [
+            (Mode::Convert, "ring-mode-convert", "ring_mode_convert"),
+            (Mode::Actions, "ring-mode-actions", "ring_mode_actions"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let active = current == mode;
+            row = row.child(
+                div()
+                    .id(id)
+                    .flex_1()
+                    .py_0p5()
+                    .rounded_md()
+                    .text_center()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .cursor_pointer()
+                    .when(active, |s| s.bg(accent.opacity(0.16)).text_color(accent))
+                    .when(!active, |s| s.text_color(muted).hover(move |s| s.bg(fg.opacity(0.06))))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |app, _, _, cx| {
+                            if let Some(session) = app.converter.as_mut() {
+                                session.set_mode(mode);
+                            }
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    )
+                    .child(format!("{} · {}", text(key), counts[index])),
+            );
+        }
+        row.into_any_element()
+    }
+
+    /// Installable provider engines that would add more formats for this
+    /// selection. Their routes stay hidden from the wheel until installed.
+    fn render_locked_engines(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let session = self.converter.as_ref()?;
+        if session.package.is_some() || session.locked.is_empty() {
+            return None;
+        }
+        let muted = cx.theme().muted_foreground;
+        let mut column = v_flex().w_full().gap_1().pt_1();
+        let mut any = false;
+        for tool in session.locked.clone() {
+            let Some(request) = session.installers.get(&tool) else {
+                continue;
+            };
+            any = true;
+            let size = format!("{:.1} MiB", request.tool.download_bytes as f64 / 1048576.0);
+            column = column
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(rust_i18n::t!("convert_more_formats", engine = tool.name()).into_owned()),
+                )
+                .child(button(
+                    "convert-unlock-engine",
+                    rust_i18n::t!("convert_unlock_package", engine = tool.name(), size = size)
+                        .into_owned(),
+                    cx,
+                    move |app| app.install_conversion_engine(tool),
+                ));
+        }
+        any.then(|| column.into_any_element())
+    }
+
+    /// Actions side of the info column: what the action does, where the
+    /// result lands and the knobs it honours.
+    fn render_action_info(
+        &mut self,
+        mut column: gpui::Div,
+        cx: &mut Context<Self>,
+    ) -> (AnyElement, Option<AnyElement>) {
+        let session = self.converter.as_ref().unwrap();
+        let (fg, muted, accent, accent_fg) = {
+            let t = cx.theme();
+            (t.foreground, t.muted_foreground, t.accent, t.accent_foreground)
+        };
+        let shown = session.hovered.unwrap_or(session.selected);
+        let Some(action) = session
+            .actions
+            .get(shown.min(session.actions.len().saturating_sub(1)))
+            .cloned()
+        else {
+            column = column.child(div().text_xs().text_color(muted).child(text("ring_no_actions")));
+            return (column.into_any_element(), None);
+        };
+        let title = action_title(&action);
+        column = column.child(
+            div()
+                .w_full()
+                .px_2()
+                .py_0p5()
+                .rounded_md()
+                .bg(accent.opacity(0.16))
+                .text_sm()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(accent)
+                .truncate()
+                .child(title.clone()),
+        );
+        let description = match &action {
+            RingAction::Native(native) => text(match native {
+                Action::Resize => "ring_desc_resize",
+                Action::RotateRight | Action::RotateLeft => "ring_desc_rotate",
+                Action::StripMetadata => "ring_desc_strip",
+                Action::Compress => "ring_desc_compress",
+                Action::CompressPdf => "ring_desc_compress_pdf",
+            }),
+            RingAction::Extension { .. } => text("ring_desc_extension"),
+        };
+        column = column.child(div().text_xs().text_color(muted).child(description));
+        let row = |label: String, value: String| {
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_center()
+                .justify_between()
+                .text_xs()
+                .child(div().flex_none().text_color(muted).child(label))
+                .child(div().min_w_0().truncate().text_color(fg).child(value))
+        };
+        column = column.child(row(text("convert_engine_label"), action_engine(&action)));
+        if let RingAction::Native(native) = action {
+            let settings = &session.action_settings;
+            let suffix = match native {
+                Action::Resize => format!("-{}px", settings.edge),
+                Action::RotateRight | Action::RotateLeft => "-rotated".to_string(),
+                Action::StripMetadata => "-clean".to_string(),
+                Action::Compress | Action::CompressPdf => "-compressed".to_string(),
+            };
+            let output = if session.sources.len() == 1 {
+                let source = &session.sources[0];
+                let stem = source.file_stem().unwrap_or_default().to_string_lossy();
+                let ext = source.extension().unwrap_or_default().to_string_lossy();
+                format!("{stem}{suffix}.{ext}")
+            } else {
+                rust_i18n::t!("ring_output_multi", count = session.sources.len(), suffix = suffix)
+                    .into_owned()
+            };
+            column = column.child(row(text("convert_output_label"), output));
+            let edge = settings.edge;
+            let quality = settings.quality;
+            let knob = |label: String, control: AnyElement| {
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .child(div().text_xs().text_color(muted).child(label))
+                    .child(control)
+            };
+            match native {
+                Action::Resize => {
+                    column = column.child(knob(
+                        text("ring_max_edge"),
+                        value_button("ring-edge", format!("{edge} px"), cx, |app| {
+                            if let Some(s) = &mut app.converter {
+                                const EDGES: [u32; 5] = [800, 1280, 1920, 2560, 3840];
+                                let next = EDGES
+                                    .iter()
+                                    .position(|e| *e == s.action_settings.edge)
+                                    .map_or(0, |i| (i + 1) % EDGES.len());
+                                s.action_settings.edge = EDGES[next];
+                            }
+                        }),
+                    ));
+                }
+                // Quality only matters for JPEG; PNG compression is lossless.
+                Action::Compress
+                    if session.sources.iter().any(|p| {
+                        p.extension().is_some_and(|e| {
+                            e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg")
+                        })
+                    }) =>
+                {
+                    column = column.child(knob(
+                        text("convert_quality"),
+                        value_button("ring-quality", format!("{quality}%"), cx, |app| {
+                            if let Some(s) = &mut app.converter {
+                                s.action_settings.quality = match s.action_settings.quality {
+                                    90 => 80,
+                                    80 => 60,
+                                    _ => 90,
+                                };
+                            }
+                        }),
+                    ));
+                }
+                _ => {}
+            }
+            column = column.child(self.render_conversion_settings(false, false, cx));
+        }
+        let multi_ring = geometry::rings(self.converter.as_ref().map_or(1, |s| s.len())).len() > 1;
+        let footer = v_flex()
+            .w_full()
+            .gap_1()
+            .child(
+                div()
+                    .id("ring-apply")
+                    .w_full()
+                    .py_1p5()
+                    .rounded_lg()
+                    .text_center()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .bg(accent)
+                    .text_color(accent_fg)
+                    .cursor_pointer()
+                    .hover(|s| s.opacity(0.9))
+                    .truncate()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|app, _, _, cx| {
+                            app.start_conversion();
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    )
+                    .child(title),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .text_center()
+                    .text_size(px(10.))
+                    .text_color(muted.opacity(0.8))
+                    .child(text(if multi_ring { "ring_keys_rings" } else { "ring_keys" })),
             )
             .into_any_element();
         (column.into_any_element(), Some(footer))

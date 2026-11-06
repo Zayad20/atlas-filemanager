@@ -131,7 +131,9 @@ fn watch_path_with_mode(path: &Path, tx: flume::Sender<BgResult>, recursive: boo
                     }
                     continue;
                 }
-                let changes = runtime.block_on(async {
+                // A panic resolving one batch must not end the watcher thread;
+                // fall back to a full rescan, which needs no per-event state.
+                let changes = crate::util::guard::contain("fs-watcher", || runtime.block_on(async {
                     let mut changes = Vec::new();
                     for event in coalesce_rename_chains(events) {
                         let path = match &event { Change::Upsert(path) | Change::Remove(path) => Some(path),
@@ -156,7 +158,13 @@ fn watch_path_with_mode(path: &Path, tx: flume::Sender<BgResult>, recursive: boo
                         }
                     }
                     changes
-                });
+                }));
+                let Ok(changes) = changes else {
+                    if tx.send(BgResult::FsEvent(directory.clone())).is_err() {
+                        break;
+                    }
+                    continue;
+                };
                 if !changes.is_empty()
                     && tx
                         .send(BgResult::FsChanges {

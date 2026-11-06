@@ -53,6 +53,13 @@ pub(crate) fn install(view: &Entity<App>, window: &mut Window, cx: &mut gpui::Ap
     }
     view.update(cx, |app, cx| {
         app.state.overlay.show_getting_started = false;
+        // In-memory only (the lab never saves): render the glass treatment.
+        if std::env::var_os("ATLAS_CONVERSION_LAB_GLASS").is_some()
+            && !app.state.profiles.active().theme.ends_with(" Glass")
+        {
+            let theme = &mut app.state.profiles.active_mut().theme;
+            theme.push_str(" Glass");
+        }
         app.open_converter_for(vec![source]);
         cx.notify();
     });
@@ -94,6 +101,9 @@ fn frame(
 ) -> bool {
     if std::env::var_os("ATLAS_CONVERSION_LAB_PACKAGE").is_some() {
         return package_frame(view, directory, step, window, cx);
+    }
+    if std::env::var_os("ATLAS_CONVERSION_LAB_ACTIONS").is_some() {
+        return actions_frame(view, directory, step, window, cx);
     }
     if step == 12 {
         if std::env::var_os("ATLAS_CONVERSION_LAB_VIDEO").is_some() {
@@ -227,6 +237,88 @@ fn frame(
     }
     if step >= 600 {
         panic!("Conversion lab did not finish");
+    }
+    window.refresh();
+    false
+}
+
+/// Actions side: M switches modes through the real key dispatcher, the info
+/// column renders, and "Rotate right" runs end to end on the PNG fixture.
+fn actions_frame(
+    view: &Entity<App>,
+    directory: &std::path::Path,
+    step: usize,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) -> bool {
+    use atlas_core::convert::actions::Action;
+    if step == 12 {
+        let session = view.read(cx).converter.as_ref().unwrap();
+        assert!(matches!(session.phase, super::Phase::Choosing));
+        assert_eq!(session.mode, super::Mode::Convert);
+        assert!(session.actions.contains(&super::RingAction::Native(Action::Resize)));
+        assert!(session.actions.contains(&super::RingAction::Native(Action::RotateRight)));
+        assert!(
+            !session.actions.contains(&super::RingAction::Native(Action::CompressPdf)),
+            "PDF-only action must not be offered for a PNG"
+        );
+        window.dispatch_keystroke(gpui::Keystroke::parse("m").unwrap(), cx);
+        assert_eq!(view.read(cx).converter.as_ref().unwrap().mode, super::Mode::Actions);
+    }
+    if step == 16 {
+        window
+            .render_to_image()
+            .unwrap()
+            .save(directory.join("actions-desktop.png"))
+            .unwrap();
+        window.resize(gpui::size(gpui::px(900.), gpui::px(560.)));
+    }
+    if step == 25 {
+        window
+            .render_to_image()
+            .unwrap()
+            .save(directory.join("actions-laptop.png"))
+            .unwrap();
+        let rotate = view
+            .read(cx)
+            .converter
+            .as_ref()
+            .unwrap()
+            .actions
+            .iter()
+            .position(|a| *a == super::RingAction::Native(Action::RotateRight))
+            .unwrap();
+        view.update(cx, |app, cx| {
+            app.converter.as_mut().unwrap().selected = rotate;
+            cx.notify();
+        });
+    }
+    if step == 30 {
+        window
+            .render_to_image()
+            .unwrap()
+            .save(directory.join("actions-rotate.png"))
+            .unwrap();
+        window.dispatch_keystroke(gpui::Keystroke::parse("enter").unwrap(), cx);
+    }
+    let output = directory.join("Sample-rotated.png");
+    if step > 30 && view.read(cx).converter.is_none() && output.is_file() {
+        let rotated = image::open(&output).unwrap();
+        assert_eq!((rotated.width(), rotated.height()), (100, 160));
+        std::fs::write(
+            directory.join("passed.txt"),
+            "Actions ring: M switched modes, PNG rotated 160x100 -> 100x160 beside the source.
+",
+        )
+        .unwrap();
+        cx.quit();
+        return true;
+    }
+    if let Some(super::Phase::Finished(report)) = view.read(cx).converter.as_ref().map(|s| &s.phase) {
+        panic!("Action failed: {:?}", report.errors());
+    }
+    if step >= 400 {
+        panic!("Actions lab did not finish");
     }
     window.refresh();
     false
@@ -400,6 +492,10 @@ fn package_frame(
                     revision: session.discovery,
                     tools: convert::Tools::default(),
                     catalog: Vec::new(),
+                    action_tools: convert::Tools::default(),
+                    actions: Vec::new(),
+                    extra: Vec::new(),
+                    locked: Vec::new(),
                 })
                 .unwrap();
             app.drain_converter();

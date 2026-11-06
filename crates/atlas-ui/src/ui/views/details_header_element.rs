@@ -12,7 +12,7 @@ use crate::ui::surface::{
     shape_text_truncated, Slot,
 };
 use crate::ui::views::details::{
-    DetailsColors, DetailsContentLod, DetailsRowLayout, CELL_PAD, DETAILS_ROW_H, ROW_TEXT_Y_NUDGE,
+    DetailsColors, DetailsContentLod, DetailsRowLayout, CELL_PAD, DETAILS_HEADER_H, ROW_TEXT_Y_NUDGE,
 };
 use atlas_model::file_entry::{SortColumn, SortDir};
 use atlas_model::pane::TabId;
@@ -248,7 +248,7 @@ mod tests {
                     w: 120.0 * zoom,
                 }],
             };
-            let targets = header_targets(&layout, 340.0 * zoom, 24.0 * zoom, zoom);
+            let targets = header_targets(&layout, 340.0 * zoom, DETAILS_HEADER_H * zoom, zoom);
             assert_eq!(
                 hit_test(&targets, 16.0 * zoom, 12.0 * zoom),
                 Some(HeaderHit::SelectAll)
@@ -295,7 +295,7 @@ impl Element for DetailsHeaderElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         crate::perf::count("details.header.layout");
         let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
-        let header_h = DETAILS_ROW_H * zoom_scale;
+        let header_h = DETAILS_HEADER_H * zoom_scale;
         let mut style = Style::default();
         style.refine(&self.style);
         style.size.width =
@@ -320,7 +320,7 @@ impl Element for DetailsHeaderElement {
         crate::perf::count("details.header.prepaint");
 
         let zoom_scale = f32::from(window.rem_size()) / crate::ui::BASE_PX;
-        let header_h = DETAILS_ROW_H * zoom_scale;
+        let header_h = DETAILS_HEADER_H * zoom_scale;
         // Header labels use text_xs chrome scale.
         self.font_size = chrome_font_size_header(window);
         let font = &self.font;

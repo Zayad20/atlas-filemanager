@@ -90,7 +90,7 @@ fn assert_query(
         "expected query {query:?}, got {:?}",
         menu.input.text
     );
-    ensure!(menu.focus.is_focused(window), "IMM search lost focus");
+    ensure!(menu.focus.is_focused(window), "DG search lost focus");
     ensure!(
         !app.state
             .active_tab_state()

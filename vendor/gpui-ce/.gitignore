@@ -16,10 +16,13 @@ DerivedData/
 xcuserdata/
 
 # AI agents
+.claude/
 .cursor/
 .aider/
 .copilot/
 .codex/
+.gemini/
+.agents/
 
 # MacOS file system clutter.
 ._*

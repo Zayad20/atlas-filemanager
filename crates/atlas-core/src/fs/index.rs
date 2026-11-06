@@ -124,7 +124,7 @@ fn index_tree(
 ) {
     // Breadth first: publish nearby folders before descending into large
     // AppData, dependency or document trees. A new project at home/developer/
-    // git/myproj must not wait behind every deep subtree that sorts before it.
+    // git/pexer must not wait behind every deep subtree that sorts before it.
     inject_folder(root.to_path_buf(), home, seen, injector);
     let mut pending = VecDeque::from([(root.to_path_buf(), 0_usize)]);
     while let Some((directory, depth)) = pending.pop_front() {
@@ -321,7 +321,7 @@ mod tests {
     fn fresh_project_folders_are_published_before_deep_subtrees() {
         let home = tempfile::tempdir().unwrap();
         let root = home.path();
-        let project = root.join("developer/git/myproj");
+        let project = root.join("developer/git/pexer");
         std::fs::create_dir_all(&project).unwrap();
         std::fs::create_dir_all(root.join("a-deep/one/two/three/four/beyond-limit")).unwrap();
         std::fs::create_dir_all(root.join(".hidden/ignored")).unwrap();
@@ -343,7 +343,7 @@ mod tests {
         assert!(paths.contains(&project));
         assert!(!paths.contains(&root.join(".hidden")));
         assert!(!paths.contains(&root.join("a-deep/one/two/three/four/beyond-limit")));
-        pool.set_pattern("myproj");
+        pool.set_pattern("pexer");
         while pool.results(100).iter().all(|entry| entry.path != project) {
             pool.tick();
             assert!(Instant::now() < deadline);

@@ -9,6 +9,18 @@ pub enum CharacterKeyAction {
     TriggerHotkey,
 }
 
+/// Which icon set file rows use. `Auto` keeps the historic behaviour: native
+/// Windows Shell icons only under the "Atlas Windows" themes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+pub enum IconStyle {
+    #[default]
+    Auto,
+    /// Native Windows Shell icons (colored, per file type) in every theme.
+    Windows,
+    /// The installed icon theme (e.g. Flow Icons), or the built-in set.
+    Theme,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum ViewMode {
     #[default]
@@ -124,6 +136,63 @@ pub struct Settings {
     /// True after the first-run setup has been dismissed or completed.
     pub getting_started_seen: bool,
     pub vim_mode: bool,
+    pub icon_style: IconStyle,
+    /// Convert / Actions radial menu preferences.
+    pub ring: RingPrefs,
+}
+
+/// Convert / Actions ring preferences. Unknown action ids (from a newer or
+/// older build) are ignored by the UI, so a stale list never breaks loading.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct RingPrefs {
+    /// Open on the Actions side instead of Convert.
+    pub open_actions: bool,
+    /// Visible actions, in ring order (ids from `convert::actions::Action::id`).
+    pub actions: Vec<String>,
+    /// Longest edge for "Resize", in pixels.
+    pub resize_edge: u32,
+    /// JPEG quality for "Compress".
+    pub compress_quality: u8,
+}
+
+pub const RING_ACTION_IDS: [&str; 6] = [
+    "resize",
+    "rotate-right",
+    "rotate-left",
+    "strip-metadata",
+    "compress",
+    "compress-pdf",
+];
+
+impl Default for RingPrefs {
+    fn default() -> Self {
+        Self {
+            open_actions: false,
+            actions: RING_ACTION_IDS.iter().map(|id| (*id).to_string()).collect(),
+            resize_edge: 1920,
+            compress_quality: 80,
+        }
+    }
+}
+
+impl RingPrefs {
+    pub fn shows(&self, id: &str) -> bool {
+        self.actions.iter().any(|action| action == id)
+    }
+    /// Show/hide `id`, keeping the canonical order for re-added actions.
+    pub fn set_shown(&mut self, id: &str, shown: bool) {
+        self.actions.retain(|action| action != id);
+        if shown {
+            let rank = |a: &str| RING_ACTION_IDS.iter().position(|x| *x == a).unwrap_or(usize::MAX);
+            let at = self
+                .actions
+                .iter()
+                .position(|action| rank(action) > rank(id))
+                .unwrap_or(self.actions.len());
+            self.actions.insert(at, id.to_string());
+        }
+    }
 }
 
 pub fn default_glass_opacity() -> f32 {
@@ -187,6 +256,7 @@ impl Default for Settings {
             single_click_folders_only: false,
             scroll_overscroll: 0.4,
             character_key_action: CharacterKeyAction::TypeInFilter,
+            icon_style: IconStyle::Auto,
             filter_sticky: false,
             thumbnail_cache_mb: default_thumbnail_cache_mb(),
             show_hidden: false,
@@ -213,6 +283,7 @@ impl Default for Settings {
             grid_spacing: default_grid_spacing(),
             getting_started_seen: false,
             vim_mode: false,
+            ring: RingPrefs::default(),
         }
     }
 }
@@ -241,6 +312,21 @@ mod tests {
         assert!(!settings.single_click_opens_folder(true, 2, false));
         let saved = serde_json::to_string(&settings).unwrap();
         assert!(serde_json::from_str::<Settings>(&saved).unwrap().single_click_folders_only);
+    }
+
+    #[test]
+    fn ring_prefs_load_from_old_and_partial_settings() {
+        let old: Settings = serde_json::from_str(r#"{"font_size": 13.0}"#).unwrap();
+        assert_eq!(old.ring, RingPrefs::default());
+        let partial: Settings =
+            serde_json::from_str(r#"{"ring": {"actions": ["compress", "future-action"]}}"#).unwrap();
+        assert_eq!(partial.ring.actions, ["compress", "future-action"]);
+        assert_eq!(partial.ring.resize_edge, 1920);
+        let mut ring = partial.ring;
+        ring.set_shown("resize", true);
+        ring.set_shown("compress", false);
+        assert!(ring.shows("resize") && !ring.shows("compress"));
+        assert_eq!(ring.actions[0], "resize");
     }
 
     #[test]

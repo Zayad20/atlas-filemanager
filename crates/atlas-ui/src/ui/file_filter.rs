@@ -67,7 +67,7 @@ impl App {
         (state.group_by != atlas_model::tab::GroupBy::None).then(|| state.grouped_cells_shared(flow))
     }
 
-    /// Position space of the pane's IMM view: grouped Details/List get their
+    /// Position space of the pane's DG view: grouped Details/List get their
     /// header cells, everything else the plain visible order.
     pub(crate) fn view_cells(&mut self, pane: TabId) -> Arc<Vec<usize>> {
         let flow = match self.tab_data_for(pane).map(|tab| tab.view_mode.clone()) {

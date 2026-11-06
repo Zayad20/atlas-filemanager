@@ -1,4 +1,4 @@
-//! Group divider shared by every IMM view: sidebar chevron, label, count, hairline.
+//! Group divider shared by every DG view: sidebar chevron, label, count, hairline.
 //! Headers are few, so they are plain absolutely-placed elements over the canvas;
 //! the canvas only reserves their cells.
 use crate::app::App;

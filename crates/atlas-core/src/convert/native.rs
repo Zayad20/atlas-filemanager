@@ -7,8 +7,13 @@ use std::path::{Component, Path};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) fn image(command: &Command, settings: &Settings, output: &Path) -> Result<()> {
+    write_image(decode_oriented(&command.source)?, command, settings, output)
+}
+
+/// Decode with a 512 MiB allocation cap and the EXIF orientation applied.
+pub(super) fn decode_oriented(source: &Path) -> Result<image::DynamicImage> {
     use image::ImageDecoder;
-    let mut reader = image::ImageReader::open(&command.source)?.with_guessed_format()?;
+    let mut reader = image::ImageReader::open(source)?.with_guessed_format()?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(512 * 1024 * 1024);
     reader.limits(limits);
@@ -18,7 +23,7 @@ pub(super) fn image(command: &Command, settings: &Settings, output: &Path) -> Re
         .unwrap_or(image::metadata::Orientation::NoTransforms);
     let mut img = image::DynamicImage::from_decoder(decoder)?;
     img.apply_orientation(orientation);
-    write_image(img, command, settings, output)
+    Ok(img)
 }
 
 pub(super) fn write_image(

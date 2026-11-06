@@ -1,3 +1,4 @@
+use atlas_model::clamp::ClampLenient;
 use crate::app::App;
 use atlas_model::pane::TabId;
 use gpui::prelude::*;
@@ -79,7 +80,7 @@ pub(super) fn input_width(name: &str, max_px: f32, font_size: Pixels, window: &m
     let max_px = max_px.max(0.0);
     // Include both insets, the caret and fractional glyph rounding. A tight
     // text-only width can scroll even a fully visible name by a few pixels.
-    (width.ceil() + 6.0 * scale + 4.0).clamp((72.0 * scale).min(max_px), max_px)
+    (width.ceil() + 6.0 * scale + 4.0).clamp_lenient((72.0 * scale).min(max_px), max_px)
 }
 
 fn text_width(name: &str, font_size: Pixels, window: &mut Window) -> f32 {

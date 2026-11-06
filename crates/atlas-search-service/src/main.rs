@@ -769,7 +769,7 @@ fn search_index(state: &State, query: &SearchQuery, request_id: u64) -> SearchBa
     // Name matches are preferred. Only pay for a full-path recovery pass when
     // they cannot fill the requested page; this keeps ordinary typing fast
     // while still supporting concatenated component queries such as
-    // "usersky".
+    // "fzemiskyblock".
     if include_path && candidates.len() < query.offset.saturating_add(query.limit.max(1)) {
         let characters: Vec<char> = compact_query.chars().collect();
         let mut suffix_lengths: Vec<_> = [8_usize, 6, 4, 3]
@@ -1233,12 +1233,12 @@ mod tests {
         // prefer the real project before the page is truncated.
         for id in 8..308 {
             index.apply(atlas_core::search::volume_index::ChangeRecord {
-                id, parent: 7, name: format!("C--Users-user-project-my-project-{id}"), is_dir: true,
+                id, parent: 7, name: format!("C--Users-finder-project-OS-Vida-{id}"), is_dir: true,
                 reason: atlas_core::search::volume_index::REASON_FILE_CREATE,
             });
         }
         index.apply(atlas_core::search::volume_index::ChangeRecord {
-            id: 308, parent: (1 << 48) | 5, name: "My Project".into(), is_dir: true,
+            id: 308, parent: (1 << 48) | 5, name: "OS Vida".into(), is_dir: true,
             reason: atlas_core::search::volume_index::REASON_FILE_CREATE,
         });
         save_index(&index, &path).unwrap();
@@ -1255,12 +1255,12 @@ mod tests {
             assert_eq!(batch.results[0].path, PathBuf::from(r"C:\egui-app"));
             assert!(batch.results[0].is_dir);
         }
-        let mut query = SearchQuery::text("my-project");
+        let mut query = SearchQuery::text("os-vida");
         query.interactive = true;
         query.limit = 1;
         let batch = execute_search(&state, &query);
         assert!(batch.complete);
-        assert_eq!(batch.results[0].path, PathBuf::from(r"C:\My Project"));
+        assert_eq!(batch.results[0].path, PathBuf::from(r"C:\OS Vida"));
         drop(state);
         fs::remove_file(path.with_extension("atlasfind2")).unwrap();
         fs::remove_file(path).unwrap();
@@ -1269,16 +1269,16 @@ mod tests {
 
     #[test]
     fn fuzzy_name_accepts_lazy_subsequence() {
-        assert!(score_name("SkyBlockAncestral", "skbans").is_some());
-        assert!(score_name("SkyBlockAncestral", "sba").is_some());
-        assert!(score_name("SkyBlockAncestral", "snab").is_none());
+        assert!(score_name("SkyBlockAnsestral", "skbans").is_some());
+        assert!(score_name("SkyBlockAnsestral", "sba").is_some());
+        assert!(score_name("SkyBlockAnsestral", "snab").is_none());
     }
 
     #[test]
     fn compact_path_matches_across_components() {
         assert!(score_path(
-            Path::new(r"C:\Users\user\Downloads\SkyBlockAncestral"),
-            "usersky"
+            Path::new(r"C:\Users\fzemi\Downloads\SkyBlockAnsestral"),
+            "fzemiskyblock"
         )
         .is_some());
     }

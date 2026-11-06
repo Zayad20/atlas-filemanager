@@ -394,16 +394,13 @@ impl App {
             handle.prewarm();
         }
 
-        // Extensions: seed bundled ones, load enabled overrides, build the registry.
-        let _ = atlas_core::ext::install::ensure_bundled(
-            "file-tools",
-            crate::app::ext::FILE_TOOLS_MANIFEST,
-        );
-        let _ = atlas_core::ext::install::ensure_asset(
-            "file-tools",
-            "icon.svg",
-            crate::app::ext::FILE_TOOLS_ICON,
-        );
+        // Extensions: retire official ones whose features are now built in
+        // (moved to extensions/.trash, never deleted, never fatal), seed the
+        // bundled ones, load enabled overrides and build the registry.
+        let retired = atlas_core::ext::install::retire_bundled();
+        if !retired.is_empty() {
+            tracing::info!("retired bundled extensions: {retired:?}");
+        }
         let _ = atlas_core::ext::install::ensure_bundled(
             "media-thumbs",
             crate::app::ext::MEDIA_THUMBS_MANIFEST,
@@ -412,15 +409,6 @@ impl App {
             "media-thumbs",
             "icon.svg",
             crate::app::ext::MEDIA_THUMBS_ICON,
-        );
-        let _ = atlas_core::ext::install::ensure_bundled(
-            "document-previews",
-            crate::app::ext::DOCUMENT_PREVIEWS_MANIFEST,
-        );
-        let _ = atlas_core::ext::install::ensure_asset(
-            "document-previews",
-            "icon.svg",
-            crate::app::ext::DOCUMENT_PREVIEWS_ICON,
         );
         let _ = atlas_core::ext::install::ensure_bundled(
             "icon-manager",
@@ -590,6 +578,15 @@ impl App {
 
         // transfer_journal resume is WIP and not wired into atlas-core yet.
 
+        #[cfg(windows)]
+        if let Some(crash) = atlas_win_space::crash::previous_crash() {
+            tracing::warn!(summary = ?crash.summary, reports = crash.reports.len(), "previous session crashed");
+            state.overlay.op_errors.push_back(atlas_model::overlay::Toast::new(
+                rust_i18n::t!("crash_previous_session").into_owned(),
+                atlas_model::overlay::ToastKind::Error,
+            ));
+        }
+
         let thumbnail_cache_mb = state.settings.thumbnail_cache_mb;
         Self {
             mounted_volumes: Vec::new(),
@@ -597,6 +594,7 @@ impl App {
             startup_started,
             startup_first_render_logged: false,
             close_after_tab_transfer: false,
+            crash_report_sent: false,
             #[cfg(windows)]
             pending_tab_restore,
             tx,
@@ -646,6 +644,7 @@ impl App {
             icon_theme,
             icon_cache: HashMap::new(),
             liquid_glass: crate::app::liquid_glass::LiquidGlassCache::new(),
+            light_surfaces: false,
             icon_tx,
             icon_rx,
             // Phase A: dock built lazily on first render from the restored pane_tree.
@@ -654,6 +653,8 @@ impl App {
             pane_tabs_cache: HashMap::new(),
             pane_tabs_fp: HashMap::new(),
             pane_tabs_bounds: HashMap::new(),
+            dock_flip_last_frame: false,
+            dock_settling: false,
             sidebar_panel: None,
             inspector_host: None,
             dock_host: None,
@@ -710,7 +711,7 @@ impl App {
             settings_input: None,
             theme_editor: None,
             theme_fork_error: None,
-            settings_section: 0,
+            settings_ui: crate::ui::settings_palette::SettingsUi::default(),
             settings_font_families: None,
             rename_edit: None,
             batch_input_sub: None,
@@ -719,8 +720,12 @@ impl App {
             content_cancel: None,
             theme_dirty: true,
             theme_preview_before: None,
+            settings_theme_previewing: false,
+            view_preview_before: None,
+            icon_style_preview_before: None,
             sidebar_width_dirty: true,
             sidebar_render_width: None,
+            sidebar_visual_collapsed: false,
             sidebar_width_animating: false,
             #[cfg(windows)]
             hwnd: hwnd_opt,

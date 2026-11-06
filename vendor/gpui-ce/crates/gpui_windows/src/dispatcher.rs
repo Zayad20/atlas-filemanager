@@ -177,7 +177,21 @@ unsafe extern "system" fn run_work_callback(
     context: *mut c_void,
 ) {
     let runnable = unsafe { RunnableVariant::from_raw(NonNull::new_unchecked(context as *mut ())) };
-    WindowsDispatcher::execute_runnable(runnable);
+    run_contained(runnable);
+}
+
+/// Threadpool callbacks are `extern "system"`: a panic unwinding out of them
+/// aborts the process. Background runnables hold no entity leases, so catching
+/// here is sound; async-task closes the panicked task and its awaiter observes
+/// the failure instead of the whole app dying.
+fn run_contained(runnable: RunnableVariant) {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        WindowsDispatcher::execute_runnable(runnable)
+    }))
+    .is_err()
+    {
+        log::error!("background task panicked; task cancelled");
+    }
 }
 
 unsafe extern "system" fn run_timer_callback(
@@ -186,6 +200,6 @@ unsafe extern "system" fn run_timer_callback(
     timer: PTP_TIMER,
 ) {
     let runnable = unsafe { RunnableVariant::from_raw(NonNull::new_unchecked(context as *mut ())) };
-    WindowsDispatcher::execute_runnable(runnable);
+    run_contained(runnable);
     unsafe { CloseThreadpoolTimer(timer) };
 }

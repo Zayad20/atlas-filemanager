@@ -309,9 +309,9 @@ mod tests {
         assert!(is_service_available(), "pipe should be responsive");
 
         let backend = WindowsServiceBackend::new();
-        let query = SearchQuery::text("windows");
+        let query = SearchQuery::text("ghidra");
         let batch = backend.search(&query);
-        assert!(!batch.results.is_empty(), "search for 'windows' should return results");
+        assert!(!batch.results.is_empty(), "search for 'ghidra' should return results");
 
         let drive_letters: std::collections::HashSet<char> = batch
             .results

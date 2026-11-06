@@ -73,7 +73,7 @@ pub(crate) fn track_hover<K: Clone + PartialEq + 'static>(
             }
         });
         if changed {
-            crate::perf::count("imm.hover.target_changed");
+            crate::perf::count("dg.hover.target_changed");
             cx.notify(owner);
         }
     });
@@ -112,7 +112,7 @@ pub(crate) fn chrome_font_size_crumbs(window: &Window, windows_theme: bool) -> P
 /// Details column header: always `text_xs`.
 pub(crate) fn chrome_font_size_header(window: &Window) -> Pixels {
     let rem = f32::from(window.rem_size());
-    px(rem * 0.75)
+    px(rem * 0.78)
 }
 
 /// UI font at a specific size (keeps family/weight from window style).
@@ -159,7 +159,7 @@ pub(crate) fn shape_text(
 
 /// Shapes a single line of text with binary-search UTF-8 truncation ('…') if it exceeds `max_text_w`.
 ///
-/// Implements the O(1) rect-slicing algorithm:
+/// Implements the Digital Grove / Pexer algorithm:
 /// 1. Measures full string; returns immediately if it fits (0-allocation fast path).
 /// 2. Measures ellipsis glyph '…'.
 /// 3. Binary searches UTF-8 char boundary indices for the maximal fit.

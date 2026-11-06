@@ -45,4 +45,4 @@
 ### Оцените новое поколение работы с файлами
 Откройте для себя быстрый, удобный и уважительный к вашей конфиденциальности файловый менеджер. Установите **Файловый менеджер Atlas** из Microsoft Store уже сегодня!
 
-Исходный код (AGPL-3.0-or-later): https://github.com/neondeex/atlas-filemanager
+Исходный код (AGPL-3.0-or-later): https://atlasfm.modhyt.org/source-code

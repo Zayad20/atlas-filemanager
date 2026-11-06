@@ -3,7 +3,7 @@
 use crate::{
     app::App,
     ui::{
-        imm::motion::{PresenceMotion, RowMotion},
+        dg::motion::{PresenceMotion, RowMotion},
         icons::{theme_icon, AtlasIcon},
     },
 };

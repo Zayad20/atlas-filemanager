@@ -1,7 +1,10 @@
 //! Custom theme copies are persisted independently of bundled presets.
 use crate::app::App;
+use crate::input::action::Action;
 use gpui::prelude::*;
-use gpui::{div, px, AnyElement, Context, Entity, Hsla, SharedString, Subscription, Window};
+use crate::ui::rem_px;
+use gpui::ColorExt as _;
+use gpui::{div, px, AnyElement, Context, Entity, FontWeight, Hsla, SharedString, Subscription, Window};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::{
@@ -45,6 +48,8 @@ impl Role {
 
 pub(crate) struct ThemeEditor {
     config: ThemeConfig,
+    /// Last state on disk; Discard restores it (edits preview live).
+    saved: ThemeConfig,
     file_name: String,
     controls: Vec<(Role, Entity<ColorPickerState>)>,
     dirty: bool,
@@ -84,7 +89,7 @@ fn theme_set(config: &ThemeConfig) -> ThemeSet {
 }
 
 impl App {
-    fn fork_active_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn fork_active_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let registry = ThemeRegistry::global(cx);
         let Some(base) = registry
             .themes()
@@ -115,6 +120,7 @@ impl App {
         }
         let mut editor = ThemeEditor {
             config: config.clone(),
+            saved: config.clone(),
             file_name,
             controls: Vec::new(),
             dirty: false,
@@ -146,7 +152,11 @@ impl App {
                             role.set(&mut editor.config, *color);
                             editor.dirty = true;
                             editor.error = None;
+                            // Live preview: the fork is the active theme.
+                            ThemeRegistry::global_mut(cx).register_custom_theme(editor.config.clone());
+                            this.theme_dirty = true;
                         }
+                        this.notify_all_panes(cx);
                         cx.notify();
                     }
                 },
@@ -175,6 +185,7 @@ impl App {
                 Some(rust_i18n::t!("theme_save_error", error = error.to_string()).to_string());
         } else {
             ThemeRegistry::global_mut(cx).register_custom_theme(editor.config.clone());
+            editor.saved = editor.config.clone();
             editor.dirty = false;
             editor.error = None;
             let name = editor.config.name.to_string();
@@ -183,79 +194,226 @@ impl App {
         cx.notify();
     }
 
+    /// Close the editor; unsaved live edits revert to the file on disk.
+    pub(crate) fn close_theme_editor(&mut self, cx: &mut Context<Self>) {
+        if let Some(editor) = self.theme_editor.take() {
+            if editor.dirty {
+                ThemeRegistry::global_mut(cx).register_custom_theme(editor.saved);
+                self.theme_dirty = true;
+                self.notify_all_panes(cx);
+            }
+        }
+        cx.notify();
+    }
+
     pub(crate) fn render_theme_editor(&self, cx: &mut Context<Self>) -> AnyElement {
-        let fg = cx.theme().foreground;
-        let muted = cx.theme().muted_foreground;
-        let danger = cx.theme().danger;
-        let mut content = v_flex().w_full().gap_2().py_2().child(
-            h_flex()
-                .w_full()
-                .items_center()
-                .justify_between()
-                .gap_2()
-                .child(
-                    v_flex()
-                        .gap_1()
-                        .child(
-                            rust_i18n::t!(
-                                "theme_active",
-                                name = self.state.profiles.active().theme.clone()
-                            )
-                            .to_string(),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(muted)
-                                .child(rust_i18n::t!("theme_fork_description").to_string()),
-                        ),
-                )
-                .child(
-                    Button::new("fork-active-theme")
-                        .small()
-                        .label(rust_i18n::t!("theme_fork").to_string())
-                        .disabled(self.theme_editor.is_some())
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.fork_active_theme(window, cx)),
-                        ),
-                ),
+        let theme = cx.theme();
+        let (fg, danger, border, primary) = (
+            theme.popover_foreground,
+            theme.danger,
+            theme.border,
+            theme.primary,
         );
+        let muted = fg.opacity(0.62);
+        let (bg, accent, text) = (theme.background, theme.primary, theme.foreground);
+        let editing = self.theme_editor.is_some();
+        let name = self.state.profiles.active().theme.clone();
+
+        // A miniature window painted with the live theme colours.
+        let line = |w: f32, alpha: f32| {
+            div().h(rem_px(4.)).w(rem_px(w)).rounded_full().bg(text.opacity(alpha))
+        };
+        let preview = v_flex()
+            .flex_shrink_0()
+            .w(rem_px(176.))
+            .h(rem_px(112.))
+            .rounded(rem_px(10.))
+            .overflow_hidden()
+            .bg(bg)
+            .border_1()
+            .border_color(border)
+            .shadow_md()
+            .child(
+                h_flex()
+                    .h(rem_px(16.))
+                    .px(rem_px(6.))
+                    .gap(rem_px(4.))
+                    .items_center()
+                    .border_b_1()
+                    .border_color(text.opacity(0.08))
+                    .children([0.5, 0.35, 0.2].map(|a| div().size(rem_px(5.)).rounded_full().bg(text.opacity(a)))),
+            )
+            .child(
+                h_flex()
+                    .flex_1()
+                    .child(
+                        v_flex()
+                            .w(rem_px(44.))
+                            .h_full()
+                            .p(rem_px(6.))
+                            .gap(rem_px(6.))
+                            .bg(text.opacity(0.04))
+                            .child(line(28., 0.35))
+                            .child(line(22., 0.2))
+                            .child(line(26., 0.2)),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .p(rem_px(8.))
+                            .gap(rem_px(7.))
+                            .child(
+                                h_flex()
+                                    .gap(rem_px(5.))
+                                    .child(div().size(rem_px(6.)).rounded_sm().bg(accent))
+                                    .child(line(60., 0.55)),
+                            )
+                            .child(
+                                h_flex()
+                                    .px(rem_px(4.))
+                                    .py(rem_px(3.))
+                                    .rounded(rem_px(3.))
+                                    .bg(accent.opacity(0.22))
+                                    .child(line(70., 0.6)),
+                            )
+                            .child(line(54., 0.3))
+                            .child(line(64., 0.3))
+                            .child(
+                                h_flex()
+                                    .justify_end()
+                                    .child(div().h(rem_px(10.)).w(rem_px(28.)).rounded_full().bg(accent)),
+                            ),
+                    ),
+            );
+
+        let hero = h_flex()
+            .w_full()
+            .gap(rem_px(18.))
+            .p(rem_px(16.))
+            .items_center()
+            .rounded(rem_px(12.))
+            .border_1()
+            .border_color(fg.opacity(0.08))
+            .bg(fg.opacity(0.03))
+            .child(preview)
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .gap(rem_px(4.))
+                    .child(div().text_xs().text_color(muted).child(rust_i18n::t!("sp_theme_active").to_string()))
+                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).truncate().child(name))
+                    .child(
+                        div().text_xs().text_color(muted).child(
+                            rust_i18n::t!(if editing { "theme_editor_description" } else { "theme_fork_description" })
+                                .to_string(),
+                        ),
+                    )
+                    .child(
+                        h_flex()
+                            .pt(rem_px(8.))
+                            .gap(rem_px(8.))
+                            .child(
+                                Button::new("fork-active-theme")
+                                    .small()
+                                    .primary()
+                                    .label(rust_i18n::t!("theme_fork").to_string())
+                                    .disabled(editing)
+                                    .on_click(cx.listener(|this, _, window, cx| this.fork_active_theme(window, cx))),
+                            )
+                            .child(
+                                // Custom theme JSON lives here and hot-reloads; opening it in
+                                // Atlas lets people share, import or delete their themes.
+                                Button::new("open-themes-folder")
+                                    .small()
+                                    .ghost()
+                                    .label(rust_i18n::t!("theme_open_folder").to_string())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        let path = atlas_core::util::config::themes_dir();
+                                        let pane = this.state.focused_tile;
+                                        this.close_settings_state();
+                                        this.process_actions([Action::NewTabWithPath { pane, path }]);
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            );
+
+        let mut content = v_flex().w_full().gap(rem_px(14.)).py(rem_px(4.)).child(hero);
         if let Some(error) = &self.theme_fork_error {
             content = content.child(div().text_sm().text_color(danger).child(error.clone()));
         }
-        if let Some(editor) = &self.theme_editor {
-            content = content.child(div().text_sm().text_color(fg).child(
-                rust_i18n::t!("theme_editing", name = editor.config.name.to_string()).to_string(),
-            ));
-            content = content.child(
-                div()
-                    .text_xs()
-                    .text_color(muted)
-                    .child(rust_i18n::t!("theme_editor_description").to_string()),
-            );
-            for (role, control) in &editor.controls {
-                let hex = control
-                    .read(cx)
-                    .value()
-                    .map(|value| value.to_hex())
-                    .unwrap_or_default();
-                content = content.child(
-                    h_flex()
-                        .w_full()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .child(div().text_sm().text_color(fg).child(role.label()))
-                        .child(ColorPicker::new(control).small().label(hex)),
-                );
-            }
-            if let Some(error) = &editor.error {
-                content = content.child(div().text_sm().text_color(danger).child(error.clone()));
-            }
+        let Some(editor) = &self.theme_editor else {
+            return content.into_any_element();
+        };
+
+        content = content.child(
+            h_flex()
+                .px(rem_px(4.))
+                .gap(rem_px(6.))
+                .items_center()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(muted)
+                .child(rust_i18n::t!("sp_theme_colors").to_string().to_uppercase())
+                .when(editor.dirty, |row| {
+                    row.child(div().size(rem_px(6.)).rounded_full().bg(primary)).child(
+                        div()
+                            .font_weight(FontWeight::NORMAL)
+                            .child(rust_i18n::t!("sp_theme_unsaved").to_string()),
+                    )
+                }),
+        );
+        for (role, control) in &editor.controls {
+            let value = control.read(cx).value();
+            let hex = value.map(|value| value.to_hex()).unwrap_or_default();
             content = content.child(
                 h_flex()
-                    .gap_2()
-                    .mt(px(4.0))
+                    .w_full()
+                    .h(rem_px(52.))
+                    .px(rem_px(10.))
+                    .gap(rem_px(12.))
+                    .items_center()
+                    .rounded(rem_px(8.))
+                    .hover(|h| h.bg(fg.opacity(0.045)))
+                    .child(
+                        div()
+                            .size(rem_px(30.))
+                            .flex_shrink_0()
+                            .rounded(rem_px(8.))
+                            .border_1()
+                            .border_color(fg.opacity(0.15))
+                            .when_some(value, |d, color| d.bg(color)),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .child(div().text_sm().text_color(fg).child(role.label()))
+                            .child(div().text_xs().text_color(muted).child(hex.clone())),
+                    )
+                    .child(ColorPicker::new(control).small().label(hex)),
+            );
+        }
+        if let Some(error) = &editor.error {
+            content = content.child(div().text_sm().text_color(danger).child(error.clone()));
+        }
+        content
+            .child(
+                h_flex()
+                    .w_full()
+                    .pt(rem_px(6.))
+                    .gap(rem_px(8.))
+                    .justify_end()
+                    .child(
+                        Button::new("close-theme-editor")
+                            .small()
+                            .ghost()
+                            .label(
+                                rust_i18n::t!(if editor.dirty { "theme_discard" } else { "theme_close_editor" })
+                                    .to_string(),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.close_theme_editor(cx))),
+                    )
                     .child(
                         Button::new("save-custom-theme")
                             .primary()
@@ -263,26 +421,9 @@ impl App {
                             .label(rust_i18n::t!("theme_save").to_string())
                             .disabled(!editor.dirty)
                             .on_click(cx.listener(|this, _, _, cx| this.save_theme_editor(cx))),
-                    )
-                    .child(
-                        Button::new("close-theme-editor")
-                            .small()
-                            .label(
-                                rust_i18n::t!(if editor.dirty {
-                                    "theme_discard"
-                                } else {
-                                    "theme_close_editor"
-                                })
-                                .to_string(),
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.theme_editor = None;
-                                cx.notify();
-                            })),
                     ),
-            );
-        }
-        content.into_any_element()
+            )
+            .into_any_element()
     }
 }
 

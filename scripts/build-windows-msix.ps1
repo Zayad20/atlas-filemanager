@@ -42,6 +42,8 @@ if (-not $SkipBuild) {
         if ($LASTEXITCODE -ne 0) {
             throw "Cargo release build failed with exit code $LASTEXITCODE."
         }
+        # Editions build different binaries for the same version: keep both symbol sets.
+        & (Join-Path $repo "scripts\archive-symbols.ps1") -Version "$sourceVersion-$Edition"
     } finally {
         Pop-Location
     }
@@ -74,7 +76,7 @@ Copy-Item -LiteralPath (Join-Path $repo "packaging\windows\msix\THIRD-PARTY-NOTI
 Copy-Item -LiteralPath (Join-Path $repo "LICENSE") -Destination (Join-Path $staging "LICENSE.txt")
 $sourceNotice = @"
 Atlas $sourceVersion corresponding source and build instructions:
-https://github.com/neondeex/atlas-filemanager
+https://atlasfm.modhyt.org/source-code
 https://pub-89dd9e8d0b06444ca2f59e0dc245dbc9.r2.dev/source/atlas-$sourceVersion-source.zip
 No additional charge or private repository access is required.
 Atlas: AGPL-3.0-or-later. Third-party components retain their own licenses.

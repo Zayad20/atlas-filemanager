@@ -662,6 +662,9 @@ impl Element for Scrollbar {
                             let opacity = 1.0 - (elapsed - FADE_OUT_DELAY).powi(10);
                             idle_state.0 = cx.theme().scrollbar_thumb.opacity(opacity);
 
+                            // Atlas fork: cached views (AnyView::cached) reuse their last
+                            // paint unless notified, which froze the thumb mid-fade.
+                            cx.notify(window.current_view());
                             window.request_animation_frame();
                         }
                     }

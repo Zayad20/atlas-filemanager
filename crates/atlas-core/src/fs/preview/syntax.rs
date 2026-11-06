@@ -1470,4 +1470,43 @@ mod tests {
         let kinds_2: Vec<TokenKind> = lines[2].iter().map(|(k, _)| *k).collect();
         assert!(kinds_2.contains(&TokenKind::LogInfo));
     }
+
+    /// Every short mix of syntax-significant ASCII and multi-byte chars must
+    /// tokenize without panicking and yield char-boundary ranges.
+    #[test]
+    fn exhaustive_short_inputs_never_split_utf8() {
+        const ALPHABET: &[&str] = &[
+            "<", ">", "!", "-", "/", "*", "#", "[", "]", "\\", "\"", "'", "`", "$", "{", "@",
+            "&", ";", "0", "x", "a", " ", "é", "日", "🧑", "\u{301}",
+        ];
+        const EXTS: &[&str] = &[
+            "c", "js", "tsx", "html", "css", "json", "py", "rs", "zig", "go", "java", "cs",
+            "php", "rb", "swift", "lua", "dart", "sql", "sh", "toml", "md", "diff", "log",
+        ];
+        let n = ALPHABET.len();
+        let mut line = String::new();
+        for ext in EXTS {
+            for a in 0..n {
+                for b in 0..n {
+                    for c in 0..n {
+                        line.clear();
+                        line.push_str(ALPHABET[a]);
+                        line.push_str(ALPHABET[b]);
+                        line.push_str(ALPHABET[c]);
+                        line.push_str(ALPHABET[(a + b + c) % n]);
+                        for open in [false, true] {
+                            let mut in_block = open;
+                            for token in tokenize_line(&line, ext, &mut in_block) {
+                                assert!(
+                                    line.get(token.range.clone()).is_some(),
+                                    "{ext}: range {:?} splits {line:?}",
+                                    token.range
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

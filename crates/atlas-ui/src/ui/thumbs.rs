@@ -53,7 +53,22 @@ pub(crate) fn thumbnail_size(natural_w: f32, natural_h: f32, slot_w: f32, slot_h
     ((natural_w * scale).round().max(1.0), (natural_h * scale).round().max(1.0))
 }
 
-/// Shared by retained and IMM surfaces: every preview texture (including PDF,
+/// Largest rect with the texture's own aspect that fits `slot`, centered. Shell
+/// icons are cropped to their visible art (a folder is wider than tall), so an
+/// icon slot must contain the texture, never stretch it to a square.
+pub(crate) fn contain_bounds(texture: &RenderImage, slot: Bounds<Pixels>) -> Bounds<Pixels> {
+    let natural = texture.size(0);
+    let (nw, nh) = (i32::from(natural.width).max(1) as f32, i32::from(natural.height).max(1) as f32);
+    let (sw, sh) = (f32::from(slot.size.width), f32::from(slot.size.height));
+    let scale = (sw / nw).min(sh / nh);
+    let (w, h) = (nw * scale, nh * scale);
+    Bounds {
+        origin: point(slot.origin.x + px((sw - w) * 0.5), slot.origin.y + px((sh - h) * 0.5)),
+        size: size(px(w), px(h)),
+    }
+}
+
+/// Shared by retained and DG surfaces: every preview texture (including PDF,
 /// video, RAW and extension previews) gets the same inner one-pixel outline.
 pub(crate) fn paint_thumbnail(
     window: &mut gpui::Window,
@@ -142,7 +157,7 @@ impl App {
             let key = Self::shell_recycle_bin_icon_key();
             if self.ext_thumb_inflight.contains(&key) {
                 self.recycle_bin_icon_dirty = true;
-            } else if crate::ui::icons::is_windows_theme(&self.state.profiles.active().theme) {
+            } else if self.native_file_icons() {
                 self.load_shell_recycle_bin_icon(true);
             }
         }

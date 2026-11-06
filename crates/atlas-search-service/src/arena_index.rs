@@ -1,6 +1,6 @@
 //! In-Memory Compact Arena Index for Linux.
 //!
-//! Compact arena-based file index.
+//! Inspired by FSearch (https://github.com/cboxdoerfer/fsearch).
 //! Stores filesystem trees using compact contiguous arenas instead of individual
 //! heap-allocated `PathBuf` strings. Nodes contain only `parent_id` and an offset
 //! into a shared `StringArena`, shrinking memory footprint to ~20-30 bytes per file.

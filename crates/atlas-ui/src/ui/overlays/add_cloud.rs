@@ -71,9 +71,18 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> FocusHandle {
-        self.cloud_add_name_input(window, cx)
-            .read(cx)
-            .focus_handle(cx)
+        let name = self.cloud_add_name_input(window, cx);
+        // Keep whichever field the user clicked: sync_overlay_focus runs every
+        // frame, so always answering "name" would steal focus from the others.
+        if let Some(inputs) = &self.cloud_add_inputs {
+            for input in [&inputs.host, &inputs.port, &inputs.user, &inputs.password] {
+                let handle = input.read(cx).focus_handle(cx);
+                if handle.is_focused(window) {
+                    return handle;
+                }
+            }
+        }
+        name.read(cx).focus_handle(cx)
     }
 
     fn close_add_cloud(&mut self) {

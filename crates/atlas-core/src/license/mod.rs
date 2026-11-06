@@ -117,6 +117,42 @@ pub async fn refresh() -> Option<Source> {
     source
 }
 
+/// Markets where Premium is sold as the Store add-on at a regional price
+/// (Partner Center groups 8.49 / 6.49 USD) instead of the Polar license.
+/// Keep in sync with `STORE_REGION_CENTS` in website-edge/api/worker.ts.
+const STORE_PRICED_REGIONS: &[&str] = &[
+    "KH", "GE", "DZ", "AR", "EG", "ID", "KZ", "MA", "PH", "TN", "TR", "UA", "VN", // 8.49
+    "ET", "GH", "BD", "KE", "NP", "NG", "TZ", "UG", "IN", "PK", "LK", // 6.49
+];
+
+pub fn is_store_priced_region(country: &str) -> bool {
+    STORE_PRICED_REGIONS.iter().any(|code| code.eq_ignore_ascii_case(country))
+}
+
+/// Whether this user should buy Premium through the Store add-on.
+#[cfg(windows)]
+pub fn prefers_store_purchase() -> bool {
+    store::home_region().is_some_and(|code| is_store_priced_region(&code))
+}
+
+#[cfg(not(windows))]
+pub const fn prefers_store_purchase() -> bool {
+    false
+}
+
+/// Runs the Store purchase dialog for the add-on and, when it ends owned,
+/// unlocks Premium in the running app. `owner` is the Atlas window handle.
+#[cfg(windows)]
+pub async fn buy_in_store(owner: isize) -> store::Purchase {
+    let outcome = tokio::task::spawn_blocking(move || store::purchase_premium(owner))
+        .await
+        .unwrap_or_else(|error| store::Purchase::Failed(error.to_string()));
+    if outcome == store::Purchase::Owned {
+        refresh().await;
+    }
+    outcome
+}
+
 /// Binds a Polar key to this device and unlocks Premium immediately.
 pub async fn activate(key: &str) -> Result<(), polar::Error> {
     let key = key.trim();
@@ -153,6 +189,16 @@ mod tests {
         assert!(!decide(Check::Invalid, 0));
         assert!(decide(Check::Unreachable, OFFLINE_GRACE_SECS));
         assert!(!decide(Check::Unreachable, OFFLINE_GRACE_SECS + 1));
+    }
+
+    #[test]
+    fn store_priced_regions_match_partner_center_groups() {
+        for code in ["IN", "in", "TR", "VN", "NG", "AR"] {
+            assert!(is_store_priced_region(code), "{code}");
+        }
+        for code in ["US", "MX", "ES", "DE", "BR", "", "IND"] {
+            assert!(!is_store_priced_region(code), "{code}");
+        }
     }
 
     #[test]

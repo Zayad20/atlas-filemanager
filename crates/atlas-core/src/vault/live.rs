@@ -18,18 +18,18 @@ pub fn is_private(path: &Path) -> bool {
     })
 }
 pub fn register(path: PathBuf, name: String) {
-    mounts().lock().unwrap().insert(path, name);
+    mounts().lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(path, name);
 }
 pub fn unregister(path: &Path) {
-    mounts().lock().unwrap().remove(path);
+    mounts().lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(path);
 }
 pub fn display_name(path: &Path) -> Option<String> {
-    mounts().lock().unwrap().get(path).cloned()
+    mounts().lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(path).cloned()
 }
 pub fn mount_root(path: &Path) -> Option<PathBuf> {
     mounts()
         .lock()
-        .unwrap()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .keys()
         .find(|root| path.starts_with(root))
         .cloned()

@@ -614,7 +614,7 @@ impl TabState {
         }
     }
 
-    /// Headers and entries as one position space for the IMM views. Cached per
+    /// Headers and entries as one position space for the DG views. Cached per
     /// group snapshot and flow; the entry-only order stays in `visible_indices`.
     pub fn grouped_cells_shared(&mut self, flow: crate::grouping::GroupFlow) -> Arc<crate::grouping::GroupCells> {
         self.visible_indices();

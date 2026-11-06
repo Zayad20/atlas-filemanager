@@ -15,7 +15,12 @@ use crate::ui::pane_panel::FilePanel;
 use atlas_core::util::display::display_name;
 use atlas_model::layout_tree::{Container, LinearDir, Tile, TileId};
 use atlas_model::location::Location;
-use std::{sync::OnceLock, time::Instant};
+use std::{collections::HashSet, sync::OnceLock, time::Instant};
+
+/// Panes allowed to change bounds (and so re-render, ~0.45 ms each) per frame
+/// during or right after a split/close motion. The rest replay their cached
+/// scene for a frame or two instead of all re-rendering in the same frame.
+const DOCK_REFLOW_PANES_PER_FRAME: usize = 3;
 
 const DOCK_FLAT_HOST_TIMINGS: LayoutRegionTimings = LayoutRegionTimings {
     request_layout: "dock.flat_host.request_layout",
@@ -218,6 +223,40 @@ fn pane_visual_layout(
         ..final_rect
     };
     (rect, (current.x - rect.x, current.y - rect.y))
+}
+
+/// Keep a retained FLIP layout at the pane's previous origin while it still fits
+/// the dock. The view cache keys on absolute bounds, so a sibling the split merely
+/// shifts would otherwise re-render; paint offset + clip place its pixels the same.
+fn retain_previous_origin(
+    rect: FlatRect,
+    previous: Option<FlatRect>,
+    dock_w: f32,
+    dock_h: f32,
+) -> FlatRect {
+    let Some(previous) = previous else {
+        return rect;
+    };
+    let fits = previous.x >= -0.5
+        && previous.y >= -0.5
+        && previous.x + rect.w <= dock_w + 0.5
+        && previous.y + rect.h <= dock_h + 0.5;
+    if fits {
+        FlatRect {
+            x: previous.x,
+            y: previous.y,
+            ..rect
+        }
+    } else {
+        rect
+    }
+}
+
+fn same_rect(a: FlatRect, b: FlatRect) -> bool {
+    (a.x - b.x).abs() < 0.5
+        && (a.y - b.y).abs() < 0.5
+        && (a.w - b.w).abs() < 0.5
+        && (a.h - b.h).abs() < 0.5
 }
 
 fn pane_exit_paint_offset(
@@ -500,37 +539,78 @@ impl App {
         let view = cx.entity();
         let flip_active = active_animation.is_some();
         let stable_flip = flip_active && stable_flip_layout_enabled();
+        let was_flipping = std::mem::replace(&mut self.dock_flip_last_frame, stable_flip);
+        if stable_flip {
+            self.dock_settling = false;
+        } else if was_flipping {
+            self.dock_settling = true;
+        }
         let mut host = div().absolute().inset_0().overflow_hidden();
         let mut closing_panes = Vec::new();
         let mut opening_panes = Vec::new();
         let mut live_panes = Vec::new();
 
+        // Target layout per pane, before the per-frame reflow budget is applied.
+        let mut slots = Vec::with_capacity(panes.len());
         for pane in panes {
             let motion = self.split_motion_for_tile(pane.tile);
             let is_closing = matches!(motion, Some(SplitMotion::Closing));
             let is_opening = matches!(motion, Some(SplitMotion::Opening));
-            let current_rect = pane.rect;
-            if is_closing && (current_rect.w < 12.0 || current_rect.h < 12.0) {
+            if is_closing && (pane.rect.w < 12.0 || pane.rect.h < 12.0) {
                 // A departing pane collapsed below visible threshold needs no scene replay while its logical
                 // teardown is pending during another pane's transition.
                 continue;
             }
-            let (rect, paint_offset) = pane_visual_layout(
-                current_rect,
+            let previous = self.previous_pane_rect(pane.tile, bounds.origin);
+            let (rect, offset) = pane_visual_layout(
+                pane.rect,
                 pane.layout_rect,
                 is_closing,
                 is_opening,
                 stable_flip,
-                self.pane_tabs_bounds
-                    .get(&pane.tile)
-                    .map(|previous| FlatRect {
-                        x: f32::from(previous.origin.x - bounds.origin.x),
-                        y: f32::from(previous.origin.y - bounds.origin.y),
-                        w: f32::from(previous.size.width),
-                        h: f32::from(previous.size.height),
-                    }),
+                previous,
             );
-            if stable_flip {
+            let (rect, offset) = if stable_flip && !is_closing {
+                let rect = retain_previous_origin(rect, previous, w, h);
+                (rect, (pane.rect.x - rect.x, pane.rect.y - rect.y))
+            } else {
+                (rect, offset)
+            };
+            slots.push((pane, is_closing, is_opening, previous, rect, offset));
+        }
+        // A pane whose bounds change re-renders (~0.45 ms). Closing survivors grow
+        // during the motion and every pane reflows after it; spread those over frames.
+        let reflow_candidates: Vec<(TileId, f32)> = slots
+            .iter()
+            .filter(|(_, is_closing, is_opening, ..)| !is_closing && !is_opening)
+            .filter_map(|(pane, _, _, previous, rect, _)| {
+                let previous = (*previous)?;
+                let changes = if stable_flip {
+                    (previous.w - rect.w).abs() >= 0.5 || (previous.h - rect.h).abs() >= 0.5
+                } else {
+                    self.dock_settling && !same_rect(previous, *rect)
+                };
+                changes.then_some((pane.tile, pane.rect.w * pane.rect.h))
+            })
+            .collect();
+        let held = self.hold_reflows_over_budget(reflow_candidates, window);
+        if !stable_flip && held.is_empty() {
+            self.dock_settling = false;
+        }
+
+        for (pane, is_closing, is_opening, previous, rect, paint_offset) in slots {
+            let current_rect = pane.rect;
+            let hold = held.contains(&pane.tile);
+            let (rect, paint_offset) = match previous.filter(|_| hold) {
+                // Waiting for its reflow turn: keep last frame's bounds exactly so
+                // the cached scene replays, translated and clipped to its slot.
+                Some(previous) => (
+                    previous,
+                    (current_rect.x - previous.x, current_rect.y - previous.y),
+                ),
+                None => (rect, paint_offset),
+            };
+            if stable_flip || hold {
                 crate::perf::count("dock.retained_reveal.pane");
                 let offset = if is_closing {
                     pane_exit_paint_offset(current_rect, rect, pane.close_axis)
@@ -687,8 +767,8 @@ impl App {
             ));
         }
 
-        if stable_flip {
-            // Paint-only FLIP deliberately keeps cached hitboxes at their final
+        if stable_flip || !held.is_empty() {
+            // Paint-only FLIP deliberately keeps cached hitboxes at their retained
             // geometry while panes are visually translated. One dock-wide occluder
             // prevents a short-lived click/drop mismatch without rebuilding every
             // pane's interaction tree on each animation frame.
@@ -697,6 +777,43 @@ impl App {
         }
 
         Some(timed_layout_region("dock.flat_host", DOCK_FLAT_HOST_TIMINGS, host).into_any_element())
+    }
+
+    /// Last prepainted bounds of a pane slot, in dock-local coordinates.
+    fn previous_pane_rect(&self, tile: TileId, dock_origin: gpui::Point<gpui::Pixels>) -> Option<FlatRect> {
+        self.pane_tabs_bounds.get(&tile).map(|previous| FlatRect {
+            x: f32::from(previous.origin.x - dock_origin.x),
+            y: f32::from(previous.origin.y - dock_origin.y),
+            w: f32::from(previous.size.width),
+            h: f32::from(previous.size.height),
+        })
+    }
+
+    /// Panes whose bounds change this frame re-render. Let the focused/largest few
+    /// reflow now and hold the rest at last frame's bounds (cached scene replay);
+    /// returns the held panes and drives the next frame while any remain.
+    fn hold_reflows_over_budget(
+        &mut self,
+        candidates: Vec<(TileId, f32)>,
+        window: &mut Window,
+    ) -> HashSet<TileId> {
+        let focused = self.state.focused_tile;
+        let focused_tabs = self.state.find_tabs_container(focused);
+        let mut queue: Vec<(bool, f32, TileId)> = candidates
+            .into_iter()
+            .map(|(tile, area)| (tile == focused || Some(tile) == focused_tabs, area, tile))
+            .collect();
+        queue.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.total_cmp(&a.1)));
+        let held: HashSet<TileId> = queue
+            .iter()
+            .skip(DOCK_REFLOW_PANES_PER_FRAME)
+            .map(|(_, _, tile)| *tile)
+            .collect();
+        crate::perf::count_by("dock.reflow.held", held.len() as u64);
+        if !held.is_empty() {
+            window.request_animation_frame();
+        }
+        held
     }
 
     fn collect_flat_layout(
@@ -792,7 +909,7 @@ impl App {
                 };
                 let share_sum = shares.iter().copied().filter(|v| *v > 0.0).sum::<f32>();
 
-                let splitter_size = 5.0;
+                let splitter_size = crate::ui::dock::GUTTER;
                 let span = match linear.dir {
                     LinearDir::Horizontal => rect.w,
                     LinearDir::Vertical => rect.h,
@@ -1066,7 +1183,7 @@ impl App {
                 let view = cx.entity();
                 let child_count = children.len();
                 let num_splitters = child_count.saturating_sub(1);
-                let splitter_size = 5.0; // from resize.rs splitter thickness
+                let splitter_size = crate::ui::dock::GUTTER;
                 let closing_ix = self
                     .dock_split_animations
                     .get(&id)
@@ -1331,9 +1448,15 @@ impl App {
                 hash_instant(&mut h, anim.started);
             }
         }
-        // Global state that changes chrome, Alt overlay for alt-drag
+        // Global state that changes chrome, Alt overlay for Hyprland
         // drag, and active drag state for body drop zones.
         self.state.profiles.active().theme.hash(&mut h);
+        // Tab icons come from the icon pack and arrive asynchronously.
+        std::mem::discriminant(&self.state.settings.icon_style).hash(&mut h);
+        self.file_icon(&App::file_icon_ref_for_path(std::path::PathBuf::new(), true))
+            .texture()
+            .map(|tex| tex.id)
+            .hash(&mut h);
         self.state.settings.glass_opacity.to_bits().hash(&mut h);
         self.state.settings.show_titlebar.hash(&mut h);
         if self.state.settings.show_titlebar {
@@ -1384,11 +1507,9 @@ impl App {
         let active_theme = self.state.profiles.active().theme.as_str();
         let is_glass = active_theme.ends_with(" Glass");
         let windows_theme = is_windows_theme(active_theme);
-        let panel_bg = if is_glass || windows_theme {
-            cx.theme().colors.list
-        } else {
-            cx.theme().background
-        };
+        // The pane card is the list surface; the window canvas behind it is
+        // `background`. Themes where the two differ read as one canvas + card.
+        let panel_bg = cx.theme().colors.list;
         let active_id = active.unwrap_or_else(|| *children.first().unwrap());
         let content = active
             .map(|id| {
@@ -1447,10 +1568,8 @@ impl App {
             |s| s.opacity(0.65),
         )
         .when(is_glass, |s| s.glass_surface(panel_bg))
-        .when(!is_glass, |s| s.rounded(cx.theme().radius_lg).bg(panel_bg))
-        .when(!is_glass && !windows_theme, |s| {
-            s.border_1().border_color(cx.theme().border.opacity(0.55))
-        });
+        // Islands separate by tone and gutter, never by an outline.
+        .when(!is_glass, |s| s.rounded(cx.theme().radius_lg).bg(panel_bg));
 
         let is_mod = window.modifiers().alt;
         let activate_drag_app = cx.entity().clone();
@@ -1467,7 +1586,7 @@ impl App {
                     "pane.drag_overlay",
                     div()
                         .id(gpui::SharedString::from(format!(
-                            "alt-drag-{}",
+                            "hyprland-drag-{}",
                             active_id.0
                         )))
                         .absolute()
@@ -1512,7 +1631,7 @@ impl App {
                         })
                         .on_mouse_down(MouseButton::Right, move |ev, _window, cx| {
                             app_for_resize.update(cx, |this, _cx| {
-                                this.start_alt_resize(active_id, ev.position);
+                                this.start_hyprland_resize(active_id, ev.position);
                             });
                             cx.stop_propagation();
                         }),
@@ -1560,7 +1679,7 @@ impl App {
         };
 
         let app = cx.entity();
-        let strip_height = crate::ui::rem_px(if windows_theme { 46.0 } else { 34.0 });
+        let strip_height = crate::ui::rem_px(if windows_theme { 46.0 } else { 40.0 });
         let font = crate::ui::surface::chrome_ui_font(window);
         let font_size = crate::ui::surface::chrome_font_size_tabs(window, windows_theme);
 
@@ -1588,6 +1707,33 @@ impl App {
                     (label, tag_color)
                 })
                 .unwrap_or_else(|| (rust_i18n::t!("fallback_tab_title").to_string(), None));
+            // Directories use the active icon pack (Shell / theme / Atlas art),
+            // exactly like the sidebar and file rows.
+            let folder = self
+                .tab_data_for(*pane_id)
+                .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()));
+            let icon_px = 18.0 * f32::from(window.rem_size()) / crate::ui::BASE_PX;
+            let icon_tex = folder.and_then(|path| {
+                // Shell icons are per path, so Videos/Downloads/... get their
+                // special folder art (same source as the sidebar).
+                #[cfg(target_os = "windows")]
+                if self.native_file_icons() {
+                    if let Some(tex) = self.grid_thumbnail(&path) {
+                        return Some(tex);
+                    }
+                    self.request_shell_thumbnail_or_icon(&path);
+                }
+                let file = App::file_icon_ref_for_path(path, true);
+                self.maybe_request_file_icon(&file);
+                self.file_icon(&file).texture_for_size(icon_px)
+            });
+            let icon = self
+                .tab_data_for(*pane_id)
+                .map_or(AtlasIcon::Folder, |t| match &t.location {
+                    Location::RecycleBin => AtlasIcon::Trash,
+                    Location::Remote { .. } => AtlasIcon::Cloud,
+                    _ => AtlasIcon::Folder,
+                });
 
             tab_items.push(crate::ui::views::tabs_bar_element::TabBarItem {
                 pane_id: *pane_id,
@@ -1595,6 +1741,8 @@ impl App {
                 is_active: Some(*pane_id) == active,
                 tag_rgb: tag_color,
                 closing: self.tab_closing.get(pane_id).copied(),
+                icon,
+                icon_tex,
             });
         }
 
@@ -1617,7 +1765,6 @@ impl App {
             tab_fg,
             muted,
             border,
-            cx.theme().accent,
         ).interaction(geometry.clone(), reorder, instant);
 
         let mut strip_container = div()
@@ -2018,6 +2165,24 @@ mod tests {
             let (layout, _) = pane_visual_layout(current, final_rect, false, false, true, Some(previous));
             assert_eq!((layout.w, layout.h), (400.0, 600.0));
         }
+    }
+
+    #[test]
+    fn shifted_sibling_keeps_its_previous_origin_for_cache_reuse() {
+        let previous = FlatRect { x: 300.0, y: 0.0, w: 200.0, h: 500.0 };
+        let current = FlatRect { x: 270.0, w: 190.0, ..previous };
+        let final_rect = FlatRect { x: 240.0, w: 180.0, ..previous };
+        let (layout, _) = pane_visual_layout(current, final_rect, false, false, true, Some(previous));
+        let layout = retain_previous_origin(layout, Some(previous), 1000.0, 500.0);
+        assert!(same_rect(layout, previous), "unchanged bounds keep the view cache valid");
+    }
+
+    #[test]
+    fn retained_origin_falls_back_when_it_would_leave_the_dock() {
+        let previous = FlatRect { x: 600.0, y: 0.0, w: 300.0, h: 500.0 };
+        let grown = FlatRect { x: 300.0, w: 600.0, ..previous };
+        let layout = retain_previous_origin(grown, Some(previous), 1000.0, 500.0);
+        assert_eq!(layout.x, 300.0);
     }
 
     #[test]

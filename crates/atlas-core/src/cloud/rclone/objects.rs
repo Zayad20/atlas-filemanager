@@ -226,7 +226,7 @@ mod tests {
                 stream.read_exact(&mut body).unwrap();
                 let request_line = headers.lines().next().unwrap().to_string();
                 let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-                recorded.lock().unwrap().push((request_line.clone(), body));
+                recorded.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((request_line.clone(), body));
                 let result = if request_line.contains("/config/get") {
                     json!({"type":"drive", "token":"{\"access_token\":\"test-only\"}"})
                 } else if request_line.contains("/backend/command") {
@@ -272,7 +272,7 @@ mod tests {
         client.trash_id("account-one", &selected).await.unwrap();
         stop.store(true, Ordering::Relaxed);
         server.join().unwrap();
-        let requests = requests.lock().unwrap();
+        let requests = requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let copy = requests
             .iter()
             .find(|(line, _)| line.contains("/backend/command"))

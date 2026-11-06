@@ -141,6 +141,10 @@ pub struct ExtCommand {
     /// Preview commands are background-only and are not shown in command menus.
     #[serde(default)]
     pub preview: bool,
+    /// When true, the command also appears as a sector in the Actions ring for
+    /// selections it accepts and whose required tools are installed.
+    #[serde(default)]
+    pub ring: bool,
     /// Preview output format. Declarative previews write this to `{output}`; WASM
     /// previews return the same JSON shape directly.
     #[serde(default)]
@@ -170,6 +174,9 @@ pub struct Manifest {
     #[serde(default)]
     #[allow(dead_code)] // reason: extension manager keeps this field available
     pub description: String,
+    /// Official bundled extensions use "Atlas Team"; retirement checks it.
+    #[serde(default)]
+    pub author: String,
     #[serde(default)]
     pub kind: ExtKind,
     #[serde(default)]

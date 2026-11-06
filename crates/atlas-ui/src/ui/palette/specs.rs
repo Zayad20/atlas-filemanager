@@ -419,27 +419,27 @@ mod goto_query_tests {
 
     #[test]
     fn location_labels_keep_real_separators_and_omit_the_repeated_filename() {
-        let home = Path::new("C:\\Users\\user-test");
-        let path = home.join("developer").join("git").join("My Project");
+        let home = Path::new("C:\\Users\\finder-test");
+        let path = home.join("developer").join("git").join("OS Vida");
         assert_eq!(goto_location_label(&path, Some(home)), format!("~{0}developer{0}git", std::path::MAIN_SEPARATOR));
-        assert_eq!(goto_location_label(&home.join("myproj"), Some(home)), "~");
+        assert_eq!(goto_location_label(&home.join("pexer"), Some(home)), "~");
         assert_eq!(goto_location_label(Path::new("D:\\Projects\\egui-app"), Some(home)), "D:\\Projects");
     }
 
     #[test]
     fn home_paths_scope_partial_folder_names() {
-        let home = Path::new("C:\\Users\\user-test");
-        for query in ["~\\developer\\git\\myproj", "~/developer/git/myproj"] {
+        let home = Path::new("C:\\Users\\finder-test");
+        for query in ["~\\developer\\git\\pexer", "~/developer/git/pexer"] {
             let expanded = expand_home_query(query, home).unwrap();
             let (base, needle) = split_query_base(&expanded).unwrap();
             assert_eq!(base, home.join("developer").join("git"));
-            assert_eq!(needle, "myproj");
+            assert_eq!(needle, "pexer");
         }
     }
 
     #[test]
     fn home_root_and_trailing_separator_have_empty_needles() {
-        let home = Path::new("C:\\Users\\user-test");
+        let home = Path::new("C:\\Users\\finder-test");
         for query in ["~", "~/", "~\\"] {
             let expanded = expand_home_query(query, home).unwrap();
             let (base, needle) = split_query_base(&expanded).unwrap();
@@ -450,7 +450,7 @@ mod goto_query_tests {
 
     #[test]
     fn filename_queries_and_named_users_are_not_home_paths() {
-        let home = Path::new("C:\\Users\\user-test");
+        let home = Path::new("C:\\Users\\finder-test");
         for query in ["egui", "~someone/developer", "file~name"] {
             assert!(expand_home_query(query, home).is_none());
             assert!(split_query_base(query).is_none());
@@ -518,16 +518,16 @@ mod goto_query_tests {
             is_dir: true,
         };
         let entries = merge_goto_entries(
-            vec![entry("developer/git/myproj"), entry("developer/git/myproj")],
-            vec![entry("node_modules/duplexer"), entry("developer/git/myproj")],
+            vec![entry("developer/git/pexer"), entry("developer/git/pexer")],
+            vec![entry("node_modules/duplexer"), entry("developer/git/pexer")],
         );
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].path, Path::new("developer/git/myproj"));
+        assert_eq!(entries[0].path, Path::new("developer/git/pexer"));
     }
 
     #[test]
     fn literal_names_lead_weak_fuzzy_matches() {
-        assert!(filename_match_quality("myproj", "myproj") > filename_match_quality("duplexer", "myproj"));
+        assert!(filename_match_quality("pexer", "pexer") > filename_match_quality("duplexer", "pexer"));
         assert!(filename_match_quality("egui-app", "egui") > filename_match_quality("bevy_egui", "egui"));
         assert!(filename_match_quality("bevy_egui", "egui") > filename_match_quality("registry_utils", "egui"));
         assert_eq!(filename_match_quality("Egui", "egui"), 4);
@@ -537,13 +537,13 @@ mod goto_query_tests {
     #[test]
     fn familiar_projects_precede_other_copies_of_the_same_folder_name() {
         let current = Path::new("home/developer");
-        let bookmarks = vec!["home/projects/My Project".into()];
-        let recent = vec!["home/old/My Project".into(), "home/work/My Project".into()];
+        let bookmarks = vec!["home/projects/OS Vida".into()];
+        let recent = vec!["home/old/OS Vida".into(), "home/work/OS Vida".into()];
         let mut paths = vec![
-            Path::new("other/My Project"),
-            Path::new("home/old/My Project"),
-            Path::new("home/work/My Project"),
-            Path::new("home/projects/My Project"),
+            Path::new("other/OS Vida"),
+            Path::new("home/old/OS Vida"),
+            Path::new("home/work/OS Vida"),
+            Path::new("home/projects/OS Vida"),
             current,
         ];
         paths.sort_by_key(|path| goto_familiarity(path, current, &bookmarks, &recent));
@@ -551,10 +551,10 @@ mod goto_query_tests {
             paths,
             vec![
                 current,
-                Path::new("home/projects/My Project"),
-                Path::new("home/work/My Project"),
-                Path::new("home/old/My Project"),
-                Path::new("other/My Project")
+                Path::new("home/projects/OS Vida"),
+                Path::new("home/work/OS Vida"),
+                Path::new("home/old/OS Vida"),
+                Path::new("other/OS Vida")
             ]
         );
     }
@@ -581,7 +581,49 @@ fn section_or_empty(
     }
 }
 
+/// One remappable command as listed by the settings shortcut editor.
+pub(crate) struct ShortcutCommand {
+    pub id: &'static str,
+    pub title: gpui::SharedString,
+    pub group: gpui::SharedString,
+    pub icon: AtlasIcon,
+    pub keywords: String,
+}
+
 impl App {
+    /// Every remappable command, titled like the palette shows it. Commands
+    /// the palette doesn't list (cursor movement…) get a title from their id.
+    pub(crate) fn shortcut_commands(&self, cx: &gpui::App) -> Vec<ShortcutCommand> {
+        let mut titled: std::collections::HashMap<String, (gpui::SharedString, gpui::SharedString, AtlasIcon, String)> =
+            std::collections::HashMap::new();
+        for (_, group, _, commands) in self.command_groups(cx) {
+            for command in commands {
+                titled.entry(command.id.clone()).or_insert_with(|| {
+                    (command.title.clone().into(), group.clone(), command.icon, command.aliases.join(" "))
+                });
+            }
+        }
+        crate::input::commands::COMMANDS
+            .iter()
+            .filter(|meta| meta.remappable)
+            .map(|meta| match titled.remove(meta.id) {
+                Some((title, group, icon, keywords)) => ShortcutCommand { id: meta.id, title, group, icon, keywords },
+                None => {
+                    let (group, name) = meta.id.split_once('.').unwrap_or(("", meta.id));
+                    let mut name = name.replace('-', " ");
+                    if let Some(first) = name.get(..1) {
+                        name = first.to_uppercase() + &name[1..];
+                    }
+                    let mut group = group.to_string();
+                    if let Some(first) = group.get(..1) {
+                        group = first.to_uppercase() + &group[1..];
+                    }
+                    ShortcutCommand { id: meta.id, title: name.into(), group: group.into(), icon: AtlasIcon::Command, keywords: meta.id.to_string() }
+                }
+            })
+            .collect()
+    }
+
     pub(crate) fn shortcut_conflict_message(&self, cx: &gpui::App) -> Option<String> {
         let id = self.command_shortcut_conflict.as_ref()?;
         let title = self.command_groups(cx).into_iter().flat_map(|(_, _, _, commands)| commands)
@@ -1424,6 +1466,12 @@ impl App {
             }
         }
 
+        if let Some(pattern) = pattern.as_ref() {
+            if let Some(section) = self.settings_command_section(&query, pattern, cx) {
+                scored.push(section);
+            }
+        }
+
         if searching {
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         }
@@ -1438,6 +1486,63 @@ impl App {
             footer: FooterSpec::Default,
             empty_text: rust_i18n::t!("palette_no_results").into(),
         }
+    }
+
+    /// Settings matching the query, shown with their live value. Switches
+    /// flip in place; everything else opens Settings on that row.
+    fn settings_command_section(
+        &mut self,
+        query: &str,
+        pattern: &atlas_core::search::fuzzy::Pattern,
+        cx: &gpui::App,
+    ) -> Option<(u32, usize, PaletteSection)> {
+        use crate::ui::settings_palette::{value_label, Control, SETTINGS};
+        let mut scored: Vec<(u32, PaletteItem)> = SETTINGS
+            .iter()
+            .filter_map(|def| {
+                let title = def.title();
+                let score = self
+                    .fuzzy_scorer
+                    .score_pattern(pattern, &title)
+                    .or_else(|| def.words_match(query).then_some(1))?
+                    // Commands named after the same words stay ahead of settings.
+                    .saturating_sub(8)
+                    .max(1);
+                let action = if matches!(def.control, Control::Toggle { .. }) {
+                    Action::ToggleSetting(def.id)
+                } else {
+                    Action::OpenSettingAt(def.id)
+                };
+                let mut item = PaletteItem::new(title.clone(), action);
+                item.icon = Some(def.icon);
+                item.highlight = self.fuzzy_scorer.match_ranges_pattern(pattern, &title);
+                let category = def.category.title();
+                item.description = Some(match value_label(def, self, cx) {
+                    Some(value) => format!("{category} · {value}").into(),
+                    None => category,
+                });
+                if let Some(value) = value_label(def, self, cx).filter(|_| matches!(def.control, Control::Toggle { .. })) {
+                    item.shortcuts.push(ShortcutHint::Label(value));
+                }
+                Some((score, item))
+            })
+            .collect();
+        if scored.is_empty() {
+            return None;
+        }
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        let best = scored[0].0;
+        Some((
+            best,
+            usize::MAX,
+            PaletteSection {
+                id: "settings",
+                icon: Some(AtlasIcon::Gear),
+                title: Some(rust_i18n::t!("settings_title").into()),
+                collapsible: true,
+                items: scored.into_iter().map(|(_, item)| item).take(8).collect(),
+            },
+        ))
     }
 
     /// Score `defs` against `query`: matching items as palette rows (best
@@ -1672,6 +1777,10 @@ impl App {
             CommandDef::new("pane.focus-below", rust_i18n::t!("cmd_pane_below_title"), rust_i18n::t!("cmd_pane_spatial_desc"), AtlasIcon::SplitVertical, Action::SelectPanelBelow),
             CommandDef::new("pane.even-siblings", rust_i18n::t!("cmd_pane_even_siblings_title"), rust_i18n::t!("cmd_pane_even_siblings_desc"), AtlasIcon::SplitHorizontal, Action::EvenPanelSiblings),
             CommandDef::new("pane.even-all", rust_i18n::t!("cmd_pane_even_all_title"), rust_i18n::t!("cmd_pane_even_all_desc"), AtlasIcon::SplitVertical, Action::EvenAllPanes),
+            CommandDef::new("pane.move-left", rust_i18n::t!("cmd_pane_move_left_title"), rust_i18n::t!("cmd_pane_move_desc"), AtlasIcon::ArrowLeft, Action::MoveTabToPanel(crate::ui::tab_reorder::PanelDirection::Left)),
+            CommandDef::new("pane.move-right", rust_i18n::t!("cmd_pane_move_right_title"), rust_i18n::t!("cmd_pane_move_desc"), AtlasIcon::ArrowRight, Action::MoveTabToPanel(crate::ui::tab_reorder::PanelDirection::Right)),
+            CommandDef::new("pane.move-above", rust_i18n::t!("cmd_pane_move_above_title"), rust_i18n::t!("cmd_pane_move_desc"), AtlasIcon::SplitVertical, Action::MoveTabToPanel(crate::ui::tab_reorder::PanelDirection::Above)),
+            CommandDef::new("pane.move-below", rust_i18n::t!("cmd_pane_move_below_title"), rust_i18n::t!("cmd_pane_move_desc"), AtlasIcon::SplitVertical, Action::MoveTabToPanel(crate::ui::tab_reorder::PanelDirection::Below)),
             CommandDef::new("folder.inherit-view", rust_i18n::t!("cmd_folder_inherit_title"), rust_i18n::t!("cmd_folder_inherit_desc"), AtlasIcon::Folder, Action::ToggleFolderViewRecursive),
         ];
 
@@ -2571,6 +2680,20 @@ impl App {
                 rust_i18n::t!("cmd_sys_deactivate_license_desc"),
                 AtlasIcon::Lock,
                 Action::DeactivateLicense,
+            ),
+            CommandDef::new(
+                "sys.crash-reports",
+                rust_i18n::t!("cmd_sys_crash_reports_title"),
+                rust_i18n::t!("cmd_sys_crash_reports_desc"),
+                AtlasIcon::Lifebuoy,
+                Action::OpenCrashReports,
+            ),
+            CommandDef::new(
+                "sys.send-crash-report",
+                rust_i18n::t!("cmd_sys_send_crash_report_title"),
+                rust_i18n::t!("cmd_sys_send_crash_report_desc"),
+                AtlasIcon::Lifebuoy,
+                Action::SendCrashReport,
             ),
             CommandDef::new(
                 "sys.save-session",

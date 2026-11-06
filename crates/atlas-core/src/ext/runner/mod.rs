@@ -8,6 +8,7 @@
 mod argv;
 mod ext_preview;
 mod icon_manager;
+pub use icon_manager::{activate_icon_variant, active_icon_variant, installed_icon_variants, InstalledIconVariant};
 mod img;
 mod office;
 pub(crate) use office::delimited_bytes;

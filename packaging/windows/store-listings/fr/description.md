@@ -44,4 +44,4 @@ Conçu pour une efficacité maximale sans quitter le clavier :
 ### Découvrez une nouvelle façon de gérer vos fichiers
 Adoptez un gestionnaire de fichiers moderne, ultra-rapide et respectueux de votre vie privée. Téléchargez **Atlas Gestionnaire de fichiers** dès aujourd'hui et redécouvrez le plaisir d'une navigation fluide sur Windows.
 
-Code source (AGPL-3.0-or-later): https://github.com/neondeex/atlas-filemanager
+Code source (AGPL-3.0-or-later): https://atlasfm.modhyt.org/source-code

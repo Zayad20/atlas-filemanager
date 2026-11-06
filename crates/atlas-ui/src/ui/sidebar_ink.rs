@@ -139,7 +139,10 @@ impl RowInk {
                             *color,
                         ),
                         RowIcon::Texture(texture) => {
-                            let icon_bounds = icon_slot.to_bounds(bounds.origin);
+                            let icon_bounds = crate::ui::thumbs::contain_bounds(
+                                texture,
+                                icon_slot.to_bounds(bounds.origin),
+                            );
                             let _ = window.paint_image(
                                 icon_bounds,
                                 icon_bounds,

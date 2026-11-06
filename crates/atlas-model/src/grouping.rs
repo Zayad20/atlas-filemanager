@@ -1,4 +1,5 @@
 //! Cached virtual list structure. Headers never masquerade as file indices.
+use crate::clamp::ClampLenient;
 use crate::file_entry::{FileEntry, FileKind};
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate};
 use std::collections::{BTreeMap, BTreeSet};
@@ -242,7 +243,7 @@ impl RowBands {
 /// before it; headers resolve in the direction of travel.
 pub fn grouped_step(cells: &[usize], current: usize, delta: isize) -> Option<usize> {
     let last = cells.len().checked_sub(1)?;
-    let target = (current as isize + delta).clamp(0, last as isize) as usize;
+    let target = (current as isize + delta).clamp_lenient(0, last as isize) as usize;
     if !is_virtual_cell(cells[target]) {
         return Some(target);
     }

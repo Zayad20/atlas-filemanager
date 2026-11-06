@@ -1,6 +1,7 @@
 //! Frosted surface geometry and optional soft depth. Theme application owns the
 //! palette and material weights; glass surfaces never add a decorative rim.
 
+use atlas_model::clamp::ClampLenient;
 use gpui::ColorExt as _;
 use gpui::{
     div, hsla, linear_color_stop, linear_gradient, point, px, BoxShadow, Hsla, InteractiveElement,
@@ -88,7 +89,12 @@ pub(crate) fn control_colors(theme: &gpui_component::Theme, glass: bool) -> Cont
         } else {
             (0.62, 0.78)
         };
-        (theme.colors.list.alpha * 0.85).clamp(min, max)
+        // Follow the Glass opacity setting through the canvas density, but only
+        // within this range: capsules adapt slightly and always keep a backing.
+        let (lo, hi) = crate::app::theme::glass_canvas_range(theme.is_dark());
+        let t = ((theme.colors.background.alpha - lo) / (hi - lo).max(f32::EPSILON))
+            .clamp_lenient(0.0, 1.0);
+        min + (max - min) * t
     } else {
         1.0
     };
@@ -195,12 +201,17 @@ pub trait GlassExt: Styled + Sized {
     /// Glass with an explicit fill (sidebar/chrome variants): same floating
     /// material as `glass_panel` (rounded corners + soft shadow) but with a
     /// caller-chosen fill so the sidebar/chrome can sit a touch denser than the panes.
+    ///
+    /// No in-app backdrop blur: these surfaces sit directly on the translucent
+    /// window canvas, which the OS already blurs. The DX11 blur composite adds
+    /// the backdrop's alpha on top of itself, so blurring here roughly doubled
+    /// the canvas density under every pane and the Glass opacity setting
+    /// barely changed them (near-black panes at minimum opacity).
     #[must_use]
     fn glass_surface(self, fill: Hsla) -> Self {
         let surface = self
             .rounded(px(GLASS_RADIUS))
             .rounded_smoothing_ios()
-            .backdrop_blur(px(12.0))
             .bg(fill);
         if glass_shadows_enabled() {
             surface.shadow(raised_shadow())

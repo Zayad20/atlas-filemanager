@@ -110,7 +110,7 @@ impl App {
         kind: &FileKind,
         ext: Option<&str>,
     ) -> Arc<RenderImage> {
-        self.liquid_glass.texture_for_entry(kind, ext)
+        self.liquid_glass.texture_for_entry_on(kind, ext, self.light_surfaces)
     }
 }
 

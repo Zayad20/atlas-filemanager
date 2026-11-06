@@ -185,10 +185,35 @@ impl App {
                     atlas_core::util::config::save_settings(&self.state.settings);
                 }
                 Action::OpenSettings => {
+                    if !self.state.overlay.show_settings {
+                        self.settings_ui = crate::ui::settings_palette::SettingsUi::default();
+                    }
                     self.state.overlay.show_settings = true;
                 }
+                Action::OpenSettingAt(id) => {
+                    self.settings_cancel_drill();
+                    let category = crate::ui::settings_palette::find(id).map(|def| def.category);
+                    self.settings_ui = crate::ui::settings_palette::SettingsUi::opened_at(category);
+                    self.settings_ui.focus_id = Some(id);
+                    self.settings_input = None;
+                    self.state.overlay.show_settings = true;
+                }
+                Action::ToggleSetting(id) => {
+                    if let Some(crate::ui::settings_palette::Control::Toggle { get, set, .. }) =
+                        crate::ui::settings_palette::find(id).map(|def| &def.control)
+                    {
+                        let on = !get(self);
+                        set(self, on);
+                        self.commit_settings();
+                        self.dirty_all_panes = true;
+                    }
+                }
                 Action::OpenSettingsAbout => {
-                    self.settings_section = 5;
+                    self.settings_cancel_drill();
+                    self.settings_ui = crate::ui::settings_palette::SettingsUi::opened_at(Some(
+                        crate::ui::settings_palette::Category::About,
+                    ));
+                    self.settings_input = None;
                     self.state.overlay.show_settings = true;
                 }
                 Action::ActivateLicense => {
@@ -221,8 +246,63 @@ impl App {
                         let _ = tx.send(atlas_model::app_state::BgResult::LicenseChanged(result));
                     });
                 }
+                Action::OpenCrashReports => {
+                    #[cfg(windows)]
+                    {
+                        let newest = atlas_win_space::crash::previous_crash()
+                            .and_then(|crash| crash.reports.first().cloned());
+                        match newest {
+                            Some(report) => {
+                                let _ = std::process::Command::new("explorer")
+                                    .arg(format!("/select,{}", report.display()))
+                                    .spawn();
+                            }
+                            None => {
+                                if let Ok(dir) = atlas_win_space::crash::crash_directory() {
+                                    let _ = std::fs::create_dir_all(&dir);
+                                    let _ = open::that(dir);
+                                }
+                            }
+                        }
+                    }
+                }
+                Action::SendCrashReport => {
+                    #[cfg(windows)]
+                    {
+                        let Some(crash) = atlas_win_space::crash::previous_crash() else {
+                            self.toast_info(rust_i18n::t!("crash_report_none").into_owned());
+                            continue;
+                        };
+                        if std::mem::replace(&mut self.crash_report_sent, true) {
+                            self.toast_info(rust_i18n::t!("crash_report_already_sent").into_owned());
+                            continue;
+                        }
+                        self.toast_info(rust_i18n::t!("crash_report_sending").into_owned());
+                        let tx = self.tx.clone();
+                        self.rt.spawn(async move {
+                            let result = atlas_core::crash_report::send(
+                                &crash.reports,
+                                &crash.version,
+                                crash.summary.as_deref(),
+                            )
+                            .await
+                            .map(|_| rust_i18n::t!("crash_report_sent").into_owned())
+                            .map_err(|error| {
+                                tracing::warn!(%error, "crash report upload failed");
+                                rust_i18n::t!("crash_report_failed").into_owned()
+                            });
+                            let _ = tx.send(atlas_model::app_state::BgResult::CrashReportSent(result));
+                        });
+                    }
+                }
                 Action::GetPremium => {
-                    let _ = open::that("https://atlasnative.com/#pricing");
+                    // Regional-price markets buy the Store add-on; the Store listing
+                    // has no buy button for it, so the app must open the dialog.
+                    if atlas_core::license::prefers_store_purchase() {
+                        self.buy_premium_in_store();
+                    } else {
+                        let _ = open::that("https://atlasnative.com/#pricing");
+                    }
                 }
                 Action::OpenGettingStarted => {
                     self.getting_started_profile_input = None;
@@ -1392,6 +1472,7 @@ impl App {
                 Action::SelectPanelBelow => self.select_spatial_panel(crate::ui::tab_reorder::PanelDirection::Below),
                 Action::EvenPanelSiblings => self.even_panels(false),
                 Action::EvenAllPanes => self.even_panels(true),
+                Action::MoveTabToPanel(direction) => self.move_tab_to_spatial_panel(direction),
                 Action::ToggleFolderViewRecursive => self.toggle_folder_view_recursive(),
                 Action::SetViewMode(mode) => {
                     let tab = self.state.focused_tile;
@@ -1424,18 +1505,21 @@ impl App {
                     {
                         section.collapsed ^= true;
                     }
+                    atlas_core::util::config::save_profiles(&self.state.profiles);
                 }
                 Action::MoveSidebarSectionUp(i) => {
                     let sections = &mut self.state.profiles.active_mut().sidebar_sections;
                     if i > 0 && i < sections.len() {
                         sections.swap(i, i - 1);
                     }
+                    atlas_core::util::config::save_profiles(&self.state.profiles);
                 }
                 Action::MoveSidebarSectionDown(i) => {
                     let sections = &mut self.state.profiles.active_mut().sidebar_sections;
                     if i + 1 < sections.len() {
                         sections.swap(i, i + 1);
                     }
+                    atlas_core::util::config::save_profiles(&self.state.profiles);
                 }
                 Action::SetSidebarSectionHidden { index, hidden } => {
                     if let Some(section) = self
@@ -1447,10 +1531,12 @@ impl App {
                     {
                         section.hidden = hidden;
                     }
+                    atlas_core::util::config::save_profiles(&self.state.profiles);
                 }
                 Action::ResetSidebarSections => {
                     self.state.profiles.active_mut().sidebar_sections =
                         atlas_model::profiles::default_sections();
+                    atlas_core::util::config::save_profiles(&self.state.profiles);
                 }
                 Action::RemoveBookmark(idx) => {
                     if idx < self.state.profiles.active().bookmarks.len() {
@@ -1802,7 +1888,7 @@ impl App {
                 std::thread::spawn(move || {
                     let accepted = ole_clipboard::wait_transfer_ack(event);
                     if launched {
-                        if let Ok(mut events) = queue.lock() {
+                        if let Some(mut events) = queue.lock().or_else(atlas_model::sync::recover).ok() {
                             if accepted && close_source { events.push(DndEvent::TabTransferAccepted { tab }); }
                             else if !accepted { events.push(DndEvent::Error("Tab transfer was not acknowledged; the original tab remains open".into())); }
                         }

@@ -299,8 +299,8 @@ impl App {
             )
             .with_animation(
                 SharedString::from("type-filter-panel-appear"),
-                crate::ui::motion::animation(crate::ui::motion::MICRO_MS),
-                |this, t| this.opacity(t).mt(px(5.0 * (1.0 - t))),
+                gpui_component::animation::dropdown_animation(),
+                gpui_component::animation::dropdown_appear,
             );
 
         let v = view.clone();

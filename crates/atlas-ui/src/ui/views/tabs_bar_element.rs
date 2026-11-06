@@ -1,8 +1,9 @@
 //! Flat TabsBar surface: math layout + measured labels + hit slots (1 layout node).
 
+use atlas_model::clamp::ClampLenient;
 use crate::app::App;
 use crate::input::action::Action;
-use crate::ui::imm::cut::RectCut;
+use crate::ui::dg::cut::RectCut;
 use crate::ui::drag_hover::{DragHoverCommand, DragHoverId, DragHoverKind, DragHoverTarget};
 use crate::ui::icons::AtlasIcon;
 use crate::ui::surface::{
@@ -44,6 +45,10 @@ pub(crate) struct TabBarItem {
     pub is_active: bool,
     pub tag_rgb: Option<[u8; 3]>,
     pub closing: Option<std::time::Instant>,
+    /// Location glyph drawn before the label (folder, recycle bin, ...).
+    pub icon: AtlasIcon,
+    /// Icon-pack texture (Shell / icon theme folder); wins over `icon`.
+    pub icon_tex: Option<std::sync::Arc<gpui::RenderImage>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -71,7 +76,6 @@ pub(crate) struct TabsBarElement {
     tab_fg: Hsla,
     muted: Hsla,
     border: Hsla,
-    accent: Hsla,
     style: StyleRefinement,
 }
 
@@ -80,6 +84,7 @@ struct TabGeom {
     label: Slot,
     close: Slot,
     tag: Option<Slot>,
+    icon: Option<Slot>,
     visible: bool,
     opacity: f32,
 }
@@ -132,7 +137,6 @@ impl TabsBarElement {
         tab_fg: Hsla,
         muted: Hsla,
         border: Hsla,
-        accent: Hsla,
     ) -> Self {
         Self {
             id: ElementId::Name(SharedString::from("tabs-bar-surface")),
@@ -152,7 +156,6 @@ impl TabsBarElement {
             tab_fg,
             muted,
             border,
-            accent,
             style: StyleRefinement::default(),
         }
     }
@@ -231,17 +234,18 @@ impl Element for TabsBarElement {
         let zoom = f32::from(window.rem_size()) / crate::ui::BASE_PX;
         // Force chrome type scale (ignore body font_size from caller).
         self.font_size = chrome_font_size_tabs(window, self.windows_theme);
-        let strip_h = if self.windows_theme { 46.0 } else { 34.0 } * zoom;
-        let tab_h = if self.windows_theme { 38.0 } else { 26.0 } * zoom;
-        let tab_min = if self.windows_theme { 118.0 } else { 56.0 } * zoom;
+        let strip_h = if self.windows_theme { 46.0 } else { 40.0 } * zoom;
+        let tab_h = if self.windows_theme { 38.0 } else { 30.0 } * zoom;
+        let tab_min = if self.windows_theme { 118.0 } else { 72.0 } * zoom;
         let tab_max = if self.windows_theme { 210.0 } else { 220.0 } * zoom;
         let gap = if self.windows_theme { 8.0 } else { 6.0 } * zoom;
         let close_sz = if self.windows_theme { 22.0 } else { 18.0 } * zoom;
         let pad_x = 8.0 * zoom;
         let pad_in = 10.0 * zoom;
-        let radius = if self.windows_theme { 8.0 } else { 6.0 } * zoom;
-        let new_sz = if self.windows_theme { 32.0 } else { 24.0 } * zoom;
+        let radius = if self.windows_theme { 8.0 } else { 8.0 } * zoom;
+        let new_sz = if self.windows_theme { 32.0 } else { 26.0 } * zoom;
         let tag_dot = 9.0 * zoom;
+        let icon_w = if self.windows_theme { 18.0 } else { 16.0 } * zoom;
 
         // Shape labels with final colors (active vs idle).
         let mut labels = Vec::with_capacity(self.tabs.len());
@@ -257,11 +261,11 @@ impl Element for TabsBarElement {
             let tag_w = if tab.tag_rgb.is_some() {
                 tag_dot + 6.0 * zoom
             } else {
-                0.0
+                icon_w + 6.0 * zoom
             };
             // pad + tag + text + gap + close + pad
             let natural =
-                (pad_in + tag_w + text_w + 6.0 * zoom + close_sz + pad_in).clamp(tab_min, tab_max);
+                (pad_in + tag_w + text_w + 6.0 * zoom + close_sz + pad_in).clamp_lenient(tab_min, tab_max);
             natural_ws.push(natural);
             labels.push(line);
         }
@@ -269,7 +273,7 @@ impl Element for TabsBarElement {
         let avail = (f32::from(bounds.size.width) - pad_x * 2.0 - new_sz - gap).max(0.0);
 
         // Progressive Disclosure: if the space is too small for all tabs,
-        // start hiding inactive ones (so inactive tabs collapse progressively).
+        // start hiding inactive ones (just like Filepilot).
         let min_required = self.tabs.len() as f32 * (tab_min * 0.55 + gap);
         let mut visible_tabs: Vec<bool> = vec![true; self.tabs.len()];
         let mut sum_visible = 0.0;
@@ -306,6 +310,7 @@ impl Element for TabsBarElement {
                     label: Slot::new(slicer.x, y0, 0.0, 0.0),
                     close: Slot::new(slicer.x, y0, 0.0, 0.0),
                     tag: None,
+                    icon: None,
                     visible: false,
                     opacity: 0.0,
                 });
@@ -341,6 +346,13 @@ impl Element for TabsBarElement {
             } else {
                 None
             };
+            let icon = if tag.is_none() && tab_cut.w > icon_w + close_sz + 24.0 * zoom {
+                let icon_cut = tab_cut.cut_left(icon_w);
+                tab_cut.cut_left(6.0 * zoom);
+                Some(Slot::new(icon_cut.x, y0 + (tab_h - icon_w) * 0.5, icon_w, icon_w))
+            } else {
+                None
+            };
             let close_raw = tab_cut.cut_right(close_sz);
             let close = Slot::new(
                 close_raw.x,
@@ -356,6 +368,7 @@ impl Element for TabsBarElement {
                 label,
                 close,
                 tag,
+                icon,
                 visible: true,
                 opacity: openness,
             });
@@ -377,7 +390,7 @@ impl Element for TabsBarElement {
         let viewport = [f32::from(bounds.size.width), tab_max, zoom];
         let now = std::time::Instant::now();
         let motion = window.use_keyed_state("tabs-neighbor-motion", cx, |_, _| {
-            crate::ui::imm::motion::RowMotion::<TabId>::new(0, viewport)
+            crate::ui::dg::motion::RowMotion::<TabId>::new(0, viewport)
         });
         let mut targets: Vec<_> = geoms
             .iter()
@@ -473,7 +486,6 @@ impl Element for TabsBarElement {
         let muted = self.muted;
         let bar_bg = self.bar_bg;
         let border = self.border;
-        let accent = self.accent;
         let radius = prepaint.radius;
         let strip_h = prepaint.strip_h;
         let origin = bounds.origin;
@@ -534,21 +546,8 @@ impl Element for TabsBarElement {
                     |window| {
                         window.with_element_opacity(Some(g.opacity), |window| {
                             if tab.is_active {
+                                // The fill alone marks the active tab (no accent underline).
                                 paint_rounded(window, tab_b, radius, active_bg);
-                                paint_fill(
-                                    window,
-                                    Bounds {
-                                        origin: point(
-                                            tab_b.origin.x + px(radius * 0.5),
-                                            tab_b.origin.y + px(g.tab.h - 2.0 * zoom),
-                                        ),
-                                        size: size(
-                                            px((g.tab.w - radius * zoom).max(0.0)),
-                                            px(2.0 * zoom),
-                                        ),
-                                    },
-                                    accent,
-                                );
                             } else if hover_i == Some(i) {
                                 paint_rounded(window, tab_b, radius, hover_bg);
                             }
@@ -564,6 +563,40 @@ impl Element for TabsBarElement {
                                     tag_slot.to_bounds(origin),
                                     tag_slot.h * 0.5,
                                     gpui::rgb_to_hsla(c),
+                                );
+                            }
+
+                            if let (Some(icon_slot), Some(tex)) = (g.icon, tab.icon_tex.clone()) {
+                                let side = icon_slot.w.min(icon_slot.h);
+                                let image = Slot::new(
+                                    icon_slot.x + (icon_slot.w - side) * 0.5,
+                                    icon_slot.y + (icon_slot.h - side) * 0.5,
+                                    side,
+                                    side,
+                                );
+                                let image = crate::ui::thumbs::contain_bounds(
+                                    &tex,
+                                    image.to_bounds(origin),
+                                );
+                                let _ = window.paint_image(
+                                    image,
+                                    image,
+                                    Corners::default(),
+                                    tex,
+                                    0,
+                                    false,
+                                );
+                            } else if let Some(icon_slot) = g.icon {
+                                let icon_color = if tab.is_active { self.active_fg } else { muted };
+                                paint_theme_icon(
+                                    window,
+                                    cx,
+                                    origin,
+                                    icon_slot,
+                                    tab.icon,
+                                    windows_theme,
+                                    14.0 * zoom,
+                                    icon_color,
                                 );
                             }
 
@@ -727,7 +760,8 @@ impl Element for TabsBarElement {
                     }
                     if press
                         .as_ref()
-                        .is_some_and(|(at, _, _)| (ev.position - *at).magnitude() > 2.0)
+                        // A deliberate move, not click jitter, starts a tab drag.
+                        .is_some_and(|(at, _, _)| (ev.position - *at).magnitude() > 6.0)
                     {
                         press.take()
                     } else {
@@ -829,6 +863,8 @@ mod tests {
             is_active: id == 1,
             tag_rgb: None,
             closing: None,
+            icon: AtlasIcon::Folder,
+            icon_tex: None,
         }).collect();
         tabs[2].closing = Some(std::time::Instant::now());
         let geom = |x, w, visible| TabGeom {
@@ -836,6 +872,7 @@ mod tests {
             label: Slot::default(),
             close: Slot::default(),
             tag: None,
+            icon: None,
             visible,
             opacity: 1.0,
         };

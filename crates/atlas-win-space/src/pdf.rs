@@ -80,6 +80,47 @@ pub fn recognize_pages(
     recognize().map_err(|error| format!("Could not recognize PDF text: {error}"))
 }
 
+/// Render page 1 to in-memory PNG bytes with the built-in Windows PDF renderer,
+/// scaled so the longest edge is `max_edge`. Used by the default preview path.
+pub fn render_first_page_png(source: &Path, max_edge: u32) -> Result<Vec<u8>, String> {
+    let render = || -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let path = std::path::absolute(source)?;
+        let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path.as_os_str()))?.get()?;
+        let document = PdfDocument::LoadFromFileAsync(&file)?.get()?;
+        if document.PageCount()? == 0 {
+            return Err("PDF has no pages".into());
+        }
+        let page = document.GetPage(0)?;
+        let result = (|| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+            let size = page.Size()?;
+            let longest = f64::from(size.Width.max(size.Height));
+            if !longest.is_finite() || longest <= 0.0 {
+                return Err("Invalid page size".into());
+            }
+            let scale = f64::from(max_edge.max(1)) / longest;
+            let width = (f64::from(size.Width) * scale).round().clamp(1.0, 8192.0);
+            let height = (f64::from(size.Height) * scale).round().clamp(1.0, 8192.0);
+            let options = PdfPageRenderOptions::new()?;
+            options.SetDestinationWidth(width as u32)?;
+            options.SetDestinationHeight(height as u32)?;
+            let stream = InMemoryRandomAccessStream::new()?;
+            page.RenderWithOptionsToStreamAsync(&stream, &options)?.get()?;
+            let length = stream.Size()?;
+            if length == 0 || length > 256 * 1024 * 1024 {
+                return Err("Rendered page is too large or empty".into());
+            }
+            let reader = DataReader::CreateDataReader(&stream.GetInputStreamAt(0)?)?;
+            let loaded = reader.LoadAsync(length as u32)?.get()?;
+            let mut bytes = vec![0; loaded as usize];
+            reader.ReadBytes(&mut bytes)?;
+            Ok(bytes)
+        })();
+        let _ = page.Close();
+        result
+    };
+    render().map_err(|error| format!("Could not render PDF: {error}"))
+}
+
 /// Render every page to a PNG in an isolated directory owned by the caller.
 pub struct RenderedPage {
     pub path: PathBuf,

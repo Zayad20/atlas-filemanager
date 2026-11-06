@@ -93,7 +93,7 @@ mod imp {
         let mut counters = COUNTERS
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
-            .unwrap();
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *counters.entry(name).or_default() += amount;
     }
 
@@ -105,7 +105,7 @@ mod imp {
         let mut timings = TIMINGS_US
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
-            .unwrap();
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *timings.entry(name).or_default() += us;
     }
 
@@ -151,7 +151,7 @@ mod imp {
             let mut previous = LAST_FRAME_DETAIL
                 .get_or_init(|| Mutex::new(None))
                 .lock()
-                .unwrap();
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match previous.replace(detail()) {
                 Some(previous) => (frame.saturating_sub(1), previous),
                 None => (frame, previous.take().expect("current frame detail")),
@@ -159,7 +159,7 @@ mod imp {
         };
         let now = Instant::now();
         let gap_ms = {
-            let mut last = LAST_FRAME.get_or_init(|| Mutex::new(now)).lock().unwrap();
+            let mut last = LAST_FRAME.get_or_init(|| Mutex::new(now)).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let gap = now.duration_since(*last).as_secs_f64() * 1000.0;
             *last = now;
             gap
@@ -167,13 +167,13 @@ mod imp {
         let counters = COUNTERS
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain()
             .collect::<Vec<_>>();
         let timings = TIMINGS_US
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain()
             .collect::<Vec<_>>();
         if counters.is_empty() && timings.is_empty() && frame > 1 {

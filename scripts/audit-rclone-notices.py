@@ -38,7 +38,7 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
     results=list(pool.map(fetch,modules))
 results.sort(key=lambda i:(i['path'],i['version']))
 go_license=ROOT/'legal/upstream/go1.26.5-LICENSE.txt'
-chunks=['rclone v1.74.4 — additional Go dependency notices\n\nThese are the modules recorded in the shipped Windows executable. Original\nmodule notices are preserved below. Dependencies retain their own licenses.\nSource and the verification manifest are available without charge at:\nhttps://github.com/neondeex/atlas-filemanager\n\nGo standard library, toolchain go1.26.5:\nhttps://github.com/golang/go/blob/go1.26.5/LICENSE\nhttps://go.dev/dl/\n\n'+go_license.read_text(encoding='utf-8')]
+chunks=['rclone v1.74.4 — additional Go dependency notices\n\nThese are the modules recorded in the shipped Windows executable. Original\nmodule notices are preserved below. Dependencies retain their own licenses.\nSource and the verification manifest are available without charge at:\nhttps://atlasfm.modhyt.org/source-code\n\nGo standard library, toolchain go1.26.5:\nhttps://github.com/golang/go/blob/go1.26.5/LICENSE\nhttps://go.dev/dl/\n\n'+go_license.read_text(encoding='utf-8')]
 for item in results:
     chunks.append('\n'+'='*76+'\n'+item['path']+' '+item['version']+'\nChecksum: '+item['verifiedSum']+'\n')
     for notice in item['notices']:chunks.append('\n--- '+notice['path']+' ---\n'+notice['text'].strip()+'\n')

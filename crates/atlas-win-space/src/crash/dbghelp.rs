@@ -12,7 +12,7 @@ use windows_sys::Win32::{
     Storage::FileSystem::WriteFile,
     System::{
         Diagnostics::Debug::*,
-        LibraryLoader::{GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32},
+        LibraryLoader::{GetModuleFileNameW, GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32},
         Threading::{GetCurrentProcess, GetCurrentThread},
     },
 };
@@ -168,12 +168,16 @@ pub(super) unsafe fn stack(file: HANDLE, exception: *const EXCEPTION_POINTERS) {
         // Always retain addresses if a release build has no local PDB.
         if !duplicate {
             let base = unsafe { (api.base)(GetCurrentProcess(), frame.AddrPC.Offset) };
-            let mut line = *b"0x0000000000000000 module=0x0000000000000000\r\n";
+            let mut line = *b"0x0000000000000000 module=0x0000000000000000";
             hex(&mut line[2..18], frame.AddrPC.Offset);
             hex(&mut line[28..44], base);
             let mut written = 0;
             unsafe {
                 WriteFile(file, line.as_ptr(), line.len() as u32, &mut written, null_mut());
+                // The module name lets release stacks (PDB not shipped) be
+                // symbolized offline by `scripts/symbolize-crash.py`.
+                write_module_name(file, base);
+                WriteFile(file, b"\r\n".as_ptr(), 2, &mut written, null_mut());
                 write_symbol(file, api, frame.AddrPC.Offset);
             }
         }
@@ -247,6 +251,31 @@ unsafe fn write_symbol(file: HANDLE, api: &Functions, address: u64) {
             WriteFile(file, output.bytes.as_ptr(), output.len as u32, &mut written, null_mut());
         }
     }
+}
+
+/// Appends ` <file name>` of the module loaded at `base`. Fixed buffers only.
+unsafe fn write_module_name(file: HANDLE, base: u64) {
+    let mut wide = [0u16; 260];
+    let len = unsafe { GetModuleFileNameW(base as isize, wide.as_mut_ptr(), wide.len() as u32) } as usize;
+    if base == 0 || len == 0 {
+        return;
+    }
+    let path = &wide[..len.min(wide.len())];
+    let name = path.rsplit(|&c| c == u16::from(b'\\')).next().unwrap_or(path);
+    let mut output = [0u8; 1024];
+    output[0] = b' ';
+    let mut used = 1;
+    for ch in char::decode_utf16(name.iter().copied()) {
+        let mut bytes = [0; 4];
+        let encoded = ch.unwrap_or(char::REPLACEMENT_CHARACTER).encode_utf8(&mut bytes);
+        if used + encoded.len() > output.len() {
+            break;
+        }
+        output[used..used + encoded.len()].copy_from_slice(encoded.as_bytes());
+        used += encoded.len();
+    }
+    let mut written = 0;
+    unsafe { WriteFile(file, output.as_ptr(), used as u32, &mut written, null_mut()) };
 }
 
 fn hex(output: &mut [u8], value: u64) {

@@ -45,4 +45,4 @@ Designed for maximum hands-on-keyboard efficiency:
 ### Experience the Future of File Management
 Step up to a modern, privacy-respecting file manager engineered for pure speed and focus. Download **Atlas File Manager** today and experience file navigation reimagined.
 
-Source code (AGPL-3.0-or-later): https://github.com/neondeex/atlas-filemanager
+Source code (AGPL-3.0-or-later): https://atlasfm.modhyt.org/source-code

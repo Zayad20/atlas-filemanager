@@ -147,7 +147,7 @@ impl Progress {
         }
     }
     fn record(&self, result: HRESULT, original: Ref<'_, IShellItem>, item: Ref<'_, IShellItem>) {
-        if let Ok(mut state) = self.state.lock() {
+        if let Some(mut state) = self.state.lock().or_else(atlas_model::sync::recover).ok() {
             if result.is_err() || result == COPYENGINE_S_USER_IGNORED {
                 state.failure.get_or_insert(result);
             }

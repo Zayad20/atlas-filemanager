@@ -3,6 +3,38 @@
 #![allow(clippy::type_complexity)] // Not useful, GPUI makes heavy use of callbacks
 #![allow(clippy::collapsible_else_if)] // False positives in platform specific code
 #![allow(unused_mut)] // False positives in platform specific code
+// Panic-free stdio: std's print macros panic when the stream is a closed
+// pipe, and a panic aborts the whole GUI process. These shadow the prelude
+// macros for every module of this crate and drop write errors instead.
+#[allow(unused_macros)]
+macro_rules! println {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::writeln!(::std::io::stdout(), $($arg)*);
+    }};
+}
+#[allow(unused_macros)]
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::writeln!(::std::io::stderr(), $($arg)*);
+    }};
+}
+#[allow(unused_macros)]
+macro_rules! print {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::write!(::std::io::stdout(), $($arg)*);
+    }};
+}
+#[allow(unused_macros)]
+macro_rules! eprint {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::write!(::std::io::stderr(), $($arg)*);
+    }};
+}
+
 
 extern crate self as gpui;
 #[macro_use]

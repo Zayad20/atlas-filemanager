@@ -6,6 +6,7 @@
 
 pub mod app_state;
 pub mod batch_rename;
+pub mod clamp;
 pub mod cleanup;
 pub mod edition;
 #[cfg(feature = "provider-host")]
@@ -27,6 +28,7 @@ pub mod preview_cache;
 pub mod profiles;
 pub mod provider_protocol;
 pub mod settings;
+pub mod sync;
 pub mod tab;
 pub mod tag_cache;
 pub mod undo;

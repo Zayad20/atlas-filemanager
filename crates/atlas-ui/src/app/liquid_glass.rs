@@ -30,18 +30,30 @@ const ALL_ICONS: &[FileTypeIcon] = &[
 
 pub(crate) struct LiquidGlassCache {
     textures: HashMap<FileTypeIcon, Arc<RenderImage>>,
+    /// Same art with darkened ink: the white glass vanishes on light surfaces.
+    light_textures: HashMap<FileTypeIcon, Arc<RenderImage>>,
     fallback: Arc<RenderImage>,
 }
 
 impl LiquidGlassCache {
     pub(crate) fn new() -> Self {
         let mut textures = HashMap::with_capacity(ALL_ICONS.len());
+        let mut light_textures = HashMap::with_capacity(ALL_ICONS.len());
 
         for &kind in ALL_ICONS {
             let path = kind.path();
             if let Some(bytes) = liquid_glass_filetype(path) {
-                if let Some(tex) = decode_png_to_render_image(bytes) {
+                if let Some(tex) =
+                    decode_png_to_render_image(bytes, [1.0; 3], AlphaMap::Gain(DARK_SURFACE_ALPHA))
+                {
                     textures.insert(kind, tex);
+                }
+                if let Some(tex) = decode_png_to_render_image(
+                    bytes,
+                    LIGHT_SURFACE_INK,
+                    AlphaMap::Curve(LIGHT_SURFACE_ALPHA_CURVE),
+                ) {
+                    light_textures.insert(kind, tex);
                 }
             }
         }
@@ -51,7 +63,7 @@ impl LiquidGlassCache {
             .cloned()
             .unwrap_or_else(create_dummy_texture);
 
-        Self { textures, fallback }
+        Self { textures, light_textures, fallback }
     }
 
     #[inline]
@@ -64,10 +76,44 @@ impl LiquidGlassCache {
         let icon_kind = file_type_icon_kind(kind, extension);
         self.texture_for(icon_kind)
     }
+
+    /// Variant for light surfaces (darkened ink so the glass stays visible).
+    #[inline]
+    pub(crate) fn texture_for_entry_on(
+        &self,
+        kind: &FileKind,
+        extension: Option<&str>,
+        light_surface: bool,
+    ) -> Arc<RenderImage> {
+        let icon_kind = file_type_icon_kind(kind, extension);
+        if light_surface {
+            if let Some(tex) = self.light_textures.get(&icon_kind) {
+                return tex.clone();
+            }
+        }
+        self.texture_for(icon_kind)
+    }
 }
 
-/// Decode raw PNG bytes to an Arc<RenderImage> with straight BGRA format.
-fn decode_png_to_render_image(bytes: &[u8]) -> Option<Arc<RenderImage>> {
+/// The art is pure white at ~50% alpha: crisp on black, gray-on-gray on the
+/// mid-tone surfaces of Graphite/Nord/glass. Denser glass keeps it legible.
+const DARK_SURFACE_ALPHA: f32 = 1.4;
+/// Per-channel RGB ink for the light-surface variant: the white glass becomes
+/// a cool slate. A uniform gray scale read muddy on every light theme.
+const LIGHT_SURFACE_INK: [f32; 3] = [0.42, 0.48, 0.57];
+/// Light variant alpha = alpha^CURVE: lifts the faint folder front so the
+/// gradient stays soft instead of a dark tab fading into a gray slab.
+const LIGHT_SURFACE_ALPHA_CURVE: f32 = 0.6;
+
+#[derive(Clone, Copy)]
+enum AlphaMap {
+    Gain(f32),
+    Curve(f32),
+}
+
+/// Decode raw PNG bytes to an Arc<RenderImage> with straight BGRA format,
+/// scaling RGB per channel by `ink` (1.0 = original art) and remapping alpha.
+fn decode_png_to_render_image(bytes: &[u8], ink: [f32; 3], alpha: AlphaMap) -> Option<Arc<RenderImage>> {
     let img = image::load_from_memory(bytes).ok()?.to_rgba8();
     let (w, h) = img.dimensions();
     let mut raw = img.into_raw();
@@ -75,6 +121,18 @@ fn decode_png_to_render_image(bytes: &[u8]) -> Option<Arc<RenderImage>> {
     // Swap R <-> B for GPUI's straight-BGRA GPU pipeline.
     for px in raw.chunks_exact_mut(4) {
         px.swap(0, 2);
+        // Now BGRA, while `ink` is RGB.
+        for (c, scale) in px[..3].iter_mut().zip([ink[2], ink[1], ink[0]]) {
+            if scale < 1.0 {
+                *c = (f32::from(*c) * scale).round() as u8;
+            }
+        }
+        let a = f32::from(px[3]) / 255.0;
+        let a = match alpha {
+            AlphaMap::Gain(gain) => a * gain,
+            AlphaMap::Curve(exp) => a.powf(exp),
+        };
+        px[3] = (a * 255.0).round().clamp(0.0, 255.0) as u8;
     }
 
     let buf = image::RgbaImage::from_raw(w, h, raw)?;

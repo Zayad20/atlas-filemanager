@@ -284,25 +284,25 @@ impl SpaceTree {
 static TREE: Mutex<Option<Arc<SpaceTree>>> = Mutex::new(None);
 
 pub fn store(tree: Arc<SpaceTree>) {
-    *TREE.lock().unwrap() = Some(tree);
+    *TREE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tree);
 }
 pub fn cached(path: &Path) -> Option<Arc<SpaceTree>> {
     TREE.lock()
-        .unwrap()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
         .filter(|t| t.find(path).is_some())
         .cloned()
 }
 /// Update the cached tree after `path` was deleted. False if nothing changed.
 pub fn remove(path: &Path) -> bool {
-    let mut guard = TREE.lock().unwrap();
+    let mut guard = TREE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     guard
         .as_mut()
         .and_then(Arc::get_mut)
         .is_some_and(|tree| tree.remove_node(path))
 }
 pub fn invalidate() {
-    if let Some(old) = TREE.lock().unwrap().take() {
+    if let Some(old) = TREE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
         std::thread::spawn(move || drop(old));
     }
 }

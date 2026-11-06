@@ -45,4 +45,4 @@ Zaprojektowany z myślą o maksymalnej wydajności bez odrywania rąk od klawiat
 ### Poznaj przyszłość zarządzania plikami
 Przejdź na nowoczesny, szanujący prywatność menedżer plików stworzony dla czystej szybkości i skupienia. Pobierz **Menedżer plików Atlas** już dziś i odkryj zarządzanie plikami na nowo.
 
-Kod źródłowy (AGPL-3.0-or-later): https://github.com/neondeex/atlas-filemanager
+Kod źródłowy (AGPL-3.0-or-later): https://atlasfm.modhyt.org/source-code

@@ -19,6 +19,18 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::{NativeItemKind, NativeMenuItem, RawIcon};
 
+/// Command-id range handed to `QueryContextMenu`. Only items whose `wID` falls
+/// inside it are real commands; popup items often carry an arbitrary `wID`
+/// (frequently the submenu's `HMENU` value).
+pub(crate) const ID_FIRST: u32 = 1;
+pub(crate) const ID_LAST: u32 = 0x7FFF;
+
+/// 0-based command offset for `wid`, or `None` when it is outside the range we
+/// gave `QueryContextMenu` (and therefore not safe to pass to the handler).
+fn command_offset(wid: u32, id_first: u32) -> Option<u32> {
+    (id_first..=ID_LAST).contains(&wid).then(|| wid - id_first)
+}
+
 /// Verbs that Atlas already provides in its own section; the native duplicates
 /// are dropped so the menu shows each action once.
 const DEDUPE_VERBS: &[&str] = &[
@@ -103,19 +115,33 @@ pub(crate) fn walk_menu(hmenu: HMENU, icm: &IContextMenu, id_first: u32) -> Vec<
                 continue;
             }
 
-            let item_id = info.wID.saturating_sub(id_first);
+            let is_submenu = !info.hSubMenu.is_invalid();
+            let offset = command_offset(info.wID, id_first);
+            // Popups keep their raw offset: `find_submenu` matches it back to
+            // `wID` and it is never invoked. A non-popup outside our range is
+            // not a command we can invoke safely — drop it.
+            let item_id = match offset {
+                Some(off) => off,
+                None if is_submenu => info.wID.wrapping_sub(id_first),
+                None => continue,
+            };
             let disabled = (info.fState.0 & (MFS_DISABLED.0 | MFS_GRAYED.0)) != 0;
             let is_default = (info.fState.0 & MFS_DEFAULT.0) != 0;
 
-            // Canonical verb (best-effort; many shell items have none).
-            let verb = command_verb(icm, item_id);
+            // Canonical verb (best-effort; many shell items have none). Never
+            // ask for popups or out-of-range ids: handlers such as ntshrui read
+            // an idCmd > 0xFFFF as a verb *string pointer* and AV.
+            let verb = match offset {
+                Some(off) if !is_submenu => command_verb(icm, off),
+                _ => None,
+            };
             if redundant_verb(verb.as_deref()) {
                 continue;
             }
 
             let icon = bitmap_to_rgba(info.hbmpItem);
 
-            let kind = if !info.hSubMenu.is_invalid() {
+            let kind = if is_submenu {
                 NativeItemKind::Submenu { children: None }
             } else {
                 NativeItemKind::Normal
@@ -150,6 +176,16 @@ mod tests {
             assert!(!redundant_verb(Some(verb)), "{verb}");
         }
         assert!(!redundant_verb(None));
+    }
+
+    #[test]
+    fn command_offset_rejects_ids_outside_query_range() {
+        assert_eq!(command_offset(ID_FIRST, ID_FIRST), Some(0));
+        assert_eq!(command_offset(ID_LAST, ID_FIRST), Some(ID_LAST - ID_FIRST));
+        assert_eq!(command_offset(0, ID_FIRST), None);
+        assert_eq!(command_offset(ID_LAST + 1, ID_FIRST), None);
+        // HMENU-looking wID from the crash dump (atlas-31252).
+        assert_eq!(command_offset(0x0010_037e, ID_FIRST), None);
     }
 
     #[test]

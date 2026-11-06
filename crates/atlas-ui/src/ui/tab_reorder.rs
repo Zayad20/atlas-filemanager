@@ -2,7 +2,7 @@
 use atlas_model::layout_tree::TileId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PanelDirection { Left, Right, Above, Below }
+pub enum PanelDirection { Left, Right, Above, Below }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RootDropEdge { RootTop, RootBottom, RootLeft, RootRight }

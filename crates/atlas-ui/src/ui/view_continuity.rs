@@ -152,7 +152,7 @@ impl App {
     /// Keyboard reveal for the focused cursor. Scrolls only when the cursor would
     /// leave the viewport (one item of context past the edge); never recenters.
     pub(crate) fn scroll_keyboard_selection(&mut self, pane: TabId) -> bool {
-        use crate::ui::imm::scroll::keyboard_target;
+        use crate::ui::dg::scroll::keyboard_target;
         let mode = self.tab_data_for(pane).map(|tab| tab.view_mode.clone());
         if matches!(mode, Some(ViewMode::Tree | ViewMode::Miller)) {
             let Some(state) = self.state.tab_states.get(&pane) else { return false; };

@@ -121,6 +121,24 @@ impl Registry {
             .collect()
     }
 
+    /// Enabled declarative commands that opted into the Actions ring, accept
+    /// every path and have all their tools installed.
+    pub fn ring_commands(&self, paths: &[std::path::PathBuf]) -> Vec<(String, ExtCommand)> {
+        if paths.is_empty() {
+            return Vec::new();
+        }
+        self.declarative_commands()
+            .into_iter()
+            .filter(|(_, command)| command.ring && self.required_tools(command).is_some())
+            .filter(|(_, command)| {
+                paths.iter().all(|path| {
+                    let extension = path.extension().and_then(|e| e.to_str());
+                    command.accepts.matches(extension, path.is_dir())
+                })
+            })
+            .collect()
+    }
+
     /// Resolve a specific command to a runnable `CommandRef`.
     pub fn command(&self, ext_id: &str, cmd_id: &str) -> Option<CommandRef> {
         let ext = self.get(ext_id)?;
@@ -453,6 +471,46 @@ accepts = { any = true }
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn ring_commands_need_opt_in_matching_paths_and_installed_tools() {
+        let manifest = Manifest::parse(
+            r#"
+id = "img"
+name = "Img"
+kind = "declarative"
+
+[[commands]]
+id = "ring-png"
+title = "Ring PNG"
+ring = true
+accepts = { extensions = ["png"] }
+run = "x {input}"
+
+[[commands]]
+id = "menu-only"
+title = "Menu only"
+accepts = { extensions = ["png"] }
+run = "x {input}"
+
+[[commands]]
+id = "needs-tool"
+title = "Needs tool"
+ring = true
+requires = ["definitely-not-installed-tool"]
+accepts = { extensions = ["png"] }
+run = "definitely-not-installed-tool {input}"
+"#,
+        )
+        .unwrap();
+        let registry = registry_with(manifest);
+        let png = [std::path::PathBuf::from("a.png")];
+        let ids: Vec<_> = registry.ring_commands(&png).into_iter().map(|(_, c)| c.id).collect();
+        assert_eq!(ids, ["ring-png"]);
+        let mixed = [std::path::PathBuf::from("a.png"), std::path::PathBuf::from("b.jpg")];
+        assert!(registry.ring_commands(&mixed).is_empty());
+        assert!(registry.ring_commands(&[]).is_empty());
     }
 
     #[test]

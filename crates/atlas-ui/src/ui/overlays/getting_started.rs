@@ -1,11 +1,12 @@
 use crate::app::App;
 use crate::input::action::Action;
+use super::brand;
 use crate::ui::icons::{atlas_logo, icon, AtlasIcon};
 use atlas_model::settings::ViewMode;
 use gpui::prelude::*;
 use gpui::ColorExt as _;
 use gpui::{
-    deferred, div, hsla, linear_color_stop, linear_gradient, point, px, AnyElement, BoxShadow,
+    deferred, div, hsla, linear_color_stop, linear_gradient, px, AnyElement,
     Context, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton, SharedString, Window,
 };
 use gpui_component::input::InputState;
@@ -13,26 +14,21 @@ use gpui_component::{h_flex, scroll::ScrollableElement, v_flex};
 
 const LOAD_MS: u128 = 5000;
 const WELCOME_MS: u128 = 2600;
+// First-run setup wears the same brand surface as the feature guide.
 fn setup_bg() -> gpui::Hsla {
-    hsla(0., 0., 0.08, 1.0)
-}
-fn setup_panel() -> gpui::Hsla {
-    hsla(0., 0., 0.13, 0.96)
+    hsla(0., 0., 0.02, 1.0)
 }
 fn setup_tile() -> gpui::Hsla {
-    hsla(0., 0., 0.19, 0.90)
+    brand::wash()
 }
 fn setup_fg() -> gpui::Hsla {
-    hsla(0., 0., 0.94, 1.0)
+    brand::ink()
 }
 fn setup_muted() -> gpui::Hsla {
-    hsla(0., 0., 0.68, 1.0)
+    brand::muted()
 }
 fn setup_border() -> gpui::Hsla {
-    hsla(0., 0., 0.36, 1.0)
-}
-fn setup_accent() -> gpui::Hsla {
-    hsla(0., 0., 0.90, 1.0)
+    brand::rim()
 }
 
 impl App {
@@ -69,8 +65,10 @@ impl App {
         let primary_view = view.clone();
         let back_view = view.clone();
         let guide_view = view.clone();
+        // Last step: the filled button continues into the tutorial; the outlined
+        // one just finishes the setup.
         let primary_label = if step == 2 {
-            rust_i18n::t!("getting_started_primary").to_string()
+            rust_i18n::t!("getting_started_guide_btn").to_string()
         } else {
             rust_i18n::t!("getting_started_next").to_string()
         };
@@ -123,14 +121,14 @@ impl App {
                 }
             }))
             .child(div().absolute().inset_0().bg(linear_gradient(
-                135.,
-                linear_color_stop(hsla(0., 0., 0.24, 0.30), 0.0),
-                linear_color_stop(hsla(0., 0., 0.08, 0.56), 1.0),
+                180.,
+                linear_color_stop(brand::hot().opacity(0.0), 0.45),
+                linear_color_stop(brand::hot().opacity(0.10), 1.0),
             )))
             .child(div().absolute().inset_0().bg(linear_gradient(
-                35.,
-                linear_color_stop(hsla(0., 0., 0.34, 0.10), 0.0),
-                linear_color_stop(hsla(0., 0., 0.04, 0.72), 1.0),
+                180.,
+                linear_color_stop(hsla(0., 0., 1., 0.035), 0.0),
+                linear_color_stop(hsla(0., 0., 1., 0.0), 0.5),
             )))
             .child(
                 v_flex()
@@ -141,29 +139,28 @@ impl App {
                     .gap_4()
                     .px_6()
                     .children((!loading).then(|| {
-                        v_flex()
+                        brand::panel()
                             .id("getting-started-card")
+                            .flex()
+                            .flex_col()
                             .w(px(760.))
                             .max_w(px(760.))
                             .min_h(px(520.))
-                            .p_6()
+                            .p(px(28.))
                             .gap_5()
-                            .rounded(px(22.))
-                            .border_1()
-                            .border_color(border.opacity(0.70))
-                            .bg(setup_panel())
-                            .shadow(soft_shadow())
                             .occlude()
+                            .child(brand::top_rim())
+                            .child(brand::warm_edge())
                             .child(
                                 h_flex()
                                     .justify_between()
                                     .items_center()
-                                    .child(step_dots(step, muted))
+                                    .child(step_dots(step))
                                     .child(
                                         div()
                                             .id("getting-started-close")
                                             .size(px(30.))
-                                            .rounded(px(8.))
+                                            .rounded_full()
                                             .flex()
                                             .items_center()
                                             .justify_center()
@@ -193,9 +190,9 @@ impl App {
                                     .child(
                                         div()
                                             .id("getting-started-back")
-                                            .px_3()
+                                            .px_4()
                                             .py_2()
-                                            .rounded(px(8.))
+                                            .rounded_full()
                                             .text_sm()
                                             .text_color(muted)
                                             .cursor_pointer()
@@ -222,9 +219,9 @@ impl App {
                                             .child(
                                                 div()
                                                     .id("getting-started-skip")
-                                                    .px_3()
+                                                    .px_4()
                                                     .py_2()
-                                                    .rounded(px(8.))
+                                                    .rounded_full()
                                                     .text_sm()
                                                     .text_color(muted)
                                                     .cursor_pointer()
@@ -247,29 +244,18 @@ impl App {
                                                     }),
                                             )
                                             .children((step == 2).then(|| {
-                                                div()
-                                                    .id("getting-started-guide")
-                                                    .px_4()
-                                                    .py_2()
-                                                    .rounded(px(8.))
-                                                    .border_1()
-                                                    .border_color(border.opacity(0.70))
-                                                    .text_sm()
-                                                    .text_color(fg)
-                                                    .cursor_pointer()
-                                                    .hover(move |h| h.bg(setup_tile()))
-                                                    .child(
-                                                        rust_i18n::t!("getting_started_guide_btn")
-                                                            .to_string(),
-                                                    )
+                                                brand::ghost(
+                                                    "getting-started-guide",
+                                                    rust_i18n::t!("getting_started_primary")
+                                                        .to_string(),
+                                                )
                                                     .on_mouse_down(MouseButton::Left, {
                                                         let guide_view = guide_view.clone();
                                                         move |_ev, _w, cx| {
                                                             guide_view.update(cx, |this, cx| {
                                                                 this.submit_getting_started_profile_name(cx);
                                                                 this.process_actions([
-                                                                    Action::CloseGettingStarted,
-                                                                    Action::OpenGuide(0),
+                                                                    Action::StartGettingStarted,
                                                                 ]);
                                                                 cx.notify();
                                                             });
@@ -277,18 +263,8 @@ impl App {
                                                     })
                                             }))
                                             .child(
-                                                div()
-                                                    .id("getting-started-primary")
-                                                    .px_4()
-                                                    .py_2()
-                                                    .rounded(px(8.))
-                                                    .text_sm()
-                                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                    .bg(setup_accent())
-                                                    .text_color(hsla(0., 0., 0.07, 1.0))
-                                                    .cursor_pointer()
+                                                brand::pill("getting-started-primary", primary_label, None)
                                                     .when(loading, |d| d.opacity(0.72))
-                                                    .child(primary_label)
                                                     .on_mouse_down(
                                                         MouseButton::Left,
                                                         move |_ev, _w, cx| {
@@ -301,7 +277,8 @@ impl App {
                                                                 {
                                                                     this.submit_getting_started_profile_name(cx);
                                                                     this.process_actions([
-                                                                        Action::StartGettingStarted,
+                                                                        Action::CloseGettingStarted,
+                                                                        Action::OpenGuide(0),
                                                                     ]);
                                                                 } else {
                                                                     if this
@@ -449,8 +426,9 @@ impl App {
                     .child(atlas_logo(72.0))
                     .child(
                         div()
-                            .text_xl()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_size(px(28.))
+                            .line_height(px(34.))
+                            .font_weight(gpui::FontWeight::LIGHT)
                             .child(rust_i18n::t!("getting_started_title").to_string()),
                     )
                     .child(
@@ -463,58 +441,8 @@ impl App {
                             .child(rust_i18n::t!("getting_started_subtitle").to_string()),
                     ),
             )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(muted)
-                            .child(rust_i18n::t!("getting_started_profile_name").to_string()),
-                    )
-                    .child(crate::ui::text_input::bordered(&profile_input)),
-            )
-            .child(
-                v_flex()
-                    .gap_3()
-                    .child(
-                        h_flex()
-                            .gap_3()
-                            .child(welcome_tile(
-                                "getting-started-profile",
-                                AtlasIcon::UserSwitch,
-                                "getting_started_profile",
-                                fg,
-                                border,
-                            ))
-                            .child(welcome_tile(
-                                "getting-started-palette",
-                                AtlasIcon::Lightning,
-                                "getting_started_palette",
-                                fg,
-                                border,
-                            )),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_3()
-                            .child(welcome_tile(
-                                "getting-started-ext",
-                                AtlasIcon::PuzzlePiece,
-                                "getting_started_extensions",
-                                fg,
-                                border,
-                            ))
-                            .child(welcome_tile(
-                                "getting-started-integrations",
-                                AtlasIcon::TerminalWindow,
-                                "getting_started_integrations",
-                                fg,
-                                border,
-                            )),
-                    ),
-            )
+            .child(profile_field(&profile_input, fg, muted, border))
+            .child(welcome_bento(fg, muted, border))
             .into_any_element()
     }
 
@@ -540,22 +468,14 @@ impl App {
                     .id(SharedString::from(format!("setup-theme-{name}")))
                     .px_3()
                     .py_2()
-                    .rounded(px(10.))
+                    .rounded(px(12.))
                     .border_1()
-                    .border_color(if selected {
-                        setup_accent().opacity(0.76)
-                    } else {
-                        border.opacity(0.46)
-                    })
-                    .bg(if selected {
-                        setup_accent().opacity(0.14)
-                    } else {
-                        setup_tile()
-                    })
+                    .border_color(if selected { brand::soft().opacity(0.55) } else { border })
+                    .bg(if selected { brand::wash_hover() } else { setup_tile() })
                     .text_color(if selected { fg } else { muted })
                     .text_sm()
                     .cursor_pointer()
-                    .hover(move |h| h.border_color(setup_accent().opacity(0.64)).text_color(fg))
+                    .hover(move |h| h.bg(brand::wash_hover()).text_color(fg))
                     .child(name)
                     .on_mouse_down(MouseButton::Left, move |_ev, _w, cx| {
                         let pick = pick.clone();
@@ -591,7 +511,7 @@ impl App {
                 &view,
                 fg,
                 muted,
-                border.opacity(0.46),
+                border,
                 setup_tile(),
             ));
 
@@ -748,32 +668,166 @@ impl App {
     }
 }
 
-fn welcome_tile(
-    id: &'static str,
-    icon_kind: AtlasIcon,
-    title_key: &'static str,
+/// Profile name as a floating-label field drawn in the brand surface; the input
+/// itself is borderless so it inherits the field instead of the app theme.
+fn profile_field(
+    input: &Entity<InputState>,
     fg: gpui::Hsla,
+    muted: gpui::Hsla,
     border: gpui::Hsla,
 ) -> AnyElement {
-    v_flex()
-        .id(SharedString::from(id))
-        .flex_1()
-        .h(px(132.))
-        .items_center()
-        .justify_center()
+    h_flex()
+        .h(px(60.))
+        .pl(px(18.))
+        .pr(px(16.))
         .gap_3()
-        .rounded(px(14.))
+        .items_center()
+        .rounded(px(18.))
         .border_1()
-        .border_color(border.opacity(0.46))
+        .border_color(border)
         .bg(setup_tile())
-        .shadow(soft_card_shadow())
-        .child(icon(icon_kind, 38., setup_accent()))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(brand::faint())
+                        .child(rust_i18n::t!("getting_started_profile_name").to_string()),
+                )
+                .child(
+                    div().text_color(fg).child(
+                        crate::ui::text_input::flat(input)
+                            .text_size(px(16.))
+                            .text_color(fg)
+                            .px_0(),
+                    ),
+                ),
+        )
+        .child(icon(AtlasIcon::PencilSimple, 16., muted))
+        .into_any_element()
+}
+
+/// Bento shell: quiet wash, clipped so oversized decorative icons bleed off the edge.
+fn bento_tile(id: &'static str, border: gpui::Hsla) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(SharedString::from(id))
+        .relative()
+        .overflow_hidden()
+        .rounded(px(22.))
+        .border_1()
+        .border_color(border)
+        .bg(setup_tile())
+        .p(px(18.))
+}
+
+/// Giant low-contrast glyph parked half outside a tile.
+fn bento_ghost(icon_kind: AtlasIcon, size: f32, right: f32, top: f32) -> AnyElement {
+    div()
+        .absolute()
+        .right(px(right))
+        .top(px(top))
+        .child(icon(icon_kind, size, hsla(0., 0., 1., 0.035)))
+        .into_any_element()
+}
+
+fn bento_title(key: &'static str, size: f32, fg: gpui::Hsla) -> AnyElement {
+    div()
+        .text_size(px(size))
+        .line_height(px(size + 4.))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(fg)
+        .child(rust_i18n::t!(key).to_string())
+        .into_any_element()
+}
+
+fn bento_desc(key: &'static str, muted: gpui::Hsla) -> AnyElement {
+    div()
+        .text_xs()
+        .line_height(px(17.))
+        .text_color(muted)
+        .child(rust_i18n::t!(key).to_string())
+        .into_any_element()
+}
+
+/// Asymmetric feature bento: one tall hero tile, one wide tile, two odd-sized
+/// small ones. Sizes are deliberately uneven.
+fn welcome_bento(fg: gpui::Hsla, muted: gpui::Hsla, border: gpui::Hsla) -> AnyElement {
+    let profile = bento_tile("getting-started-profile", border)
+        .w(px(264.))
+        .h_full()
+        .flex()
+        .flex_col()
+        .justify_between()
+        .bg(linear_gradient(
+            160.,
+            linear_color_stop(brand::hot().opacity(0.16), 0.0),
+            linear_color_stop(setup_tile(), 0.75),
+        ))
+        .child(bento_ghost(AtlasIcon::UserSwitch, 176., -58., 46.))
+        .child(icon(AtlasIcon::UserSwitch, 44., fg))
+        .child(
+            v_flex()
+                .gap_1()
+                .child(bento_title("getting_started_profile", 19., fg))
+                .child(bento_desc("getting_started_profile_desc", muted)),
+        );
+
+    let palette = bento_tile("getting-started-palette", border)
+        .h(px(116.))
+        .flex()
+        .items_center()
+        .gap_4()
+        .child(
+            v_flex()
+                .flex_1()
+                .gap_1()
+                .child(bento_title("getting_started_palette", 16., fg))
+                .child(bento_desc("getting_started_palette_desc", muted)),
+        )
         .child(
             div()
-                .text_sm()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(fg)
-                .child(rust_i18n::t!(title_key).to_string()),
+                .mr(px(-6.))
+                .child(icon(AtlasIcon::Lightning, 60., brand::soft())),
+        );
+
+    let extensions = bento_tile("getting-started-ext", border)
+        .flex_1()
+        .h_full()
+        .flex()
+        .flex_col()
+        .justify_between()
+        .child(bento_ghost(AtlasIcon::PuzzlePiece, 110., -40., 8.))
+        .child(icon(AtlasIcon::PuzzlePiece, 30., fg))
+        .child(bento_title("getting_started_extensions", 14., fg));
+
+    let integrations = bento_tile("getting-started-integrations", border)
+        .w(px(156.))
+        .h_full()
+        .flex()
+        .flex_col()
+        .justify_between()
+        .child(icon(AtlasIcon::TerminalWindow, 30., brand::soft()))
+        .child(bento_title("getting_started_integrations", 14., fg));
+
+    h_flex()
+        .h(px(244.))
+        .gap_3()
+        .child(profile)
+        .child(
+            v_flex()
+                .flex_1()
+                .h_full()
+                .gap_3()
+                .child(palette)
+                .child(
+                    h_flex()
+                        .flex_1()
+                        .gap_3()
+                        .child(extensions)
+                        .child(integrations),
+                ),
         )
         .into_any_element()
 }
@@ -793,29 +847,13 @@ fn option_tile(
         .items_center()
         .justify_center()
         .gap_2()
-        .rounded(px(14.))
+        .rounded(px(16.))
         .border_1()
-        .border_color(if selected {
-            hsla(0., 0., 1., 0.30)
-        } else {
-            border.opacity(0.38)
-        })
-        .bg(if selected {
-            setup_accent().opacity(0.14)
-        } else {
-            setup_tile()
-        })
-        .shadow(soft_card_shadow())
+        .border_color(if selected { brand::soft().opacity(0.55) } else { border })
+        .bg(if selected { brand::wash_hover() } else { setup_tile() })
         .cursor_pointer()
-        .child(icon(
-            icon_kind,
-            24.,
-            if selected {
-                setup_accent()
-            } else {
-                muted.opacity(0.86)
-            },
-        ))
+        .hover(|h| h.bg(brand::wash_hover()))
+        .child(icon(icon_kind, 20., if selected { fg } else { muted }))
         .child(
             div()
                 .text_xs()
@@ -853,8 +891,9 @@ fn setup_page(
                 .child(atlas_logo(72.0))
                 .child(
                     div()
-                        .text_xl()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_size(px(28.))
+                        .line_height(px(34.))
+                        .font_weight(gpui::FontWeight::LIGHT)
                         .child(rust_i18n::t!(title).to_string()),
                 )
                 .child(
@@ -871,39 +910,22 @@ fn setup_page(
         .into_any_element()
 }
 
-fn step_dots(step: usize, muted: gpui::Hsla) -> AnyElement {
+fn step_dots(step: usize) -> AnyElement {
     h_flex()
-        .gap_2()
-        .children((0..3).map(|i| {
+        .items_center()
+        .child(h_flex().gap_1().children((0..3).map(|i| {
             div()
-                .size(px(if i == step { 9. } else { 7. }))
+                .w(px(if i == step { 40. } else { 20. }))
+                .h(px(2.))
                 .rounded_full()
-                .bg(if i <= step {
-                    setup_accent()
+                .bg(if i == step {
+                    brand::soft()
+                } else if i < step {
+                    brand::muted().opacity(0.55)
                 } else {
-                    muted.opacity(0.45)
+                    brand::rim()
                 })
                 .into_any_element()
-        }))
+        })))
         .into_any_element()
-}
-
-fn soft_shadow() -> Vec<BoxShadow> {
-    vec![BoxShadow {
-        color: hsla(0., 0., 0., 0.24).into(),
-        offset: point(px(0.0), px(24.0)),
-        blur_radius: px(64.0),
-        spread_radius: px(-24.0),
-        inset: false,
-    }]
-}
-
-fn soft_card_shadow() -> Vec<BoxShadow> {
-    vec![BoxShadow {
-        color: hsla(0., 0., 0., 0.18).into(),
-        offset: point(px(0.0), px(14.0)),
-        blur_radius: px(34.0),
-        spread_radius: px(-20.0),
-        inset: false,
-    }]
 }

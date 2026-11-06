@@ -7,21 +7,10 @@ use std::path::PathBuf;
 use crate::app::App;
 use atlas_model::ext_state::PendingCommand;
 
-/// Bundled extensions seeded into the extensions dir on first run.
-pub const FILE_TOOLS_MANIFEST: &str =
-    include_str!("../../../../extensions/file-tools/extension.toml");
-pub const FILE_TOOLS_ICON: &[u8] = include_bytes!("../../../../extensions/file-tools/icon.svg");
-
 /// Bundled media-thumbnailer extension (video + PSD/raster grid thumbnails).
 pub const MEDIA_THUMBS_MANIFEST: &str =
     include_str!("../../../../extensions/media-thumbs/extension.toml");
 pub const MEDIA_THUMBS_ICON: &[u8] = include_bytes!("../../../../extensions/media-thumbs/icon.svg");
-
-/// Bundled document-preview extension (inspector previews for document formats).
-pub const DOCUMENT_PREVIEWS_MANIFEST: &str =
-    include_str!("../../../../extensions/document-previews/extension.toml");
-pub const DOCUMENT_PREVIEWS_ICON: &[u8] =
-    include_bytes!("../../../../extensions/document-previews/icon.svg");
 
 /// Bundled icon-manager extension (Open VSX VSCode icon themes).
 pub const ICON_MANAGER_MANIFEST: &str =
@@ -260,6 +249,18 @@ impl App {
 
     /// Resolve a command + selection and either run it or open the prompt modal.
     fn start_ext_command(&mut self, ext_id: &str, cmd_id: &str) {
+        let paths = self.state.selected_paths();
+        self.start_ext_command_for(ext_id, cmd_id, paths);
+    }
+
+    /// Run a contributed command on explicit `paths` (the Actions ring passes
+    /// the sources it was opened with, not whatever is selected now).
+    pub(crate) fn start_ext_command_for(
+        &mut self,
+        ext_id: &str,
+        cmd_id: &str,
+        paths: Vec<std::path::PathBuf>,
+    ) {
         tracing::info!(
             "start_ext_command called with ext_id={}, cmd_id={}",
             ext_id,
@@ -273,7 +274,6 @@ impl App {
             );
             return;
         };
-        let paths = self.state.selected_paths();
         if paths.is_empty() && !cmd.command.accepts.any {
             tracing::warn!("Paths are empty and accepts.any is false. Returning early.");
             return;
@@ -324,6 +324,7 @@ impl App {
         error: Option<String>,
         dirs: Vec<PathBuf>,
     ) {
+        let failed = error.is_some();
         if let Some(e) = error {
             self.state.ext.last_error = Some(format!("{ext_id}: {e}"));
             tracing::warn!("extension {ext_id} command failed: {e}");
@@ -336,11 +337,15 @@ impl App {
             .join("theme_mappings.json");
 
         let mut icons_changed = false;
-        if ext_id == "icon-manager" && !mappings_path.exists() {
+        if ext_id == "icon-manager" {
+            crate::ui::settings_palette::refresh_icon_inventory();
+        }
+        // A failed command (e.g. a download error) must not wipe the user's icons.
+        if ext_id == "icon-manager" && !failed && !mappings_path.exists() {
             // Reset to default Liquid Glass icons.
             self.persist_icon_selection(std::collections::HashMap::new());
             icons_changed = true;
-            self.state.ext.feedback = Some("Restablecido a iconos por defecto (Liquid Glass)".to_string());
+            self.state.ext.feedback = Some(rust_i18n::t!("icons_reset_default").to_string());
         } else if mappings_path.exists() {
             #[allow(clippy::disallowed_methods)] // reason: small JSON read on command completion
             let contents = std::fs::read_to_string(&mappings_path);
@@ -352,11 +357,19 @@ impl App {
                     // per-profile store) and apply it to the live icon cache.
                     self.persist_icon_selection(map);
                     icons_changed = true;
-                    self.state.ext.feedback = Some("Tema de iconos activado".to_string());
+                    let message = rust_i18n::t!("icons_theme_activated").to_string();
+                    self.toast_info(message.clone());
+                    self.state.ext.feedback = Some(message);
                 }
             }
         }
         // Re-list any directory tab whose contents may have changed.
+        self.relist_panes(|p| icons_changed || dirs.iter().any(|d| d.as_path() == p));
+    }
+
+    /// Re-list every directory pane whose path passes `filter`, re-warming the
+    /// icon cache (icons are loaded per listing).
+    pub(crate) fn relist_panes(&mut self, filter: impl Fn(&std::path::Path) -> bool) {
         let targets: Vec<(atlas_model::layout_tree::TileId, PathBuf, _, _)> = self
             .state
             .all_pane_tile_ids()
@@ -365,7 +378,7 @@ impl App {
                 let td = self.tab_data_for(tile)?;
                 td.location
                     .fs_dir()
-                    .filter(|p| icons_changed || dirs.iter().any(|d| d.as_path() == *p))
+                    .filter(|p| filter(p))
                     .map(|p| p.to_path_buf())
                     .map(|path| (tile, path, td.sort_col.clone(), td.sort_dir.clone()))
             })

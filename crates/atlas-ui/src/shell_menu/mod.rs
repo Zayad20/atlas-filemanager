@@ -132,7 +132,7 @@ impl ShellMenuHandle {
     /// yet (the request stays queued and is drained when `WM_ATLAS_SHELLMENU`
     /// next fires; a `Build` always posts so the first one is never lost).
     pub fn send(&self, req: ShellMenuRequest) {
-        if let Ok(mut q) = self.requests.lock() {
+        if let Some(mut q) = self.requests.lock().or_else(atlas_model::sync::recover).ok() {
             q.push_back(req);
         }
         let hwnd = self.worker_hwnd.load(Ordering::Acquire);

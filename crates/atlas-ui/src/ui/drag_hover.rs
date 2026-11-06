@@ -297,7 +297,7 @@ impl App {
         if self
             .dnd
             .as_ref()
-            .and_then(|d| d.zones.lock().ok().map(|z| z.drag_active))
+            .and_then(|d| d.zones.lock().or_else(atlas_model::sync::recover).ok().map(|z| z.drag_active))
             .unwrap_or(false)
         {
             return true;
@@ -335,7 +335,7 @@ impl App {
         if let Some((x, y)) = self
             .dnd
             .as_ref()
-            .and_then(|d| d.zones.lock().ok().and_then(|z| z.cursor))
+            .and_then(|d| d.zones.lock().or_else(atlas_model::sync::recover).ok().and_then(|z| z.cursor))
         {
             self.drag_hover_set_cursor(gpui::point(gpui::px(x), gpui::px(y)));
         }
@@ -519,7 +519,7 @@ impl App {
         let mut paths = self.active_external_drag.as_ref().map(|drag| drag.paths.clone()).unwrap_or_default();
         let (mut ctrl, mut shift) = (window.modifiers().control, window.modifiers().shift);
         #[cfg(windows)]
-        if let Some(zones) = self.dnd.as_ref().and_then(|dnd| dnd.zones.lock().ok()) {
+        if let Some(zones) = self.dnd.as_ref().and_then(|dnd| dnd.zones.lock().or_else(atlas_model::sync::recover).ok()) {
             if zones.drag_active {
                 if !zones.paths.is_empty() { paths.clone_from(&zones.paths); }
                 ctrl = zones.ctrl;
@@ -674,7 +674,7 @@ impl App {
     #[cfg(windows)]
     pub(crate) fn publish_native_drop_snapshot(&self) {
         let Some(dnd) = &self.dnd else { return; };
-        if !dnd.zones.lock().ok().is_some_and(|zones| zones.drag_active) { return; }
+        if !dnd.zones.lock().or_else(atlas_model::sync::recover).ok().is_some_and(|zones| zones.drag_active) { return; }
         let tabs = self.pending_drag_hover_targets.iter().filter_map(|target| {
             let DragHoverId::Tab(id) = target.id else { return None; };
             self.tab_drop_command(id).map(|command| (id, command))
@@ -684,7 +684,7 @@ impl App {
             .filter_map(|(id, bounds)| self.tab_drop_command(*id).map(|command| (*bounds, command))).collect();
         let snapshot = NativeDropSnapshot { targets: self.pending_drag_hover_targets.clone(),
             dropzone: self.dropzone_bounds, sidebar: self.sidebar_scroll_region.as_ref().map(|(bounds, _)| *bounds), tabs, panes };
-        if let Ok(mut zones) = dnd.zones.lock() { zones.hover_snapshot = Some(snapshot); }
+        if let Some(mut zones) = dnd.zones.lock().or_else(atlas_model::sync::recover).ok() { zones.hover_snapshot = Some(snapshot); }
     }
 
     pub(crate) fn tab_drop_command(&self, pane_id: TileId) -> Option<DragHoverDropCommand> {

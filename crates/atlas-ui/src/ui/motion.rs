@@ -116,6 +116,9 @@ pub fn item_appear(this: Div, t: f32, row: usize) -> Div {
         .paint_offset(point(px(0.0), px(4.0 * (1.0 - e))))
 }
 
+/// Flyout (side submenu) reveal duration.
+pub const DROPDOWN_MS: u64 = 180;
+
 pub fn animation(ms: u64) -> Animation {
     Animation::new(gpui::Motion::new(Duration::from_millis(ms)).with_easing(ease_out_quart))
 }

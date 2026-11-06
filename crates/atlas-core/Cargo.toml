@@ -90,7 +90,7 @@ roxmltree = "0.20"
 [target.'cfg(windows)'.dependencies]
 atlas-win-space = { path = "../atlas-win-space" }
 winfsp = { version = "0.13.2", default-features = false, features = ["delayload"] }
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Services_Store", "Foundation_Collections"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Globalization", "Win32_UI_Shell", "Services_Store", "Foundation_Collections"] }
 
 [dev-dependencies]
 

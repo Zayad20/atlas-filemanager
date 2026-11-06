@@ -58,6 +58,7 @@ pub(crate) enum AtlasIcon {
     StarFill,
     Plus,
     Lightning,
+    Command,
     Gear,
     Palette,
     UserSwitch,
@@ -93,6 +94,24 @@ pub(crate) enum AtlasIcon {
     ArrowDown,
     TrayArrowDown,
     Lock,
+    // Settings palette.
+    Check,
+    ArrowUpRight,
+    Info,
+    Keyboard,
+    TextAa,
+    TextT,
+    Gauge,
+    CursorClick,
+    Drop,
+    MagnifyingGlassPlus,
+    Sparkle,
+    AppWindow,
+    SlidersHorizontal,
+    Leaf,
+    ArrowsVertical,
+    Translate,
+    FolderOpen,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -119,7 +138,19 @@ impl AtlasIcon {
     pub(crate) const fn has_windows_glyph(self) -> bool {
         !matches!(
             self,
-            Self::TerminalWindow | Self::GitBranch | Self::TreeStructure
+            Self::TerminalWindow
+                | Self::GitBranch
+                | Self::TreeStructure
+                | Self::Gauge
+                | Self::CursorClick
+                | Self::Drop
+                | Self::Sparkle
+                | Self::AppWindow
+                | Self::SlidersHorizontal
+                | Self::Leaf
+                | Self::ArrowsVertical
+                | Self::Translate
+                | Self::FolderOpen
         )
     }
 
@@ -154,6 +185,7 @@ impl AtlasIcon {
             Self::StarFill => "icons/ph/star-fill.svg",
             Self::Plus => "icons/ph/plus.svg",
             Self::Lightning => "icons/ph/lightning.svg",
+            Self::Command => "icons/ph/command.svg",
             Self::Gear => "icons/ph/gear.svg",
             Self::Palette => "icons/ph/palette.svg",
             Self::UserSwitch => "icons/ph/user-switch.svg",
@@ -189,6 +221,23 @@ impl AtlasIcon {
             Self::ArrowDown => "icons/ph/arrow-down.svg",
             Self::TrayArrowDown => "icons/ph/tray-arrow-down.svg",
             Self::Lock => "icons/ph/lock-simple.svg",
+            Self::Check => "icons/ph/check.svg",
+            Self::ArrowUpRight => "icons/ph/arrow-up-right.svg",
+            Self::Info => "icons/ph/info.svg",
+            Self::Keyboard => "icons/ph/keyboard.svg",
+            Self::TextAa => "icons/ph/text-aa.svg",
+            Self::TextT => "icons/ph/text-t.svg",
+            Self::Gauge => "icons/ph/gauge.svg",
+            Self::CursorClick => "icons/ph/cursor-click.svg",
+            Self::Drop => "icons/ph/drop.svg",
+            Self::MagnifyingGlassPlus => "icons/ph/magnifying-glass-plus.svg",
+            Self::Sparkle => "icons/ph/sparkle.svg",
+            Self::AppWindow => "icons/ph/app-window.svg",
+            Self::SlidersHorizontal => "icons/ph/sliders-horizontal.svg",
+            Self::Leaf => "icons/ph/leaf.svg",
+            Self::ArrowsVertical => "icons/ph/arrows-vertical.svg",
+            Self::Translate => "icons/ph/translate.svg",
+            Self::FolderOpen => "icons/ph/folder-open.svg",
         }
     }
 }
@@ -288,6 +337,7 @@ pub(crate) fn windows_icon_glyph(kind: AtlasIcon) -> &'static str {
         AtlasIcon::Star => "\u{E734}",
         AtlasIcon::StarFill => "\u{E735}",
         AtlasIcon::Lightning => "\u{E945}",
+        AtlasIcon::Command => "\u{E765}",
         AtlasIcon::Gear => "\u{E713}",
         AtlasIcon::Palette => "\u{E771}",
         AtlasIcon::UserSwitch => "\u{E748}",
@@ -317,6 +367,15 @@ pub(crate) fn windows_icon_glyph(kind: AtlasIcon) -> &'static str {
         AtlasIcon::Funnel => "\u{E71C}",
         AtlasIcon::Square => "\u{E739}",
         AtlasIcon::TrayArrowDown => "\u{E896}",
+        AtlasIcon::Check => "\u{E73E}",
+        AtlasIcon::ArrowUpRight => "\u{E8A7}",
+        AtlasIcon::Info => "\u{E946}",
+        AtlasIcon::Keyboard => "\u{E765}",
+        AtlasIcon::TextAa => "\u{E8D2}",
+        AtlasIcon::TextT => "\u{E8E9}",
+        AtlasIcon::MagnifyingGlassPlus => "\u{E8A3}",
+        // No faithful Fluent glyph; excluded via has_windows_glyph().
+        AtlasIcon::Gauge | AtlasIcon::CursorClick | AtlasIcon::Drop | AtlasIcon::Sparkle | AtlasIcon::AppWindow | AtlasIcon::SlidersHorizontal | AtlasIcon::Leaf | AtlasIcon::ArrowsVertical | AtlasIcon::Translate | AtlasIcon::FolderOpen => "",
     }
 }
 

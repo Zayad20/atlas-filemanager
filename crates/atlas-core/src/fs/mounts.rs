@@ -40,7 +40,7 @@ pub fn list_drives() -> Vec<DriveInfo> {
     let cache_arc = DRIVE_CACHE
         .get_or_init(|| Arc::new(Mutex::new(None)))
         .clone();
-    let mut cache = cache_arc.lock().unwrap();
+    let mut cache = cache_arc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     if let Some((last_update, drives, is_updating)) = &mut *cache {
         if last_update.elapsed() < Duration::from_secs(5) {
@@ -51,7 +51,7 @@ pub fn list_drives() -> Vec<DriveInfo> {
             let cache_clone = cache_arc.clone();
             std::thread::spawn(move || {
                 let new_drives = list_drives_internal();
-                if let Ok(mut c) = cache_clone.lock() {
+                if let Some(mut c) = cache_clone.lock().or_else(atlas_model::sync::recover).ok() {
                     *c = Some((Instant::now(), new_drives, false));
                 }
             });

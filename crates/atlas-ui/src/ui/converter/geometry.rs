@@ -1,5 +1,6 @@
 //! Polar layout shared by paint, labels, keyboard and hit testing. Every
 //! option gets a sector: rings are added outward instead of paginating.
+use atlas_model::clamp::ClampLenient;
 use std::f32::consts::{FRAC_PI_2, TAU};
 
 /// Center disc radius (base px, before window-fit scaling).
@@ -116,7 +117,7 @@ pub(crate) fn hop(rings: &[Ring], index: usize, delta: isize) -> usize {
     let Some(current) = rings.iter().position(|ring| ring.contains(index)) else {
         return index;
     };
-    let target = (current as isize + delta).clamp(0, rings.len() as isize - 1) as usize;
+    let target = (current as isize + delta).clamp_lenient(0, rings.len() as isize - 1) as usize;
     if target == current {
         return index;
     }

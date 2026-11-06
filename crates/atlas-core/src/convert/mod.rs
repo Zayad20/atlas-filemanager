@@ -5,6 +5,7 @@ mod catalog;
 mod contacts;
 #[cfg(test)]
 mod edition_tests;
+pub mod actions;
 mod flac;
 mod native;
 mod office;
@@ -19,7 +20,7 @@ mod vector;
 #[cfg(all(test, target_os = "windows"))]
 mod video_tests;
 
-pub use catalog::{native_options, options, route, Backend, ConversionOption, Format, FORMATS};
+pub use catalog::{locked_engines, native_options, options, route, wheel_options, Backend, ConversionOption, Format, FORMATS};
 pub use tools::{Tool, Tools};
 
 use anyhow::{bail, Context, Result};
@@ -71,8 +72,18 @@ impl Plan {
         settings: Settings,
         tools: Tools,
     ) -> Result<Self> {
+        Self::build_wheel(paths, extension, settings, tools, &[])
+    }
+    /// Wheel plans: native routes, Opus and the provider-installed `extra` engines.
+    pub fn build_wheel(
+        paths: &[PathBuf],
+        extension: &str,
+        settings: Settings,
+        tools: Tools,
+        extra: &[Tool],
+    ) -> Result<Self> {
         edition::current().check(Feature::BatchConversion, paths.len())?;
-        let tools = tools.native_and_opus();
+        let tools = tools.native_and(extra);
         let target = FORMATS
             .iter()
             .find(|format| format.extension == extension)
@@ -83,7 +94,7 @@ impl Plan {
                     backend
                         .required_tools()
                         .iter()
-                        .any(|tool| *tool != Tool::Opus)
+                        .any(|tool| *tool != Tool::Opus && !extra.contains(tool))
                 })
             {
                 bail!("This route is not implemented by Atlas or Windows; only the Opus encoder is enabled");
@@ -275,7 +286,7 @@ fn execute_one(command: &Command, plan: &Plan, cancel: &AtomicBool) -> Result<Pa
     // Keep a path guard rather than an open file handle: system codecs can
     // require exclusive access to their destination. The guard still removes
     // every failed/cancelled temporary and publishes with noclobber atomically.
-    let mut output = tempfile::Builder::new()
+    let output = tempfile::Builder::new()
         .prefix(".atlas-convert-")
         .suffix(&format!(".{}", command.target.extension))
         .tempfile_in(parent)?
@@ -390,6 +401,16 @@ fn execute_one(command: &Command, plan: &Plan, cancel: &AtomicBool) -> Result<Pa
     if cancel.load(Ordering::Relaxed) {
         bail!("Cancelled");
     }
+    publish(output, |index| {
+        output_name(&command.source, parent, command.target.extension, index)
+    })
+}
+
+/// Flush a finished temporary and claim the first free `name(index)`.
+pub(crate) fn publish(
+    mut output: tempfile::TempPath,
+    name: impl Fn(usize) -> PathBuf,
+) -> Result<PathBuf> {
     if std::fs::metadata(&output)?.len() == 0 {
         bail!("The engine produced an empty file");
     }
@@ -401,7 +422,7 @@ fn execute_one(command: &Command, plan: &Plan, cancel: &AtomicBool) -> Result<Pa
     // persist_noclobber atomically claims a destination, including races with
     // other workers/applications. Never truncate an existing file or a symlink.
     for index in 0..10_000 {
-        let destination = output_name(&command.source, parent, command.target.extension, index);
+        let destination = name(index);
         match output.persist_noclobber(&destination) {
             Ok(()) => return Ok(destination),
             Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {

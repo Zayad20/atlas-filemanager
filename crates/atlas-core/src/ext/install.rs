@@ -108,6 +108,73 @@ pub fn uninstall(id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Official bundled extensions that Atlas no longer ships. Their features
+/// moved into the app (native previews, the Actions ring), so a stale copy
+/// would only duplicate menu entries.
+pub const RETIRED_BUNDLED: [&str; 2] = ["file-tools", "document-previews"];
+
+/// Move retired official extensions into `extensions/.trash/`. Only folders
+/// whose manifest is still the official one (same id, "Atlas Team") move; a
+/// user's own extension that reused the id is left alone. Never fails startup:
+/// on any error the folder stays and keeps loading exactly as before.
+pub fn retire_bundled() -> Vec<String> {
+    retire_in(&super::extensions_dir(), &RETIRED_BUNDLED)
+}
+
+/// Runs once per id: `.retired` records handled ids, so an extension the user
+/// deliberately reinstalls afterwards (e.g. from the marketplace) stays put.
+fn retire_in(base: &Path, ids: &[&str]) -> Vec<String> {
+    let marker = base.join(".retired");
+    let done = std::fs::read_to_string(&marker).unwrap_or_default();
+    let mut handled: Vec<String> = done.lines().map(str::to_owned).collect();
+    let mut retired = Vec::new();
+    for id in ids {
+        if handled.iter().any(|h| h == id) {
+            continue;
+        }
+        match retire_one(base, id) {
+            Ok(moved) => {
+                if moved {
+                    retired.push(id.to_string());
+                }
+                handled.push(id.to_string());
+            }
+            // Not recorded: retried on the next start.
+            Err(error) => tracing::warn!("could not retire extension {id}: {error:#}"),
+        }
+    }
+    if handled.len() != done.lines().count() {
+        let _ = std::fs::create_dir_all(base);
+        if let Err(error) = std::fs::write(&marker, handled.join("
+") + "
+") {
+            tracing::warn!("could not record retired extensions: {error}");
+        }
+    }
+    retired
+}
+
+fn retire_one(base: &Path, id: &str) -> anyhow::Result<bool> {
+    validate_extension_id(id)?;
+    let dir = base.join(id);
+    if !dir.is_dir() {
+        return Ok(false);
+    }
+    let Ok(text) = std::fs::read_to_string(dir.join("extension.toml")) else {
+        return Ok(false);
+    };
+    let official = Manifest::parse(&text)
+        .is_ok_and(|manifest| manifest.id == id && manifest.author == "Atlas Team");
+    if !official {
+        return Ok(false);
+    }
+    let trash = base.join(".trash");
+    std::fs::create_dir_all(&trash)?;
+    let target = trash.join(format!("{id}_{}", uuid::Uuid::new_v4().simple()));
+    std::fs::rename(&dir, &target).context("move retired extension to trash")?;
+    Ok(true)
+}
+
 /// Write/update a manifest-only bundled extension on disk.
 pub fn ensure_bundled(id: &str, manifest_toml: &str) -> anyhow::Result<()> {
     let dir = resolve_extension_dir(id)?;
@@ -221,6 +288,49 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"new-build");
         copy_packaged_program(&source, &target).unwrap();
         assert_eq!(std::fs::read_dir(target.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn retired_official_extensions_move_to_trash_and_the_rest_stay() {
+        let base = tempfile::tempdir().unwrap();
+        let write = |id: &str, author: &str, extra: &[(&str, &[u8])]| {
+            let dir = base.path().join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("extension.toml"),
+                format!("id = \"{id}\"
+name = \"X\"
+author = \"{author}\"
+kind = \"declarative\"
+"),
+            )
+            .unwrap();
+            for (name, bytes) in extra {
+                std::fs::write(dir.join(name), bytes).unwrap();
+            }
+        };
+        write("file-tools", "Atlas Team", &[("plugin.wasm", b" asm"), ("icon.svg", b"<svg/>")]);
+        write("document-previews", "Someone Else", &[]);
+        write("media-thumbs", "Atlas Team", &[]);
+        // Broken manifest: never touched, never an error.
+        std::fs::create_dir_all(base.path().join("broken")).unwrap();
+        std::fs::write(base.path().join("broken/extension.toml"), "id = [").unwrap();
+
+        let ids = ["file-tools", "document-previews", "broken", "missing"];
+        assert_eq!(retire_in(base.path(), &ids), ["file-tools"]);
+        assert!(!base.path().join("file-tools").exists());
+        assert!(base.path().join("document-previews").is_dir(), "third-party reuse of the id stays");
+        assert!(base.path().join("media-thumbs").is_dir());
+        assert!(base.path().join("broken").is_dir());
+        let trashed: Vec<_> = std::fs::read_dir(base.path().join(".trash")).unwrap().flatten().collect();
+        assert_eq!(trashed.len(), 1);
+        assert!(trashed[0].path().join("plugin.wasm").is_file());
+        // Second boot: nothing left to do.
+        assert!(retire_in(base.path(), &ids).is_empty());
+        // A deliberate reinstall after the migration is respected.
+        write("file-tools", "Atlas Team", &[]);
+        assert!(retire_in(base.path(), &ids).is_empty());
+        assert!(base.path().join("file-tools").is_dir());
     }
 
     #[test]

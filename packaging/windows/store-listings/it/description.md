@@ -45,4 +45,4 @@ Progettato per garantire la massima produttività da tastiera:
 ### Scopri il futuro della gestione dei file
 Passa a un gestore file moderno, rispettoso della tua privacy e ottimizzato per offrirti velocità, efficienza e concentrazione. Scarica **Atlas Gestore file** oggi stesso e trasforma il tuo modo di lavorare su Windows.
 
-Codice sorgente (AGPL-3.0-or-later): https://github.com/neondeex/atlas-filemanager
+Codice sorgente (AGPL-3.0-or-later): https://atlasfm.modhyt.org/source-code

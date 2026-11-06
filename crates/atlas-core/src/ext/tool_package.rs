@@ -734,14 +734,14 @@ mod tests {
             provider.clone(),
             tool.clone(),
             Arc::new(AtomicBool::new(false)),
-            move |progress| events.lock().unwrap().push(progress),
+            move |progress| events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(progress),
         )
         .await
         .unwrap();
         assert!(path.parent().unwrap().join("COPYING.rtf").is_file());
         assert!(stages
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .any(|progress| matches!(progress, Progress::Extracting)));
         let metadata = std::fs::metadata(&path).unwrap();

@@ -18,24 +18,28 @@ pub(crate) fn splitter(
     cx: &mut gpui::App,
     thickness: f32,
 ) -> AnyElement {
-    let border = cx.theme().border.opacity(0.7);
+    // The seam is empty space; its hairline only appears while hovered so the
+    // resize affordance is discoverable without drawing lines between islands.
+    let border = cx.theme().border.opacity(0.9);
     let view = view.clone();
     let thickness = thickness.max(0.0);
     let line = thickness.min(1.0);
     let margin = (thickness - line) * 0.5;
     let el = match dir {
         LinearDir::Horizontal => div()
+            .group("dock-splitter")
             .w(px(thickness))
             .h_full()
             .flex_none()
             .cursor_col_resize()
-            .child(div().w(px(line)).h_full().mx(px(margin)).bg(border)),
+            .child(div().w(px(line)).h_full().mx(px(margin)).group_hover("dock-splitter", |s| s.bg(border))),
         LinearDir::Vertical => div()
+            .group("dock-splitter")
             .h(px(thickness))
             .w_full()
             .flex_none()
             .cursor_row_resize()
-            .child(div().h(px(line)).w_full().my(px(margin)).bg(border)),
+            .child(div().h(px(line)).w_full().my(px(margin)).group_hover("dock-splitter", |s| s.bg(border))),
     };
     el.on_mouse_down(MouseButton::Left, move |ev, _window, cx| {
         view.update(cx, |this, _cx| {

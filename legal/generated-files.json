@@ -1,25 +1,25 @@
 {
   "sources": {
-    "legal/documents.json": "8c0cc633e93e49db1a3197349a1e667c1bfdec783f0674788d1b6fe2646ffda4",
-    "legal/privacy-choices.js": "a906477d4aedb92beca8a703f9f25f146cb3391187c3e7d14616ee55f27328cb",
+    "legal/documents.json": "e90f624dc909b1393b9f18bbfb9dd919c9eb4d4a72a9fadcb069c54cf3307db9",
+    "legal/privacy-choices.js": "eead505dca14877cf1c7f41a3b74b40bd2577a8aff38cbc30477c0ed978e823c",
     "legal/check-site.mjs": "42cdc17c4b60e7220c7477900070824ab82f46c4dee85f411824d6db776c5536",
     "packaging/windows/msix/RCLONE-THIRD-PARTY-NOTICES.txt": "90e796646e7f1ac95d769e3da7a561e0d5eec19fe2096bfd8b546b68ae71d5cb"
   },
   "outputs": {
-    "website/src/lib/legal-documents.json": "0f53d364596689e4154ed5429581d19b35272ce38cdd654f5609f3caa0f07efa",
-    "website-edge/public/privacy-policy.html": "d58df0dd3189d8f0bde24b6072464f48f626c5356b34211e36df1c20f3631baa",
+    "website/src/lib/legal-documents.json": "e90f624dc909b1393b9f18bbfb9dd919c9eb4d4a72a9fadcb069c54cf3307db9",
+    "website-edge/public/privacy-policy.html": "e2203a101f9017a93892526e4aac15fc790acf9a47048a15bcaf36929780760e",
     "website/src/app/privacy-policy/page.tsx": "91b63658421dbc0d933fe93d0c81c7158381d8a2e50018ef6e8d3f836b42c251",
-    "website-edge/public/terms-of-service.html": "09e353ba0e5dccc99b5625a7cacba8868690dd3af67c58b38507cfb443b62f63",
+    "website-edge/public/terms-of-service.html": "5e6ba5f4ec1f49edb8565ca5adcf51aa74eb7fc9caecba03edf4902355d6b364",
     "website/src/app/terms-of-service/page.tsx": "bf83f213d10c2795279693075b90ae65ca1e686c906d16dad8185c7262644886",
-    "website-edge/public/third-party-licenses.html": "0ca07508cca79af137a505b3348a5589dee1360a778dc0284a756c39fce37ca0",
+    "website-edge/public/third-party-licenses.html": "9a4ad2fe6e739792a625f8bc1e24f065212f5eea1856908748543a2aff0b8314",
     "website/src/app/third-party-licenses/page.tsx": "59ba249d1c42f367acca3d781984a8a597cd79ee8c47b14460db89336d199099",
-    "website/public/privacy-choices.js": "a906477d4aedb92beca8a703f9f25f146cb3391187c3e7d14616ee55f27328cb",
-    "website-edge/public/privacy-choices.js": "a906477d4aedb92beca8a703f9f25f146cb3391187c3e7d14616ee55f27328cb",
+    "website/public/privacy-choices.js": "eead505dca14877cf1c7f41a3b74b40bd2577a8aff38cbc30477c0ed978e823c",
+    "website-edge/public/privacy-choices.js": "eead505dca14877cf1c7f41a3b74b40bd2577a8aff38cbc30477c0ed978e823c",
     "website/public/legal/RCLONE-THIRD-PARTY-NOTICES.txt": "ef87c591a9652e30a86121a4f47d4920822dc88a970de06c452b5cb731f13a18",
     "website/scripts/check-legal.mjs": "42cdc17c4b60e7220c7477900070824ab82f46c4dee85f411824d6db776c5536",
-    "website/public/legal/build-manifest.json": "9674984fce7f079bacc1ade9e77c2b8589bfb54456c13841f597393d34c6d6d2",
+    "website/public/legal/build-manifest.json": "c4c3cea100bc275a7d789527045b23b61d159d6279e169d4173ad9900be14959",
     "website-edge/public/legal/RCLONE-THIRD-PARTY-NOTICES.txt": "ef87c591a9652e30a86121a4f47d4920822dc88a970de06c452b5cb731f13a18",
     "website-edge/scripts/check-legal.mjs": "42cdc17c4b60e7220c7477900070824ab82f46c4dee85f411824d6db776c5536",
-    "website-edge/public/legal/build-manifest.json": "15d215ec019ec4bd685fec609a0dd04b0c35a84c56415cb74aad6a62782e7a3f"
+    "website-edge/public/legal/build-manifest.json": "1569d76781eab380b64e5e8e47f9dbe9af4cd8711a1cd5c242b1a8ee88a8487f"
   }
 }

@@ -177,21 +177,48 @@ pub fn options(paths: &[PathBuf], tools: &Tools) -> Vec<ConversionOption> {
 
 /// Only routes implemented by Atlas, the OS, or the optional Opus encoder.
 pub fn native_options(paths: &[PathBuf], tools: &Tools) -> Vec<ConversionOption> {
-    let native = tools.clone().native_and_opus();
-    options(paths, &native)
+    wheel_options(paths, tools, &[])
+}
+
+/// Wheel routes: Atlas, the OS, the optional Opus encoder and the `extra`
+/// engines an enabled tool provider has installed. Routes needing any other
+/// engine are hidden, never offered with a missing-tool chip.
+pub fn wheel_options(paths: &[PathBuf], tools: &Tools, extra: &[Tool]) -> Vec<ConversionOption> {
+    let allowed = tools.clone().native_and(extra);
+    options(paths, &allowed)
         .into_iter()
         .filter(|option| {
             paths.iter().all(|path| {
                 extension(path) == option.target.extension
-                    || route(path, option.target, &native).is_some_and(|backend| {
+                    || route(path, option.target, &allowed).is_some_and(|backend| {
                         backend
                             .required_tools()
                             .iter()
-                            .all(|tool| *tool == Tool::Opus)
+                            .all(|tool| *tool == Tool::Opus || allowed.has(*tool))
                     })
             })
         })
         .collect()
+}
+
+/// Engines a provider package could install that would add wheel routes for
+/// `paths`. The wheel hides those routes; the side panel offers the package.
+pub fn locked_engines(paths: &[PathBuf], tools: &Tools, extra: &[Tool], installable: &[Tool]) -> Vec<Tool> {
+    let allowed = tools.clone().native_and(extra);
+    let mut locked = Vec::new();
+    for option in options(paths, &allowed) {
+        if option.missing.is_empty() || option.missing.contains(&Tool::Opus) {
+            continue;
+        }
+        if option.missing.iter().all(|tool| installable.contains(tool)) {
+            for tool in option.missing {
+                if !locked.contains(&tool) {
+                    locked.push(tool);
+                }
+            }
+        }
+    }
+    locked
 }
 
 pub fn route(source: &Path, target: &Format, tools: &Tools) -> Option<Backend> {

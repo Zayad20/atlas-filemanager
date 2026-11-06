@@ -18,7 +18,7 @@ pub const RELEASES_URL: &str = match option_env!("ATLAS_RELEASES_URL") {
 
 pub const SOURCE_URL: &str = match option_env!("ATLAS_SOURCE_URL") {
     Some(url) => url,
-    None => "https://github.com/neondeex/atlas-filemanager",
+    None => "https://atlasfm.modhyt.org/source-code",
 };
 
 #[cfg(not(windows))]

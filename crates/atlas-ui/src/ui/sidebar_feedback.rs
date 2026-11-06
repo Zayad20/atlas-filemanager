@@ -2,7 +2,7 @@
 use crate::{
     app::App,
     ui::{
-        imm::motion::ActionPulse,
+        dg::motion::ActionPulse,
         icons::AtlasIcon,
         surface::{paint_theme_icon, Slot},
     },
@@ -47,6 +47,7 @@ impl RenderOnce for RecycleIcon {
             move |bounds, (pulse, active), window, cx| {
                 let width = f32::from(bounds.size.width);
                 if let Some(texture) = &native {
+                    let bounds = crate::ui::thumbs::contain_bounds(texture, bounds);
                     let _ = window.paint_image(
                         bounds,
                         bounds,

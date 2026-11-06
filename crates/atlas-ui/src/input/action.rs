@@ -59,6 +59,8 @@ pub enum Action {
     SelectPanelBelow,
     EvenPanelSiblings,
     EvenAllPanes,
+    /// Move the focused tab into the nearest visible panel in this direction.
+    MoveTabToPanel(crate::ui::tab_reorder::PanelDirection),
     ToggleFolderViewRecursive,
     FocusNextTab,
     FocusPreviousTab,
@@ -215,10 +217,18 @@ pub enum Action {
     OpenConverter,
     OpenSettings,
     OpenSettingsAbout,
+    /// Open Settings with this setting (registry id) selected.
+    OpenSettingAt(&'static str),
+    /// Flip a switch setting (registry id) without opening Settings.
+    ToggleSetting(&'static str),
     /// Activate the Polar license key currently on the clipboard.
     ActivateLicense,
     /// Release this device's license activation so the key can move to another PC.
     DeactivateLicense,
+    /// Reveal the crash-report folder (newest report selected when there is one).
+    OpenCrashReports,
+    /// Upload the previous session's crash report (text only, paths redacted).
+    SendCrashReport,
     /// Open the Premium purchase options.
     GetPremium,
     OpenGettingStarted,

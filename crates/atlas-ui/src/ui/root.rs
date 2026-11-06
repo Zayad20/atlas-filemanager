@@ -365,7 +365,7 @@ impl Render for App {
         self.publish_native_drop_snapshot();
         #[cfg(windows)]
         if let Some(dnd) = &self.dnd {
-            if let Ok(mut z) = dnd.zones.lock() {
+            if let Some(mut z) = dnd.zones.lock().or_else(atlas_model::sync::recover).ok() {
                 let zones = std::mem::take(&mut *self.pending_pane_zones.borrow_mut());
                 z.update(zones);
             }
@@ -447,9 +447,12 @@ impl Render for App {
         let active_theme = self.state.profiles.active().theme.as_str();
         let windows_theme = is_windows_theme(active_theme);
         let glass_theme = active_theme.ends_with(" Glass");
-        let workspace_inset = px(if glass_theme { 6.0 } else { 3.0 });
+        // Breathing room so cards never touch the window edges. Solid Windows stays
+        // flush like Explorer; Windows Glass floats its cards like every Glass preset.
+        let windows_flush = windows_theme && !glass_theme;
+        let workspace_inset = px(if windows_flush { 3.0 } else { crate::ui::dock::GUTTER });
         let caption_height = workspace_inset
-            + crate::ui::rem_px(if windows_theme { 46.0 } else { 34.0 })
+            + crate::ui::rem_px(if windows_theme { 46.0 } else { 40.0 })
                 .to_pixels(window.rem_size());
         let center_content = {
             let _perf = crate::perf::span("app.render.center_dock");
@@ -475,14 +478,12 @@ impl Render for App {
         self.sidebar_width_animating = false;
         let sidebar =
             (self.state.settings.show_sidebar && !crate::perf::skip_sidebar()).then(|| {
+                let collapsed_width = if windows_theme { 64.0 } else { 56.0 };
+                let expanded_width = self.state.settings.sidebar_width;
                 let target_width = if self.state.settings.sidebar_collapsed {
-                    if windows_theme {
-                        64.0
-                    } else {
-                        56.0
-                    }
+                    collapsed_width
                 } else {
-                    self.state.settings.sidebar_width
+                    expanded_width
                 };
                 let width_sample = crate::ui::motion::panel_transition(
                     window,
@@ -490,7 +491,8 @@ impl Render for App {
                     "atlas-sidebar-width",
                     target_width,
                     target_width,
-                    gpui::spring(900.0, 60.0, 1.0),
+                    // Critically damped and unhurried (~350 ms) so the panel glides.
+                    gpui::spring(300.0, 34.6, 1.0),
                     self.sidebar_resize.is_some()
                         || self.state.settings.disable_animations
                         || suppress_resize_animations,
@@ -498,6 +500,9 @@ impl Render for App {
                 let width = width_sample.value;
                 self.sidebar_width_animating = width_sample.is_active;
                 self.sidebar_render_width = Some(width);
+                let visual_collapsed = width < (collapsed_width + expanded_width) * 0.5;
+                let layout_flipped = visual_collapsed != self.sidebar_visual_collapsed;
+                self.sidebar_visual_collapsed = visual_collapsed;
                 let panel = if let Some(panel) = &self.sidebar_panel {
                     panel.clone()
                 } else {
@@ -524,7 +529,9 @@ impl Render for App {
                 };
                 // A hidden sidebar clears its hit geometry. Re-showing a cached
                 // view must record it again before it can accept drops.
-                if !self.state.settings.sidebar_collapsed && self.dropzone_bounds.is_none() {
+                if layout_flipped
+                    || (!self.state.settings.sidebar_collapsed && self.dropzone_bounds.is_none())
+                {
                     panel.update(cx, |_, cx| cx.notify());
                 }
                 let is_glass = glass_theme;
@@ -538,13 +545,18 @@ impl Render for App {
                     .h_full()
                     .flex_none()
                     .overflow_hidden()
-                    .when(is_glass, |s| s.glass_surface(panel_bg))
+                    // Glass: the sidebar sits directly on the blurred window canvas.
+                    .when(is_glass, |s| s.bg(gpui::transparent_black()))
                     .when(!is_glass, |s| s.rounded(cx.theme().radius_lg).bg(panel_bg));
                 // Keep the expensive sidebar tree, hitboxes, and paint commands
                 // retained while its fingerprint and bounds are unchanged.
                 let panel =
                     gpui::AnyView::from(panel).cached(gpui::StyleRefinement::default().size_full());
-                crate::ui::layout_region::layout_region("sidebar", shell.child(panel))
+                // While expanded content is visible, keep its full width and let
+                // the shell clip it: the panel slides closed instead of reflowing.
+                let content_width = if visual_collapsed { width } else { width.max(expanded_width) };
+                let content = div().w(px(content_width)).h_full().flex_none().child(panel);
+                crate::ui::layout_region::layout_region("sidebar", shell.child(content))
                     .into_any_element()
             });
         let sidebar_resizer = (self.state.settings.show_sidebar
@@ -718,8 +730,11 @@ impl Render for App {
 
         v_flex()
             .size_full()
-            // Keep theme tint, but let the system backdrop breathe through.
-            .bg(root_bg)
+            // gpui-component's Root already paints `background` under this view.
+            // Painting a translucent canvas twice compounds it: the DX11 alpha
+            // blend is additive (ONE + ONE), so two 45% layers cover ~90% and
+            // dark Glass turned opaque black regardless of the opacity setting.
+            .when(root_bg.alpha >= 0.999, |s| s.bg(root_bg))
             .relative()
             .text_color(fg)
             .text_sm()
@@ -1070,13 +1085,7 @@ impl Render for App {
                     .flex_1()
                     .min_h(px(0.))
                     .p(workspace_inset)
-                    .gap(px(if glass_theme {
-                        4.0
-                    } else if windows_theme {
-                        0.0
-                    } else {
-                        3.0
-                    }))
+                    .gap(px(if windows_flush { 0.0 } else { crate::ui::dock::GUTTER }))
                     .children(sidebar)
                     .child(
                         div()

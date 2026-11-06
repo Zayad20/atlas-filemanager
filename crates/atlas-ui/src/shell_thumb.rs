@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn test_shell_thumbnail_video() {
-        let video = Path::new(r"C:\Users\user\Videos\2025-06-30 11-20-28.mp4");
+        let video = Path::new(r"C:\Users\fzemi\Videos\2025-06-30 11-20-28.mp4");
         if !video.exists() {
             return;
         }

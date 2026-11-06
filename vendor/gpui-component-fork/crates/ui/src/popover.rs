@@ -1,3 +1,4 @@
+use gpui::AnimationExt as _;
 use gpui::AppContext;
 use gpui::{
     Anchor, AnyElement, App, Bounds, Context, Deferred, DismissEvent, Div, ElementId, EventEmitter,
@@ -459,6 +460,12 @@ impl RenderOnce for Popover {
                 })
                 .refine_style(&self.style);
 
+        // Atlas fork: popovers share the dropdown reveal (fade + short drop).
+        let popover_content = popover_content.with_animation(
+            "popover-appear",
+            crate::animation::dropdown_animation(),
+            crate::animation::dropdown_appear,
+        );
         el.child(Self::render_popover(
             self.anchor,
             position,

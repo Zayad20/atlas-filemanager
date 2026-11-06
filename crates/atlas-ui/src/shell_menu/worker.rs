@@ -36,7 +36,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const CMIC_MASK_UNICODE: u32 = 0x0000_4000;
 const CMIC_MASK_PTINVOKE: u32 = 0x2000_0000;
 
-use super::enumerate::walk_menu;
+use super::enumerate::{walk_menu, ID_FIRST, ID_LAST};
 use super::{NativeMenuItem, ShellMenuEvent, ShellMenuRequest, WM_ATLAS_SHELLMENU};
 
 /// The live shell context menu and its backing COM objects. `Drop` frees the
@@ -71,7 +71,7 @@ thread_local! {
 fn push_event(ev: ShellMenuEvent) {
     WORKER.with(|w| {
         if let Some(ws) = w.borrow().as_ref() {
-            if let Ok(mut q) = ws.events.lock() {
+            if let Some(mut q) = ws.events.lock().or_else(atlas_model::sync::recover).ok() {
                 q.push(ev);
                 crate::ui_wake::wake();
             }
@@ -187,7 +187,7 @@ unsafe fn drain_requests(hwnd: HWND) {
             w.borrow()
                 .as_ref()
                 .and_then(|ws| {
-                    ws.requests.lock().ok().and_then(|mut q| {
+                    ws.requests.lock().or_else(atlas_model::sync::recover).ok().and_then(|mut q| {
                         // Real requests jump ahead of background prewarming.
                         let pos = q
                             .iter()
@@ -198,7 +198,16 @@ unsafe fn drain_requests(hwnd: HWND) {
                 })
         });
         let Some(req) = req else { break };
-        process(hwnd, req);
+        // Runs inside the wndproc, where an escaping panic always aborts. A
+        // misbehaving shell extension costs one menu, not the process.
+        let build_id = match &req {
+            ShellMenuRequest::Build { id, .. } => Some(*id),
+            _ => None,
+        };
+        let outcome = atlas_core::util::guard::contain("shell-menu", || unsafe { process(hwnd, req) });
+        if let (Err(_), Some(id)) = (outcome, build_id) {
+            push_event(ShellMenuEvent::Built { id, items: vec![] });
+        }
     }
 }
 
@@ -274,8 +283,6 @@ unsafe fn build_menu(
 
     use windows::Win32::UI::WindowsAndMessaging::CreatePopupMenu;
     let hmenu = CreatePopupMenu().ok()?;
-    const ID_FIRST: u32 = 1;
-    const ID_LAST: u32 = 0x7FFF;
     let hr = icm.QueryContextMenu(hmenu, 0, ID_FIRST, ID_LAST, CMF_NORMAL);
     if hr.is_err() {
         let _ = DestroyMenu(hmenu);
@@ -420,6 +427,11 @@ unsafe fn invoke(_hwnd: HWND, id: u64, item_id: u32, screen_pt: (i32, i32)) -> R
         return Err("menú expirado".into());
     };
 
+    // A wrapped/truncated offset would run a *different* command, and an
+    // offset > 0xFFFF is read by handlers as a string-verb pointer (AV).
+    if item_id > ID_LAST - ID_FIRST {
+        return Err("comando fuera de rango".into());
+    }
     let verb = make_int_resource(item_id); // command id, not a string verb
     let pt = POINT {
         x: screen_pt.0,
@@ -440,8 +452,9 @@ unsafe fn invoke(_hwnd: HWND, id: u64, item_id: u32, screen_pt: (i32, i32)) -> R
 }
 
 /// `MAKEINTRESOURCE(id)`: the low word of a pointer is the command offset.
+/// Callers must range-check `id` first (see `invoke`).
 fn make_int_resource(id: u32) -> usize {
-    (id & 0xFFFF) as usize
+    id as usize
 }
 
 /// UTF-16, NUL-terminated, for Win32 wide-string args.

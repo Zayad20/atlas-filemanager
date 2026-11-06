@@ -54,6 +54,8 @@ use std::sync::Arc;
 pub struct SidebarStyle {
     pub hover: Hsla,
     pub active_bg: Hsla,
+    /// Text/icon ink of the active row (theme `sidebar.accent.foreground`).
+    pub active_fg: Hsla,
     pub accent: Hsla,
     pub fg: Hsla,
     pub muted: Hsla,
@@ -148,6 +150,7 @@ fn sidebar_fingerprint(app: &AtlasApp) -> u64 {
     let state = &app.state;
 
     state.settings.sidebar_collapsed.hash(&mut hasher);
+    app.sidebar_visual_collapsed.hash(&mut hasher);
     state.settings.global_zoom.to_bits().hash(&mut hasher);
     state.settings.disable_animations.hash(&mut hasher);
     state.settings.font_size.to_bits().hash(&mut hasher);
@@ -367,8 +370,8 @@ fn profile_menu_panel(
     .child(profile_menu_new_row(app, popover, fg, muted, hover))
     .with_animation(
         SharedString::from("sidebar-profile-menu-appear"),
-        crate::ui::motion::animation(crate::ui::motion::MICRO_MS),
-        |this, t| this.opacity(t).ml(px(5.0 * (1.0 - t))),
+        crate::ui::motion::animation(crate::ui::motion::DROPDOWN_MS),
+        |this, t| this.opacity(t).paint_offset(point(px(-8.0 * (1.0 - t)), px(0.0))),
     )
     .into_any_element()
 }
@@ -493,9 +496,12 @@ fn profile_menu_action_button(
         .justify_center()
         .rounded_sm()
         .cursor_pointer()
+        // Opacity, not `invisible()`: gpui registers no mouse listeners on
+        // hidden elements, so a click landing before the hover repaint fell
+        // through to the row and switched profile instead of deleting.
         .when(!confirming, |s| {
-            s.invisible()
-                .group_hover(row_group.clone(), gpui::Styled::visible)
+            s.opacity(0.0)
+                .group_hover(row_group.clone(), |s| s.opacity(1.0))
         })
         .when(confirming && !is_delete, |s| s.invisible())
         .when(confirming && is_delete, |s| {
@@ -522,7 +528,9 @@ fn profile_menu_action_button(
                     this.process_actions(vec![Action::OpenRenameProfileAt(index)]);
                 } else if is_duplicate {
                     this.process_actions(vec![Action::DuplicateProfile(index)]);
-                } else if this.state.profile_ui.confirming_delete_profile == Some(index) {
+                } else if confirming {
+                    // Rendered in confirm mode: the live flag may already have been
+                    // cleared by the popover's mouse-down-out, so trust the render.
                     this.process_actions(vec![Action::DeleteProfile(index)]);
                 } else {
                     this.state.profile_ui.confirming_delete_profile = Some(index);
@@ -531,6 +539,17 @@ fn profile_menu_action_button(
             });
             if is_rename || is_duplicate || (is_delete && confirming) {
                 popover.update(cx, |state, cx| state.dismiss(window, cx));
+            } else if is_delete {
+                // The profiles flyout sits outside the launcher popover's bounds,
+                // so its mouse-down-out (capture phase) has already closed the
+                // launcher and cleared the confirm state. Re-open it in confirm
+                // mode so the second click can actually delete.
+                popover.update(cx, |state, cx| state.show(window, cx));
+                app.update(cx, |this, cx| {
+                    this.state.profile_ui.confirming_delete_profile = Some(index);
+                    this.state.profile_ui.atlas_launcher_profiles_open = true;
+                    cx.notify();
+                });
             }
         })
         .into_any_element()
@@ -785,11 +804,7 @@ fn atlas_launcher_content(
             colors,
         ));
 
-    let menu = menu.with_animation(
-        SharedString::from("sidebar-atlas-launcher-menu-appear"),
-        crate::ui::motion::animation(crate::ui::motion::MICRO_MS),
-        |this, t| this.opacity(t).mt(px(5.0 * (1.0 - t))),
-    );
+    // The Popover itself provides the shared dropdown reveal.
 
     div()
         .relative()
@@ -961,8 +976,27 @@ impl RenderOnce for AtlasLauncherTrigger {
                 )
             })
             .when(!self.collapsed, |s| {
+                let initial = self
+                    .profile_name
+                    .chars()
+                    .find(|c| c.is_alphanumeric())
+                    .map_or_else(|| "A".to_string(), |c| c.to_uppercase().collect());
                 s.justify_start()
                     .font_weight(gpui::FontWeight::BOLD)
+                    .child(
+                        div()
+                            .size(crate::ui::rem_px(22.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .bg(cx.theme().primary)
+                            .text_color(cx.theme().primary_foreground)
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::EXTRA_BOLD)
+                            .child(initial),
+                    )
                     .child(RowInk::new(self.profile_name, RowIcon::None, self.fg, false).into_element())
                     .child(icon(AtlasIcon::CaretDown, 11.0, self.muted.opacity(0.78)))
             })
@@ -1014,9 +1048,9 @@ impl Render for SidebarPanel {
             this.dropzone_rects.clear();
             this.pending_drag_hover_targets.retain(|target| !matches!(target.id, DragHoverId::Sidebar(_)));
         });
-        let (fg, muted, accent) = {
+        let (fg, muted, accent, sidebar_accent, sidebar_accent_fg) = {
             let t = cx.theme();
-            (t.foreground, t.muted_foreground, t.accent)
+            (t.foreground, t.muted_foreground, t.accent, t.sidebar_accent, t.sidebar_accent_foreground)
         };
         let active_theme = app.read(cx).state.profiles.active().theme.clone();
         let (smooth_ease, smooth_boost) =
@@ -1025,10 +1059,13 @@ impl Render for SidebarPanel {
         let windows_theme = is_windows_theme(&active_theme);
         let is_glass = active_theme.ends_with(" Glass");
         let hover = control_hover(fg);
-        let active_bg = layer_color(accent, 0.0, 0.10);
+        // Active rows follow the theme's sidebar accent pair, so a neutral
+        // highlight (e.g. Atlas Ember) is possible next to a colored accent.
+        let active_bg = sidebar_accent;
         let style = SidebarStyle {
             hover,
             active_bg,
+            active_fg: sidebar_accent_fg,
             accent,
             fg,
             muted,
@@ -1048,7 +1085,8 @@ impl Render for SidebarPanel {
             let app_ref = app.read(cx);
             (
                 app_ref.state.profiles.active().name.clone(),
-                app_ref.state.settings.sidebar_collapsed,
+                // The visual layout, not the setting: it flips mid-animation.
+                app_ref.sidebar_visual_collapsed,
             )
         };
 
@@ -1058,6 +1096,8 @@ impl Render for SidebarPanel {
         let atlas_launcher_popover = Popover::new("sidebar-atlas-launcher")
             .appearance(false)
             .anchor(Anchor::TopLeft)
+            // Open below the trigger so the profile name stays visible.
+            .mt(crate::ui::rem_px(34.))
             .trigger(AtlasLauncherTrigger {
                 app: app.downgrade(),
                 profile_name: active_profile_name.clone(),
@@ -1097,12 +1137,12 @@ impl Render for SidebarPanel {
             div()
                 .id("sidebar-collapse-toggle")
                 .block_mouse_except_scroll()
-                .size(crate::ui::rem_px(30.))
+                .size(crate::ui::rem_px(26.))
                 .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(9.))
+                .rounded_full()
                 .bg(hsla(0., 0., 1., 0.0))
                 .hover(move |s| s.bg(hover).text_color(fg))
                 .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
@@ -1114,6 +1154,56 @@ impl Render for SidebarPanel {
                         cx.notify();
                     });
                 })
+        };
+        // macOS-style pill groups for the header's quick actions.
+        let capsule = move |children: Vec<gpui::AnyElement>| {
+            h_flex()
+                .flex_none()
+                .h(crate::ui::rem_px(30.))
+                .p(px(2.))
+                .gap(px(1.))
+                .items_center()
+                .rounded_full()
+                .bg(fg.opacity(0.06))
+                .border_1()
+                .border_color(fg.opacity(0.08))
+                .children(children)
+        };
+        let capsule_button = |id: &'static str,
+                              glyph: AtlasIcon,
+                              label_key: &'static str,
+                              command_id: &'static str,
+                              action: Action| {
+            let shortcut = app
+                .read(cx)
+                .command_shortcut_keystroke(command_id)
+                .map(|key| gpui_component::kbd::Kbd::format(&key));
+            let label = match shortcut {
+                Some(key) => format!("{}  {key}", rust_i18n::t!(label_key)),
+                None => rust_i18n::t!(label_key).to_string(),
+            };
+            let app = app.clone();
+            div()
+                .id(id)
+                .block_mouse_except_scroll()
+                .size(crate::ui::rem_px(26.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .hover(move |s| s.bg(hover))
+                .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
+                .child(icon(glyph, 14.0, muted))
+                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                    cx.stop_propagation();
+                    let action = action.clone();
+                    app.update(cx, |this, cx| {
+                        this.process_actions(vec![action]);
+                        cx.notify();
+                    });
+                })
+                .into_any_element()
         };
         let atlas_header = if sidebar_collapsed {
             v_flex()
@@ -1127,7 +1217,7 @@ impl Render for SidebarPanel {
                         .block_mouse_except_scroll()
                         .child(atlas_launcher_popover),
                 )
-                .child(collapse_button)
+                .child(capsule(vec![collapse_button.into_any_element()]))
                 .into_any_element()
         } else {
             h_flex()
@@ -1146,7 +1236,11 @@ impl Render for SidebarPanel {
                         .block_mouse_except_scroll()
                         .child(atlas_launcher_popover),
                 )
-                .child(collapse_button)
+                .child(capsule(vec![
+                    capsule_button("sidebar-open-goto", AtlasIcon::Search, "cmd_nav_goto_title", "nav.goto", Action::OpenGotoBar),
+                    capsule_button("sidebar-open-palette", AtlasIcon::Command, "atlas_menu_command_palette", "sys.palette", Action::OpenPalette),
+                ]))
+                .child(capsule(vec![collapse_button.into_any_element()]))
                 .into_any_element()
         };
         let mut col = v_flex()
@@ -2469,7 +2563,7 @@ fn collapsed_nav_row(
     let ctx_app = app.clone();
     let ctx_path = path.clone();
     let icon_color = if active {
-        accent
+        style.active_fg
     } else {
         hsla(
             (fg.hue.into_positive_degrees() / 360.0),
@@ -2575,7 +2669,7 @@ fn collapsed_virtual_nav_row(
     let request_recycle_icon = loc == Location::RecycleBin;
     let recycle_icon_app = app.clone();
     let icon_color = if active {
-        accent
+        style.active_fg
     } else {
         hsla(
             (fg.hue.into_positive_degrees() / 360.0),
@@ -2668,7 +2762,7 @@ fn collapsed_bookmark_row(
     let shell_path = path.clone();
     let shell_app = app.clone();
     let icon_color = if active {
-        accent
+        style.active_fg
     } else {
         hsla(
             (fg.hue.into_positive_degrees() / 360.0),
@@ -3227,7 +3321,7 @@ fn render_section_body(
             }
             col = col.child(crate::ui::sidebar_collection::ReferenceCollection {
                 id: SharedString::from(format!("recent-reference-motion-{}", app.read(cx).state.profiles.active().name)),
-                app: app.clone(), items, extent: if windows_theme { 30.0 } else { 24.0 }, gap: 4.0,
+                app: app.clone(), items, extent: if windows_theme { 28.0 } else { 24.0 }, gap: 4.0,
                 horizontal: false, icon: AtlasIcon::Folder, color: muted, windows: windows_theme,
                 empty: Some(empty_row(rust_i18n::t!("sidebar_no_recent").to_string(), muted).into_any_element()),
             });
@@ -3302,7 +3396,7 @@ fn tag_row(
         .group(group.clone())
         .w_full()
         .px_2()
-        .h(crate::ui::rem_px(if windows_theme { 30.0 } else { 24.0 }))
+        .h(crate::ui::rem_px(if windows_theme { 28.0 } else { 24.0 }))
         .gap(crate::ui::rem_px(if windows_theme { 10.0 } else { 8.0 }))
         .items_center()
         .rounded(px(7.))
@@ -3496,7 +3590,7 @@ fn drive_row(
         .text_color(fg)
         .when(active, |s| s.bg(active_bg))
         .when(!active, |s| s.hover(|h| h.bg(hover)))
-        .h(crate::ui::rem_px(if windows_theme { 48.0 } else { 44.0 }))
+        .h(crate::ui::rem_px(44.0))
         .child({
             let ink = RowInk::new(drive.label.clone(), icon_or_texture(drive_icon(&drive), shell_tex, icon_color), fg, windows_theme)
                 .detail(free_label, muted, false);
@@ -3640,7 +3734,7 @@ fn removable_device_row(
         .text_color(fg)
         .when(active, |s| s.bg(active_bg))
         .when(!active, |s| s.hover(|h| h.bg(hover)))
-        .h(crate::ui::rem_px(if windows_theme { 48.0 } else { 44.0 }))
+        .h(crate::ui::rem_px(44.0))
         .child(RowInk::new(device.label.clone(), RowIcon::Theme(AtlasIcon::Usb, icon_color), fg, windows_theme)
             .detail(subtitle, muted, true).into_element())
         .child(
@@ -3731,7 +3825,9 @@ fn section_header(
         .rounded(px(6.))
         .hover(|s| s.bg(hover))
         .h(crate::ui::rem_px(28.0))
-        .child(RowInk::new(label.to_string(), RowIcon::None, muted, false).into_element())
+        // Small-caps section labels ("PLACES") read as structure, not as rows.
+        .text_size(crate::ui::rem_px(10.5))
+        .child(RowInk::new(label.to_uppercase(), RowIcon::None, muted.opacity(0.85), false).into_element())
         .child(chevron)
         .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
             app_click.update(cx, |this, cx| {
@@ -3895,9 +3991,9 @@ pub(crate) fn bookmark_row(
     let shell_app = app.clone();
     let group = SharedString::from(format!("bm-row-{index}"));
     let hover_id = DragHoverId::Sidebar(id.to_string());
-    let content = if active { accent } else { fg };
+    let content = if active { style.active_fg } else { fg };
     let icon_color = if active {
-        accent
+        style.active_fg
     } else {
         hsla(
             (fg.hue.into_positive_degrees() / 360.0),
@@ -3910,7 +4006,7 @@ pub(crate) fn bookmark_row(
         .id(id)
         .group(group.clone())
         .w_full()
-        .h(crate::ui::rem_px(if windows_theme { 30.0 } else { 24.0 }))
+        .h(crate::ui::rem_px(if windows_theme { 28.0 } else { 24.0 }))
         .block_mouse_except_scroll()
         .px_2()
         .gap(crate::ui::rem_px(if windows_theme { 10.0 } else { 8.0 }))
@@ -4043,9 +4139,9 @@ fn nav_row(
     let shell_app = app.clone();
     let ctx_app = app.clone();
     let ctx_path = path.clone();
-    let content = if active { accent } else { fg };
+    let content = if active { style.active_fg } else { fg };
     let icon_color = if active {
-        accent
+        style.active_fg
     } else {
         // Slightly dimmed icon for inactive rows (Figma: ~85% ink).
         hsla(
@@ -4058,7 +4154,7 @@ fn nav_row(
     h_flex()
         .id(id)
         .w_full()
-        .h(crate::ui::rem_px(if windows_theme { 30.0 } else { 24.0 }))
+        .h(crate::ui::rem_px(if windows_theme { 28.0 } else { 24.0 }))
         .block_mouse_except_scroll()
         .px_2()
         .gap(crate::ui::rem_px(if windows_theme { 10.0 } else { 8.0 }))
@@ -4155,9 +4251,9 @@ fn virtual_nav_row(
     let hover_id = DragHoverId::Sidebar(id.to_string());
     let recycle_icon_app = app.clone();
     let request_recycle_icon = loc == Location::RecycleBin;
-    let content = if active { accent } else { fg };
+    let content = if active { style.active_fg } else { fg };
     let icon_color = if active {
-        accent
+        style.active_fg
     } else {
         hsla(
             (fg.hue.into_positive_degrees() / 360.0),
@@ -4169,7 +4265,7 @@ fn virtual_nav_row(
     h_flex()
         .id(id)
         .w_full()
-        .h(crate::ui::rem_px(if windows_theme { 30.0 } else { 24.0 }))
+        .h(crate::ui::rem_px(if windows_theme { 28.0 } else { 24.0 }))
         .block_mouse_except_scroll()
         .px_2()
         .gap(crate::ui::rem_px(if windows_theme { 10.0 } else { 8.0 }))

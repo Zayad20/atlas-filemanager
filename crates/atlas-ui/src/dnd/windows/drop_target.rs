@@ -282,7 +282,7 @@ impl AtlasDropTarget {
     }
 
     fn update_description(&self, x: f32, y: f32, ctrl: bool, shift: bool) -> DROPEFFECT {
-        let target = self.zones.lock().ok().and_then(|zones| {
+        let target = self.zones.lock().or_else(atlas_model::sync::recover).ok().and_then(|zones| {
             let dest = zones.hover_snapshot.as_ref()?.transfer_at(x, y, &zones.paths, ctrl, shift)?;
             let default = if zones.paths.is_empty() { crate::dnd::DropEffect::Copy }
                 else { crate::dnd::default_effect_for_paths(&zones.paths, &dest) };
@@ -330,7 +330,7 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
         // Mark drag active so the render path starts publishing zones.
         let (x, y) = self.to_logical(pt);
         let paths = unsafe { read_cf_hdrop(data_obj) };
-        if let Ok(mut zones) = self.zones.lock() {
+        if let Some(mut zones) = self.zones.lock().or_else(atlas_model::sync::recover).ok() {
             zones.drag_active = true;
             zones.cursor = Some((x, y));
             zones.paths = paths;
@@ -394,12 +394,12 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
             }
         }
         let (x, y) = self.to_logical(pt);
-        if let Ok(mut zones) = self.zones.lock() {
+        if let Some(mut zones) = self.zones.lock().or_else(atlas_model::sync::recover).ok() {
             zones.cursor = Some((x, y));
             zones.ctrl = grfkeystate.0 & 0x0008 != 0;
             zones.shift = grfkeystate.0 & 0x0004 != 0;
         }
-        if let Ok(mut q) = self.action_queue.lock() {
+        if let Some(mut q) = self.action_queue.lock().or_else(atlas_model::sync::recover).ok() {
             q.push(super::DndEvent::DragOver { x, y });
             crate::ui_wake::wake();
         }
@@ -408,13 +408,13 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
 
     fn DragLeave(&self) -> Result<()> {
         self.clear_description();
-        if let Ok(mut zones) = self.zones.lock() {
+        if let Some(mut zones) = self.zones.lock().or_else(atlas_model::sync::recover).ok() {
             zones.drag_active = false;
             zones.cursor = None;
             zones.paths.clear();
             zones.hover_snapshot = None;
         }
-        if let Ok(mut q) = self.action_queue.lock() {
+        if let Some(mut q) = self.action_queue.lock().or_else(atlas_model::sync::recover).ok() {
             q.push(super::DndEvent::DragLeave);
             crate::ui_wake::wake();
         }
@@ -434,7 +434,7 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
         pdweffect: *mut DROPEFFECT,
     ) -> Result<()> {
         self.clear_description();
-        if let Ok(mut zones) = self.zones.lock() {
+        if let Some(mut zones) = self.zones.lock().or_else(atlas_model::sync::recover).ok() {
             zones.drag_active = false;
             zones.cursor = None;
             zones.paths.clear();
@@ -480,7 +480,7 @@ impl IDropTarget_Impl for AtlasDropTarget_Impl {
             x: lx,
             y: ly,
         };
-        if let Ok(mut q) = self.action_queue.lock() {
+        if let Some(mut q) = self.action_queue.lock().or_else(atlas_model::sync::recover).ok() {
             q.push(super::DndEvent::DropIn(payload));
             crate::ui_wake::wake();
         }

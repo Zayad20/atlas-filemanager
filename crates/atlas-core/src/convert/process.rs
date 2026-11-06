@@ -234,6 +234,7 @@ pub(super) fn convert(
             run(command, cancel)
         }
         Tool::SevenZip => seven_zip(conversion, plan, output, cancel),
+        Tool::Ghostscript => bail!("Ghostscript is not a conversion engine"),
     }
 }
 

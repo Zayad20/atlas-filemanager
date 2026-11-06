@@ -14,9 +14,11 @@
 //!   - `render_tag_picker_layer` paints the overlay layer (called from `overlays/mod.rs`).
 //!   - Focus is claimed by `overlay_focus.rs` → `overlay_focus_target`.
 
+use atlas_model::clamp::ClampLenient;
 use crate::app::App;
 use crate::input::action::Action;
 use crate::ui::icons::{icon, AtlasIcon};
+use gpui::AnimationExt as _;
 use gpui::prelude::*;
 use gpui::ColorExt as _;
 use gpui::{
@@ -152,7 +154,7 @@ impl App {
         let ww = f32::from(win.width);
         let wh = f32::from(win.height);
         let max_h = 480.0_f32.min((wh - 72.0 * 2.0).max(140.0));
-        let panel_h = est_h.clamp(row_h + list_pad + chrome_h, max_h);
+        let panel_h = est_h.clamp_lenient(row_h + list_pad + chrome_h, max_h);
         let list_h = (panel_h - chrome_h).max(row_h + list_pad);
         let left = ax.min((ww - W - 6.0).max(6.0)).max(6.0);
         let top = ay.min((wh - panel_h - 6.0).max(6.0)).max(6.0);
@@ -259,7 +261,11 @@ impl App {
                             )
                             .vertical_scrollbar(&self.tag_picker_scroll),
                     )
-                    ,
+                    .with_animation(
+                "tag-picker-appear",
+                gpui_component::animation::dropdown_animation(),
+                gpui_component::animation::dropdown_appear,
+            ),
             )
             .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
                 if this.handle_tag_picker_key(ev, cx) {

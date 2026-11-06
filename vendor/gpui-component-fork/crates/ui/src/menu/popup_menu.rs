@@ -10,7 +10,7 @@ use gpui::{
     ParentElement, Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
     WeakEntity, Window, anchored, div, prelude::FluentBuilder, px, rems,
 };
-use gpui::{ClickEvent, Half, MouseDownEvent, OwnedMenuItem, Point, Subscription};
+use gpui::{AnimationExt as _, ClickEvent, Half, MouseDownEvent, OwnedMenuItem, Point, Subscription};
 
 use std::rc::Rc;
 
@@ -1356,5 +1356,11 @@ impl Render for PopupMenu {
                 // TODO: When the menu is limited by `overflow_y_scroll`, the sub-menu will cannot be displayed.
                 this.vertical_scrollbar(&self.scroll_handle)
             })
+            // Atlas fork: every popup/context/sub menu fades in while dropping into place.
+            .with_animation(
+                "popup-menu-appear",
+                crate::animation::dropdown_animation(),
+                crate::animation::dropdown_appear,
+            )
     }
 }

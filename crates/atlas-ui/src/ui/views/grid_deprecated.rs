@@ -465,7 +465,7 @@ impl App {
     }
 
     pub(crate) fn prepare_grid_visible(&mut self, pane_id: TabId, range: Range<usize>) {
-        let windows_theme = crate::ui::icons::is_windows_theme(&self.state.profiles.active().theme);
+        let windows_theme = self.native_file_icons();
         let (to_request, to_request_ext, to_request_shell, request_folder_icon, all_visible) = {
             let Some(ts) = self.state.tab_states.get(&pane_id) else {
                 return;
@@ -534,7 +534,7 @@ impl App {
         };
 
         {
-            let mut wanted = self.thumb_wanted.lock().unwrap();
+            let mut wanted = self.thumb_wanted.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             wanted.clear();
             wanted.extend(all_visible);
         }

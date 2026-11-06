@@ -88,9 +88,9 @@ impl App {
         None
     }
 
-    /// Toggle for immediate-mode experimental chrome (O(1) rect-slicing).
+    /// Toggle for Digital Grove experimental chrome (inspired by Pexer: O(1) rect-slicing).
     /// Enabled for testing.
-    pub const EXPERIMENTAL_IMM_CHROME: bool = true;
+    pub const EXPERIMENTAL_DG_CHROME: bool = true;
 
     /// Compact breadcrumb strip rendered at the top of each pane, showing the
     /// pane's current path. Clicking any segment navigates that specific pane.
@@ -190,10 +190,10 @@ impl App {
         let is_branch_view = self.tab_data_for(pane_id).is_some_and(|t| t.is_branch_view);
         let button_hover = control_hover(fg);
 
-        if Self::EXPERIMENTAL_IMM_CHROME {
+        if Self::EXPERIMENTAL_DG_CHROME {
             if let Some(Location::Directory(dir)) = pane_location.as_ref() {
                 let trail = self.tab_data_for(pane_id).and_then(|tab| tab.breadcrumb_trail.as_deref());
-                let segments = std::sync::Arc::new(crate::ui::chrome_imm::path_with_ghost_segments(dir, trail));
+                let segments = std::sync::Arc::new(crate::ui::chrome_dg::path_with_ghost_segments(dir, trail));
                 let is_bookmarked = if let Some(path) = self
                     .tab_data_for(pane_id)
                     .and_then(|t| t.location.fs_dir().map(|p| p.to_path_buf()))
@@ -212,7 +212,7 @@ impl App {
                 } else {
                     border.opacity(0.03)
                 };
-                return crate::ui::chrome_imm::ImmChromeElement::new(
+                return crate::ui::chrome_dg::DgChromeElement::new(
                     pane_id,
                     view.downgrade(),
                     segments,

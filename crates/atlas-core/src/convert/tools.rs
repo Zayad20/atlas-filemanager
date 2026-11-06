@@ -11,10 +11,12 @@ pub enum Tool {
     PdfText,
     SevenZip,
     Calibre,
+    /// Ghostscript: never a conversion route, only the optional "Compress PDF" action.
+    Ghostscript,
 }
 
 impl Tool {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Magick,
         Self::Ffmpeg,
         Self::Opus,
@@ -23,6 +25,7 @@ impl Tool {
         Self::PdfText,
         Self::SevenZip,
         Self::Calibre,
+        Self::Ghostscript,
     ];
     pub const fn name(self) -> &'static str {
         match self {
@@ -34,6 +37,7 @@ impl Tool {
             Self::PdfText => "Poppler",
             Self::SevenZip => "7-Zip",
             Self::Calibre => "Calibre",
+            Self::Ghostscript => "Ghostscript",
         }
     }
     pub const fn executable(self) -> &'static str {
@@ -46,6 +50,8 @@ impl Tool {
             Self::PdfText => "pdftotext",
             Self::SevenZip => "7z",
             Self::Calibre => "ebook-convert",
+            Self::Ghostscript if cfg!(windows) => "gswin64c",
+            Self::Ghostscript => "gs",
         }
     }
     pub const fn url(self) -> &'static str {
@@ -58,7 +64,12 @@ impl Tool {
             Self::PdfText => "https://poppler.freedesktop.org/",
             Self::SevenZip => "https://www.7-zip.org/",
             Self::Calibre => "https://calibre-ebook.com/download",
+            Self::Ghostscript => "https://ghostscript.com/releases/gsdnld.html",
         }
+    }
+    /// Tool-provider manifests may use the portable name (`gs`) for Ghostscript.
+    pub fn matches_name(self, name: &str) -> bool {
+        name == self.executable() || (self == Self::Ghostscript && name == "gs")
     }
 }
 
@@ -94,9 +105,26 @@ pub struct Tools(pub BTreeMap<Tool, PathBuf>, pub SystemAudio);
 impl Tools {
     /// Conversion wheel policy: Atlas, Windows and the small Opus encoder only.
     /// Discovery for previews and independent validation can still see other tools.
-    pub fn native_and_opus(mut self) -> Self {
-        self.0.retain(|tool, _| *tool == Tool::Opus);
+    pub fn native_and_opus(self) -> Self {
+        self.native_and(&[])
+    }
+    /// Wheel policy plus `extra` engines (those installed by enabled tool providers).
+    pub fn native_and(mut self, extra: &[Tool]) -> Self {
+        self.0
+            .retain(|tool, _| *tool == Tool::Opus || extra.contains(tool));
         self
+    }
+    /// Tools whose discovered path is the one supplied by an extension package.
+    pub fn managed_by<'a>(&self, managed: impl IntoIterator<Item = (&'a String, &'a PathBuf)>) -> Vec<Tool> {
+        let mut found = Vec::new();
+        for (name, path) in managed {
+            for tool in Tool::ALL {
+                if tool.matches_name(name) && self.get(tool) == Some(path.as_path()) && !found.contains(&tool) {
+                    found.push(tool);
+                }
+            }
+        }
+        found
     }
     pub fn has(&self, tool: Tool) -> bool {
         self.0.contains_key(&tool)
@@ -133,6 +161,12 @@ impl Tools {
                     "Atlas/tools",
                 ] {
                     directories.push(base.join(suffix));
+                }
+                // Ghostscript installs into gs/gs<version>/bin.
+                if let Ok(entries) = std::fs::read_dir(base.join("gs")) {
+                    for entry in entries.flatten().take(64) {
+                        directories.push(entry.path().join("bin"));
+                    }
                 }
                 if let Ok(entries) = std::fs::read_dir(&base) {
                     for entry in entries.flatten().take(512) {
@@ -176,7 +210,7 @@ impl Tools {
             }
         }
         for (name, path) in managed {
-            if let Some(tool) = Tool::ALL.into_iter().find(|tool| tool.executable() == name) {
+            if let Some(tool) = Tool::ALL.into_iter().find(|tool| tool.matches_name(&name)) {
                 if path.is_absolute() && path.is_file() {
                     tools.0.insert(tool, path);
                 }

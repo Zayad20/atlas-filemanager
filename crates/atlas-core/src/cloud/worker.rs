@@ -1127,7 +1127,8 @@ fn remote_to_file_entry(e: RemoteEntry) -> FileEntry {
     let modified = e
         .modified
         .and_then(|secs| u64::try_from(secs).ok())
-        .map(|secs| UNIX_EPOCH + Duration::from_secs(secs));
+        // Server-supplied: an absurd value must not overflow `SystemTime`.
+        .and_then(|secs| UNIX_EPOCH.checked_add(Duration::from_secs(secs)));
     FileEntry::from(atlas_model::file_entry::FileEntryData {
         name: e.name.into(),
         path: PathBuf::from(e.path),

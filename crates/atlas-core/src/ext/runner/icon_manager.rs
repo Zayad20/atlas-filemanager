@@ -104,30 +104,11 @@ pub async fn download_and_activate_theme(
         return Err(anyhow::anyhow!("Extension contains no icon themes"));
     }
 
-    let selected_rel_path = if variants.len() > 1 {
-        let labels: Vec<String> = variants.iter().map(|v| v.label.clone()).collect();
-        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        let _ = bg_tx.send(BgResult::ExtShowQuickPick {
-            items: labels.clone(),
-            reply_tx,
-        });
-
-        let choice = tokio::task::spawn_blocking(move || reply_rx.recv())
-            .await?
-            .unwrap_or_default();
-
-        if choice.is_empty() {
-            return Ok(());
-        }
-
-        match variants.iter().find(|v| v.label == choice) {
-            Some(v) => v.theme_rel_path.clone(),
-            None => return Ok(()),
-        }
-    } else {
-        variants[0].theme_rel_path.clone()
-    };
-
+    // The first variant activates right away; the others are listed in
+    // Settings › File icons (see `installed_icon_variants`).
+    let _ = bg_tx;
+    let selected_rel_path = variants[0].theme_rel_path.clone();
+    record_active_variant(data_dir, &slug, &selected_rel_path);
     build_mappings_from_theme_file(data_dir, &theme_root, &selected_rel_path)
 }
 
@@ -253,10 +234,97 @@ pub async fn select_theme_variant(
         data_dir,
         &selected_variant.theme_root,
         &selected_variant.theme_rel_path,
-    )
+    )?;
+    if let Some(slug) = selected_variant.theme_root.file_name() {
+        record_active_variant(data_dir, &slug.to_string_lossy(), &selected_variant.theme_rel_path);
+    }
+    Ok(())
+}
+
+/// One icon-theme variant installed under the icon-manager data dir.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstalledIconVariant {
+    /// Install directory name (`publisher_name`).
+    pub slug: String,
+    pub pkg_name: String,
+    pub label: String,
+    pub theme_rel_path: String,
+    /// How many variants the package ships (1 → show just the package name).
+    pub siblings: usize,
+}
+
+const ACTIVE_VARIANT_FILE: &str = "active_variant.txt";
+
+fn record_active_variant(data_dir: &Path, slug: &str, theme_rel_path: &str) {
+    let _ = std::fs::write(data_dir.join(ACTIVE_VARIANT_FILE), format!("{slug}\n{theme_rel_path}"));
+}
+
+/// `(slug, theme_rel_path)` of the variant last activated, if any.
+pub fn active_icon_variant(data_dir: &Path) -> Option<(String, String)> {
+    let text = std::fs::read_to_string(data_dir.join(ACTIVE_VARIANT_FILE)).ok()?;
+    let (slug, rel) = text.trim().split_once('\n')?;
+    Some((slug.to_string(), rel.to_string()))
+}
+
+/// Every variant of every theme downloaded into `data_dir`.
+pub fn installed_icon_variants(data_dir: &Path) -> Vec<InstalledIconVariant> {
+    let Ok(entries) = std::fs::read_dir(data_dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(slug) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        let Ok(variants) = read_package_variants(&path) else {
+            continue;
+        };
+        let siblings = variants.len();
+        out.extend(variants.into_iter().map(|v| InstalledIconVariant {
+            slug: slug.clone(),
+            pkg_name: v.pkg_name,
+            label: v.label,
+            theme_rel_path: v.theme_rel_path,
+            siblings,
+        }));
+    }
+    out.sort_by(|a, b| a.slug.cmp(&b.slug));
+    out
+}
+
+/// Switch to an installed variant without downloading; completion goes
+/// through the normal `ExtCommandDone` path (persist + live apply).
+pub fn activate_icon_variant(
+    rt: &tokio::runtime::Handle,
+    bg_tx: flume::Sender<BgResult>,
+    data_dir: PathBuf,
+    slug: String,
+    theme_rel_path: String,
+) {
+    rt.spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            anyhow::ensure!(!slug.contains(['/', '\\']) && !slug.contains(".."), "invalid theme dir");
+            build_mappings_from_theme_file(&data_dir, &data_dir.join(&slug), &theme_rel_path)?;
+            record_active_variant(&data_dir, &slug, &theme_rel_path);
+            Ok(())
+        })
+        .await
+        .map_err(anyhow::Error::from)
+        .and_then(|r| r);
+        let _ = bg_tx.send(BgResult::ExtCommandDone {
+            ext_id: "icon-manager".to_string(),
+            error: result.err().map(|e| e.to_string()),
+            dirs: Vec::new(),
+        });
+    });
 }
 
 pub fn reset_default_icons(data_dir: &Path) -> Result<()> {
+    let _ = std::fs::remove_file(data_dir.join(ACTIVE_VARIANT_FILE));
     let mappings_path = data_dir.join("theme_mappings.json");
     if mappings_path.exists() {
         let _ = std::fs::remove_file(mappings_path);

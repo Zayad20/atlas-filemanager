@@ -83,7 +83,7 @@ pub mod linux {
         ) -> Vec<PathBuf> {
             let paths = parse_uri_list_bytes(data);
             if !paths.is_empty() {
-                if let Ok(mut q) = self.action_queue.lock() {
+                if let Some(mut q) = self.action_queue.lock().or_else(atlas_model::sync::recover).ok() {
                     q.push(LinuxDndEvent::Drop(LinuxDropPayload {
                         paths: paths.clone(),
                         from_self: false,
@@ -489,7 +489,7 @@ mod tests {
         let paths = state.handle_drop_uri_list(data, 100.0, 200.0, false, false);
         assert_eq!(paths, vec![PathBuf::from("/tmp/dropped file.txt")]);
 
-        let queue = state.action_queue.lock().unwrap();
+        let queue = state.action_queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(queue.len(), 1);
         if let linux::LinuxDndEvent::Drop(payload) = &queue[0] {
             assert_eq!(payload.paths, paths);

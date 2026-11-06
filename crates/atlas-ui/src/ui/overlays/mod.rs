@@ -8,7 +8,7 @@
 //! unified engine in `ui::palette` and hosted in `ui::palette_host`; this module
 //! keeps their thin per-frame entry points plus the non-fuzzy modals:
 //!   - `paste_conflict` — overwrite/skip/rename/cancel modal.
-//!   - settings — general/appearance toggles.
+//!   - settings — rendered by `ui::settings_palette`.
 //!   - `batch_rename` — mode, text fields, preview, apply.
 //!   - `create_tag`, `op_errors` toasts; context menu lives in `ui/root.rs`.
 
@@ -35,6 +35,31 @@ impl App {
         }
 
 
+        // Live previews belong to the open settings picker; any other way of
+        // closing Settings (Esc elsewhere, CloseOverlays, links) reverts them.
+        let show_settings = self.state.overlay.show_settings;
+        if !show_settings && self.settings_ui.drill.is_some() {
+            self.settings_cancel_drill();
+        }
+        let drilling = self.settings_ui.drill.as_ref().filter(|_| show_settings).map(|d| d.setting);
+        let mut reverted = false;
+        if self.settings_theme_previewing && drilling != Some("theme") {
+            self.settings_theme_previewing = false;
+            self.restore_theme_preview();
+            reverted = true;
+        }
+        if self.view_preview_before.is_some() && drilling != Some("default-view") {
+            self.restore_pane_view_preview();
+            reverted = true;
+        }
+        if self.icon_style_preview_before.is_some() && drilling != Some("icon-style") {
+            self.restore_icon_style_preview();
+            reverted = true;
+        }
+        if reverted {
+            self.notify_all_panes(cx);
+            cx.notify();
+        }
         if self.state.overlay.show_settings {
             layers.push(self.render_settings(window, cx));
         }
@@ -208,6 +233,7 @@ mod create_tag;
 mod ext_manager;
 mod ext_prompt;
 mod getting_started;
+mod brand;
 mod guide;
 pub(crate) mod legal;
 mod properties;
@@ -215,8 +241,6 @@ mod rename_profile;
 #[cfg(feature = "provider-host")]
 mod rename_remote;
 mod scrim;
-mod settings;
-pub(crate) mod settings_imm;
 pub(crate) mod toasts;
 mod transfer_conflict;
 mod transfers_bar;

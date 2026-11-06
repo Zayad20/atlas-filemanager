@@ -1,3 +1,4 @@
+use atlas_model::clamp::ClampLenient;
 use super::{packing, CleanupPanel};
 use crate::ui::{
     file_icons::FileIcon,
@@ -42,7 +43,7 @@ impl Cache {
         let dt = self
             .tick
             .map_or(1. / 60., |t| now.duration_since(t).as_secs_f32())
-            .clamp(0.001, 1. / 30.);
+            .clamp_lenient(0.001, 1. / 30.);
         let mut moving = false;
         for i in 0..n {
             let target = f32::from(u8::from(hovered == Some(self.circles[i].index)));
@@ -276,7 +277,7 @@ impl Element for BubbleMapElement {
                         ));
                     }
                     if circle.radius >= 23. * zoom && t > 0.7 {
-                        let icon_size = (circle.radius * 0.48).clamp(20. * zoom, 52. * zoom);
+                        let icon_size = (circle.radius * 0.48).clamp_lenient(20. * zoom, 52. * zoom);
                         let icon_y = if circle.radius > 43. * zoom {
                             circle.y - icon_size - 6. * zoom
                         } else {

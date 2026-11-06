@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-31",
+  "updated": "2026-11-05",
   "operator": "Cuber Labs (Atlas File Manager)",
   "contact": "support@modhyt.org",
   "privacy-policy": {
@@ -34,16 +34,19 @@
         "paragraphs": [
           "Atlas checks for updates over HTTPS when it starts. The update server receives the connection's IP address, request time and technical request information, including the Atlas version in the User-Agent. This check does not send a list of your files or their contents.",
           "When you request an extension, icon theme or optional tool, Atlas contacts its catalog and download hosts, which may include Cloudflare, GitHub, Open VSX and the tool's publisher. Those services receive ordinary network request information. Requesting WinFsp installation contacts its official GitHub download service.",
-          "The desktop application does not currently send background usage analytics or automatically upload local diagnostic logs to Atlas. If you send a screenshot, log, file or support request yourself, we process what you send to help resolve that request. Please remove unrelated personal information before sending support material."
+          "The desktop application does not send background usage analytics and never uploads diagnostic logs or crash data automatically. If Atlas closes unexpectedly, it saves a crash report on your device, in the Atlas\\Crashes folder under your local application data. You can open that folder or delete its contents at any time.",
+          "Only if you choose Send Crash Report does Atlas send the last crash's error text to atlasnative.com: the error message, when it occurred, the source location and internal Atlas thread where it occurred, the symbolized call stack, the Atlas version and the operating system and processor type. Before sending, Atlas replaces your user folder path and account name with placeholders. The memory dump saved with the report never leaves your device, and no files, file contents or folder listings are sent. Cloudflare receives the request with ordinary network information; we do not store your IP address with the report, only the country Cloudflare derives from it.",
+          "We use crash reports only to find and fix defects in Atlas. They are stored in Cloudflare D1 and deleted automatically after 180 days. When a new kind of crash arrives, a notification with the same report text is posted to a private Discord channel used by the Atlas team; Discord retains those messages under its own policy until we delete them. To ask us to delete a report you sent, contact us with the approximate time you sent it.",
+          "If you send a screenshot, log, file or support request yourself, we process what you send to help resolve that request. Please remove unrelated personal information before sending support material."
         ]
       },
       {
         "title": "5. Website analytics and your choices",
         "paragraphs": [
-          "The website uses Cloudflare for hosting, security and delivery. We use PostHog and OpenPanel to measure page visits and interactions such as opening pricing, requesting access and starting checkout. Depending on the provider, technical data can include IP address, browser and operating-system information, referring page, page URL, event time and a browser/device identifier. We do not describe this information as necessarily anonymous.",
-          "Optional website analytics are disabled until you choose Allow analytics. You can choose Essential only and change your choice using Privacy choices in the footer. We also honor Global Privacy Control and Do Not Track by keeping optional analytics disabled. The preference is stored locally in your browser. Essential security, checkout and email-confirmation requests still operate when analytics are disabled.",
-          "We disable PostHog session recording, form autocapture and automatic exception capture in the website client. We do not intentionally send email addresses, payment-card data, file contents, confirmation tokens or private-folder passwords to analytics. Confirmation and unsubscribe pages do not initialize optional analytics.",
-          "We retain website analytics only for the measurement and troubleshooting purposes described here. The applicable retention period depends on the provider's project settings and legal requirements. Contact support@modhyt.org for information about the current period or a deletion request. You can block optional scripts in your browser."
+          "The website uses Cloudflare for hosting, security and delivery. We use OpenPanel to measure page visits and interactions such as opening pricing, requesting access and starting checkout, and, only if you choose Allow all analytics, PostHog for product analytics and session replays. Depending on the provider, technical data can include IP address, browser and operating-system information, referring page, page URL, event time and a browser/device identifier. We do not describe this information as necessarily anonymous.",
+          "OpenPanel measurement is on by default. It does not set cookies and we use it only to understand website use. PostHog analytics and session replays are disabled until you choose Allow all analytics. Choose Anonymous only to keep PostHog off, and change your choice at any time using Privacy choices in the footer. We honor Global Privacy Control and Do Not Track by keeping all optional analytics, including OpenPanel, disabled. The PostHog preference is stored locally in your browser. Essential security, checkout and email-confirmation requests still operate when analytics are disabled.",
+          "If you allow PostHog, session replays mask all form inputs and text marked as sensitive; form autocapture and automatic exception capture stay disabled. We do not intentionally send email addresses, payment-card data, file contents, confirmation tokens or private-folder passwords to analytics. Confirmation, unsubscribe and checkout pages do not initialize any website analytics.",
+          "We retain website analytics only for the measurement and troubleshooting purposes described here. The applicable retention period depends on the provider's project settings and legal requirements. Contact support@modhyt.org for information about the current period or a deletion request. You can block analytics scripts in your browser."
         ]
       },
       {
@@ -104,6 +107,10 @@
             "href": "https://polar.sh/legal/privacy-policy"
           },
           {
+            "label": "Discord privacy policy",
+            "href": "https://discord.com/privacy"
+          },
+          {
             "label": "Microsoft privacy statement",
             "href": "https://privacy.microsoft.com/privacystatement"
           }
@@ -125,7 +132,7 @@
       {
         "title": "2. Alpha access and product availability",
         "paragraphs": [
-          "Atlas is under active development. Windows alpha invitations are released in cohorts. Joining the free alpha does not require buying a paid plan, and a paid plan does not promise an immediate invitation unless the offer expressly says so. A downloaded free alpha version does not expire merely because the alpha program ends.",
+          "Atlas is under active development. The free Windows alpha is available on the Microsoft Store and does not require buying a paid plan. A downloaded free alpha version does not expire merely because the alpha program ends.",
           "Alpha software can contain defects, incomplete functions and compatibility limitations. Back up important files before using file operations, cleanup, conversion or encryption. Review deletion and overwrite confirmations and protect encryption passphrases. Performance examples describe particular tests and are not guaranteed on every computer.",
           "Features and operating-system support are those documented for the build you receive. Linux is in development and macOS is on the roadmap; a roadmap item is not a currently delivered feature or a guaranteed release date."
         ]
@@ -133,10 +140,10 @@
       {
         "title": "3. Paid website plans and included rights",
         "paragraphs": [
-          "Founding License is a one-time purchase covering the offer for one Windows PC, priority alpha-cohort invitation and the final 1.0 license. Lifetime Pro covers the offer for up to three Windows PCs and includes future major upgrades and Pro features as they are released. Current features, price, taxes and the selected plan are shown before payment. There is no recurring subscription for these plans.",
+          "Founding License is a one-time purchase covering the offer for up to five Windows PCs and the final 1.0 license. Lifetime Pro is a supporter plan that exists mainly to support the creators of Atlas; it covers the offer for up to ten Windows PCs and includes future major upgrades and Pro features as they are released. Current features, price, taxes and the selected plan are shown before payment. There is no recurring subscription for these plans.",
           "Lifetime refers to the permanent entitlement for the purchased software versions and the upgrades expressly included in the offer. It does not guarantee perpetual hosting, indefinite support or delivery of every roadmap proposal. An unreleased Pro feature must be described as upcoming, not as available today.",
           "Commercial use is permitted under the software license applicable to your copy. Buying a plan does not remove rights already granted by the AGPL, GPL, MPL or other applicable open-source licenses. Device counts describe paid-plan entitlements and support; they do not impose additional restrictions on copying or modifying components under their open-source licenses.",
-          "Free and Full builds may have different limits. Where the Free edition is offered, it permits one saved connection, one profile, up to 25 files per batch rename and one source file per conversion operation. A build change may be required to obtain Full features; a purchase must not be presented as an automatic in-app unlock unless that activation method is actually available. Your purchase confirmation and the offer identify the delivery method and entitlement."
+          "Free and Full builds may have different limits. Where the Free edition is offered, it permits up to two panes, two profiles, one saved cloud connection, up to ten conversions per day, up to 25 files per batch rename and one source file per conversion operation. A build change may be required to obtain Full features; a purchase must not be presented as an automatic in-app unlock unless that activation method is actually available. Your purchase confirmation and the offer identify the delivery method and entitlement."
         ]
       },
       {

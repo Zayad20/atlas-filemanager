@@ -11,11 +11,11 @@
 //! expansion, collapsed sections) lives in `atlas-model`'s `FuzzyOverlayState`.
 #![allow(dead_code)] // reason: declarative engine API; variants exist for specs to use
 
-pub(crate) mod palette_imm;
+pub(crate) mod palette_dg;
 mod render;
 mod specs;
-pub(crate) use palette_imm::{PaletteListElement, PaletteListRow};
-pub(crate) use specs::GotoSnapshot;
+pub(crate) use palette_dg::{PaletteListElement, PaletteListRow};
+pub(crate) use specs::{GotoSnapshot, ShortcutCommand};
 
 use crate::app::App;
 use crate::input::action::Action;

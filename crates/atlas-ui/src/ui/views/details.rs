@@ -54,11 +54,11 @@ impl Render for DetailsColumnDrag {
 }
 
 impl App {
-    pub const EXPERIMENTAL_IMM_TREE: bool = true;
-    pub const EXPERIMENTAL_IMM_DETAILS: bool = true;
-    pub const EXPERIMENTAL_IMM_LIST: bool = true;
-    pub const EXPERIMENTAL_IMM_GRID: bool = true;
-    pub const EXPERIMENTAL_IMM_MILLER: bool = true;
+    pub const EXPERIMENTAL_DG_TREE: bool = true;
+    pub const EXPERIMENTAL_DG_DETAILS: bool = true;
+    pub const EXPERIMENTAL_DG_LIST: bool = true;
+    pub const EXPERIMENTAL_DG_GRID: bool = true;
+    pub const EXPERIMENTAL_DG_MILLER: bool = true;
 
     /// Render the file view for a pane (Details/Grid/List/Miller). Public to the
     /// crate so `ui::pane_panel::FilePanel` (a Dock `Panel`) can delegate here.
@@ -141,32 +141,32 @@ impl App {
         });
         match view_mode {
             ViewMode::Grid => {
-                if Self::EXPERIMENTAL_IMM_GRID {
-                    return self.render_grid_view_imm(pane_id, window, cx);
+                if Self::EXPERIMENTAL_DG_GRID {
+                    return self.render_grid_view_dg(pane_id, window, cx);
                 }
                 return self.render_grid(pane_id, window, cx);
             }
             ViewMode::List => {
-                if Self::EXPERIMENTAL_IMM_LIST {
-                    return self.render_list_view_imm(pane_id, window, cx);
+                if Self::EXPERIMENTAL_DG_LIST {
+                    return self.render_list_view_dg(pane_id, window, cx);
                 }
                 return self.render_list_compact(pane_id, window, cx);
             }
             ViewMode::Miller => {
-                if Self::EXPERIMENTAL_IMM_MILLER {
-                    return self.render_miller_imm(pane_id, window, cx);
+                if Self::EXPERIMENTAL_DG_MILLER {
+                    return self.render_miller_dg(pane_id, window, cx);
                 }
                 return self.render_miller(pane_id, window, cx);
             }
             ViewMode::Tree => {
-                if Self::EXPERIMENTAL_IMM_TREE {
-                    return self.render_tree_view_imm(pane_id, window, cx);
+                if Self::EXPERIMENTAL_DG_TREE {
+                    return self.render_tree_view_dg(pane_id, window, cx);
                 }
                 return self.render_tree_view(pane_id, window, cx);
             }
             ViewMode::Details => {
-                if Self::EXPERIMENTAL_IMM_DETAILS {
-                    return self.render_details_view_imm(pane_id, window, cx);
+                if Self::EXPERIMENTAL_DG_DETAILS {
+                    return self.render_details_view_dg(pane_id, window, cx);
                 }
             }
         }
@@ -236,7 +236,7 @@ impl App {
         let content_lod = details_content_lod(pane_width, zoom_scale);
         // One priority projection and retained presentation for header and rows.
         // The scroll gutter is reserved in both, so their right edges also agree.
-        let (layout, header_layout) = crate::ui::views::details_imm::presented_layout(
+        let (layout, header_layout) = crate::ui::views::details_dg::presented_layout(
             self,
             pane_id,
             (pane_width - 16.0 * zoom_scale).max(0.0),
@@ -250,7 +250,7 @@ impl App {
         let row_motion = window.use_keyed_state(
             SharedString::from(format!("details-row-motion-{}", pane_id.0)),
             cx,
-            |_, _| crate::ui::imm::motion::RowMotion::new(0, [0.0; 3]),
+            |_, _| crate::ui::dg::motion::RowMotion::new(0, [0.0; 3]),
         );
         let dragging = self
             .col_dragging
@@ -637,7 +637,7 @@ impl App {
             .get(&pane_id)
             .map_or(800.0, |ts| ts.last_pane_width)
             - 16.0 * zoom_scale;
-        let target = crate::ui::views::details_imm::responsive_layout(
+        let target = crate::ui::views::details_dg::responsive_layout(
             available,
             zoom_scale,
             prefs.widths,
@@ -981,9 +981,12 @@ fn type_header_cell(
 
 /// Fixed height for canvas rows — eliminates per-row flex layout cost.
 pub(crate) const DETAILS_ROW_H: f32 = 24.0;
+/// Column header is taller than a row so titles get breathing room.
+pub(crate) const DETAILS_HEADER_H: f32 = 30.0;
 pub(crate) const ROW_PAD_X: f32 = 8.0;
 const ROW_ICON_W: f32 = 20.0;
-pub(crate) const ROW_ICON_SIZE: f32 = 16.0;
+/// Fills the 20px gutter better; 16px Shell folders read squashed next to text.
+pub(crate) const ROW_ICON_SIZE: f32 = 18.0;
 const ROW_GAP: f32 = 8.0;
 pub(crate) const ROW_NAME_X: f32 = ROW_PAD_X + ROW_ICON_W + ROW_GAP;
 const ROW_NAME_MIN_W: f32 = 88.0;
@@ -1240,7 +1243,7 @@ fn fit_details_widths(
     }
 }
 
-/// Explorer-style layout: columns anchored to the LEFT.
+/// Explorer/FilePilot-style layout: columns anchored to the LEFT.
 /// Name comes first (icon + text), then metadata in order, each at its own width.
 /// Resizing a column shifts the ones to its right into the trailing space — the
 /// handle follows the cursor and nothing "jumps the other way". Narrow panes use

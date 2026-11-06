@@ -44,4 +44,4 @@ Rust 언어의 메모리 안전성과 GPU 하드웨어 가속 렌더링을 바�
 ### 파일 관리의 새로운 기준을 경험하세요
 단순한 파일 도구를 넘어, 작업의 효율과 즐거움을 높여주는 데스크톱 필수 관리자. 지금 **Atlas 파일 관리자**를 다운로드하고 압도적인 속도를 직접 확인해 보세요.
 
-소스 코드 (AGPL-3.0-or-later): https://github.com/neondeex/atlas-filemanager
+소스 코드 (AGPL-3.0-or-later): https://atlasfm.modhyt.org/source-code

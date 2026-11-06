@@ -107,8 +107,12 @@ impl From<FileEntryData> for FileEntry {
 
 impl FileEntry {
     pub fn in_directory(data: FileEntryData, directory: Arc<EntryDirectory>) -> Self {
+        // `parent.join(name)` re-separates with `\` on Windows, so a `/`-separated
+        // remote path ("share/folder") must be kept verbatim or rclone/SMB sees
+        // one bogus name ("share\folder").
         let reconstructs = data.path.parent() == Some(directory.parent.as_path())
-            && data.path.file_name().and_then(std::ffi::OsStr::to_str) == Some(data.name.as_str());
+            && data.path.file_name().and_then(std::ffi::OsStr::to_str) == Some(data.name.as_str())
+            && !(cfg!(windows) && data.path.as_os_str().as_encoded_bytes().contains(&b'/'));
         let directory =
             if reconstructs && data.archive_root.is_none() && data.recycle_info.is_none() {
                 directory
@@ -407,6 +411,13 @@ mod tests {
             PathBuf::from("root").join(std::ffi::OsString::from_wide(&[0xd800, 46, 116, 120, 116]));
         let entry = FileEntry::from(data(path.clone(), None));
         assert_eq!(entry.path(), path);
+    }
+
+    #[test]
+    fn remote_slash_path_keeps_its_separator() {
+        // SMB share "D", folder "seestar": rclone needs "D/seestar", not "D\seestar".
+        let entry = FileEntry::from(data(PathBuf::from("D/seestar"), None));
+        assert_eq!(entry.path().as_os_str(), "D/seestar");
     }
 
     #[cfg(unix)]

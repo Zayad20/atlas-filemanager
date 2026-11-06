@@ -32,7 +32,7 @@ pub(super) fn install(
         let result: anyhow::Result<Vec<serde_json::Value>> = async {
             let mut checks = Vec::new();
             for (index, theme) in themes.iter().enumerate() {
-                for section in [0, 1, 3] {
+                for section in [0usize, 2, 4] {
                     handle.update(cx, |_, window, cx| {
                         window.resize(size(px(if index % 2 == 0 { 980. } else { 1280. }), px(760.)));
                         view.update(cx, |app, cx| {
@@ -40,7 +40,9 @@ pub(super) fn install(
                             app.state.settings.disable_animations = true;
                             app.state.profiles.active_mut().theme = theme.clone();
                             app.theme_dirty = true;
-                            app.settings_section = section;
+                            app.settings_ui = crate::ui::settings_palette::SettingsUi::opened_at(
+                                section.checked_sub(1).and_then(|i| crate::ui::settings_palette::Category::ALL.get(i).copied()),
+                            );
                             app.state.overlay.show_settings = true;
                             cx.notify();
                         });
@@ -53,7 +55,10 @@ pub(super) fn install(
                         window.render_to_image()?.save(directory.join(&screenshot))?;
                         // Interior clicks must never reach the dismissing scrim.
                         let viewport = window.viewport_size();
-                        let position = point(viewport.width / 2., viewport.height / 2.);
+                        // The footer hint bar is inert; rows activate on click.
+                        let panel_h = (600.0_f32).min(f32::from(viewport.height) * 0.82);
+                        let top = ((f32::from(viewport.height) - panel_h) * 0.32).max(12.0);
+                        let position = point(viewport.width / 2., px(top + panel_h - 18.));
                         mouse_down(position, window, cx);
                         mouse_up(position, window, cx);
                         ensure!(view.read(cx).state.overlay.show_settings, "Interior click dismissed Settings: {theme}");

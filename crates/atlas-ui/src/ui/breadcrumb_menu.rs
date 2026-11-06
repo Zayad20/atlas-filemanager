@@ -11,6 +11,7 @@ use crate::ui::icons::{icon as atlas_icon, AtlasIcon};
 use atlas_model::file_entry::FileKind;
 use atlas_model::location::Location;
 use atlas_model::pane::TabId;
+use gpui::AnimationExt as _;
 use gpui::prelude::*;
 use gpui::ColorExt as _;
 use gpui::{
@@ -307,7 +308,12 @@ impl App {
                         cx.stop_propagation();
                         cx.notify();
                     }
-                })),
+                }))
+                .with_animation(
+                "breadcrumb-menu-appear",
+                gpui_component::animation::dropdown_animation(),
+                gpui_component::animation::dropdown_appear,
+            ),
         )
         .into_any_element()
     }

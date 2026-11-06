@@ -237,6 +237,8 @@ pub enum BgResult {
     },
     /// License activation/deactivation finished; carries the message to show.
     LicenseChanged(Result<String, String>),
+    /// A user-requested crash report upload finished; carries the message to show.
+    CrashReportSent(Result<String, String>),
     /// A WASM extension requested the fuzzy panel. The background worker blocks on `reply_tx`.
     ExtShowQuickPick {
         items: Vec<String>,

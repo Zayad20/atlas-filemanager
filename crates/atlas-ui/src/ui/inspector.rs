@@ -19,7 +19,7 @@ use crate::app::App;
 use crate::input::action::Action;
 use crate::ui::drag::FileDragSource as _;
 use crate::ui::glass::{backdrop_tint, layer_color, GlassExt};
-use crate::ui::icons::{file_type_icon, icon, AtlasIcon};
+use crate::ui::icons::{icon, AtlasIcon};
 use crate::ui::root::DraggedFiles;
 use atlas_core::util::display::{format_date, format_size};
 use atlas_model::file_entry::FileKind;
@@ -1010,7 +1010,8 @@ impl App {
             .min_h(px(0.))
             .overflow_hidden()
             .text_color(fg)
-            .when(is_glass, |s| s.glass_surface(panel_bg))
+            // Glass: the preview sits directly on the blurred window canvas.
+            .when(is_glass, |s| s.bg(gpui::transparent_black()))
             .when(!is_glass, |s| s.bg(panel_bg).rounded(px(8.)))
             .px_3()
             .py_3()
@@ -2179,7 +2180,7 @@ impl App {
 
     /// Ask for the thumbnails of the folder's image/video files (the ring cards).
     fn request_dir_ring_thumbnails(&mut self, paths: &[PathBuf]) {
-        if let Ok(mut wanted) = self.thumb_wanted.lock() {
+        if let Some(mut wanted) = self.thumb_wanted.lock().or_else(atlas_model::sync::recover).ok() {
             wanted.extend(paths.iter().cloned());
         }
         for path in paths {
@@ -2306,7 +2307,12 @@ impl App {
                                     .h(px(14.))
                                     .flex_none()
                                     .into_any_element(),
-                                None => file_type_icon(&row_kind, e.extension.as_deref(), 14.0),
+                                // Cache variant follows light/dark surfaces.
+                                None => gpui::img(self.liquid_glass_icon(&row_kind, e.extension.as_deref()))
+                                    .w(px(14.))
+                                    .h(px(14.))
+                                    .flex_none()
+                                    .into_any_element(),
                             },
                         ),
                     )

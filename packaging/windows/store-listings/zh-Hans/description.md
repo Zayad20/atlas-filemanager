@@ -48,4 +48,4 @@
 
 立即下载 **Atlas 文件管理器**，体验新一代 Windows 生产力工具的非凡魅力！
 
-源代码 (AGPL-3.0-or-later): https://github.com/neondeex/atlas-filemanager
+源代码 (AGPL-3.0-or-later): https://atlasfm.modhyt.org/source-code

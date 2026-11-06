@@ -1,4 +1,4 @@
-//! Atlas–style right-click menu: a searchable overlay combining Atlas's own
+//! File Pilot–style right-click menu: a searchable overlay combining Atlas's own
 //! commands (top) with the native Windows shell context menu (Open with, Send to,
 //! 7-Zip, Properties, …) enumerated by the [`crate::shell_menu`] worker.
 //!
@@ -6,6 +6,7 @@
 //! Atlas rows dispatch the same boxed gpui actions the old `PopupMenu` used, so
 //! all existing wiring is reused. Native rows are invoked through the worker.
 
+use atlas_model::clamp::ClampLenient;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -13,8 +14,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use atlas_model::ext_model::CommandRef;
+use atlas_model::settings::ViewMode;
 
-use crate::ui::imm::{motion::RetainedSpring, ImmTextInputState};
+use crate::ui::dg::{motion::RetainedSpring, DgTextInputState};
 use gpui::{
     div, px, AnyElement, Context, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton, ParentElement, Pixels, Point, RenderImage, Styled, Window,
@@ -42,6 +44,7 @@ pub(crate) struct UiNativeItem {
 
 // Shell command ids are bounded; reserve one local id for the combined group.
 const OPEN_WITH_GROUP: u32 = u32::MAX;
+const VIEW_GROUP: u32 = u32::MAX - 1;
 
 fn native_open_with(item: &UiNativeItem) -> bool {
     if item.verb.as_deref().is_some_and(|verb| verb.eq_ignore_ascii_case("openwith")) {
@@ -104,7 +107,7 @@ pub(crate) struct CtxMenuState {
     /// Monotonic id; stale `Built` events from a prior open are ignored.
     pub menu_id: u64,
     pub focus: FocusHandle,
-    pub input: ImmTextInputState,
+    pub input: DgTextInputState,
     pub scroll_top: f32,
     pub scroll_motion: RetainedSpring,
     pub input_bounds: Option<gpui::Bounds<Pixels>>,
@@ -245,6 +248,88 @@ impl AtlasCmd {
     }
 }
 
+/// Explorer-style "View" submenu entries on the background menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewPreset {
+    IconsXl,
+    IconsLarge,
+    IconsMedium,
+    IconsSmall,
+    List,
+    Details,
+    Tree,
+    Columns,
+}
+
+const VIEW_PRESETS: &[ViewPreset] = &[
+    ViewPreset::IconsXl,
+    ViewPreset::IconsLarge,
+    ViewPreset::IconsMedium,
+    ViewPreset::IconsSmall,
+    ViewPreset::List,
+    ViewPreset::Details,
+    ViewPreset::Tree,
+    ViewPreset::Columns,
+];
+
+impl ViewPreset {
+    fn label(self) -> String {
+        match self {
+            Self::IconsXl => rust_i18n::t!("view_icons_xl").to_string(),
+            Self::IconsLarge => rust_i18n::t!("view_icons_large").to_string(),
+            Self::IconsMedium => rust_i18n::t!("view_icons_medium").to_string(),
+            Self::IconsSmall => rust_i18n::t!("view_icons_small").to_string(),
+            Self::List => rust_i18n::t!("view_list").to_string(),
+            Self::Details => rust_i18n::t!("view_details").to_string(),
+            Self::Tree => rust_i18n::t!("view_tree").to_string(),
+            Self::Columns => rust_i18n::t!("view_columns").to_string(),
+        }
+    }
+    fn icon(self) -> AtlasIcon {
+        match self {
+            Self::IconsXl | Self::IconsLarge | Self::IconsMedium | Self::IconsSmall => AtlasIcon::Grid,
+            Self::List => AtlasIcon::List,
+            Self::Details => AtlasIcon::Details,
+            Self::Tree => AtlasIcon::TreeStructure,
+            Self::Columns => AtlasIcon::Columns,
+        }
+    }
+    /// Grid thumbnail size; these land on the toolbar slider's 16px steps.
+    fn thumbnail_size(self) -> Option<f32> {
+        match self {
+            Self::IconsXl => Some(256.0),
+            Self::IconsLarge => Some(160.0),
+            Self::IconsMedium => Some(96.0),
+            Self::IconsSmall => Some(64.0),
+            _ => None,
+        }
+    }
+    fn view_mode(self) -> ViewMode {
+        match self {
+            Self::List => ViewMode::List,
+            Self::Details => ViewMode::Details,
+            Self::Tree => ViewMode::Tree,
+            Self::Columns => ViewMode::Miller,
+            _ => ViewMode::Grid,
+        }
+    }
+    /// The preset that best describes a pane's current view.
+    fn current(mode: &ViewMode, thumbnail_size: f32) -> Self {
+        match mode {
+            ViewMode::List => Self::List,
+            ViewMode::Details => Self::Details,
+            ViewMode::Tree => Self::Tree,
+            ViewMode::Miller => Self::Columns,
+            ViewMode::Grid => VIEW_PRESETS
+                .iter()
+                .copied()
+                .filter_map(|preset| preset.thumbnail_size().map(|size| (preset, (size - thumbnail_size).abs())))
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map_or(Self::IconsMedium, |(preset, _)| preset),
+        }
+    }
+}
+
 /// Atlas items for normal directory views. `true` = separator follows the item.
 const ATLAS_ITEMS: &[(AtlasCmd, bool)] = &[
     (AtlasCmd::Open, false),
@@ -308,6 +393,11 @@ enum CtxRow {
         app: atlas_core::fs::desktop_apps::DesktopApp,
         depth: u8,
     },
+    View {
+        preset: ViewPreset,
+        active: bool,
+        depth: u8,
+    },
 }
 
 impl CtxRow {
@@ -318,6 +408,7 @@ impl CtxRow {
                 | CtxRow::Ext { .. }
                 | CtxRow::Native { .. }
                 | CtxRow::DesktopApp { .. }
+                | CtxRow::View { .. }
         )
     }
 }
@@ -428,7 +519,7 @@ impl App {
         self.ctx_menu = Some(CtxMenuState {
             menu_id,
             focus,
-            input: ImmTextInputState::new(""),
+            input: DgTextInputState::new(""),
             scroll_top: 0.0,
             scroll_motion: RetainedSpring::new(0.0, Instant::now()),
             input_bounds: None,
@@ -546,12 +637,14 @@ impl App {
                         // Command ids changed: carry expanded submenus over by title.
                         let mut reopen = Vec::new();
                         let open_with_expanded = m.expanded.contains(&OPEN_WITH_GROUP);
+                        let view_expanded = m.expanded.contains(&VIEW_GROUP);
                         if m.stale {
                             expanded_titles(&m.native, &m.expanded, &mut reopen);
                             m.expanded.clear();
                         }
                         m.native = ui;
                         if open_with_expanded { m.expanded.insert(OPEN_WITH_GROUP); }
+                        if view_expanded { m.expanded.insert(VIEW_GROUP); }
                         m.loading = false;
                         m.stale = false;
                         if open_with_expanded {
@@ -661,10 +754,26 @@ impl App {
             }
         }
 
+        let current_view = self
+            .state
+            .active_tab_data()
+            .map_or(ViewPreset::Details, |tab| ViewPreset::current(&tab.view_mode, tab.thumbnail_size));
+
         let q = query.trim();
         let rows = if q.is_empty() {
             // Tree mode: Atlas section, separator, native tree (loading skeleton).
             let mut rows = Vec::new();
+            if state.background {
+                let expanded = state.expanded.contains(&VIEW_GROUP);
+                rows.push(CtxRow::Native { id: VIEW_GROUP, title: rust_i18n::t!("ctx_view").to_string(), icon: None,
+                    depth: 0, submenu: true, expanded, disabled: false, is_default: false });
+                if expanded {
+                    for preset in VIEW_PRESETS {
+                        rows.push(CtxRow::View { preset: *preset, active: *preset == current_view, depth: 1 });
+                    }
+                }
+                rows.push(CtxRow::Separator);
+            }
             for (cmd, sep_after) in &atlas_items {
                 rows.push(CtxRow::Atlas { cmd: *cmd });
                 if *cmd == AtlasCmd::Open && (!state.desktop_apps.is_empty() || state.native.iter().any(native_open_with)) {
@@ -716,6 +825,12 @@ impl App {
             for (cmd, _) in &atlas_items {
                 cand_titles.push(cmd.label().to_string());
                 cands.push(CtxRow::Atlas { cmd: *cmd });
+            }
+            if state.background {
+                for preset in VIEW_PRESETS {
+                    cand_titles.push(format!("{} {}", rust_i18n::t!("ctx_view"), preset.label()));
+                    cands.push(CtxRow::View { preset: *preset, active: *preset == current_view, depth: 0 });
+                }
             }
             for app in &state.desktop_apps {
                 cand_titles.push(format!("{} {}", rust_i18n::t!("open_with"), app.name));
@@ -812,7 +927,7 @@ impl App {
 
         let view = cx.entity();
 
-        // Logical rows remain the command authority; IMM only receives ink and ids.
+        // Logical rows remain the command authority; DG only receives ink and ids.
         let selected_child_idx = rows
             .iter()
             .enumerate()
@@ -821,7 +936,7 @@ impl App {
             .map(|(index, _)| index);
         let mut ink = Vec::with_capacity(rows.len());
         for row in &rows {
-            use crate::ui::imm::menu::{MenuIcon, MenuRow, MenuRowKind};
+            use crate::ui::dg::menu::{MenuIcon, MenuRow, MenuRowKind};
             let mut item = MenuRow {
                 kind: MenuRowKind::Item,
                 label: "".into(),
@@ -874,6 +989,8 @@ impl App {
                     item.label = title.clone().into();
                     item.icon = if *id == OPEN_WITH_GROUP {
                         Some(MenuIcon::Theme(AtlasIcon::Grid))
+                    } else if *id == VIEW_GROUP {
+                        Some(MenuIcon::Theme(AtlasIcon::Eye))
                     } else {
                         icon.clone().map(MenuIcon::Image)
                     };
@@ -882,6 +999,15 @@ impl App {
                     item.expanded = *expanded;
                     item.disabled = *disabled;
                     item.emphasized = *is_default;
+                }
+                CtxRow::View { preset, active, depth } => {
+                    item.label = if *depth == 0 { format!("{} {}", rust_i18n::t!("ctx_view"), preset.label()) } else { preset.label() }.into();
+                    item.icon = Some(MenuIcon::Theme(preset.icon()));
+                    item.depth = *depth;
+                    item.emphasized = *active;
+                    if *active {
+                        item.shortcut = Some("\u{2713}".into());
+                    }
                 }
                 CtxRow::DesktopApp { app, depth } => {
                     item.label = if *depth == 0 { format!("{} {}", rust_i18n::t!("open_with"), app.name) } else { app.name.clone() }.into();
@@ -903,7 +1029,7 @@ impl App {
                 let row_bottom = row_top + ink[index].height(zoom);
                 let scroll_top = self.ctx_menu.as_ref().map_or(0.0, |menu| menu.scroll_top);
                 let viewport = (list_h - zoom).max(1.0);
-                let next = crate::ui::imm::menu::visible_scroll_top(
+                let next = crate::ui::dg::menu::visible_scroll_top(
                     scroll_top, viewport, row_top, row_bottom,
                 );
                 if let Some(menu) = self.ctx_menu.as_mut() {
@@ -975,10 +1101,10 @@ impl App {
                 });
             },
         );
-        let canvas = crate::ui::imm::menu::MenuCanvas::new(
+        let canvas = crate::ui::dg::menu::MenuCanvas::new(
             ink,
             selected_child_idx,
-            crate::ui::imm::menu::MenuColors {
+            crate::ui::dg::menu::MenuColors {
                 foreground: fg,
                 muted,
                 border,
@@ -997,7 +1123,7 @@ impl App {
         let viewport_h = (list_h - zoom).max(0.0);
         menu.scroll_top = menu
             .scroll_top
-            .clamp(0.0, (content_h - viewport_h).max(0.0));
+            .clamp_lenient(0.0, (content_h - viewport_h).max(0.0));
         let instant = self.state.settings.disable_animations
             || self.state.settings.scroll_smoothness <= 0.0
             || menu.scroll_drag.is_some();
@@ -1012,12 +1138,12 @@ impl App {
             Instant::now(),
             scroll_config,
         );
-        let scroll = scroll.clamp(0.0, (content_h - viewport_h).max(0.0));
+        let scroll = scroll.clamp_lenient(0.0, (content_h - viewport_h).max(0.0));
         if scrolling {
             window.request_animation_frame();
         }
         let focus = menu.focus.clone();
-        let panel = crate::ui::imm::menu_panel::MenuPanel {
+        let panel = crate::ui::dg::menu_panel::MenuPanel {
             app: view.downgrade(),
             menu_id,
             focus: focus.clone(),
@@ -1026,7 +1152,7 @@ impl App {
             scroll,
             content_h,
             height: est_h,
-            colors: crate::ui::imm::menu_panel::PanelColors {
+            colors: crate::ui::dg::menu_panel::PanelColors {
                 background: bg,
                 foreground: fg,
                 muted,
@@ -1034,10 +1160,10 @@ impl App {
                 accent,
                 radius: if bg.alpha < 1.0 { 10.0 * zoom } else { radius },
             },
-            rows: crate::ui::imm::menu_panel::MenuPanel::rows(canvas),
+            rows: crate::ui::dg::menu_panel::MenuPanel::rows(canvas),
         };
         // Only generic GPUI boxes remain: anchoring/focus and the fullscreen scrim.
-        // All visible components, search editing and scrolling belong to IMM.
+        // All visible components, search editing and scrolling belong to DG.
         let v = view.clone();
         gpui::deferred(
             div()
@@ -1262,8 +1388,19 @@ impl App {
                 let app = app.clone();
                 self.run_ctx_desktop_app(&app, cx);
             }
+            CtxRow::View { preset, .. } => self.run_ctx_view(*preset, cx),
             _ => {}
         }
+    }
+
+    fn run_ctx_view(&mut self, preset: ViewPreset, cx: &mut Context<Self>) {
+        self.close_ctx_menu(cx);
+        let pane = self.state.focused_tile;
+        match preset.thumbnail_size() {
+            Some(size) => self.set_pane_grid_thumbnail_size(pane, size),
+            None => self.set_pane_view_mode(pane, preset.view_mode()),
+        };
+        cx.notify();
     }
 
     pub(crate) fn run_ctx_desktop_app(
@@ -1511,7 +1648,7 @@ impl App {
         self.ctx_menu = Some(CtxMenuState {
             menu_id,
             focus,
-            input: ImmTextInputState::new(""),
+            input: DgTextInputState::new(""),
             scroll_top: 0.0,
             scroll_motion: RetainedSpring::new(0.0, Instant::now()),
             input_bounds: None,
@@ -1550,6 +1687,16 @@ impl App {
         if id == OPEN_WITH_GROUP {
             let expanded = self.ctx_menu.as_ref().is_some_and(|menu| menu.expanded.contains(&OPEN_WITH_GROUP));
             self.set_open_with_expanded(!expanded);
+            cx.notify();
+            return;
+        }
+        if id == VIEW_GROUP {
+            if let Some(menu) = self.ctx_menu.as_mut() {
+                if !menu.expanded.remove(&VIEW_GROUP) {
+                    menu.expanded.insert(VIEW_GROUP);
+                }
+                menu.scroll_to_selected = true;
+            }
             cx.notify();
             return;
         }
@@ -1658,87 +1805,109 @@ fn ctx_row_height(row: &CtxRow) -> f32 {
         | CtxRow::Atlas { .. }
         | CtxRow::Ext { .. }
         | CtxRow::Native { .. }
-        | CtxRow::DesktopApp { .. } => 30.0,
+        | CtxRow::DesktopApp { .. }
+        | CtxRow::View { .. } => 30.0,
     }
 }
 
-/// Open the native shell Properties dialog for `path`.
-/// On Windows uses `ShellExecuteExW` with the "properties" verb and
-/// `SEE_MASK_INVOKEIDLIST` so the dialog works for any file system object.
-/// No-op on non-Windows.
-#[allow(unsafe_code)]
-pub(crate) fn show_properties(path: &std::path::Path) {
-    #[cfg(windows)]
-    {
-        use windows::core::PCWSTR;
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::Shell::{
-            ShellExecuteExW, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
-        };
-        use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
-
-        let verb: Vec<u16> = "properties\0".encode_utf16().collect();
-        let file: Vec<u16> = path
-            .to_string_lossy()
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let mut info = SHELLEXECUTEINFOW {
-            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
-            fMask: SEE_MASK_INVOKEIDLIST,
-            hwnd: HWND::default(),
-            lpVerb: PCWSTR(verb.as_ptr()),
-            lpFile: PCWSTR(file.as_ptr()),
-            nShow: SW_SHOW.0,
-            ..Default::default()
-        };
-        unsafe {
-            let _ = ShellExecuteExW(&mut info);
-        }
-    }
-    #[cfg(not(windows))]
-    let _ = path;
+/// Work item for the dedicated Properties thread.
+#[cfg(windows)]
+enum PropertiesRequest {
+    Path(PathBuf),
+    Multi(Vec<PathBuf>),
+    ThisPc,
 }
 
-/// Open the shell Properties dialog for "This PC".
-#[allow(unsafe_code)]
-pub(crate) fn show_this_pc_properties() {
-    #[cfg(windows)]
-    {
-        use windows::core::PCWSTR;
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::Shell::{
-            ShellExecuteExW, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
-        };
-        use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
-
-        let verb: Vec<u16> = "properties\0".encode_utf16().collect();
-        let this_pc: Vec<u16> = "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\0"
-            .encode_utf16()
-            .collect();
-        let mut info = SHELLEXECUTEINFOW {
-            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
-            fMask: SEE_MASK_INVOKEIDLIST,
-            hwnd: HWND::default(),
-            lpVerb: PCWSTR(verb.as_ptr()),
-            lpFile: PCWSTR(this_pc.as_ptr()),
-            nShow: SW_SHOW.0,
-            ..Default::default()
-        };
-        unsafe {
-            let _ = ShellExecuteExW(&mut info);
-        }
-    }
-}
-
-/// Open the combined native Properties dialog for several paths at once
-/// (`SHMultiFileProperties`, the same sheet Explorer shows for a multi-select).
-/// Falls back to one dialog per path if the data object can't be built (e.g.
-/// items don't share a common shell parent).
+/// Queue a Properties sheet on a dedicated STA thread with its own perpetual
+/// message pump. Never open it on the gpui thread: `ShellExecuteExW` and
+/// `SHMultiFileProperties` pump messages while building the sheet, which
+/// re-enters gpui's foreground tasks while the App is already borrowed
+/// (`BorrowMutError` inside a wndproc → process abort). The pump also keeps the
+/// modeless sheet alive after the call returns.
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn show_properties_multi(paths: &[PathBuf]) {
+fn queue_properties(request: PropertiesRequest) {
+    use std::sync::mpsc::{Sender, TryRecvError};
+    use std::sync::{Mutex, OnceLock};
+    static TX: OnceLock<Mutex<Sender<PropertiesRequest>>> = OnceLock::new();
+    let tx = TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<PropertiesRequest>();
+        let spawned = std::thread::Builder::new()
+            .name("atlas-properties".into())
+            .spawn(move || unsafe {
+                use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+                use windows::Win32::UI::WindowsAndMessaging::{
+                    DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW,
+                    TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT,
+                };
+                let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+                let mut msg = MSG::default();
+                loop {
+                    loop {
+                        match rx.try_recv() {
+                            Ok(PropertiesRequest::Path(path)) => shell_properties(&path),
+                            Ok(PropertiesRequest::Multi(paths)) => multi_properties(&paths),
+                            Ok(PropertiesRequest::ThisPc) => {
+                                shell_properties_raw("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}");
+                            }
+                            Err(TryRecvError::Empty) => break,
+                            Err(TryRecvError::Disconnected) => return,
+                        }
+                    }
+                    let _ = MsgWaitForMultipleObjects(None, false, 50, QS_ALLINPUT);
+                    while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                        let _ = TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "could not start properties thread");
+        }
+        Mutex::new(tx)
+    });
+    if let Some(tx) = tx.lock().or_else(atlas_model::sync::recover).ok() {
+        let _ = tx.send(request);
+    }
+}
+
+/// `ShellExecuteExW` "properties" verb. Runs on the Properties thread only.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn shell_properties_raw(target: &str) {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Shell::{
+        ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
+
+    let verb: Vec<u16> = "properties\0".encode_utf16().collect();
+    let file: Vec<u16> = target.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_INVOKEIDLIST | SEE_MASK_FLAG_NO_UI,
+        hwnd: HWND::default(),
+        lpVerb: PCWSTR(verb.as_ptr()),
+        lpFile: PCWSTR(file.as_ptr()),
+        nShow: SW_SHOW.0,
+        ..Default::default()
+    };
+    unsafe {
+        let _ = ShellExecuteExW(&mut info);
+    }
+}
+
+#[cfg(windows)]
+fn shell_properties(path: &std::path::Path) {
+    shell_properties_raw(&path.to_string_lossy());
+}
+
+/// Combined sheet for a multi-select (`SHMultiFileProperties`, as Explorer).
+/// Falls back to one sheet per path when the data object can't be built.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn multi_properties(paths: &[PathBuf]) {
     use crate::dnd::windows::data_object::AtlasDataObject;
     use std::sync::atomic::AtomicU32;
     use windows::Win32::System::Ole::DROPEFFECT_COPY;
@@ -1748,9 +1917,30 @@ fn show_properties_multi(paths: &[PathBuf]) {
     let ok = data_obj.is_some_and(|obj| unsafe { SHMultiFileProperties(&obj, 0).is_ok() });
     if !ok {
         for path in paths {
-            show_properties(path);
+            shell_properties(path);
         }
     }
+}
+
+/// Open the native shell Properties dialog for `path` (any file system object).
+/// No-op on non-Windows.
+pub(crate) fn show_properties(path: &std::path::Path) {
+    #[cfg(windows)]
+    queue_properties(PropertiesRequest::Path(path.to_path_buf()));
+    #[cfg(not(windows))]
+    let _ = path;
+}
+
+/// Open the shell Properties dialog for "This PC".
+pub(crate) fn show_this_pc_properties() {
+    #[cfg(windows)]
+    queue_properties(PropertiesRequest::ThisPc);
+}
+
+/// Open the combined native Properties dialog for several paths at once.
+#[cfg(windows)]
+fn show_properties_multi(paths: &[PathBuf]) {
+    queue_properties(PropertiesRequest::Multi(paths.to_vec()));
 }
 
 /// Rank `titles` against `query` (best first). Standalone so it doesn't need the
@@ -1976,6 +2166,16 @@ fn raw_icon_to_texture(raw: crate::shell_menu::RawIcon) -> Option<Arc<RenderImag
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_presets_round_trip_and_snap_grid_sizes() {
+        for preset in VIEW_PRESETS {
+            let size = preset.thumbnail_size().unwrap_or(128.0);
+            assert_eq!(ViewPreset::current(&preset.view_mode(), size), *preset);
+        }
+        assert_eq!(ViewPreset::current(&ViewMode::Grid, 128.0), ViewPreset::IconsLarge);
+        assert_eq!(ViewPreset::current(&ViewMode::Grid, 384.0), ViewPreset::IconsXl);
+    }
 
     #[cfg(windows)]
     #[test]

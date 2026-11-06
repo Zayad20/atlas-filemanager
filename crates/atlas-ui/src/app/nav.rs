@@ -217,7 +217,7 @@ impl App {
             self.row_rects.borrow_mut().remove(&tab_id);
             #[cfg(windows)]
             if let Some(dnd) = &self.dnd {
-                if let Ok(mut zones) = dnd.zones.lock() {
+                if let Some(mut zones) = dnd.zones.lock().or_else(atlas_model::sync::recover).ok() {
                     match crate::ui::drag_hover::location_drop_command(&loc) {
                         crate::ui::drag_hover::DragHoverDropCommand::TransferTo(dest) => {
                             zones.set_dest_for_pane(tab_id.0, dest);

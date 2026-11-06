@@ -11,17 +11,34 @@ use std::time::Instant;
 
 impl App {
     pub(crate) fn select_spatial_panel(&mut self, direction: crate::ui::tab_reorder::PanelDirection) {
+        if let Some(id) = self.spatial_panel(direction) {
+            self.activate_tab(id);
+        }
+    }
+
+    /// Move the focused tab into the neighbouring panel's tab group (the same
+    /// tree operation as dropping a tab on another panel). The source group is
+    /// removed when it empties.
+    pub(crate) fn move_tab_to_spatial_panel(&mut self, direction: crate::ui::tab_reorder::PanelDirection) {
+        let Some(target) = self.spatial_panel(direction) else { return; };
+        let cur = self.state.focused_tile;
+        if self.state.find_tabs_container(cur) == self.state.find_tabs_container(target) {
+            return;
+        }
+        self.move_tab_before(cur, target);
+        self.activate_tab(cur);
+    }
+
+    fn spatial_panel(&self, direction: crate::ui::tab_reorder::PanelDirection) -> Option<TileId> {
         let center = |id: TileId| self.pane_layout_bounds.get(&id).map(|b| (
             f32::from(b.origin.x + b.size.width / 2.0),
             f32::from(b.origin.y + b.size.height / 2.0),
         ));
-        let Some(origin) = center(self.state.focused_tile) else { return; };
+        let origin = center(self.state.focused_tile)?;
         let panes = self.state.pane_tree.visible_panes().into_iter()
             .filter(|id| !self.pane_closing.contains_key(id) && !self.tab_closing.contains_key(id))
             .filter_map(|id| center(id).map(|p| (id, p)));
-        if let Some(id) = crate::ui::tab_reorder::spatial_neighbor(origin, panes, direction) {
-            self.activate_tab(id);
-        }
+        crate::ui::tab_reorder::spatial_neighbor(origin, panes, direction)
     }
 
     pub(crate) fn even_panels(&mut self, all: bool) {
@@ -1191,7 +1208,7 @@ impl App {
         self.reconcile_tree_state();
     }
 
-    pub(crate) fn start_alt_resize(
+    pub(crate) fn start_hyprland_resize(
         &mut self,
         pane_id: TileId,
         pos: gpui::Point<gpui::Pixels>,

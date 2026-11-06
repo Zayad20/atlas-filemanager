@@ -74,7 +74,7 @@ fn visit<'s>(shared: &'s Shared<'s>, scope: &rayon::Scope<'s>, path: PathBuf, id
         return;
     }
     if depth >= MAX_DEPTH || path.as_os_str().len() > 16_384 {
-        shared.builder.lock().unwrap().limited = true;
+        shared.builder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).limited = true;
         return;
     }
     let mut dirs: Vec<(String, PathBuf)> = Vec::new();
@@ -108,7 +108,7 @@ fn visit<'s>(shared: &'s Shared<'s>, scope: &rayon::Scope<'s>, path: PathBuf, id
     shared.control.files.fetch_add(files, Ordering::Relaxed);
     shared.control.bytes.fetch_add(bytes, Ordering::Relaxed);
     let children: Vec<u32> = {
-        let mut builder = shared.builder.lock().unwrap();
+        let mut builder = shared.builder.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         builder.skipped += skipped;
         if result.is_err() {
             builder.errors += 1;

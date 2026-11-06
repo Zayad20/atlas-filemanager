@@ -45,7 +45,7 @@ pub(crate) struct DetailsBodyElement {
     font: Font,
     font_size: Pixels,
     dragging: Option<DetailsColumn>,
-    row_motion: gpui::Entity<crate::ui::imm::motion::RowMotion<std::path::PathBuf>>,
+    row_motion: gpui::Entity<crate::ui::dg::motion::RowMotion<std::path::PathBuf>>,
     style: StyleRefinement,
 }
 
@@ -76,7 +76,7 @@ impl DetailsBodyElement {
         font: Font,
         font_size: Pixels,
         dragging: Option<DetailsColumn>,
-        row_motion: gpui::Entity<crate::ui::imm::motion::RowMotion<std::path::PathBuf>>,
+        row_motion: gpui::Entity<crate::ui::dg::motion::RowMotion<std::path::PathBuf>>,
     ) -> Self {
         Self {
             id: ElementId::Name(SharedString::from(format!("details-body-{}", pane_id.0))),
@@ -187,7 +187,7 @@ impl Element for DetailsBodyElement {
         let viewport_h = f32::from(viewport_bounds.size.height);
         // Smooth scrolling advances after render; shape and hit-test the range
         // that is actually on screen in this prepaint pass.
-        let (start_idx, end_idx) = crate::ui::imm::scroll::live_span(
+        let (start_idx, end_idx) = crate::ui::dg::scroll::live_span(
             scroll_y, scroll_y + viewport_h, row_h, 2, visible.len(),
         );
         let layout = self.layout.clone();
@@ -602,7 +602,7 @@ impl Element for DetailsBodyElement {
             gpui::SharedString::from(format!("details-row-presence-{}", pane_id.0)),
             cx,
             |_, _| {
-                crate::ui::imm::motion::PresenceMotion::<
+                crate::ui::dg::motion::PresenceMotion::<
                     std::path::PathBuf,
                     (DetailsRowSlot, f32, f32),
                 >::new()
@@ -623,7 +623,7 @@ impl Element for DetailsBodyElement {
                 (path.clone(), (row, y, opacity))
             })
             .collect();
-        let presence_epoch = crate::ui::imm::motion::presentation_epoch(
+        let presence_epoch = crate::ui::dg::motion::presentation_epoch(
             epoch,
             &[
                 scroll_y,
@@ -1078,7 +1078,7 @@ mod tests {
         let viewport = [0.0, 24.0, 400.0];
         let full = [("a", 0, 0.0), ("b", 1, 24.0)];
         let epoch = row_content_epoch(&tab, None);
-        let mut motion = crate::ui::imm::motion::RowMotion::new(epoch, viewport);
+        let mut motion = crate::ui::dg::motion::RowMotion::new(epoch, viewport);
         motion.sample(&full, epoch, viewport, false, now);
         tab.filter = "b".into();
         let filtered_epoch = row_content_epoch(&tab, None);

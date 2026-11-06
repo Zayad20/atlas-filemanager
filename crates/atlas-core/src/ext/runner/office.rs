@@ -22,10 +22,10 @@ pub(crate) fn builtin_document_preview(
         "docx" => crate::fs::preview::document::preview_docx(path),
         "pptx" => pptx_preview(path),
         "pdf" => {
-            let Some(tool) = tools.get("pdftoppm") else {
-                return PreviewResult::Error("Preview unavailable: pdftoppm not found".into());
-            };
-            crate::fs::preview::preview_pdf_with_pdftoppm(path, tool)
+            match tools.get("pdftoppm") {
+                Some(tool) => crate::fs::preview::preview_pdf_with_pdftoppm(path, tool),
+                None => crate::fs::preview::preview_pdf_public(path),
+            }
         }
         "psd" | "psb" => {
             if let Some(tool) = tools.get("magick") {

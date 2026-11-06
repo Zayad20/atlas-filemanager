@@ -160,10 +160,18 @@ opt-level = 1
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-strip = true
-panic = "abort"
+# Function + line tables go to a separate atlas.pdb that is archived per
+# version by scripts/build-release.ps1 and never packaged; user crash stacks
+# are symbolized offline with scripts/symbolize-crash.py. The exe only keeps
+# the PDB file name (/PDBALTPATH in scripts/winfsp-build.rs).
+debug = "line-tables-only"
+strip = "none"
+# Unwind (not abort): a panic on a worker thread becomes a recoverable task
+# error instead of killing the process. Panics that escape the UI thread still
+# terminate, through the crash reporter.
+panic = "unwind"
 
-# Iterative performance build: keeps release optimization and abort semantics,
+# Iterative performance build: keeps release optimization and panic semantics,
 # but trades final-binary optimization for much faster atlas-ui recompiles.
 # It lives in target/release-perf, so it never contaminates the definitive
 # target/release artifact.

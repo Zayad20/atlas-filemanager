@@ -14,7 +14,7 @@ use std::time::Instant;
 
 #[derive(Clone, PartialEq)]
 pub(super) struct WheelOption {
-    pub label: &'static str,
+    pub label: gpui::SharedString,
     pub available: bool,
     pub engine: String,
 }
@@ -127,8 +127,10 @@ impl Render for WheelView {
                 t.secondary,
             )
         };
+        // Glass sectors sit on a frosted disc (below), so a light veil is
+        // enough; a bare translucent fill let file names read through.
         let sector_fill = if is_glass {
-            fg.opacity(if dark { 0.30 } else { 0.20 })
+            fg.opacity(if dark { 0.16 } else { 0.12 })
         } else {
             secondary.opacity(if dark { 0.97 } else { 0.92 })
         };
@@ -144,6 +146,10 @@ impl Render for WheelView {
             .relative()
             .size(px(diameter))
             .rounded_full()
+            .when(is_glass, |s| {
+                s.bg(popover.opacity(halo * if dark { 0.62 } else { 0.70 }))
+                    .backdrop_blur(px(18.0 * scale))
+            })
             .shadow(vec![gpui::BoxShadow {
                 color: gpui::hsla(0., 0., 0., halo * if dark { 0.30 } else { 0.16 }).into(),
                 offset: gpui::point(px(0.0), px(5.0 * scale)),
@@ -171,7 +177,7 @@ impl Render for WheelView {
             for local in 0..ring.len {
                 let index = ring.start + local;
                 let option = &options[index];
-                let label = option.label;
+                let label = option.label.clone();
                 let size = ((if k == 0 { 15. } else { 13. })
                     * if label.len() > 4 { 0.84 } else { 1.0 }
                     * scale)
@@ -205,7 +211,7 @@ impl Render for WheelView {
         }
 
         let option = &options[selected];
-        let label = option.label;
+        let label = option.label.clone();
         let enabled = option.available;
         let engine_name = option.engine.clone();
         let engine_needed = self.props.engine_needed.clone();

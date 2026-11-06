@@ -1300,3 +1300,49 @@ fn native_text_and_docx_roundtrip_without_an_office_runtime() {
         "Primera línea\nA < B & C\n"
     );
 }
+
+#[test]
+fn wheel_offers_provider_installed_engines_only_when_installed() {
+    let source = PathBuf::from("notes.rst");
+    let mut tools = Tools::default();
+    // Pandoc on PATH alone is not a provider package: still hidden.
+    tools.0.insert(Tool::Pandoc, PathBuf::from("pandoc"));
+    assert!(wheel_options(&[source.clone()], &tools, &[]).is_empty());
+    let routes = wheel_options(&[source.clone()], &tools, &[Tool::Pandoc]);
+    assert!(routes.iter().any(|o| o.target.extension == "docx" && o.available()));
+    assert!(routes.iter().all(|o| o.missing.is_empty()));
+    // Not installed: no sector, but the provider is offered as locked.
+    let empty = Tools::default();
+    assert!(wheel_options(&[source.clone()], &empty, &[]).is_empty());
+    assert_eq!(
+        locked_engines(&[source.clone()], &empty, &[], &[Tool::Pandoc]),
+        [Tool::Pandoc]
+    );
+    assert!(locked_engines(&[source], &empty, &[], &[]).is_empty());
+    // Heavy engines without a provider never leak through the extra list.
+    let mut all = Tools::default();
+    for tool in Tool::ALL {
+        all.0.insert(tool, PathBuf::from(tool.executable()));
+    }
+    for option in wheel_options(&[PathBuf::from("a.heic")], &all, &[Tool::Pandoc]) {
+        assert!(!option.engines.contains(&"ImageMagick"));
+    }
+}
+
+#[test]
+fn managed_by_matches_provider_paths_and_portable_names() {
+    let mut tools = Tools::default();
+    tools.0.insert(Tool::Pandoc, PathBuf::from("C:/ext/pandoc.exe"));
+    tools.0.insert(Tool::Ghostscript, PathBuf::from("C:/ext/gs.exe"));
+    tools.0.insert(Tool::Ffmpeg, PathBuf::from("C:/path/ffmpeg.exe"));
+    let managed: std::collections::HashMap<String, PathBuf> = [
+        ("pandoc".to_string(), PathBuf::from("C:/ext/pandoc.exe")),
+        ("gs".to_string(), PathBuf::from("C:/ext/gs.exe")),
+        ("ffmpeg".to_string(), PathBuf::from("C:/ext/other-ffmpeg.exe")),
+    ]
+    .into_iter()
+    .collect();
+    let mut found = tools.managed_by(&managed);
+    found.sort();
+    assert_eq!(found, [Tool::Pandoc, Tool::Ghostscript]);
+}

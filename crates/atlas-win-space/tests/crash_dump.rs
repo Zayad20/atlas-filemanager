@@ -2,12 +2,10 @@
 #![cfg(windows)]
 #![allow(unsafe_code)]
 
-#[test]
-fn crash_child() {
-    if std::env::var_os("ATLAS_TEST_NATIVE_CRASH").is_none() {
-        return;
-    }
-    atlas_win_space::crash::install().unwrap();
+/// Kept out of line: this package builds tests optimized, and an inlined
+/// frame would resolve to the harness closure instead of this file.
+#[inline(never)]
+fn raise_native_exception() {
     unsafe {
         windows_sys::Win32::System::Diagnostics::Debug::SetErrorMode(0x0001 | 0x0002);
         windows_sys::Win32::System::Diagnostics::Debug::RaiseException(
@@ -17,6 +15,18 @@ fn crash_child() {
             std::ptr::null(),
         );
     }
+    // Work after the call stops it compiling to a tail jump, which would
+    // drop this frame from the stack.
+    std::hint::black_box(());
+}
+
+#[test]
+fn crash_child() {
+    if std::env::var_os("ATLAS_TEST_NATIVE_CRASH").is_none() {
+        return;
+    }
+    atlas_win_space::crash::install().unwrap();
+    raise_native_exception();
 }
 
 #[test]
@@ -44,6 +54,11 @@ fn native_exception_produces_a_minidump_in_isolated_app_data() {
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .collect();
+    // The unclean-exit sentinel is expected: the child never exits cleanly.
+    let (sentinels, files): (Vec<_>, Vec<_>) = files
+        .into_iter()
+        .partition(|path| path.to_string_lossy().ends_with(".lock"));
+    assert_eq!(sentinels.len(), 1, "child must leave its session sentinel");
     let dumps: Vec<_> = files
         .iter()
         .filter(|path| path.extension().is_some_and(|ext| ext == "dmp"))
@@ -62,11 +77,11 @@ fn native_exception_produces_a_minidump_in_isolated_app_data() {
     assert!(stack.starts_with("0x"));
     assert!(stack.contains("module=0x"));
     if cfg!(debug_assertions) {
-        assert!(stack.contains("crash_child"), "local PDB must resolve the faulting test: {stack}");
+        assert!(stack.contains("raise_native_exception"), "local PDB must resolve the faulting test: {stack}");
         assert!(stack.contains("crash_dump.rs:"), "source filename and line must be resolved: {stack}");
     }
     assert_eq!(files.len(), 2);
-    for file in files {
+    for file in files.into_iter().chain(sentinels) {
         std::fs::remove_file(file).unwrap();
     }
     std::fs::remove_dir(root.join("Atlas/Crashes")).unwrap();

@@ -349,7 +349,7 @@ pub fn start_drag_real(hwnd_raw: isize, paths: &[PathBuf], allowed: DROPEFFECT) 
 
 fn push_event(queue: Option<&DndQueue>, event: DndEvent) {
     if let Some(q) = queue {
-        if let Ok(mut q) = q.lock() {
+        if let Some(mut q) = q.lock().or_else(atlas_model::sync::recover).ok() {
             q.push(event);
             crate::ui_wake::wake();
         }

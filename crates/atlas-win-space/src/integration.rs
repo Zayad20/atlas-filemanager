@@ -199,7 +199,28 @@ pub fn win_e_enabled() -> io::Result<bool> {
     owned(&target, &backup)
 }
 pub fn set_win_e_enabled(enabled: bool) -> io::Result<()> {
-    set_enabled_at(TARGET, BACKUP, &std::env::current_exe()?, enabled)
+    set_enabled_at(TARGET, BACKUP, &launch_executable()?, enabled)
+}
+/// MSIX installs live under `WindowsApps`, which Explorer cannot launch
+/// directly; the package's execution alias is the stable launchable path.
+fn launch_executable() -> io::Result<std::path::PathBuf> {
+    if is_packaged() {
+        let local = std::env::var_os("LOCALAPPDATA")
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is not set"))?;
+        let alias = Path::new(&local).join(r"Microsoft\WindowsApps\atlas.exe");
+        if alias.exists() {
+            return Ok(alias);
+        }
+    }
+    std::env::current_exe()
+}
+pub fn is_packaged() -> bool {
+    use windows_sys::Win32::{
+        Foundation::ERROR_INSUFFICIENT_BUFFER,
+        Storage::Packaging::Appx::GetCurrentPackageFullName,
+    };
+    let mut len = 0;
+    unsafe { GetCurrentPackageFullName(&mut len, std::ptr::null_mut()) == ERROR_INSUFFICIENT_BUFFER }
 }
 fn set_enabled_at(
     target_path: &str,

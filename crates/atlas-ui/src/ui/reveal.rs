@@ -1,5 +1,5 @@
 //! Measured, clipped disclosure. Child geometry remains natural during resize.
-use crate::ui::imm::motion::RetainedSpring;
+use crate::ui::dg::motion::RetainedSpring;
 use gpui::{
     canvas, div, prelude::*, px, AnyElement, App, Hsla, IntoElement, RenderOnce, SharedString,
     Window,

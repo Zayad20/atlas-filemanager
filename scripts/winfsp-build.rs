@@ -3,6 +3,17 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
+    // The 1 MiB default main-thread stack overflows inside deep gpui layout
+    // recursion (debug builds reliably, release builds on big trees). The
+    // reservation is virtual; only touched pages are committed. This script is
+    // shared with lib-only crates, where `-bins` link args are rejected.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+        && std::env::var("CARGO_PKG_NAME").as_deref() == Ok("atlas")
+    {
+        println!("cargo:rustc-link-arg-bins=/STACK:16777216");
+        // Embed only the PDB's file name, not the build machine's path.
+        println!("cargo:rustc-link-arg-bins=/PDBALTPATH:%_PDB%");
+    }
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let dll = match arch.as_str() {
         "x86_64" => "winfsp-x64.dll",

@@ -16,7 +16,12 @@ pub(crate) struct CommandShortcutPrefs {
 }
 
 impl CommandShortcutPrefs {
-    fn shortcut_string(&self, command_id: &str) -> Option<String> {
+    /// Whether the user overrode (or removed) this command's shortcut.
+    pub(crate) fn customized(&self, command_id: &str) -> bool {
+        self.bindings.contains_key(command_id)
+    }
+
+    pub(crate) fn shortcut_string(&self, command_id: &str) -> Option<String> {
         match self.bindings.get(command_id) {
             Some(Some(keys)) if Keystroke::parse(keys).is_ok() => Some(keys.clone()),
             Some(Some(_)) | Some(None) => None,
@@ -58,7 +63,7 @@ const RESERVED_STATIC_SHORTCUTS: &[&str] = &[
 ];
 
 /// A focused search input resolves these keys into actions before key listeners.
-/// The palette installs this adapter; IMM forwards raw keys to the same capture state.
+/// The palette installs this adapter; DG forwards raw keys to the same capture state.
 pub(crate) fn capture_shortcut_input_actions<E: InteractiveElement>(
     element: E,
     cx: &mut Context<App>,
@@ -356,6 +361,25 @@ impl App {
         self.command_shortcut_capture = None;
     }
 
+    /// Drop the user's override so the command uses its built-in shortcut.
+    pub(crate) fn reset_command_shortcut(&mut self, command_id: &str) {
+        self.command_shortcut_conflict = None;
+        let mut prefs = self.state.profiles.active().scoped::<CommandShortcuts>();
+        if prefs.bindings.remove(command_id).is_none() {
+            return;
+        }
+        self.state
+            .profiles
+            .active_mut()
+            .set_scoped::<CommandShortcuts>(&prefs);
+        atlas_core::util::config::save_profiles(&self.state.profiles);
+    }
+
+    /// The active profile's shortcut overrides (read once per frame by lists).
+    pub(crate) fn command_shortcut_prefs(&self) -> CommandShortcutPrefs {
+        self.state.profiles.active().scoped::<CommandShortcuts>()
+    }
+
     /// Shared by palette/menu key listeners and input actions (which GPUI
     /// dispatches before raw key listeners). Never executes the command.
     pub(crate) fn capture_command_shortcut(&mut self, keystroke: &str) -> bool {
@@ -464,6 +488,10 @@ impl App {
             "pane.focus-below" => Some(Action::SelectPanelBelow),
             "pane.even-siblings" => Some(Action::EvenPanelSiblings),
             "pane.even-all" => Some(Action::EvenAllPanes),
+            "pane.move-left" => Some(Action::MoveTabToPanel(crate::ui::tab_reorder::PanelDirection::Left)),
+            "pane.move-right" => Some(Action::MoveTabToPanel(crate::ui::tab_reorder::PanelDirection::Right)),
+            "pane.move-above" => Some(Action::MoveTabToPanel(crate::ui::tab_reorder::PanelDirection::Above)),
+            "pane.move-below" => Some(Action::MoveTabToPanel(crate::ui::tab_reorder::PanelDirection::Below)),
             "folder.inherit-view" => Some(Action::ToggleFolderViewRecursive),
             "nav.back" => Some(Action::NavigateBack(focused)),
             "nav.forward" => Some(Action::NavigateForward(focused)),

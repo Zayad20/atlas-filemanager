@@ -3,8 +3,41 @@
 //!
 //! Moved here from the legacy `src/{fs,cloud,ext,search,util}` trees (Phase J); the
 //! binary re-exports each as `crate::{fs,cloud,ext,search,util}` via shims.
+// Panic-free stdio: std's print macros panic when the stream is a closed
+// pipe, and a panic aborts the whole GUI process. These shadow the prelude
+// macros for every module of this crate and drop write errors instead.
+#[allow(unused_macros)]
+macro_rules! println {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::writeln!(::std::io::stdout(), $($arg)*);
+    }};
+}
+#[allow(unused_macros)]
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::writeln!(::std::io::stderr(), $($arg)*);
+    }};
+}
+#[allow(unused_macros)]
+macro_rules! print {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::write!(::std::io::stdout(), $($arg)*);
+    }};
+}
+#[allow(unused_macros)]
+macro_rules! eprint {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::write!(::std::io::stderr(), $($arg)*);
+    }};
+}
+
 
 pub mod convert;
+pub mod crash_report;
 pub mod cleanup;
 pub mod ext;
 pub mod fs;

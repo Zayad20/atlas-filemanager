@@ -5,6 +5,38 @@
 //!
 // reason: gpui's actions! macro derives PartialEq (not Eq) on every action struct.
 #![allow(clippy::derive_partial_eq_without_eq)]
+// Panic-free stdio: std's print macros panic when the stream is a closed
+// pipe, and a panic aborts the whole GUI process. These shadow the prelude
+// macros for every module of this crate and drop write errors instead.
+#[allow(unused_macros)]
+macro_rules! println {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::writeln!(::std::io::stdout(), $($arg)*);
+    }};
+}
+#[allow(unused_macros)]
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::writeln!(::std::io::stderr(), $($arg)*);
+    }};
+}
+#[allow(unused_macros)]
+macro_rules! print {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::write!(::std::io::stdout(), $($arg)*);
+    }};
+}
+#[allow(unused_macros)]
+macro_rules! eprint {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::write!(::std::io::stderr(), $($arg)*);
+    }};
+}
+
 
 rust_i18n::i18n!("locales", fallback = "en");
 
@@ -193,6 +225,10 @@ pub fn run(
         .clone()
         .unwrap_or_else(|| "en".to_string());
     rust_i18n::set_locale(&lang);
+    // Build the translation backend now, on a shallow stack. Left lazy, its
+    // large init frame lands at the bottom of the first window's layout
+    // recursion and overflows the main thread.
+    let _ = rust_i18n::available_locales!();
     tracing::info!(
         total_ms = app_started.elapsed().as_millis(),
         phase_ms = run_started.elapsed().as_millis(),
@@ -341,7 +377,19 @@ pub fn run(
                 #[cfg(feature = "ui-lab")]
                 if std::env::var_os("ATLAS_PREVIEW_LAB").is_some() { return std::future::ready(()); }
                 weak_app.update(cx, |app, _cx| app.save_on_quit()).ok();
+                // OS end-session exits the process from inside gpui, so this,
+                // not the end of `main`, is the last orderly point.
+                #[cfg(windows)]
+                atlas_win_space::crash::mark_clean_exit();
                 std::future::ready(())
+            })
+            .detach();
+            let checkpoint_app = view.downgrade();
+            cx.spawn(async move |cx| loop {
+                cx.background_executor().timer(std::time::Duration::from_secs(60)).await;
+                if checkpoint_app.update(cx, |app, _| app.autosave_checkpoint()).is_err() {
+                    break;
+                }
             })
             .detach();
             // The top-level window view must be `Root` (mount point for

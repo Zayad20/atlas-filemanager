@@ -45,4 +45,4 @@
 ### 立即體驗現代檔案管理的極致魅力
 告別緩慢、臃腫與隱私疑慮。立即下載 **Atlas 檔案總管**，開啟前所未有的極速檔案管理新紀元！
 
-原始碼 (AGPL-3.0-or-later): https://github.com/neondeex/atlas-filemanager
+原始碼 (AGPL-3.0-or-later): https://atlasfm.modhyt.org/source-code

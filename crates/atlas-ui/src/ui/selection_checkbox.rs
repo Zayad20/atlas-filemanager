@@ -101,7 +101,7 @@ pub(crate) enum CheckState {
     Checked,
 }
 
-/// IMM control form, including the indeterminate state used by table headers.
+/// DG control form, including the indeterminate state used by table headers.
 pub(crate) fn paint_control(
     window: &mut Window,
     cx: &mut gpui::App,
