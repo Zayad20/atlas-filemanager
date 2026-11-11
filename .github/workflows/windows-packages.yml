@@ -1,0 +1,131 @@
+name: Windows packages
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      edition:
+        type: string
+        default: full
+      source-url:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: EXE installer and MSIX x64
+    runs-on: windows-latest
+    env:
+      ATLAS_VERSION: ${{ inputs.version }}
+      ATLAS_RELEASE_VERSION: ${{ inputs.version }}
+      ATLAS_EDITION: ${{ inputs.edition }}
+      ATLAS_POLAR_ORG_ID: eec2eec8-cbfd-4967-ba65-ca98e824cce0
+      INPUT_SOURCE_URL: ${{ inputs.source-url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.97.1'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Validate package inputs and notices
+        shell: pwsh
+        run: |
+          python -c "import os,sys; sys.path.insert(0,'scripts'); from linux_release import validate_version; v=validate_version(os.environ['ATLAS_VERSION']); parts=v.split('-')[0].split('.'); assert all(int(x)<=65535 for x in parts), 'MSIX version exceeds 65535'; assert os.environ['ATLAS_EDITION'] in ('free','full'); open(os.environ['GITHUB_ENV'],'a').write('ATLAS_MSIX_VERSION='+'.'.join(parts)+'.0'+chr(10))"
+          if ($LASTEXITCODE -ne 0) { throw 'Invalid package inputs' }
+          if (-not $env:INPUT_SOURCE_URL) { $env:INPUT_SOURCE_URL = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID" }
+          "ATLAS_SOURCE_URL=$env:INPUT_SOURCE_URL" >> $env:GITHUB_ENV
+          python scripts/generate-third-party.py --verify-release --scope desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop notice verification failed' }
+      - name: Prepare matching corresponding source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force target/source | Out-Null
+          cargo vendor --locked --versioned-dirs "target/source-release-$env:ATLAS_VERSION/vendor-registry" | Set-Content -Encoding utf8 target/source-vendor-config.toml
+          if ($LASTEXITCODE -ne 0) { throw 'Cargo vendoring failed' }
+          python scripts/build-source-release.py --version "$env:ATLAS_VERSION" --source-url "$env:ATLAS_SOURCE_URL"
+          if ($LASTEXITCODE -ne 0) { throw 'Source archive preparation failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-source
+          path: target/source/*
+          if-no-files-found: error
+      - name: Build optimized binaries once
+        shell: pwsh
+        run: |
+          $features = @()
+          if ($env:ATLAS_EDITION -eq 'free') { $features = @('--features', 'free') }
+          cargo build --release --locked -p atlas -p atlas-search-service -p atlas-cloud-extension -p atlas-icon-extension @features
+          if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
+          & ./target/release/atlas.exe --version
+          if ($LASTEXITCODE -ne 0) { throw 'Release binary did not start' }
+      - name: Install packaging compiler
+        run: choco install innosetup --no-progress -y
+      - name: Build direct-download installer
+        shell: pwsh
+        run: |
+          ./scripts/build-windows-installer.ps1 -Version "$env:ATLAS_VERSION" -SkipBuild
+          New-Item -ItemType Directory -Force target/windows-dist/installer | Out-Null
+          Copy-Item "target/installer/AtlasSetup-$env:ATLAS_VERSION.exe" target/windows-dist/installer/
+      - name: Build unsigned MSIX for Store submission or external signing
+        shell: pwsh
+        run: |
+          ./scripts/build-windows-msix.ps1 -Version "$env:ATLAS_MSIX_VERSION" -ReleaseVersion "$env:ATLAS_VERSION" -Edition "$env:ATLAS_EDITION" -SkipBuild
+          New-Item -ItemType Directory -Force target/windows-dist/msix-unsigned | Out-Null
+          Copy-Item "target/msix/Atlas_$($env:ATLAS_MSIX_VERSION)_x64.msix" "target/windows-dist/msix-unsigned/Atlas_$($env:ATLAS_MSIX_VERSION)_x64_store-unsigned.msix"
+      - name: Build test-signed MSIX and export only its public certificate
+        shell: pwsh
+        run: |
+          ./scripts/build-windows-msix.ps1 -Version "$env:ATLAS_MSIX_VERSION" -ReleaseVersion "$env:ATLAS_VERSION" -Edition "$env:ATLAS_EDITION" -SkipBuild -SignForLocalTesting
+          New-Item -ItemType Directory -Force target/windows-dist/msix-test | Out-Null
+          Copy-Item "target/msix/Atlas_$($env:ATLAS_MSIX_VERSION)_x64.msix" "target/windows-dist/msix-test/Atlas_$($env:ATLAS_MSIX_VERSION)_x64_test-signed.msix"
+          Copy-Item target/msix/AtlasDev.cer target/windows-dist/msix-test/
+          Copy-Item docs/install-test-msix.ps1 target/windows-dist/msix-test/Install-TestPackage.ps1
+      - name: Verify installer in isolated runner directory
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP 'atlas-installer-test'
+          $setup = Resolve-Path "target/installer/AtlasSetup-$env:ATLAS_VERSION.exe"
+          $process = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS=""', "/DIR=`"$installDir`"" -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
+          & (Join-Path $installDir 'atlas.exe') --version
+          if ($LASTEXITCODE -ne 0) { throw 'Installed executable failed to start' }
+          foreach ($name in @('atlas-search-service.exe','atlas-cloud-extension.exe','atlas-icon-extension.exe','rclone.exe','UnRAR.exe','THIRD-PARTY-NOTICES.txt')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $installDir $name))) { throw "Installed payload is incomplete: $name" }
+          }
+          $process = Start-Process -FilePath (Join-Path $installDir 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode -ne 0) { throw "Uninstaller failed: $($process.ExitCode)" }
+      - name: Package instructions and checksums
+        shell: pwsh
+        run: |
+          Copy-Item docs/package-downloads.md target/windows-dist/installer/README.md
+          Copy-Item docs/package-downloads.md target/windows-dist/msix-unsigned/README.md
+          Copy-Item docs/package-downloads.md target/windows-dist/msix-test/README.md
+          python -c "import sys; from pathlib import Path; sys.path.insert(0,'scripts'); from linux_release import write_checksums; [write_checksums(p) for p in Path('target/windows-dist').iterdir() if p.is_dir()]"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-windows-installer-x86_64
+          path: target/windows-dist/installer/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-windows-msix-store-unsigned-x86_64
+          path: target/windows-dist/msix-unsigned/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-msix-windows-x86_64
+          path: target/windows-dist/msix-test/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: debug-symbols-windows
+          path: symbols/
+          if-no-files-found: ignore

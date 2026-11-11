@@ -1,0 +1,28 @@
+name: Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Candidate version present in CHANGELOG.md (does not publish a release)
+        required: true
+        default: '0.1.5'
+      edition:
+        description: Windows edition (free for Store baseline, full for unrestricted builds)
+        type: choice
+        options: [full, free]
+        default: full
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    uses: ./.github/workflows/windows-packages.yml
+    with:
+      version: ${{ inputs.version }}
+      edition: ${{ inputs.edition }}
+  linux:
+    uses: ./.github/workflows/linux-packages.yml
+    with:
+      version: ${{ inputs.version }}
