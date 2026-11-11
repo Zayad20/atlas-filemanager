@@ -1,12 +1,12 @@
+pub mod desktop_apps;
+pub mod dir_stats;
 pub mod index;
 pub mod list;
-pub mod scan_policy;
-pub mod dir_stats;
 pub mod mounts;
 pub mod paths;
+pub mod scan_policy;
 pub mod tag_db;
 pub mod udisks;
-pub mod desktop_apps;
 
 pub mod compress;
 pub mod ops;

@@ -29,8 +29,7 @@ fn winfsp_service_running() -> bool {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
     }
-    let Ok(output) = cmd.output()
-    else {
+    let Ok(output) = cmd.output() else {
         return false;
     };
     output.status.success()
@@ -83,10 +82,7 @@ pub async fn install_winfsp(progress: impl Fn(u64, u64) + Send + 'static) -> any
     cmd.args(["/i", &msi_path.to_string_lossy(), "/passive", "/norestart"]);
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
-    let status = cmd
-        .status()
-        .await
-        .context("run msiexec")?;
+    let status = cmd.status().await.context("run msiexec")?;
 
     if !status.success() {
         return Err(anyhow::anyhow!(

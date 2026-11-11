@@ -183,7 +183,10 @@ pub enum Action {
         dir: SortDir,
     },
     SetGroupBy(atlas_model::tab::GroupBy),
-    ToggleGroup { tab: TabId, id: String },
+    ToggleGroup {
+        tab: TabId,
+        id: String,
+    },
     /// Open (`false`) or close (`true`) every group of the focused pane.
     SetAllGroupsCollapsed(bool),
     OpenGotoBar,

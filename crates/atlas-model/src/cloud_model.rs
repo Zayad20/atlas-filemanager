@@ -132,7 +132,10 @@ pub enum TransferKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RemoteSource { pub id: RemoteId, pub path: String }
+pub struct RemoteSource {
+    pub id: RemoteId,
+    pub path: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransferState {
@@ -150,7 +153,10 @@ pub enum TransferState {
 
 impl TransferState {
     pub const fn is_terminal(&self) -> bool {
-        matches!(self, Self::Done | Self::Failed(_) | Self::Cancelled | Self::Interrupted(_))
+        matches!(
+            self,
+            Self::Done | Self::Failed(_) | Self::Cancelled | Self::Interrupted(_)
+        )
     }
 }
 
@@ -190,5 +196,8 @@ impl Transfer {
 pub type TransferSnapshot = Vec<Transfer>;
 
 pub fn preview_key(account: &str, generation: u64, path: &std::path::Path) -> PathBuf {
-    PathBuf::from(format!("remote-preview:{account}/{generation}/{}", path.to_string_lossy()))
+    PathBuf::from(format!(
+        "remote-preview:{account}/{generation}/{}",
+        path.to_string_lossy()
+    ))
 }

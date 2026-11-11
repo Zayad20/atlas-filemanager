@@ -40,7 +40,9 @@ pub fn list_drives() -> Vec<DriveInfo> {
     let cache_arc = DRIVE_CACHE
         .get_or_init(|| Arc::new(Mutex::new(None)))
         .clone();
-    let mut cache = cache_arc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cache = cache_arc
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     if let Some((last_update, drives, is_updating)) = &mut *cache {
         if last_update.elapsed() < Duration::from_secs(5) {

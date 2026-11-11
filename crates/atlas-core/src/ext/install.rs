@@ -145,9 +145,14 @@ fn retire_in(base: &Path, ids: &[&str]) -> Vec<String> {
     }
     if handled.len() != done.lines().count() {
         let _ = std::fs::create_dir_all(base);
-        if let Err(error) = std::fs::write(&marker, handled.join("
-") + "
-") {
+        if let Err(error) = std::fs::write(
+            &marker,
+            handled.join(
+                "
+",
+            ) + "
+",
+        ) {
             tracing::warn!("could not record retired extensions: {error}");
         }
     }
@@ -204,8 +209,15 @@ pub fn ensure_asset(id: &str, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
 /// Seed the official icon provider from the application package on first use.
 /// This runs on the extension worker, preserving confined sidecar execution.
 pub(crate) fn ensure_packaged_icon_provider(directory: &Path) -> anyhow::Result<()> {
-    let filename = if cfg!(windows) { "atlas-icon-extension.exe" } else { "atlas-icon-extension" };
-    let source = std::env::current_exe()?.parent().context("application has no directory")?.join(filename);
+    let filename = if cfg!(windows) {
+        "atlas-icon-extension.exe"
+    } else {
+        "atlas-icon-extension"
+    };
+    let source = std::env::current_exe()?
+        .parent()
+        .context("application has no directory")?
+        .join(filename);
     let target = directory.join(filename);
     if !source.is_file() && target.is_file() {
         return Ok(()); // Independently installed provider in a development build.
@@ -216,17 +228,25 @@ pub(crate) fn ensure_packaged_icon_provider(directory: &Path) -> anyhow::Result<
 fn copy_packaged_program(source: &Path, target: &Path) -> anyhow::Result<()> {
     use sha2::{Digest as _, Sha256};
     use std::io::Write as _;
-    let bytes = std::fs::read(source).context("Packaged icon provider is missing; reinstall Atlas or the official icon extension")?;
-    if std::fs::read(target).is_ok_and(|current| Sha256::digest(&current) == Sha256::digest(&bytes)) {
+    let bytes = std::fs::read(source).context(
+        "Packaged icon provider is missing; reinstall Atlas or the official icon extension",
+    )?;
+    if std::fs::read(target).is_ok_and(|current| Sha256::digest(&current) == Sha256::digest(&bytes))
+    {
         return Ok(());
     }
-    let directory = target.parent().context("provider has no destination directory")?;
+    let directory = target
+        .parent()
+        .context("provider has no destination directory")?;
     std::fs::create_dir_all(directory)?;
     let mut staged = tempfile::NamedTempFile::new_in(directory)?;
     staged.write_all(&bytes)?;
     staged.as_file().sync_all()?;
     std::fs::set_permissions(staged.path(), std::fs::metadata(source)?.permissions())?;
-    staged.persist(target).map_err(|error| error.error).context("Cannot update the icon provider; close other Atlas operations and retry")?;
+    staged
+        .persist(target)
+        .map_err(|error| error.error)
+        .context("Cannot update the icon provider; close other Atlas operations and retry")?;
     Ok(())
 }
 
@@ -279,7 +299,9 @@ mod tests {
     fn packaged_provider_seeds_a_clean_profile_and_replaces_an_old_build() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("packaged.exe");
-        let target = directory.path().join("fresh-profile/extensions/icon-manager/provider.exe");
+        let target = directory
+            .path()
+            .join("fresh-profile/extensions/icon-manager/provider.exe");
         std::fs::write(&source, b"new-build").unwrap();
         copy_packaged_program(&source, &target).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"new-build");
@@ -287,7 +309,10 @@ mod tests {
         copy_packaged_program(&source, &target).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"new-build");
         copy_packaged_program(&source, &target).unwrap();
-        assert_eq!(std::fs::read_dir(target.parent().unwrap()).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::read_dir(target.parent().unwrap()).unwrap().count(),
+            1
+        );
     }
 
     #[test]
@@ -298,18 +323,24 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(
                 dir.join("extension.toml"),
-                format!("id = \"{id}\"
+                format!(
+                    "id = \"{id}\"
 name = \"X\"
 author = \"{author}\"
 kind = \"declarative\"
-"),
+"
+                ),
             )
             .unwrap();
             for (name, bytes) in extra {
                 std::fs::write(dir.join(name), bytes).unwrap();
             }
         };
-        write("file-tools", "Atlas Team", &[("plugin.wasm", b" asm"), ("icon.svg", b"<svg/>")]);
+        write(
+            "file-tools",
+            "Atlas Team",
+            &[("plugin.wasm", b" asm"), ("icon.svg", b"<svg/>")],
+        );
         write("document-previews", "Someone Else", &[]);
         write("media-thumbs", "Atlas Team", &[]);
         // Broken manifest: never touched, never an error.
@@ -319,10 +350,16 @@ kind = \"declarative\"
         let ids = ["file-tools", "document-previews", "broken", "missing"];
         assert_eq!(retire_in(base.path(), &ids), ["file-tools"]);
         assert!(!base.path().join("file-tools").exists());
-        assert!(base.path().join("document-previews").is_dir(), "third-party reuse of the id stays");
+        assert!(
+            base.path().join("document-previews").is_dir(),
+            "third-party reuse of the id stays"
+        );
         assert!(base.path().join("media-thumbs").is_dir());
         assert!(base.path().join("broken").is_dir());
-        let trashed: Vec<_> = std::fs::read_dir(base.path().join(".trash")).unwrap().flatten().collect();
+        let trashed: Vec<_> = std::fs::read_dir(base.path().join(".trash"))
+            .unwrap()
+            .flatten()
+            .collect();
         assert_eq!(trashed.len(), 1);
         assert!(trashed[0].path().join("plugin.wasm").is_file());
         // Second boot: nothing left to do.
@@ -371,4 +408,3 @@ kind = \"declarative\"
         }
     }
 }
-

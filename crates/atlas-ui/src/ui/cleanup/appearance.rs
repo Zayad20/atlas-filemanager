@@ -78,7 +78,13 @@ impl CleanupPanel {
             (Tab::History, _) => tr("cleanup_history_subtitle"),
             (Tab::Cleanup, _) if !self.cats.is_empty() => format!(
                 "{} {}",
-                format(self.cats.iter().filter(|c| c.enabled).map(|c| c.bytes()).sum()),
+                format(
+                    self.cats
+                        .iter()
+                        .filter(|c| c.enabled)
+                        .map(|c| c.bytes())
+                        .sum()
+                ),
                 tr("cleanup_selected_short")
             ),
             (Tab::Cleanup, _) => format!(
@@ -136,7 +142,12 @@ impl CleanupPanel {
             .rounded_lg()
             .bg(fg.opacity(0.05))
             .child(segment("cleanup-tab-map", "cleanup_map", Tab::Map, cx))
-            .child(segment("cleanup-tab-temp", "cleanup_temp", Tab::Cleanup, cx));
+            .child(segment(
+                "cleanup-tab-temp",
+                "cleanup_temp",
+                Tab::Cleanup,
+                cx,
+            ));
         let capacity = self
             .snapshot
             .capacity
@@ -204,26 +215,23 @@ impl CleanupPanel {
                             .on_click(cx.listener(|p, _, w, cx| p.close(w, cx))),
                     ),
             )
-            .when_some(
-                capacity.filter(|_| self.tab == Tab::Map),
-                |v, fraction| {
-                    v.child(
-                        div()
-                            .w_full()
-                            .h(crate::ui::rem_px(4.))
-                            .rounded_full()
-                            .bg(fg.opacity(0.09))
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .h_full()
-                                    .w(relative(fraction))
-                                    .rounded_full()
-                                    .bg(accent),
-                            ),
-                    )
-                },
-            )
+            .when_some(capacity.filter(|_| self.tab == Tab::Map), |v, fraction| {
+                v.child(
+                    div()
+                        .w_full()
+                        .h(crate::ui::rem_px(4.))
+                        .rounded_full()
+                        .bg(fg.opacity(0.09))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .h_full()
+                                .w(relative(fraction))
+                                .rounded_full()
+                                .bg(accent),
+                        ),
+                )
+            })
             .into_any_element()
     }
 }

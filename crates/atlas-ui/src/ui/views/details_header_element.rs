@@ -12,7 +12,8 @@ use crate::ui::surface::{
     shape_text_truncated, Slot,
 };
 use crate::ui::views::details::{
-    DetailsColors, DetailsContentLod, DetailsRowLayout, CELL_PAD, DETAILS_HEADER_H, ROW_TEXT_Y_NUDGE,
+    DetailsColors, DetailsContentLod, DetailsRowLayout, CELL_PAD, DETAILS_HEADER_H,
+    ROW_TEXT_Y_NUDGE,
 };
 use atlas_model::file_entry::{SortColumn, SortDir};
 use atlas_model::pane::TabId;

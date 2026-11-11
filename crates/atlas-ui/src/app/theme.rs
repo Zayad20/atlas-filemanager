@@ -31,7 +31,12 @@ fn migrated_theme_name(name: &str) -> &str {
     }
 }
 
-fn persisted_theme_name<'a>(stored: &str, wanted: &'a str, resolved: &'a str, custom_themes_loaded: bool) -> Option<&'a str> {
+fn persisted_theme_name<'a>(
+    stored: &str,
+    wanted: &'a str,
+    resolved: &'a str,
+    custom_themes_loaded: bool,
+) -> Option<&'a str> {
     // Migrations are authoritative immediately. Unknown custom themes are only
     // normalized after the asynchronous user-theme directory has been loaded.
     let permanent = custom_themes_loaded || wanted == resolved || wanted != stored;
@@ -67,9 +72,15 @@ const PANE_CURVE: f32 = 1.5;
 /// so floating controls can follow the same density within their own range.
 pub(crate) fn glass_canvas_range(dark: bool) -> (f32, f32) {
     if dark {
-        (DARK_CANVAS_BASE + 0.2 * DARK_CANVAS_SCALE, DARK_CANVAS_BASE + DARK_CANVAS_SCALE)
+        (
+            DARK_CANVAS_BASE + 0.2 * DARK_CANVAS_SCALE,
+            DARK_CANVAS_BASE + DARK_CANVAS_SCALE,
+        )
     } else {
-        (LIGHT_CANVAS_BASE + 0.2 * LIGHT_CANVAS_SCALE, LIGHT_CANVAS_BASE + LIGHT_CANVAS_SCALE)
+        (
+            LIGHT_CANVAS_BASE + 0.2 * LIGHT_CANVAS_SCALE,
+            LIGHT_CANVAS_BASE + LIGHT_CANVAS_SCALE,
+        )
     }
 }
 
@@ -226,7 +237,12 @@ impl App {
         });
 
         // Persist the normalized name so the migration is one-time and sticky.
-        if let Some(name) = persisted_theme_name(&self.state.profiles.active().theme, &wanted, &resolved_name, custom_themes_loaded) {
+        if let Some(name) = persisted_theme_name(
+            &self.state.profiles.active().theme,
+            &wanted,
+            &resolved_name,
+            custom_themes_loaded,
+        ) {
             self.state.profiles.active_mut().theme = name.to_string();
             self.save();
         }
@@ -297,8 +313,19 @@ mod gpui_ce_tests {
         let fallback = atlas_model::profiles::DEFAULT_THEME;
         assert_eq!(persisted_theme_name(custom, custom, fallback, false), None);
         assert_eq!(persisted_theme_name(custom, custom, custom, true), None);
-        assert_eq!(persisted_theme_name(custom, custom, fallback, true), Some(fallback));
-        assert_eq!(persisted_theme_name("Default Dark", "Atlas Graphite Glass", "Atlas Graphite Glass", false), Some("Atlas Graphite Glass"));
+        assert_eq!(
+            persisted_theme_name(custom, custom, fallback, true),
+            Some(fallback)
+        );
+        assert_eq!(
+            persisted_theme_name(
+                "Default Dark",
+                "Atlas Graphite Glass",
+                "Atlas Graphite Glass",
+                false
+            ),
+            Some("Atlas Graphite Glass")
+        );
     }
 
     #[test]
@@ -344,7 +371,11 @@ mod gpui_ce_tests {
             apply_frosted_material(&mut theme.colors, config.mode, 0.4);
             // Sides are the canvas; a pane composited on it is one step denser,
             // never an opaque slab next to translucent sides.
-            assert_eq!(theme.colors.sidebar.alpha, theme.colors.background.alpha, "{}", config.name);
+            assert_eq!(
+                theme.colors.sidebar.alpha, theme.colors.background.alpha,
+                "{}",
+                config.name
+            );
             let canvas = theme.colors.background.alpha;
             let pane = 1.0 - (1.0 - canvas) * (1.0 - theme.colors.list.alpha);
             if config.mode.is_dark() {
@@ -388,7 +419,11 @@ mod gpui_ce_tests {
         let themes: ThemeSet =
             serde_json::from_str(include_str!("../../assets/themes/atlas-themes.json")).unwrap();
         let config = std::rc::Rc::new(
-            themes.themes.into_iter().find(|t| t.name.as_ref() == "Atlas Ember").unwrap(),
+            themes
+                .themes
+                .into_iter()
+                .find(|t| t.name.as_ref() == "Atlas Ember")
+                .unwrap(),
         );
         let at = |opacity: f32| {
             let mut theme = gpui_component::Theme::default();
@@ -479,7 +514,11 @@ mod gpui_ce_tests {
     fn panes_and_capsules_follow_the_glass_slider_gently() {
         let themes: ThemeSet =
             serde_json::from_str(include_str!("../../assets/themes/atlas-themes.json")).unwrap();
-        for config in themes.themes.into_iter().filter(|t| t.name.ends_with(" Glass")) {
+        for config in themes
+            .themes
+            .into_iter()
+            .filter(|t| t.name.ends_with(" Glass"))
+        {
             let config = std::rc::Rc::new(config);
             let mut previous: Option<(f32, f32)> = None;
             for opacity in [0.2, 0.4, 0.6, 0.8, 1.0] {
@@ -491,10 +530,26 @@ mod gpui_ce_tests {
                 let capsule = crate::ui::glass::control_colors(&theme, true).surface.alpha;
                 assert!(capsule >= 0.54, "{}: capsule keeps a backing", config.name);
                 if let Some((prev_pane, prev_capsule)) = previous {
-                    assert!(pane > prev_pane, "{} @{opacity}: pane must densify", config.name);
-                    assert!(pane - prev_pane < 0.12, "{} @{opacity}: pane step too abrupt", config.name);
-                    assert!(capsule > prev_capsule, "{} @{opacity}: capsule must adapt", config.name);
-                    assert!(capsule - prev_capsule < 0.06, "{} @{opacity}: capsule step too abrupt", config.name);
+                    assert!(
+                        pane > prev_pane,
+                        "{} @{opacity}: pane must densify",
+                        config.name
+                    );
+                    assert!(
+                        pane - prev_pane < 0.12,
+                        "{} @{opacity}: pane step too abrupt",
+                        config.name
+                    );
+                    assert!(
+                        capsule > prev_capsule,
+                        "{} @{opacity}: capsule must adapt",
+                        config.name
+                    );
+                    assert!(
+                        capsule - prev_capsule < 0.06,
+                        "{} @{opacity}: capsule step too abrupt",
+                        config.name
+                    );
                 }
                 previous = Some((pane, capsule));
             }
@@ -513,7 +568,11 @@ mod gpui_ce_tests {
         }
         fn luminance(color: gpui::Rgba) -> f32 {
             let linear = |v: f32| {
-                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
             };
             0.2126 * linear(color.red) + 0.7152 * linear(color.green) + 0.0722 * linear(color.blue)
         }
@@ -548,9 +607,19 @@ mod gpui_ce_tests {
                 for surface in [canvas, pane] {
                     let fg = composite(theme.foreground.to_rgb(), surface);
                     let muted = composite(theme.muted_foreground.to_rgb(), surface);
-                    assert!(contrast(fg, surface) >= 4.5, "{} @{opacity}: text {}", config.name, contrast(fg, surface));
+                    assert!(
+                        contrast(fg, surface) >= 4.5,
+                        "{} @{opacity}: text {}",
+                        config.name,
+                        contrast(fg, surface)
+                    );
                     if check_muted {
-                        assert!(contrast(muted, surface) >= muted_floor, "{} @{opacity}: muted {} < {muted_floor}", config.name, contrast(muted, surface));
+                        assert!(
+                            contrast(muted, surface) >= muted_floor,
+                            "{} @{opacity}: muted {} < {muted_floor}",
+                            config.name,
+                            contrast(muted, surface)
+                        );
                     }
                 }
             }

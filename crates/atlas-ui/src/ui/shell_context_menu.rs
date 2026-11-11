@@ -47,11 +47,22 @@ const OPEN_WITH_GROUP: u32 = u32::MAX;
 const VIEW_GROUP: u32 = u32::MAX - 1;
 
 fn native_open_with(item: &UiNativeItem) -> bool {
-    if item.verb.as_deref().is_some_and(|verb| verb.eq_ignore_ascii_case("openwith")) {
+    if item
+        .verb
+        .as_deref()
+        .is_some_and(|verb| verb.eq_ignore_ascii_case("openwith"))
+    {
         return true;
     }
-    let label = item.title.replace('&', "").trim().trim_end_matches(['.', '…']).to_lowercase();
-    ["open with", "abrir con"].iter().any(|prefix| label == *prefix || label.starts_with(&format!("{prefix} ")))
+    let label = item
+        .title
+        .replace('&', "")
+        .trim()
+        .trim_end_matches(['.', '…'])
+        .to_lowercase();
+    ["open with", "abrir con"]
+        .iter()
+        .any(|prefix| label == *prefix || label.starts_with(&format!("{prefix} ")))
 }
 
 #[derive(Clone)]
@@ -287,7 +298,9 @@ impl ViewPreset {
     }
     fn icon(self) -> AtlasIcon {
         match self {
-            Self::IconsXl | Self::IconsLarge | Self::IconsMedium | Self::IconsSmall => AtlasIcon::Grid,
+            Self::IconsXl | Self::IconsLarge | Self::IconsMedium | Self::IconsSmall => {
+                AtlasIcon::Grid
+            }
             Self::List => AtlasIcon::List,
             Self::Details => AtlasIcon::Details,
             Self::Tree => AtlasIcon::TreeStructure,
@@ -323,7 +336,11 @@ impl ViewPreset {
             ViewMode::Grid => VIEW_PRESETS
                 .iter()
                 .copied()
-                .filter_map(|preset| preset.thumbnail_size().map(|size| (preset, (size - thumbnail_size).abs())))
+                .filter_map(|preset| {
+                    preset
+                        .thumbnail_size()
+                        .map(|size| (preset, (size - thumbnail_size).abs()))
+                })
                 .min_by(|a, b| a.1.total_cmp(&b.1))
                 .map_or(Self::IconsMedium, |(preset, _)| preset),
         }
@@ -456,7 +473,10 @@ impl App {
         let loading = {
             // Skip the native shell Build for RecycleBin items: the $R paths are not
             // valid shell namespace objects and the native menu would duplicate Restore.
-            if same_parent && !is_recycle_bin && !paths.iter().any(|p| atlas_core::vault::is_private_path(p)) {
+            if same_parent
+                && !is_recycle_bin
+                && !paths.iter().any(|p| atlas_core::vault::is_private_path(p))
+            {
                 if let Some(handle) = &self.shell_menu {
                     handle.send(crate::shell_menu::ShellMenuRequest::Build {
                         id: menu_id,
@@ -477,7 +497,11 @@ impl App {
         };
 
         #[cfg(windows)]
-        let cache_key = if loading { native_cache_key(&paths, false) } else { None };
+        let cache_key = if loading {
+            native_cache_key(&paths, false)
+        } else {
+            None
+        };
         #[cfg(not(windows))]
         let cache_key: Option<String> = None;
         #[cfg(windows)]
@@ -505,7 +529,10 @@ impl App {
         } else {
             self.ext_registry.context_commands_for(&selection)
         };
-        let desktop_apps = if paths.is_empty() || is_recycle_bin || paths.iter().any(|p| atlas_core::vault::is_private_path(p)) {
+        let desktop_apps = if paths.is_empty()
+            || is_recycle_bin
+            || paths.iter().any(|p| atlas_core::vault::is_private_path(p))
+        {
             Vec::new()
         } else {
             paths
@@ -602,15 +629,16 @@ impl App {
                                     && i.title == title
                             });
                             match hit {
-                                Some(item) => handle.send(
-                                    crate::shell_menu::ShellMenuRequest::Invoke {
+                                Some(item) => {
+                                    handle.send(crate::shell_menu::ShellMenuRequest::Invoke {
                                         id,
                                         item_id: item.id,
                                         screen_pt,
-                                    },
-                                ),
-                                None => handle
-                                    .send(crate::shell_menu::ShellMenuRequest::Dismiss { id }),
+                                    })
+                                }
+                                None => {
+                                    handle.send(crate::shell_menu::ShellMenuRequest::Dismiss { id })
+                                }
                             }
                         }
                         continue;
@@ -643,23 +671,35 @@ impl App {
                             m.expanded.clear();
                         }
                         m.native = ui;
-                        if open_with_expanded { m.expanded.insert(OPEN_WITH_GROUP); }
-                        if view_expanded { m.expanded.insert(VIEW_GROUP); }
+                        if open_with_expanded {
+                            m.expanded.insert(OPEN_WITH_GROUP);
+                        }
+                        if view_expanded {
+                            m.expanded.insert(VIEW_GROUP);
+                        }
                         m.loading = false;
                         m.stale = false;
                         if open_with_expanded {
-                            for item in m.native.iter().filter(|item| native_open_with(item) && submenu_children_missing(std::slice::from_ref(item), item.id)) {
-                                handle.send(crate::shell_menu::ShellMenuRequest::ExpandSubmenu { id: m.menu_id, item_id: item.id });
+                            for item in m.native.iter().filter(|item| {
+                                native_open_with(item)
+                                    && submenu_children_missing(std::slice::from_ref(item), item.id)
+                            }) {
+                                handle.send(crate::shell_menu::ShellMenuRequest::ExpandSubmenu {
+                                    id: m.menu_id,
+                                    item_id: item.id,
+                                });
                             }
                         }
                         for title in reopen {
                             if let Some(sub) = submenu_id_by_title(&m.native, &title) {
                                 m.expanded.insert(sub);
                                 if submenu_children_missing(&m.native, sub) {
-                                    handle.send(crate::shell_menu::ShellMenuRequest::ExpandSubmenu {
-                                        id: m.menu_id,
-                                        item_id: sub,
-                                    });
+                                    handle.send(
+                                        crate::shell_menu::ShellMenuRequest::ExpandSubmenu {
+                                            id: m.menu_id,
+                                            item_id: sub,
+                                        },
+                                    );
                                 }
                             }
                         }
@@ -733,7 +773,8 @@ impl App {
             ATLAS_ITEMS_RECYCLE
         } else {
             ATLAS_ITEMS
-        }.to_vec();
+        }
+        .to_vec();
         let drive_root = cfg!(windows)
             && !state.background
             && state.paths.len() == 1
@@ -746,10 +787,19 @@ impl App {
             ];
         }
         if !state.background && !is_recycle_bin && !drive_root {
-            if state.paths.iter().any(|p| atlas_core::vault::is_private_path(p)) {
+            if state
+                .paths
+                .iter()
+                .any(|p| atlas_core::vault::is_private_path(p))
+            {
                 atlas_items = vec![(AtlasCmd::UnlockFolder, false)];
-            } else if state.paths.len() == 1 && state.paths[0].is_dir()
-                && self.state.active_tab_data().is_some_and(|t| !t.location.is_archive()) {
+            } else if state.paths.len() == 1
+                && state.paths[0].is_dir()
+                && self
+                    .state
+                    .active_tab_data()
+                    .is_some_and(|t| !t.location.is_archive())
+            {
                 atlas_items.insert(2, (AtlasCmd::ProtectFolder, false));
             }
         }
@@ -757,7 +807,9 @@ impl App {
         let current_view = self
             .state
             .active_tab_data()
-            .map_or(ViewPreset::Details, |tab| ViewPreset::current(&tab.view_mode, tab.thumbnail_size));
+            .map_or(ViewPreset::Details, |tab| {
+                ViewPreset::current(&tab.view_mode, tab.thumbnail_size)
+            });
 
         let q = query.trim();
         let rows = if q.is_empty() {
@@ -765,30 +817,64 @@ impl App {
             let mut rows = Vec::new();
             if state.background {
                 let expanded = state.expanded.contains(&VIEW_GROUP);
-                rows.push(CtxRow::Native { id: VIEW_GROUP, title: rust_i18n::t!("ctx_view").to_string(), icon: None,
-                    depth: 0, submenu: true, expanded, disabled: false, is_default: false });
+                rows.push(CtxRow::Native {
+                    id: VIEW_GROUP,
+                    title: rust_i18n::t!("ctx_view").to_string(),
+                    icon: None,
+                    depth: 0,
+                    submenu: true,
+                    expanded,
+                    disabled: false,
+                    is_default: false,
+                });
                 if expanded {
                     for preset in VIEW_PRESETS {
-                        rows.push(CtxRow::View { preset: *preset, active: *preset == current_view, depth: 1 });
+                        rows.push(CtxRow::View {
+                            preset: *preset,
+                            active: *preset == current_view,
+                            depth: 1,
+                        });
                     }
                 }
                 rows.push(CtxRow::Separator);
             }
             for (cmd, sep_after) in &atlas_items {
                 rows.push(CtxRow::Atlas { cmd: *cmd });
-                if *cmd == AtlasCmd::Open && (!state.desktop_apps.is_empty() || state.native.iter().any(native_open_with)) {
+                if *cmd == AtlasCmd::Open
+                    && (!state.desktop_apps.is_empty() || state.native.iter().any(native_open_with))
+                {
                     let expanded = state.expanded.contains(&OPEN_WITH_GROUP);
-                    rows.push(CtxRow::Native { id: OPEN_WITH_GROUP, title: rust_i18n::t!("open_with").to_string(), icon: None,
-                        depth: 0, submenu: true, expanded, disabled: false, is_default: false });
+                    rows.push(CtxRow::Native {
+                        id: OPEN_WITH_GROUP,
+                        title: rust_i18n::t!("open_with").to_string(),
+                        icon: None,
+                        depth: 0,
+                        submenu: true,
+                        expanded,
+                        disabled: false,
+                        is_default: false,
+                    });
                     if expanded {
                         for app in &state.desktop_apps {
-                            rows.push(CtxRow::DesktopApp { app: app.clone(), depth: 1 });
+                            rows.push(CtxRow::DesktopApp {
+                                app: app.clone(),
+                                depth: 1,
+                            });
                         }
                         for native in state.native.iter().filter(|item| native_open_with(item)) {
                             match &native.kind {
-                                UiItemKind::Submenu { children: Some(children) } => push_native_tree(children, 1, &state.expanded, &mut rows),
-                                UiItemKind::Submenu { children: None } => rows.push(CtxRow::Loading),
-                                _ => push_native_tree(std::slice::from_ref(native), 1, &state.expanded, &mut rows),
+                                UiItemKind::Submenu {
+                                    children: Some(children),
+                                } => push_native_tree(children, 1, &state.expanded, &mut rows),
+                                UiItemKind::Submenu { children: None } => {
+                                    rows.push(CtxRow::Loading)
+                                }
+                                _ => push_native_tree(
+                                    std::slice::from_ref(native),
+                                    1,
+                                    &state.expanded,
+                                    &mut rows,
+                                ),
                             }
                         }
                     }
@@ -810,7 +896,12 @@ impl App {
             if !state.native.is_empty() || state.loading {
                 rows.push(CtxRow::Separator);
             }
-            let native: Vec<_> = state.native.iter().filter(|item| state.background || !native_open_with(item)).cloned().collect();
+            let native: Vec<_> = state
+                .native
+                .iter()
+                .filter(|item| state.background || !native_open_with(item))
+                .cloned()
+                .collect();
             push_native_tree(&native, 0, &state.expanded, &mut rows);
             if state.loading {
                 rows.push(CtxRow::Loading);
@@ -829,12 +920,19 @@ impl App {
             if state.background {
                 for preset in VIEW_PRESETS {
                     cand_titles.push(format!("{} {}", rust_i18n::t!("ctx_view"), preset.label()));
-                    cands.push(CtxRow::View { preset: *preset, active: *preset == current_view, depth: 0 });
+                    cands.push(CtxRow::View {
+                        preset: *preset,
+                        active: *preset == current_view,
+                        depth: 0,
+                    });
                 }
             }
             for app in &state.desktop_apps {
                 cand_titles.push(format!("{} {}", rust_i18n::t!("open_with"), app.name));
-                cands.push(CtxRow::DesktopApp { app: app.clone(), depth: 0 });
+                cands.push(CtxRow::DesktopApp {
+                    app: app.clone(),
+                    depth: 0,
+                });
             }
             for cmd in &state.ext_cmds {
                 cand_titles.push(cmd.command.title.clone());
@@ -1000,8 +1098,17 @@ impl App {
                     item.disabled = *disabled;
                     item.emphasized = *is_default;
                 }
-                CtxRow::View { preset, active, depth } => {
-                    item.label = if *depth == 0 { format!("{} {}", rust_i18n::t!("ctx_view"), preset.label()) } else { preset.label() }.into();
+                CtxRow::View {
+                    preset,
+                    active,
+                    depth,
+                } => {
+                    item.label = if *depth == 0 {
+                        format!("{} {}", rust_i18n::t!("ctx_view"), preset.label())
+                    } else {
+                        preset.label()
+                    }
+                    .into();
                     item.icon = Some(MenuIcon::Theme(preset.icon()));
                     item.depth = *depth;
                     item.emphasized = *active;
@@ -1010,7 +1117,12 @@ impl App {
                     }
                 }
                 CtxRow::DesktopApp { app, depth } => {
-                    item.label = if *depth == 0 { format!("{} {}", rust_i18n::t!("open_with"), app.name) } else { app.name.clone() }.into();
+                    item.label = if *depth == 0 {
+                        format!("{} {}", rust_i18n::t!("open_with"), app.name)
+                    } else {
+                        app.name.clone()
+                    }
+                    .into();
                     item.depth = *depth;
                     item.icon = Some(MenuIcon::Theme(AtlasIcon::Eye));
                 }
@@ -1322,8 +1434,20 @@ impl App {
     }
 
     fn ctx_expand_selected(&mut self, rows: &[CtxRow], selectable: &[usize], expand: bool) {
-        let local_group = self.ctx_menu.as_ref().and_then(|m| selectable.get(m.selected))
-            .and_then(|&index| rows.get(index)).is_some_and(|row| matches!(row, CtxRow::Native { id: OPEN_WITH_GROUP, .. }));
+        let local_group = self
+            .ctx_menu
+            .as_ref()
+            .and_then(|m| selectable.get(m.selected))
+            .and_then(|&index| rows.get(index))
+            .is_some_and(|row| {
+                matches!(
+                    row,
+                    CtxRow::Native {
+                        id: OPEN_WITH_GROUP,
+                        ..
+                    }
+                )
+            });
         if local_group {
             self.set_open_with_expanded(expand);
             return;
@@ -1425,14 +1549,37 @@ impl App {
     }
 
     #[cfg(feature = "ui-lab")]
-    pub(crate) fn diagnostic_cleanup_menu(&mut self, path: PathBuf, activate: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        self.open_ctx_menu(vec![path],gpui::point(gpui::px(400.),gpui::px(180.)),window,cx);
-        let available=self.ctx_menu_rows("","").iter().any(|row|matches!(row,CtxRow::Atlas {cmd:AtlasCmd::DiskCleanup}));
+    pub(crate) fn diagnostic_cleanup_menu(
+        &mut self,
+        path: PathBuf,
+        activate: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.open_ctx_menu(
+            vec![path],
+            gpui::point(gpui::px(400.), gpui::px(180.)),
+            window,
+            cx,
+        );
+        let available = self.ctx_menu_rows("", "").iter().any(|row| {
+            matches!(
+                row,
+                CtxRow::Atlas {
+                    cmd: AtlasCmd::DiskCleanup
+                }
+            )
+        });
         if available && activate {
-            let paths=self.ctx_menu.as_ref().map(|m|m.paths.clone());
-            self.run_ctx_atlas(AtlasCmd::DiskCleanup,window,cx);
-            assert!(self.cleanup_panel.is_some(),"Cleanup menu command did not open the panel: {paths:?}");
-        }else{self.close_ctx_menu(cx);}
+            let paths = self.ctx_menu.as_ref().map(|m| m.paths.clone());
+            self.run_ctx_atlas(AtlasCmd::DiskCleanup, window, cx);
+            assert!(
+                self.cleanup_panel.is_some(),
+                "Cleanup menu command did not open the panel: {paths:?}"
+            );
+        } else {
+            self.close_ctx_menu(cx);
+        }
         available
     }
 
@@ -1464,7 +1611,9 @@ impl App {
                 }
             }
             AtlasCmd::UnlockFolder => {
-                if let Some(path) = menu_paths.first() { self.try_open_vault(path); }
+                if let Some(path) = menu_paths.first() {
+                    self.try_open_vault(path);
+                }
             }
             AtlasCmd::Convert => {
                 if !is_archive {
@@ -1473,8 +1622,9 @@ impl App {
                     if let Some(anchor) = menu_anchor {
                         self.anchor_converter(anchor);
                     }
+                } else {
+                    self.toast_error(rust_i18n::t!("convert_local_only").into_owned());
                 }
-                else { self.toast_error(rust_i18n::t!("convert_local_only").into_owned()); }
             }
             AtlasCmd::Open => match menu_paths.as_slice() {
                 [path] if cfg!(windows) && atlas_core::cleanup::is_drive_root(path) => {
@@ -1629,7 +1779,11 @@ impl App {
         };
 
         #[cfg(windows)]
-        let cache_key = if loading { native_cache_key(&[], true) } else { None };
+        let cache_key = if loading {
+            native_cache_key(&[], true)
+        } else {
+            None
+        };
         #[cfg(not(windows))]
         let cache_key: Option<String> = None;
         #[cfg(windows)]
@@ -1685,7 +1839,10 @@ impl App {
         cx: &mut Context<Self>,
     ) {
         if id == OPEN_WITH_GROUP {
-            let expanded = self.ctx_menu.as_ref().is_some_and(|menu| menu.expanded.contains(&OPEN_WITH_GROUP));
+            let expanded = self
+                .ctx_menu
+                .as_ref()
+                .is_some_and(|menu| menu.expanded.contains(&OPEN_WITH_GROUP));
             self.set_open_with_expanded(!expanded);
             cx.notify();
             return;
@@ -1718,7 +1875,12 @@ impl App {
                 let (need, menu_id) = self
                     .ctx_menu
                     .as_ref()
-                    .map(|m| (!m.stale && submenu_children_missing(&m.native, id), m.menu_id))
+                    .map(|m| {
+                        (
+                            !m.stale && submenu_children_missing(&m.native, id),
+                            m.menu_id,
+                        )
+                    })
                     .unwrap_or((false, 0));
                 if need {
                     if let Some(handle) = &self.shell_menu {
@@ -1765,15 +1927,26 @@ impl App {
     }
 
     fn set_open_with_expanded(&mut self, expanded: bool) {
-        let Some(menu) = &mut self.ctx_menu else { return; };
-        if expanded { menu.expanded.insert(OPEN_WITH_GROUP); }
-        else { menu.expanded.remove(&OPEN_WITH_GROUP); }
+        let Some(menu) = &mut self.ctx_menu else {
+            return;
+        };
+        if expanded {
+            menu.expanded.insert(OPEN_WITH_GROUP);
+        } else {
+            menu.expanded.remove(&OPEN_WITH_GROUP);
+        }
         menu.scroll_to_selected = true;
         #[cfg(windows)]
         if expanded && !menu.stale {
             if let Some(handle) = &self.shell_menu {
-                for item in menu.native.iter().filter(|item| native_open_with(item) && submenu_children_missing(std::slice::from_ref(item), item.id)) {
-                    handle.send(crate::shell_menu::ShellMenuRequest::ExpandSubmenu { id: menu.menu_id, item_id: item.id });
+                for item in menu.native.iter().filter(|item| {
+                    native_open_with(item)
+                        && submenu_children_missing(std::slice::from_ref(item), item.id)
+                }) {
+                    handle.send(crate::shell_menu::ShellMenuRequest::ExpandSubmenu {
+                        id: menu.menu_id,
+                        item_id: item.id,
+                    });
                 }
             }
         }
@@ -1837,8 +2010,8 @@ fn queue_properties(request: PropertiesRequest) {
             .spawn(move || unsafe {
                 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
                 use windows::Win32::UI::WindowsAndMessaging::{
-                    DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW,
-                    TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT,
+                    DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW, TranslateMessage,
+                    MSG, PM_REMOVE, QS_ALLINPUT,
                 };
                 let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
                 let mut msg = MSG::default();
@@ -2173,8 +2346,14 @@ mod tests {
             let size = preset.thumbnail_size().unwrap_or(128.0);
             assert_eq!(ViewPreset::current(&preset.view_mode(), size), *preset);
         }
-        assert_eq!(ViewPreset::current(&ViewMode::Grid, 128.0), ViewPreset::IconsLarge);
-        assert_eq!(ViewPreset::current(&ViewMode::Grid, 384.0), ViewPreset::IconsXl);
+        assert_eq!(
+            ViewPreset::current(&ViewMode::Grid, 128.0),
+            ViewPreset::IconsLarge
+        );
+        assert_eq!(
+            ViewPreset::current(&ViewMode::Grid, 384.0),
+            ViewPreset::IconsXl
+        );
     }
 
     #[cfg(windows)]

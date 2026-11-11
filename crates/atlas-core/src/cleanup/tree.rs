@@ -284,7 +284,9 @@ impl SpaceTree {
 static TREE: Mutex<Option<Arc<SpaceTree>>> = Mutex::new(None);
 
 pub fn store(tree: Arc<SpaceTree>) {
-    *TREE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tree);
+    *TREE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tree);
 }
 pub fn cached(path: &Path) -> Option<Arc<SpaceTree>> {
     TREE.lock()
@@ -295,14 +297,20 @@ pub fn cached(path: &Path) -> Option<Arc<SpaceTree>> {
 }
 /// Update the cached tree after `path` was deleted. False if nothing changed.
 pub fn remove(path: &Path) -> bool {
-    let mut guard = TREE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = TREE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     guard
         .as_mut()
         .and_then(Arc::get_mut)
         .is_some_and(|tree| tree.remove_node(path))
 }
 pub fn invalidate() {
-    if let Some(old) = TREE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+    if let Some(old) = TREE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
         std::thread::spawn(move || drop(old));
     }
 }
@@ -327,7 +335,11 @@ mod tests {
         let whole = t.snapshot(&root, 1).unwrap();
         assert_eq!((whole.bytes, whole.entry_count), (12, 3));
         assert_eq!(
-            whole.large_files.iter().map(|f| f.bytes).collect::<Vec<_>>(),
+            whole
+                .large_files
+                .iter()
+                .map(|f| f.bytes)
+                .collect::<Vec<_>>(),
             vec![7, 3, 2]
         );
         let child = t.snapshot(&root.join("a"), 2).unwrap();
