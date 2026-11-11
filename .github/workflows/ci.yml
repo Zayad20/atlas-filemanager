@@ -60,3 +60,14 @@ jobs:
           # test-thread stack in debug builds. Match Atlas's 16 MiB UI stack.
           RUST_MIN_STACK: '16777216'
         run: cargo test --workspace --locked --no-fail-fast
+
+      - name: Archive development binaries
+        run: python scripts/stage-ci-build.py
+
+      - name: Downloadable development build
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-dev-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          path: target/ci-dist/*
+          if-no-files-found: error
+          retention-days: 14
