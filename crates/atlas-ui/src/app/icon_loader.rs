@@ -312,9 +312,13 @@ mod tests {
         assert_eq!(multi.for_size(24.0).size(0).width.0, 32);
         assert_eq!(multi.for_size(42.0).size(0).width.0, 64);
         assert_eq!(multi.for_size(53.0).size(0).width.0, 64);
-        assert_eq!(multi.for_size(63.0).size(0).width.0, 128);
+        assert_eq!(multi.for_size(63.0).size(0).width.0, 64);
+        assert_eq!(multi.for_size(64.0).size(0).width.0, 64);
+        assert_eq!(multi.for_size(65.0).size(0).width.0, 128);
         assert_eq!(multi.for_size(84.0).size(0).width.0, 128);
-        assert_eq!(multi.for_size(120.0).size(0).width.0, 256);
+        assert_eq!(multi.for_size(120.0).size(0).width.0, 128);
+        assert_eq!(multi.for_size(128.0).size(0).width.0, 128);
+        assert_eq!(multi.for_size(129.0).size(0).width.0, 256);
         assert_eq!(multi.for_size(200.0).size(0).width.0, 256);
     }
 

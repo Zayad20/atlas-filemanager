@@ -48,11 +48,11 @@ jobs:
             libxcb1-dev libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev libbz2-dev liblzma-dev \
             ffmpeg
 
-      - name: Check
-        run: cargo check --workspace --locked
-
       - name: Build
         run: cargo build --workspace --locked
+
+      - name: CLI startup
+        run: ./target/debug/atlas --version
 
       - name: Test
         env:

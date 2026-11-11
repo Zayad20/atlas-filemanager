@@ -270,7 +270,10 @@ mod tests {
                 hit_test(&targets, 245.0 * zoom, 12.0 * zoom),
                 Some(HeaderHit::SortMeta(DetailsColumn::Type))
             );
-            assert_eq!(hit_test(&targets, 300.0 * zoom, 26.0 * zoom), None);
+            assert_eq!(
+                hit_test(&targets, 300.0 * zoom, (DETAILS_HEADER_H + 1.0) * zoom),
+                None
+            );
         }
     }
 }

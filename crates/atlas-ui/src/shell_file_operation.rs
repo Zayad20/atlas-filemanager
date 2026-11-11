@@ -175,7 +175,7 @@ struct ItemResult {
 
 #[implement(IFileOperationProgressSink)]
 struct Progress {
-    source: PathBuf,
+    source: IShellItem,
     state: Arc<Mutex<ItemResult>>,
     cancel: Arc<AtomicBool>,
 }
@@ -195,13 +195,12 @@ impl Progress {
                 state.failure.get_or_insert(result);
             }
             // Windows invokes the same sink for descendants. Keep the top-level
-            // destination for Undo instead of the last copied child path.
-            if original
-                .as_ref()
-                .and_then(|item| shell_path(item).ok())
-                .as_deref()
-                == Some(self.source.as_path())
-            {
+            // destination for Undo instead of the last copied child path. The
+            // Shell may expand 8.3 names or change path casing in callbacks.
+            if original.as_ref().is_some_and(|item| unsafe {
+                item.Compare(&self.source, SICHINT_CANONICAL.0 as u32)
+                    .is_ok_and(|order| order == 0)
+            }) {
                 state.result = Some(result);
                 state.destination = item.as_ref().and_then(|item| shell_path(item).ok());
             }
@@ -430,16 +429,16 @@ fn execute_sta(
                 operation_api.SetOwnerWindow(HWND(owner as *mut _))?;
             }
         }
+        let source_wide = wide(source.as_os_str());
+        let item: IShellItem =
+            unsafe { SHCreateItemFromParsingName(PCWSTR(source_wide.as_ptr()), None)? };
         let state = Arc::new(Mutex::new(ItemResult::default()));
         let sink: IFileOperationProgressSink = Progress {
-            source: source.clone(),
+            source: item.clone(),
             state: state.clone(),
             cancel,
         }
         .into();
-        let source_wide = wide(source.as_os_str());
-        let item: IShellItem =
-            unsafe { SHCreateItemFromParsingName(PCWSTR(source_wide.as_ptr()), None)? };
         unsafe {
             let copying = matches!(operation, Operation::Copy { .. });
             match operation {
@@ -773,7 +772,18 @@ mod tests {
                 std::process::id()
             ));
             std::fs::create_dir(&path).unwrap();
-            Self(path)
+            // Shell results use long paths even when TEMP contains RUNNER~1.
+            let mut buffer = [0u16; 32768];
+            let length = unsafe {
+                windows::Win32::Storage::FileSystem::GetLongPathNameW(
+                    PCWSTR(wide(path.as_os_str()).as_ptr()),
+                    Some(&mut buffer),
+                )
+            } as usize;
+            assert!(length > 0 && length < buffer.len());
+            Self(PathBuf::from(std::ffi::OsString::from_wide(
+                &buffer[..length],
+            )))
         }
         fn run(&self, operation: Operation) -> Option<PathBuf> {
             assert!(
@@ -788,6 +798,39 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+    #[test]
+    fn native_copy_accepts_short_source_paths_and_keeps_top_level_result() {
+        let fixture = Fixture::new();
+        let source = fixture.0.join("source with a long filename.txt");
+        std::fs::write(&source, b"short-path fixture").unwrap();
+        let mut buffer = [0u16; 32768];
+        let length = unsafe {
+            windows::Win32::Storage::FileSystem::GetShortPathNameW(
+                PCWSTR(wide(source.as_os_str()).as_ptr()),
+                Some(&mut buffer),
+            )
+        } as usize;
+        assert!(length > 0 && length < buffer.len());
+        let short = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]));
+        let destination = fixture.0.join("short-path-copy.txt");
+        assert_eq!(
+            execute(
+                Operation::Copy {
+                    source: short,
+                    destination: destination.clone(),
+                    conflict: Resolution::Rename,
+                },
+                None,
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .unwrap(),
+            Some(destination.clone())
+        );
+        assert_eq!(std::fs::read(destination).unwrap(), b"short-path fixture");
+        assert!(source.exists());
+    }
+
     #[test]
     fn native_copy_move_rename_delete_and_collision_use_real_windows_shell() {
         let fixture = Fixture::new();
