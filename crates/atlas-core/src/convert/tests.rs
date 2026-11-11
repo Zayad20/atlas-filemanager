@@ -577,7 +577,12 @@ fn independent_ffmpeg_reader_checks_native_ass_and_webvtt_when_installed() {
         assert!(text.contains("\"Hola\""), "{target}: {text}");
         assert!(text.contains("José"), "{target}: {text}");
         // FFmpeg protects literal braces with ASS-style escapes in SRT output.
-        let literal = text.replace("\\{", "{").replace("\\}", "}");
+        // Newer versions also insert WORD JOINER after a literal backslash to
+        // keep it from being interpreted as an ASS control sequence.
+        let literal = text
+            .replace("\\{", "{")
+            .replace("\\}", "}")
+            .replace("\\\u{2060}", "\\");
         assert!(
             literal.contains("{literal} C:\\Windows"),
             "{target}: {text}"
