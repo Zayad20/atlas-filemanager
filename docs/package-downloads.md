@@ -1,18 +1,25 @@
-# Downloading Atlas builds
+# Contribution checks and maintainer package tests
 
-In GitHub, open **Actions**, choose the workflow run, then download its
-**Artifacts** at the bottom of the page. GitHub requires sign-in for artifact
-downloads. Extract the downloaded ZIP before using its contents.
+Microsoft Store is the Windows distribution and update channel. GitHub CI checks
+contributions; it does not distribute an alternative Windows installation.
 
-## CI development binaries
+For maintainer package tests, open **Actions**, choose the manual packaging run,
+then download its **Artifacts**. GitHub requires sign-in for artifact downloads.
+Extract the downloaded ZIP before inspecting its contents.
 
-Every successful Windows/Linux CI job uploads `atlas-dev-...`, containing the
-application, companions, notices, build commit and SHA-256 checksum. Windows uses
-a ZIP; Linux uses a tarball so executable permissions survive downloading.
-Windows archives and installers include the app-local Microsoft C++ runtime.
-These debug builds are for testing and are not optimized release installers.
+## Contributor CI
 
-## Optimized packages
+Pull requests and pushes to `main` run formatting, compilation, CLI startup and
+tests on Windows and Linux, with cached Rust dependencies. Check their results
+and logs in Actions. Routine CI does not archive binaries or upload installers.
+Linux package/install tests are started explicitly by maintainers rather than
+automatically rebuilding packages for every pull request.
+
+## Manual package validation for maintainers
+
+These workflows prepare controlled test artifacts and Store submission files.
+Do not advertise their EXE, portable or self-signed MSIX artifacts as a Windows
+download channel: those installations are outside Store-managed updates.
 
 Run **Actions → Packages → Run workflow** with a version from `CHANGELOG.md`.
 Select both platforms, or just Windows/Linux when checking a platform-specific fix.
@@ -30,8 +37,8 @@ declare OpenSSL 3 for the cloud/icon programs; AppImage bundles the libraries.
 This creates downloadable candidate packages without publishing a GitHub release
 or submitting anything to Microsoft Store, Flathub or Snap Store.
 
-- `atlas-windows-installer-x86_64`: run `AtlasSetup-<version>.exe` for a normal
-  Windows installation outside Microsoft Store. This includes the companion
+- `atlas-windows-installer-x86_64`: `AtlasSetup-<version>.exe` for controlled
+  maintainer testing outside Microsoft Store. This includes the companion
   programs and rclone. The workflow verifies installation, startup and uninstall.
 - `atlas-windows-msix-store-unsigned-x86_64`: MSIX for Store submission or signing
   with your own trusted production certificate. **It cannot be installed as-is.**
@@ -43,8 +50,8 @@ or submitting anything to Microsoft Store, Flathub or Snap Store.
   in an elevated PowerShell. This trusts the supplied certificate in Trusted
   People, then installs the package. It is not a production-trusted signature.
   MSIX includes the search executable and starts it in the user's session; it
-  does not register the privileged Windows system service. Use the EXE installer
-  with its Search Service task for NTFS indexing as a system service.
+  does not register the privileged Windows system service. The test EXE's
+  Search Service task can be used to validate NTFS system-service integration.
 - `atlas-linux-x86_64`: DEB, RPM, Arch package, tarball, AppImage, AUR recipe,
   metadata and checksums, including the search daemon, cloud/icon programs and
   third-party notices. Builds target glibc 2.35 or newer. The Linux cloud backend
@@ -56,26 +63,22 @@ or submitting anything to Microsoft Store, Flathub or Snap Store.
 
 Verify `SHA256SUMS` (Linux: `sha256sum --check SHA256SUMS`; Windows:
 `Get-FileHash <file> -Algorithm SHA256`). Candidate artifacts expire according to
-GitHub retention. Stable, permanent downloads belong in GitHub Releases.
+GitHub retention. GitHub Releases publish Linux packages and corresponding
+sources, while Windows users obtain the application through Microsoft Store.
 
-Release tags run the same packaging workflows before publication. Existing
-published releases are never overwritten by the workflow. Private signing keys,
-test certificates and PDB symbol artifacts are not published as release assets.
+Release tags validate Windows packages in the Store Free baseline and run the
+Linux packaging checks before publication. Windows EXE/MSIX files remain test
+artifacts in Actions and are excluded from public GitHub release assets. Store
+submission is a separate maintainer action. Existing published releases are never
+overwritten. Private signing keys, test certificates and PDBs are not published.
 
 ## Update channels
 
-Candidate artifacts are installable test builds. They do not establish an
-automatic update channel. The current Atlas update checker displays a version
-notice and URL; it does not download or apply an update. Windows checks the R2
-manifest, which this GitHub packaging workflow does not publish.
-
-The EXE installer can be the Windows distribution format, with an Atlas updater
-responsible for obtaining and running a newer installer. Installation, startup
-and uninstall are tested here; an installed-version-to-new-version upgrade still
-needs its own validation before promising automatic updates. Direct MSIX updates
-need a trusted signature and a hosted `.appinstaller` feed; Store MSIX updates
-are managed by Microsoft Store. This workflow does not create an App Installer
-feed or submit a Store package.
+Windows delegates updates to Microsoft Store. The app does not query the legacy
+R2 installer feed or display standalone EXE update notices. Locally compiled
+contributor builds and manual test packages do not establish an update channel.
+This workflow does not create a direct MSIX App Installer feed or submit a Store
+package. Maintainer package tests cover installation, startup and uninstall.
 
 Downloaded DEB/RPM packages also need a configured, published package repository
 for package-manager updates. The generated Flatpak/Snap files are local test

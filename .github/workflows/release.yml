@@ -51,6 +51,7 @@ jobs:
     uses: ./.github/workflows/windows-packages.yml
     with:
       version: ${{ needs.metadata.outputs.version }}
+      edition: free
       source-url: https://github.com/${{ github.repository }}/releases/download/v${{ needs.metadata.outputs.version }}/atlas-${{ needs.metadata.outputs.version }}-source.zip
 
   linux:
@@ -71,11 +72,17 @@ jobs:
       GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
+      # Windows updates are distributed through Microsoft Store. Keep Windows
+      # installers/MSIX in the workflow for maintainer testing and submission.
       - uses: actions/download-artifact@v4
         with:
-          pattern: atlas-*
+          pattern: atlas-linux-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-source
+          path: dist
       - name: Final checksums and release notes
         run: |
           python3 scripts/linux_release.py metadata --version "$ATLAS_VERSION"

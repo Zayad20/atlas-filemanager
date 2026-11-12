@@ -15,21 +15,6 @@ on:
         description: Version with an entry in CHANGELOG.md (without v)
         required: true
         default: '0.1.5'
-  pull_request:
-    paths:
-      - '.github/workflows/linux-*'
-      - '.github/workflows/release.yml'
-      - 'packaging/**'
-      - 'scripts/linux*'
-      - 'scripts/test-linux-local.py'
-      - 'scripts/install-linux.sh'
-      - 'scripts/tests/test_linux*'
-      - 'CHANGELOG.md'
-      - 'Cargo.*'
-      - 'rust-toolchain.toml'
-      - 'src/**'
-      - 'crates/**'
-      - 'vendor/**'
 
 permissions:
   contents: read
