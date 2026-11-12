@@ -100,6 +100,11 @@ jobs:
           foreach ($name in @('atlas.ico','atlas-search-service.exe','atlas-cloud-extension.exe','atlas-icon-extension.exe','rclone.exe','UnRAR.exe','vcruntime140.dll','THIRD-PARTY-NOTICES.txt')) {
             if (-not (Test-Path -LiteralPath (Join-Path $installDir $name))) { throw "Installed payload is incomplete: $name" }
           }
+          $shortcutPath = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'Atlas.lnk'
+          if (-not (Test-Path -LiteralPath $shortcutPath)) { throw 'Installer did not create the Start menu shortcut' }
+          $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath)
+          if ($shortcut.TargetPath -ne (Join-Path $installDir 'atlas.exe')) { throw 'Start menu shortcut points at the wrong program' }
+          if ($shortcut.IconLocation -notlike "$(Join-Path $installDir 'atlas.ico')*") { throw 'Start menu shortcut does not use the Atlas logo' }
           ./scripts/verify-windows-search-service.ps1 -ExpectedDirectory $installDir
           $process = Start-Process -FilePath (Join-Path $installDir 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru -WindowStyle Hidden
           if ($process.ExitCode -ne 0) { throw "Uninstaller failed: $($process.ExitCode)" }
