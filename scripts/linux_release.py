@@ -190,7 +190,7 @@ def packages(version, repo, binary, output, tool_dir, data_dir):
     aur = data_dir / "aur"
     aur.mkdir(exist_ok=True)
     pkgver = version.replace("-", "_")
-    dependencies = ["glibc", "gcc-libs", "libxkbcommon", "libxkbcommon-x11", "libxcb", "fontconfig", "wayland", "vulkan-icd-loader", "libglvnd", "ttf-dejavu"]
+    dependencies = ["glibc", "gcc-libs", "openssl", "libxkbcommon", "libxkbcommon-x11", "libxcb", "fontconfig", "wayland", "vulkan-icd-loader", "libglvnd", "ttf-dejavu"]
     # This recipe only unpacks a pinned, checksummed upstream artifact.
     recipe = f'''# Maintained upstream; generated for Atlas {version}.
 pkgname=atlas-bin

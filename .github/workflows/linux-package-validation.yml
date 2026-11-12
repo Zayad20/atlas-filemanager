@@ -1,6 +1,17 @@
 name: Validate existing Linux packages
 
 on:
+  workflow_call:
+    inputs:
+      run-id:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+      test-snap:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       run-id:
@@ -10,6 +21,10 @@ on:
         description: Expected package version
         required: true
         default: '0.1.5'
+      test-snap:
+        description: Also build and launch the local Snap
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -67,5 +82,47 @@ jobs:
         if: always()
         with:
           name: linux-test-${{ matrix.id }}
+          path: logs/
+          if-no-files-found: ignore
+
+  snap:
+    name: Build and launch updated Snap
+    if: inputs.test-snap
+    needs: matrix
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-linux-x86_64
+          path: artifacts
+          run-id: ${{ inputs.run-id }}
+          github-token: ${{ github.token }}
+      - name: Desktop and Snap dependencies
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y squashfs-tools snapd xvfb xauth xdotool imagemagick \
+            mesa-vulkan-drivers libxkbcommon-x11-0 libfontconfig1 libwayland-client0 libegl1 libgl1-mesa-dri fonts-dejavu-core libssl3
+      - name: Build, install and open the Snap
+        env:
+          ATLAS_VERSION: ${{ inputs.version }}
+        run: |
+          (cd artifacts && sha256sum --check SHA256SUMS)
+          dbus-run-session -- bash scripts/linux-store-packages.sh snap "$PWD/artifacts"
+          sudo snap install artifacts/*.snap --dangerous --classic
+          ATLAS_SMOKE_LOG_DIR="$PWD/logs" ATLAS_SMOKE_WINDOW_CLASS=atlas dbus-run-session -- xvfb-run -a bash scripts/linux-smoke.sh /snap/bin/atlas-filemanager.atlas
+          cd artifacts
+          for file in *.snap; do sha256sum "$file" > "$file.sha256"; done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-linux-snap
+          path: |
+            artifacts/*.snap
+            artifacts/*.snap.sha256
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-snap-test
           path: logs/
           if-no-files-found: ignore

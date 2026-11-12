@@ -23,6 +23,10 @@ previous manual candidate from `main`. The workflow checks unchanged application
 sources, edition, version and executable hashes, then rebuilds the search service.
 It refuses reuse when application inputs changed. `BINARY-PROVENANCE.json` records
 the source run; normal candidates and release tags build every executable.
+**Repackage existing Linux binaries** rebuilds the package metadata around an
+earlier manual candidate without invoking Rust. It keeps that candidate's source
+ZIP, adds a separate packaging patch, and records both revisions. Native packages
+declare OpenSSL 3 for the cloud/icon programs; AppImage bundles the libraries.
 This creates downloadable candidate packages without publishing a GitHub release
 or submitting anything to Microsoft Store, Flathub or Snap Store.
 
@@ -38,6 +42,9 @@ or submitting anything to Microsoft Store, Flathub or Snap Store.
   only). For deliberate local testing, review and run `Install-TestPackage.ps1`
   in an elevated PowerShell. This trusts the supplied certificate in Trusted
   People, then installs the package. It is not a production-trusted signature.
+  MSIX includes the search executable and starts it in the user's session; it
+  does not register the privileged Windows system service. Use the EXE installer
+  with its Search Service task for NTFS indexing as a system service.
 - `atlas-linux-x86_64`: DEB, RPM, Arch package, tarball, AppImage, AUR recipe,
   metadata and checksums, including the search daemon, cloud/icon programs and
   third-party notices. Builds target glibc 2.35 or newer. The Linux cloud backend

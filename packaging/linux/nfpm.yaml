@@ -44,6 +44,7 @@ overrides:
     depends:
       - libc6 (>= 2.35)
       - libgcc-s1
+      - libssl3 | libssl3t64
       - libxkbcommon0
       - libxkbcommon-x11-0
       - libxcb1
@@ -56,6 +57,8 @@ overrides:
     depends:
       - libc.so.6(GLIBC_2.35)(64bit)
       - libgcc_s.so.1()(64bit)
+      - libssl.so.3()(64bit)
+      - libcrypto.so.3()(64bit)
       - libxkbcommon.so.0()(64bit)
       - libxkbcommon-x11.so.0()(64bit)
       - libxcb.so.1()(64bit)
@@ -67,6 +70,7 @@ overrides:
     depends:
       - glibc
       - gcc-libs
+      - openssl
       - libxkbcommon
       - libxkbcommon-x11
       - libxcb
