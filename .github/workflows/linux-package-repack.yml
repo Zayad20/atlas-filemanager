@@ -120,4 +120,4 @@ jobs:
     with:
       run-id: ${{ github.run_id }}
       version: ${{ inputs.version }}
-      test-snap: true
+      test-stores: true

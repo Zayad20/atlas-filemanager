@@ -135,8 +135,9 @@ def packages(version, repo, binary, output, tool_dir, data_dir):
         raise ValueError("Package output must be empty; use a fresh --output directory")
     info = metadata(version, repo, data_dir)
     icon = data_dir / "atlas.png"
-    run("rsvg-convert", "--width", "512", "--height", "512", "--output", icon,
-        ROOT / "packaging/icons/atlas.svg")
+    # Use the same official artwork as Windows. Older librsvg versions can
+    # silently turn this logo's SVG filters into a fully transparent PNG.
+    shutil.copy2(ROOT / "packaging/icons/atlas.png", icon)
     output.mkdir(parents=True, exist_ok=True)
     companions = [binary.parent / name for name in ("atlas-search-service", "atlas-cloud-extension", "atlas-icon-extension")]
     for companion in companions:

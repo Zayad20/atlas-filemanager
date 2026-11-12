@@ -9,7 +9,7 @@ on:
       version:
         type: string
         required: true
-      test-snap:
+      test-stores:
         type: boolean
         default: false
   workflow_dispatch:
@@ -21,8 +21,8 @@ on:
         description: Expected package version
         required: true
         default: '0.1.5'
-      test-snap:
-        description: Also build and launch the local Snap
+      test-stores:
+        description: Also build and launch local Flatpak and Snap packages
         type: boolean
         default: false
 
@@ -85,11 +85,15 @@ jobs:
           path: logs/
           if-no-files-found: ignore
 
-  snap:
-    name: Build and launch updated Snap
-    if: inputs.test-snap
+  stores:
+    name: Build and launch updated ${{ matrix.format }}
+    if: inputs.test-stores
     needs: matrix
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        format: [flatpak, snap]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -98,31 +102,39 @@ jobs:
           path: artifacts
           run-id: ${{ inputs.run-id }}
           github-token: ${{ github.token }}
-      - name: Desktop and Snap dependencies
+      - name: Desktop and store dependencies
         run: |
           sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y squashfs-tools snapd xvfb xauth xdotool imagemagick \
+          sudo apt-get -o Acquire::Retries=3 install -y flatpak squashfs-tools snapd xvfb xauth xdotool imagemagick \
             mesa-vulkan-drivers libxkbcommon-x11-0 libfontconfig1 libwayland-client0 libegl1 libgl1-mesa-dri fonts-dejavu-core libssl3
-      - name: Build, install and open the Snap
+      - name: Build, install and open the store package
         env:
           ATLAS_VERSION: ${{ inputs.version }}
+          PACKAGE_FORMAT: ${{ matrix.format }}
         run: |
           (cd artifacts && sha256sum --check SHA256SUMS)
-          dbus-run-session -- bash scripts/linux-store-packages.sh snap "$PWD/artifacts"
-          sudo snap install artifacts/*.snap --dangerous --classic
-          ATLAS_SMOKE_LOG_DIR="$PWD/logs" ATLAS_SMOKE_WINDOW_CLASS=atlas dbus-run-session -- xvfb-run -a bash scripts/linux-smoke.sh /snap/bin/atlas-filemanager.atlas
+          dbus-run-session -- bash scripts/linux-store-packages.sh "$PACKAGE_FORMAT" "$PWD/artifacts"
+          if [ "$PACKAGE_FORMAT" = snap ]; then
+            sudo snap install artifacts/*.snap --dangerous --classic
+            binary=/snap/bin/atlas-filemanager.atlas
+          else
+            printf '#!/usr/bin/env bash\nexec flatpak run --die-with-parent io.github.neondeex.atlas-filemanager "$@"\n' > /tmp/atlas-flatpak
+            chmod +x /tmp/atlas-flatpak
+            binary=/tmp/atlas-flatpak
+          fi
+          ATLAS_SMOKE_LOG_DIR="$PWD/logs" ATLAS_SMOKE_WINDOW_CLASS=atlas dbus-run-session -- xvfb-run -a bash scripts/linux-smoke.sh "$binary"
           cd artifacts
-          for file in *.snap; do sha256sum "$file" > "$file.sha256"; done
+          for file in *."$PACKAGE_FORMAT"; do sha256sum "$file" > "$file.sha256"; done
       - uses: actions/upload-artifact@v4
         with:
-          name: atlas-linux-snap
+          name: atlas-linux-${{ matrix.format }}
           path: |
-            artifacts/*.snap
-            artifacts/*.snap.sha256
+            artifacts/*.${{ matrix.format }}
+            artifacts/*.${{ matrix.format }}.sha256
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: linux-snap-test
+          name: linux-${{ matrix.format }}-test
           path: logs/
           if-no-files-found: ignore
