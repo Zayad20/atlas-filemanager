@@ -17,9 +17,13 @@ on:
         type: choice
         options: [both, windows, linux]
         default: both
+      windows-binaries-run:
+        description: Optional prior candidate run; verifies unchanged app sources and rebuilds only search
+        default: ''
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   windows:
@@ -28,6 +32,7 @@ jobs:
     with:
       version: ${{ inputs.version }}
       edition: ${{ inputs.edition }}
+      reuse-run-id: ${{ inputs.windows-binaries-run }}
   linux:
     if: inputs.platform != 'windows'
     uses: ./.github/workflows/linux-packages.yml

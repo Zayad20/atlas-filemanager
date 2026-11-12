@@ -16,6 +16,13 @@ These debug builds are for testing and are not optimized release installers.
 
 Run **Actions → Packages → Run workflow** with a version from `CHANGELOG.md`.
 Select both platforms, or just Windows/Linux when checking a platform-specific fix.
+To repeat Linux installation tests without compiling again, run **Validate
+existing Linux packages** with the original Packages run ID and version.
+For a Windows search-service or packaging fix, `windows-binaries-run` can reuse a
+previous manual candidate from `main`. The workflow checks unchanged application
+sources, edition, version and executable hashes, then rebuilds the search service.
+It refuses reuse when application inputs changed. `BINARY-PROVENANCE.json` records
+the source run; normal candidates and release tags build every executable.
 This creates downloadable candidate packages without publishing a GitHub release
 or submitting anything to Microsoft Store, Flathub or Snap Store.
 

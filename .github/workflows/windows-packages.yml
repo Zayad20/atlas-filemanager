@@ -12,9 +12,13 @@ on:
       source-url:
         type: string
         default: ''
+      reuse-run-id:
+        type: string
+        default: ''
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build:
@@ -26,6 +30,7 @@ jobs:
       ATLAS_EDITION: ${{ inputs.edition }}
       ATLAS_POLAR_ORG_ID: eec2eec8-cbfd-4967-ba65-ca98e824cce0
       INPUT_SOURCE_URL: ${{ inputs.source-url }}
+      REUSE_WINDOWS_RUN: ${{ inputs.reuse-run-id }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -57,12 +62,32 @@ jobs:
           path: target/source/*
           if-no-files-found: error
           compression-level: 0
+      - uses: actions/download-artifact@v4
+        if: inputs.reuse-run-id != ''
+        with:
+          name: debug-symbols-windows
+          path: target/previous-windows-build
+          run-id: ${{ inputs.reuse-run-id }}
+          github-token: ${{ github.token }}
+      - name: Verify reusable application binaries
+        if: inputs.reuse-run-id != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_RUN: ${{ inputs.reuse-run-id }}
+        run: |
+          python scripts/restore-windows-binaries.py "$env:PREVIOUS_RUN" target/previous-windows-build
+          if ($LASTEXITCODE -ne 0) { throw 'The previous application binaries cannot be reused' }
       - name: Build optimized binaries once
         shell: pwsh
         run: |
           $features = @()
           if ($env:ATLAS_EDITION -eq 'free') { $features = @('--features', 'free') }
-          cargo build --release --locked -p atlas -p atlas-search-service -p atlas-cloud-extension -p atlas-icon-extension @features
+          if ($env:REUSE_WINDOWS_RUN) {
+            cargo build --release --locked -p atlas-search-service
+          } else {
+            cargo build --release --locked -p atlas -p atlas-search-service -p atlas-cloud-extension -p atlas-icon-extension @features
+          }
           if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
           python -c "import os,subprocess; r=subprocess.run(['target/release/atlas.exe','--version'],capture_output=True,text=True,timeout=30,check=True); print(r.stdout); assert r.stdout.strip()=='Atlas '+os.environ['ATLAS_VERSION']"
           if ($LASTEXITCODE -ne 0) { throw 'Release binary startup/version verification failed' }
@@ -115,6 +140,11 @@ jobs:
           Copy-Item docs/package-downloads.md target/windows-dist/installer/README.md
           Copy-Item docs/package-downloads.md target/windows-dist/msix-unsigned/README.md
           Copy-Item docs/package-downloads.md target/windows-dist/msix-test/README.md
+          if (Test-Path target/reused-binaries.json) {
+            foreach ($folder in Get-ChildItem target/windows-dist -Directory) {
+              Copy-Item target/reused-binaries.json (Join-Path $folder.FullName 'BINARY-PROVENANCE.json')
+            }
+          }
           python -c "import sys; from pathlib import Path; sys.path.insert(0,'scripts'); from linux_release import write_checksums; [write_checksums(p) for p in Path('target/windows-dist').iterdir() if p.is_dir()]"
       - uses: actions/upload-artifact@v4
         with:
@@ -143,7 +173,7 @@ jobs:
         run: |
           $targetRoot = [System.IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'target'))
           $allowed = $targetRoot + [System.IO.Path]::DirectorySeparatorChar
-          foreach ($relative in @("source-release-$env:ATLAS_VERSION", 'source', 'msix', 'installer', 'windows-dist', 'extensions', 'windows-runtime')) {
+          foreach ($relative in @("source-release-$env:ATLAS_VERSION", 'source', 'msix', 'installer', 'windows-dist', 'extensions', 'windows-runtime', 'previous-windows-build', 'reused-binaries.json')) {
             $path = [System.IO.Path]::GetFullPath((Join-Path $targetRoot $relative))
             if (-not $path.StartsWith($allowed, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Staging cleanup escaped target: $path" }
             if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }

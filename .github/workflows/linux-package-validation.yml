@@ -1,0 +1,71 @@
+name: Validate existing Linux packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      run-id:
+        description: Actions run containing atlas-linux-x86_64
+        required: true
+      version:
+        description: Expected package version
+        required: true
+        default: '0.1.5'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  matrix:
+    runs-on: ubuntu-24.04
+    outputs:
+      platforms: ${{ steps.platforms.outputs.platforms }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: platforms
+        env:
+          PACKAGE_VERSION: ${{ inputs.version }}
+          PACKAGE_RUN: ${{ inputs.run-id }}
+        run: |
+          python3 -c "import os,sys; sys.path.insert(0,'scripts'); from linux_release import validate_version; validate_version(os.environ['PACKAGE_VERSION']); assert os.environ['PACKAGE_RUN'].isdecimal()"
+          python3 -c 'import json; print("platforms=" + json.dumps(json.load(open("packaging/linux/test-matrix.json"))))' >> "$GITHUB_OUTPUT"
+
+  native-test:
+    name: Install and open on ${{ matrix.name }}
+    needs: matrix
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.platforms) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-linux-x86_64
+          path: artifacts
+          run-id: ${{ inputs.run-id }}
+          github-token: ${{ github.token }}
+      - name: Verify the unchanged candidate packages
+        env:
+          ATLAS_VERSION: ${{ inputs.version }}
+        run: |
+          (cd artifacts && sha256sum --check SHA256SUMS)
+          python3 -c "import json,os; assert json.load(open('artifacts/atlas-linux.json'))['version']==os.environ['ATLAS_VERSION']"
+      - name: Install, verify search service and open the file browser
+        env:
+          ATLAS_VERSION: ${{ inputs.version }}
+          TEST_IMAGE: ${{ matrix.image }}
+          TEST_FORMAT: ${{ matrix.format }}
+        run: |
+          mkdir -p logs
+          docker run --rm --security-opt seccomp=unconfined \
+            -e ATLAS_VERSION -v "$PWD/artifacts:/artifacts:ro" \
+            -v "$PWD/scripts:/scripts:ro" -v "$PWD/logs:/logs" \
+            "$TEST_IMAGE" bash /scripts/linux-container-test.sh "$TEST_FORMAT"
+          sudo chmod -R a+rwX logs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-test-${{ matrix.id }}
+          path: logs/
+          if-no-files-found: ignore

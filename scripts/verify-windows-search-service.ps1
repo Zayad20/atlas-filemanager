@@ -19,7 +19,9 @@ try {
     $buffer = [byte[]]::new(4096)
     $read = $pipe.ReadAsync($buffer, 0, $buffer.Length)
     if (-not $read.Wait(10000)) { throw 'Search service did not answer its IPC handshake' }
-    $reply = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $read.Result) | ConvertFrom-Json
-    if ($reply.Hello.protocol -ne 1) { throw 'Search service uses an unexpected IPC protocol' }
+    $response = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $read.Result)
+    if (-not $response) { throw 'Search service disconnected before delivering its IPC reply' }
+    $reply = $response | ConvertFrom-Json
+    if ($reply.Hello.protocol -ne 1) { throw "Search service uses an unexpected IPC protocol: $response" }
     Write-Host 'Installed Windows search service is running and answers protocol 1.'
 } finally { $pipe.Dispose() }

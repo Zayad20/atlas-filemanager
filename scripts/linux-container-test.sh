@@ -5,6 +5,10 @@ format=${1:?Specify deb, rpm, or archlinux}
 dist=${2:-/artifacts}
 case "$format" in
   deb)
+    # Minimal Ubuntu images discard documentation by default. Keep Atlas's
+    # notices so this test exercises the payload installed on a desktop.
+    printf 'path-include=/usr/share/doc/atlas\npath-include=/usr/share/doc/atlas/*\n' \
+      > /etc/dpkg/dpkg.cfg.d/zz-atlas-docs
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y "$dist"/*.deb \
       xvfb xauth xdotool imagemagick mesa-vulkan-drivers libegl1 libgl1-mesa-dri fonts-dejavu-core dbus-x11 python3
@@ -24,6 +28,8 @@ case "$format" in
     rpm -q atlas
     desktop-file-validate /usr/share/applications/atlas.desktop ;;
   archlinux)
+    # Override the equivalent size-saving filter in the Arch container.
+    sed -i '/^[[:space:]]*NoExtract[[:space:]]*=/s|$| !usr/share/doc/atlas !usr/share/doc/atlas/*|' /etc/pacman.conf
     pacman -Syu --noconfirm
     pacman -S --noconfirm --needed xorg-server-xvfb xorg-xauth xdotool imagemagick vulkan-swrast mesa libglvnd ttf-dejavu dbus desktop-file-utils diffutils python
     pacman -U --noconfirm "$dist"/*.pkg.tar.zst

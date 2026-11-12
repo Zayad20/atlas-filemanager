@@ -58,8 +58,8 @@ mod windows_impl {
     };
     use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
     use windows_sys::Win32::Storage::FileSystem::{
-        GetLogicalDrives, MoveFileExW, ReadFile, WriteFile, MOVEFILE_REPLACE_EXISTING,
-        MOVEFILE_WRITE_THROUGH, PIPE_ACCESS_DUPLEX,
+        FlushFileBuffers, GetLogicalDrives, MoveFileExW, ReadFile, WriteFile,
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, PIPE_ACCESS_DUPLEX,
     };
     use windows_sys::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_MESSAGE,
@@ -666,13 +666,18 @@ mod windows_impl {
         };
         let mut written = 0;
         unsafe {
-            WriteFile(
+            if WriteFile(
                 pipe,
                 bytes.as_ptr(),
                 bytes.len() as u32,
                 &mut written,
                 null_mut(),
-            );
+            ) != 0
+            {
+                // DisconnectNamedPipe discards unread replies. Wait until the
+                // client consumes this message before releasing its instance.
+                FlushFileBuffers(pipe);
+            }
         }
     }
 
@@ -1289,6 +1294,52 @@ mod windows_impl {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn pipe_reply_is_delivered_when_the_client_waits_before_reading() {
+            use std::io::{Read as _, Write as _};
+            let pipe_path = format!(r"\\.\pipe\AtlasSearchReplyTest-{}", std::process::id());
+            let stop = Arc::new(AtomicBool::new(false));
+            let server_stop = stop.clone();
+            let server_path = pipe_path.clone();
+            let (finished, completion) = std::sync::mpsc::channel();
+            thread::spawn(move || {
+                let result = serve_pipe_at(Arc::new(State::default()), &server_stop, &server_path);
+                let _ = finished.send(result);
+            });
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut client = loop {
+                if let Ok(client) = fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&pipe_path)
+                {
+                    break client;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "test pipe did not become available"
+                );
+                thread::sleep(Duration::from_millis(10));
+            };
+            client.write_all(br#"{"Hello":{"protocol":1}}"#).unwrap();
+            thread::sleep(Duration::from_millis(50));
+            let mut buffer = [0; 4096];
+            let read = client.read(&mut buffer).unwrap();
+            assert!(matches!(
+                serde_json::from_slice::<ServiceResponse>(&buffer[..read]).unwrap(),
+                ServiceResponse::Hello {
+                    protocol: 1,
+                    schema: 1
+                }
+            ));
+            drop(client);
+            stop_pipe_server(&stop, &pipe_path);
+            completion
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+                .unwrap();
+        }
 
         #[test]
         fn stopping_an_idle_pipe_server_does_not_need_another_client() {
