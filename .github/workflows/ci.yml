@@ -64,6 +64,10 @@ jobs:
           RUST_MIN_STACK: '16777216'
         run: cargo test --workspace --locked --no-fail-fast
 
+      - name: Stage Windows redistributable runtime
+        if: runner.os == 'Windows'
+        run: ./scripts/stage-windows-runtime.ps1
+
       - name: Archive development binaries
         run: python scripts/stage-ci-build.py
 

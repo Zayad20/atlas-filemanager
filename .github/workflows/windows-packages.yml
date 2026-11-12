@@ -56,6 +56,7 @@ jobs:
           name: atlas-source
           path: target/source/*
           if-no-files-found: error
+          compression-level: 0
       - name: Build optimized binaries once
         shell: pwsh
         run: |
@@ -96,7 +97,7 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
           & (Join-Path $installDir 'atlas.exe') --version
           if ($LASTEXITCODE -ne 0) { throw 'Installed executable failed to start' }
-          foreach ($name in @('atlas-search-service.exe','atlas-cloud-extension.exe','atlas-icon-extension.exe','rclone.exe','UnRAR.exe','THIRD-PARTY-NOTICES.txt')) {
+          foreach ($name in @('atlas-search-service.exe','atlas-cloud-extension.exe','atlas-icon-extension.exe','rclone.exe','UnRAR.exe','vcruntime140.dll','THIRD-PARTY-NOTICES.txt')) {
             if (-not (Test-Path -LiteralPath (Join-Path $installDir $name))) { throw "Installed payload is incomplete: $name" }
           }
           $process = Start-Process -FilePath (Join-Path $installDir 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru -WindowStyle Hidden
@@ -129,3 +130,14 @@ jobs:
           name: debug-symbols-windows
           path: symbols/
           if-no-files-found: ignore
+      - name: Keep generated packages out of the Rust dependency cache
+        if: always()
+        shell: pwsh
+        run: |
+          $targetRoot = [System.IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'target'))
+          $allowed = $targetRoot + [System.IO.Path]::DirectorySeparatorChar
+          foreach ($relative in @("source-release-$env:ATLAS_VERSION", 'source', 'msix', 'installer', 'windows-dist', 'extensions', 'windows-runtime')) {
+            $path = [System.IO.Path]::GetFullPath((Join-Path $targetRoot $relative))
+            if (-not $path.StartsWith($allowed, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Staging cleanup escaped target: $path" }
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+          }

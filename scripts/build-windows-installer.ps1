@@ -20,6 +20,7 @@ if ($LASTEXITCODE -ne 0) { throw "Windows build failed ($LASTEXITCODE)." }
 & (Join-Path $PSScriptRoot "archive-symbols.ps1") -Version "$Version-installer"
 # The Windows installer carries the same complete payload as the Cloud package.
 & (Join-Path $PSScriptRoot "build-cloud-extension.ps1") -SkipBuild
+& (Join-Path $PSScriptRoot "stage-windows-runtime.ps1")
 
 $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
 $isccPath = if ($iscc) { $iscc.Source } else { $null }

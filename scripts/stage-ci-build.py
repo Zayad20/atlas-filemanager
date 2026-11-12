@@ -33,6 +33,12 @@ def stage(profile, output):
             shutil.copy2(source, payload / target)
         if windows:
             shutil.copy2(ROOT / "crates/atlas-core/vendor/unrar-bin/UnRAR.exe", payload / "UnRAR.exe")
+            runtime = ROOT / 'target/windows-runtime'
+            if not (runtime / 'vcruntime140.dll').is_file():
+                raise FileNotFoundError('Stage the Windows redistributable runtime before archiving')
+            for path in runtime.iterdir():
+                if path.is_file():
+                    shutil.copy2(path, payload / path.name)
         repo = os.environ.get("GITHUB_REPOSITORY", "neondeex/atlas-filemanager")
         (payload / "BUILD.json").write_text(json.dumps(dict(profile=profile, revision=revision,
             platform=system, architecture=platform.machine()), indent=2) + "\n", encoding="utf-8")

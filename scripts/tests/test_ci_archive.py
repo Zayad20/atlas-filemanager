@@ -31,6 +31,9 @@ class DevelopmentArchiveTests(unittest.TestCase):
                 unrar = root / 'crates/atlas-core/vendor/unrar-bin/UnRAR.exe'
                 unrar.parent.mkdir(parents=True)
                 unrar.write_bytes(b'fixture tool')
+                runtime = root / 'target/windows-runtime'
+                runtime.mkdir()
+                (runtime / 'vcruntime140.dll').write_bytes(b'fixture runtime')
             with patch.object(archive, 'ROOT', root):
                 archive.stage('debug', root / 'output')
             bundle = next(p for p in (root / 'output').iterdir() if not p.name.endswith('.sha256'))

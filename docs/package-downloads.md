@@ -9,6 +9,7 @@ downloads. Extract the downloaded ZIP before using its contents.
 Every successful Windows/Linux CI job uploads `atlas-dev-...`, containing the
 application, companions, notices, build commit and SHA-256 checksum. Windows uses
 a ZIP; Linux uses a tarball so executable permissions survive downloading.
+Windows archives and installers include the app-local Microsoft C++ runtime.
 These debug builds are for testing and are not optimized release installers.
 
 ## Optimized packages
