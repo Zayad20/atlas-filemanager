@@ -61,3 +61,22 @@ GitHub retention. Stable, permanent downloads belong in GitHub Releases.
 Release tags run the same packaging workflows before publication. Existing
 published releases are never overwritten by the workflow. Private signing keys,
 test certificates and PDB symbol artifacts are not published as release assets.
+
+## Update channels
+
+Candidate artifacts are installable test builds. They do not establish an
+automatic update channel. The current Atlas update checker displays a version
+notice and URL; it does not download or apply an update. Windows checks the R2
+manifest, which this GitHub packaging workflow does not publish.
+
+The EXE installer can be the Windows distribution format, with an Atlas updater
+responsible for obtaining and running a newer installer. Installation, startup
+and uninstall are tested here; an installed-version-to-new-version upgrade still
+needs its own validation before promising automatic updates. Direct MSIX updates
+need a trusted signature and a hosted `.appinstaller` feed; Store MSIX updates
+are managed by Microsoft Store. This workflow does not create an App Installer
+feed or submit a Store package.
+
+Downloaded DEB/RPM packages also need a configured, published package repository
+for package-manager updates. The generated Flatpak/Snap files are local test
+packages and are not connected to Flathub or Snap Store update channels.
