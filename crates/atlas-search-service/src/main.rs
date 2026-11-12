@@ -165,7 +165,8 @@ mod windows_impl {
             .args([
                 "create",
                 SERVICE_NAME,
-                &format!("binPath= \"{}\"", path_str),
+                "binPath=",
+                &format!("\"{}\"", path_str),
                 "start=",
                 "auto",
                 "DisplayName=",
@@ -191,10 +192,34 @@ mod windows_impl {
 
     fn uninstall_service() -> anyhow::Result<()> {
         use std::os::windows::process::CommandExt;
+        use windows_service::service::ServiceAccess;
+        use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+        let service = match manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS) {
+            Ok(service) => service,
+            Err(windows_service::Error::Winapi(error))
+                if error.raw_os_error()
+                    == Some(
+                        windows_sys::Win32::Foundation::ERROR_SERVICE_DOES_NOT_EXIST as i32,
+                    ) =>
+            {
+                return Ok(());
+            }
+            Err(error) => return Err(error.into()),
+        };
         let _ = std::process::Command::new("sc.exe")
             .args(["stop", SERVICE_NAME])
             .creation_flags(0x0800_0000)
             .status();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while service.query_status()?.current_state != ServiceState::Stopped {
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "Search service did not stop; refusing to remove a running installation"
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
+        drop(service); // Do not keep the registration marked for deletion.
         let status = std::process::Command::new("sc.exe")
             .args(["delete", SERVICE_NAME])
             .creation_flags(0x0800_0000)
@@ -208,12 +233,33 @@ mod windows_impl {
 
     define_windows_service!(ffi_service_main, service_main);
 
+    fn stop_pipe_server(stop: &AtomicBool, pipe_path: &str) {
+        stop.store(true, Ordering::Release);
+        // ConnectNamedPipe blocks between clients. Wake that accept so the main
+        // loop can observe Stop and report Stopped to the service manager.
+        // Retry off the SCM callback thread to cover Stop racing pipe creation.
+        let pipe_path = pipe_path.to_owned();
+        thread::spawn(move || {
+            for _ in 0..100 {
+                if fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&pipe_path)
+                    .is_ok()
+                {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        });
+    }
+
     fn service_main(_arguments: Vec<OsString>) {
         let stop = Arc::new(AtomicBool::new(false));
         let handler_stop = stop.clone();
         let Ok(handle) = service_control_handler::register(SERVICE_NAME, move |control| {
             match control {
-        ServiceControl::Stop | ServiceControl::Shutdown => { handler_stop.store(true, Ordering::Release); windows_service::service_control_handler::ServiceControlHandlerResult::NoError }
+        ServiceControl::Stop | ServiceControl::Shutdown => { stop_pipe_server(&handler_stop, PIPE_PATH); windows_service::service_control_handler::ServiceControlHandlerResult::NoError }
         ServiceControl::Interrogate => windows_service::service_control_handler::ServiceControlHandlerResult::NoError,
         _ => windows_service::service_control_handler::ServiceControlHandlerResult::NotImplemented,
     }
@@ -507,7 +553,11 @@ mod windows_impl {
     }
 
     fn serve_pipe(state: Arc<State>, stop: &AtomicBool) -> anyhow::Result<()> {
-        let wide: Vec<u16> = OsStr::new(PIPE_PATH).encode_wide().chain(Some(0)).collect();
+        serve_pipe_at(state, stop, PIPE_PATH)
+    }
+
+    fn serve_pipe_at(state: Arc<State>, stop: &AtomicBool, pipe_path: &str) -> anyhow::Result<()> {
+        let wide: Vec<u16> = OsStr::new(pipe_path).encode_wide().chain(Some(0)).collect();
         let sddl: Vec<u16> = OsStr::new("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)")
             .encode_wide()
             .chain(Some(0))
@@ -1239,6 +1289,41 @@ mod windows_impl {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn stopping_an_idle_pipe_server_does_not_need_another_client() {
+            let pipe_path = format!(r"\\.\pipe\AtlasSearchStopTest-{}", std::process::id());
+            let stop = Arc::new(AtomicBool::new(false));
+            let server_stop = stop.clone();
+            let server_path = pipe_path.clone();
+            let (finished, completion) = std::sync::mpsc::channel();
+            thread::spawn(move || {
+                let result = serve_pipe_at(Arc::new(State::default()), &server_stop, &server_path);
+                let _ = finished.send(result);
+            });
+            let wide: Vec<u16> = OsStr::new(&pipe_path)
+                .encode_wide()
+                .chain(Some(0))
+                .collect();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if unsafe { windows_sys::Win32::System::Pipes::WaitNamedPipeW(wide.as_ptr(), 100) }
+                    != 0
+                {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "test pipe did not become available"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            stop_pipe_server(&stop, &pipe_path);
+            completion
+                .recv_timeout(Duration::from_secs(3))
+                .expect("idle service remained blocked in ConnectNamedPipe")
+                .expect("pipe server failed");
+        }
 
         #[test]
         fn restarted_client_generations_still_return_folder_results() {

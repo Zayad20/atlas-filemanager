@@ -12,17 +12,24 @@ on:
         type: choice
         options: [full, free]
         default: full
+      platform:
+        description: Platforms to package
+        type: choice
+        options: [both, windows, linux]
+        default: both
 
 permissions:
   contents: read
 
 jobs:
   windows:
+    if: inputs.platform != 'linux'
     uses: ./.github/workflows/windows-packages.yml
     with:
       version: ${{ inputs.version }}
       edition: ${{ inputs.edition }}
   linux:
+    if: inputs.platform != 'windows'
     uses: ./.github/workflows/linux-packages.yml
     with:
       version: ${{ inputs.version }}

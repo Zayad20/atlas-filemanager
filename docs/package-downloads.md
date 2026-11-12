@@ -15,6 +15,7 @@ These debug builds are for testing and are not optimized release installers.
 ## Optimized packages
 
 Run **Actions → Packages → Run workflow** with a version from `CHANGELOG.md`.
+Select both platforms, or just Windows/Linux when checking a platform-specific fix.
 This creates downloadable candidate packages without publishing a GitHub release
 or submitting anything to Microsoft Store, Flathub or Snap Store.
 

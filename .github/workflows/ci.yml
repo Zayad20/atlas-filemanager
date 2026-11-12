@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   format:
     name: Format
@@ -55,7 +59,7 @@ jobs:
         run: python -m unittest discover -s scripts/tests -p 'test_ci_archive.py'
 
       - name: CLI startup
-        run: ./target/debug/atlas --version
+        run: python -c "import os,subprocess; r=subprocess.run(['target/debug/atlas'+('.exe' if os.name=='nt' else ''),'--version'],capture_output=True,text=True,timeout=30,check=True); print(r.stdout); assert r.stdout.startswith('Atlas ')"
 
       - name: Test
         env:
