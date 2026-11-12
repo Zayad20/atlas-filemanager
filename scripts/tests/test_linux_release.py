@@ -1,5 +1,6 @@
 import json
 import importlib.util
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -7,6 +8,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from PIL import Image
 import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
@@ -83,7 +85,9 @@ class ReleaseMetadataTests(unittest.TestCase):
 
             def packaging_tool(*args, **kwargs):
                 args = [str(arg) for arg in args]
-                if "--target" in args:
+                if args[0] == 'rsvg-convert':
+                    subprocess.run(args, check=True)
+                elif "--target" in args:
                     Path(args[args.index("--target") + 1]).write_bytes(b"native package")
                 else:
                     (output / kwargs["env"]["OUTPUT"]).write_bytes(b"AppImage")
@@ -98,7 +102,10 @@ class ReleaseMetadataTests(unittest.TestCase):
                 notice = archive.extractfile("atlas-0.1.5-linux-x86_64/share/doc/atlas/THIRD-PARTY-NOTICES.txt")
                 self.assertEqual(notice.read(), (release.ROOT / "legal/THIRD-PARTY-NOTICES.txt").read_bytes())
                 logo = archive.extractfile("atlas-0.1.5-linux-x86_64/share/icons/hicolor/512x512/apps/atlas.png")
-                self.assertEqual(logo.read(), (release.ROOT / "packaging/icons/atlas.png").read_bytes())
+                with Image.open(io.BytesIO(logo.read())) as image:
+                    self.assertEqual(image.size, (512, 512))
+                    self.assertGreater(image.convert('RGBA').getchannel('A').getextrema()[1], 0,
+                                       'The installed logo must contain visible pixels')
 
 
 class InstallerTests(unittest.TestCase):

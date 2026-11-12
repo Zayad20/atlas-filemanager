@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build Linux artifacts from one version and one changelog (Python 3.10+)."""
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -135,9 +136,15 @@ def packages(version, repo, binary, output, tool_dir, data_dir):
         raise ValueError("Package output must be empty; use a fresh --output directory")
     info = metadata(version, repo, data_dir)
     icon = data_dir / "atlas.png"
-    # Use the same official artwork as Windows. Older librsvg versions can
-    # silently turn this logo's SVG filters into a fully transparent PNG.
-    shutil.copy2(ROOT / "packaging/icons/atlas.png", icon)
+    # Normalize the official Windows raster to a supported hicolor/AppImage
+    # size without using the original SVG's unsupported shadow filters.
+    encoded = base64.b64encode((ROOT / "packaging/icons/atlas.png").read_bytes()).decode('ascii')
+    wrapper = data_dir / 'atlas-icon.svg'
+    wrapper.write_text('<svg xmlns="http://www.w3.org/2000/svg" '
+                       'xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1 1">'
+                       f'<image width="1" height="1" xlink:href="data:image/png;base64,{encoded}"/>'
+                       '</svg>', encoding='utf-8')
+    run('rsvg-convert', '--width', '512', '--height', '512', '--output', icon, wrapper)
     output.mkdir(parents=True, exist_ok=True)
     companions = [binary.parent / name for name in ("atlas-search-service", "atlas-cloud-extension", "atlas-icon-extension")]
     for companion in companions:
