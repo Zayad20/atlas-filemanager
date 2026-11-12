@@ -64,8 +64,8 @@ jobs:
           if ($env:ATLAS_EDITION -eq 'free') { $features = @('--features', 'free') }
           cargo build --release --locked -p atlas -p atlas-search-service -p atlas-cloud-extension -p atlas-icon-extension @features
           if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
-          & ./target/release/atlas.exe --version
-          if ($LASTEXITCODE -ne 0) { throw 'Release binary did not start' }
+          python -c "import os,subprocess; r=subprocess.run(['target/release/atlas.exe','--version'],capture_output=True,text=True,timeout=30,check=True); print(r.stdout); assert r.stdout.strip()=='Atlas '+os.environ['ATLAS_VERSION']"
+          if ($LASTEXITCODE -ne 0) { throw 'Release binary startup/version verification failed' }
       - name: Install packaging compiler
         run: choco install innosetup --no-progress -y
       - name: Build direct-download installer
@@ -93,15 +93,17 @@ jobs:
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP 'atlas-installer-test'
           $setup = Resolve-Path "target/installer/AtlasSetup-$env:ATLAS_VERSION.exe"
-          $process = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS=""', "/DIR=`"$installDir`"" -Wait -PassThru -WindowStyle Hidden
+          $process = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS="searchservice"', "/DIR=`"$installDir`"" -Wait -PassThru -WindowStyle Hidden
           if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
-          & (Join-Path $installDir 'atlas.exe') --version
-          if ($LASTEXITCODE -ne 0) { throw 'Installed executable failed to start' }
-          foreach ($name in @('atlas-search-service.exe','atlas-cloud-extension.exe','atlas-icon-extension.exe','rclone.exe','UnRAR.exe','vcruntime140.dll','THIRD-PARTY-NOTICES.txt')) {
+          python -c "import os,subprocess,sys; r=subprocess.run([sys.argv[1],'--version'],capture_output=True,text=True,timeout=30,check=True); print(r.stdout); assert r.stdout.strip()=='Atlas '+os.environ['ATLAS_VERSION']" (Join-Path $installDir 'atlas.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Installed executable startup/version verification failed' }
+          foreach ($name in @('atlas.ico','atlas-search-service.exe','atlas-cloud-extension.exe','atlas-icon-extension.exe','rclone.exe','UnRAR.exe','vcruntime140.dll','THIRD-PARTY-NOTICES.txt')) {
             if (-not (Test-Path -LiteralPath (Join-Path $installDir $name))) { throw "Installed payload is incomplete: $name" }
           }
+          ./scripts/verify-windows-search-service.ps1 -ExpectedDirectory $installDir
           $process = Start-Process -FilePath (Join-Path $installDir 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru -WindowStyle Hidden
           if ($process.ExitCode -ne 0) { throw "Uninstaller failed: $($process.ExitCode)" }
+          if (Get-Service -Name AtlasSearchService -ErrorAction SilentlyContinue) { throw 'Uninstaller left the Windows search service registered' }
       - name: Package instructions and checksums
         shell: pwsh
         run: |

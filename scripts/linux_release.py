@@ -138,7 +138,7 @@ def packages(version, repo, binary, output, tool_dir, data_dir):
     run("rsvg-convert", "--width", "512", "--height", "512", "--output", icon,
         ROOT / "packaging/icons/atlas.svg")
     output.mkdir(parents=True, exist_ok=True)
-    companions = [binary.parent / name for name in ("atlas-cloud-extension", "atlas-icon-extension")]
+    companions = [binary.parent / name for name in ("atlas-search-service", "atlas-cloud-extension", "atlas-icon-extension")]
     for companion in companions:
         if not companion.is_file():
             raise FileNotFoundError(f"Missing built companion: {companion}")
@@ -207,7 +207,7 @@ options=('!strip')
 source=('{info["release_url"].replace("/tag/", "/download/")}/{tarball.name}')
 sha256sums=('{sha256(tarball)}')
 package() {{
-    for binary in atlas atlas-cloud-extension atlas-icon-extension; do
+    for binary in atlas atlas-search-service atlas-cloud-extension atlas-icon-extension; do
         install -Dm755 "$srcdir/{name}/bin/$binary" "$pkgdir/usr/bin/$binary"
     done
     mkdir -p "$pkgdir/usr/share"

@@ -75,7 +75,7 @@ class ReleaseMetadataTests(unittest.TestCase):
             root = Path(directory)
             binaries = root / "release"
             binaries.mkdir()
-            for name in ("atlas", "atlas-cloud-extension", "atlas-icon-extension"):
+            for name in ("atlas", "atlas-search-service", "atlas-cloud-extension", "atlas-icon-extension"):
                 binary = binaries / name
                 binary.write_bytes(b"built executable")
                 binary.chmod(0o755)
@@ -94,7 +94,7 @@ class ReleaseMetadataTests(unittest.TestCase):
                 release.packages("0.1.5", "owner/repo", binaries / "atlas", output,
                                  root / "tools", root / "data")
             with tarfile.open(output / "atlas-0.1.5-linux-x86_64.tar.gz") as archive:
-                for name in ("atlas", "atlas-cloud-extension", "atlas-icon-extension"):
+                for name in ("atlas", "atlas-search-service", "atlas-cloud-extension", "atlas-icon-extension"):
                     member = archive.getmember(f"atlas-0.1.5-linux-x86_64/bin/{name}")
                     self.assertTrue(member.mode & 0o111, name)
                 notice = archive.extractfile("atlas-0.1.5-linux-x86_64/share/doc/atlas/THIRD-PARTY-NOTICES.txt")

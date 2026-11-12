@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SKIP = {".git", ".github", "target", "node_modules", "__pycache__", ".wrangler", ".playwright-cli", "artifacts", "perf-logs"}
 ROOT_FILES = ["Cargo.toml", "Cargo.lock", "LICENSE", "README.md", "ARCHITECTURE.md", "CONTRIBUTING.md", "rust-toolchain.toml", "rustfmt.toml", "clippy.toml"]
-SCRIPTS = ["winfsp-build.rs", "stage-windows-runtime.ps1", "archive-symbols.ps1", "build-windows-msix.ps1", "build-windows-installer.ps1", "build-cloud-extension.ps1", "recover-licensed-artwork.py", "generate-third-party.py", "build-source-release.py", "verify-source-release.py", "audit-rclone-notices.py", "linux_release.py", "linux_repository.py", "linux-smoke.sh", "linux-container-test.sh", "linux-store-packages.sh", "install-linux.sh"]
+SCRIPTS = ["winfsp-build.rs", "stage-windows-runtime.ps1", "archive-symbols.ps1", "build-windows-msix.ps1", "build-windows-installer.ps1", "build-cloud-extension.ps1", "recover-licensed-artwork.py", "generate-third-party.py", "build-source-release.py", "verify-source-release.py", "audit-rclone-notices.py", "linux_release.py", "linux_repository.py", "linux-smoke.sh", "linux-container-test.sh", "linux-store-packages.sh", "install-linux.sh", "test-linux-search-service.py", "verify-windows-search-service.ps1"]
 
 
 def eligible(path: Path, parent: Path) -> bool:

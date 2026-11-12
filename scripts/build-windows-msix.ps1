@@ -71,9 +71,8 @@ Copy-Item -LiteralPath $exe -Destination (Join-Path $staging "atlas.exe")
 Get-ChildItem -LiteralPath (Join-Path $repo 'target\windows-runtime') -File |
     ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $staging }
 $serviceExe = Join-Path $repo "target\release\atlas-search-service.exe"
-if (Test-Path $serviceExe) {
-    Copy-Item -LiteralPath $serviceExe -Destination (Join-Path $staging "atlas-search-service.exe")
-}
+if (-not (Test-Path -LiteralPath $serviceExe)) { throw "Missing search service: $serviceExe" }
+Copy-Item -LiteralPath $serviceExe -Destination (Join-Path $staging "atlas-search-service.exe")
 Copy-Item -LiteralPath (Join-Path $repo "crates\atlas-core\vendor\unrar-bin\UnRAR.exe") `
     -Destination (Join-Path $staging "UnRAR.exe")
 Copy-Item -LiteralPath (Join-Path $repo "packaging\windows\msix\THIRD-PARTY-NOTICES.txt") `
