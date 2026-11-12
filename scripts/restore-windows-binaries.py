@@ -32,7 +32,7 @@ def restore(run_id, directory):
     command('git', 'fetch', '--no-tags', '--depth=1', 'origin', revision)
     changes = command('git', 'diff', '--name-only', revision, 'HEAD').splitlines()
     for path in changes:
-        if path.startswith(('.github/', 'docs/', 'crates/atlas-search-service/src/')):
+        if path.startswith(('.github/', 'docs/', 'packaging/linux/', 'crates/atlas-search-service/src/')):
             continue
         if path.startswith('scripts/') and Path(path).suffix in ('.py', '.ps1', '.sh'):
             continue
@@ -43,7 +43,8 @@ def restore(run_id, directory):
     step = next(step for step in build['steps'] if step['name'] == 'Build optimized binaries once')
     if step['conclusion'] != 'success':
         raise ValueError('The source candidate did not finish compiling')
-    log = command('gh', 'api', f'repos/{repo}/actions/jobs/{build["id"]}/logs')
+    # Capture trusted runner logs for parsing; never emit their terminal codes.
+    log = command('gh', 'api', f'repos/{repo}/actions/jobs/{build["id"]}/logs', '--allow-escape-sequences')
     for key, value in [('ATLAS_VERSION', version), ('ATLAS_EDITION', edition)]:
         recorded = set(re.findall(r'Z\s+' + key + r': ([^\r\n]+)', log))
         if recorded != {value}:
