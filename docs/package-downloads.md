@@ -31,7 +31,9 @@ or submitting anything to Microsoft Store, Flathub or Snap Store.
   in an elevated PowerShell. This trusts the supplied certificate in Trusted
   People, then installs the package. It is not a production-trusted signature.
 - `atlas-linux-x86_64`: DEB, RPM, Arch package, tarball, AppImage, AUR recipe,
-  metadata and checksums. Builds target glibc 2.35 or newer.
+  metadata and checksums, including the cloud/icon companion programs and
+  third-party notices. Builds target glibc 2.35 or newer. The Linux cloud backend
+  locates rclone on PATH or downloads a checksum-verified copy on first use.
 - `atlas-linux-flatpak` / `atlas-linux-snap`: locally installable store-format
   packages; they have not been submitted to their stores.
 - `atlas-source`: matching source ZIP with locked dependency sources and a hash

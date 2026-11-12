@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -68,6 +69,36 @@ class ReleaseMetadataTests(unittest.TestCase):
             (output / "old.deb").write_bytes(b"old package")
             with self.assertRaisesRegex(ValueError, "must be empty"):
                 release.packages("1.0.0", "owner/repo", output / "binary", output, output, output)
+
+    def test_distributable_payload_includes_extensions_and_notices(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binaries = root / "release"
+            binaries.mkdir()
+            for name in ("atlas", "atlas-cloud-extension", "atlas-icon-extension"):
+                binary = binaries / name
+                binary.write_bytes(b"built executable")
+                binary.chmod(0o755)
+            output = root / "dist"
+
+            def packaging_tool(*args, **kwargs):
+                args = [str(arg) for arg in args]
+                if args[0] == "rsvg-convert":
+                    Path(args[args.index("--output") + 1]).write_bytes(b"icon")
+                elif "--target" in args:
+                    Path(args[args.index("--target") + 1]).write_bytes(b"native package")
+                else:
+                    (output / kwargs["env"]["OUTPUT"]).write_bytes(b"AppImage")
+
+            with patch.object(release, "run", side_effect=packaging_tool):
+                release.packages("0.1.5", "owner/repo", binaries / "atlas", output,
+                                 root / "tools", root / "data")
+            with tarfile.open(output / "atlas-0.1.5-linux-x86_64.tar.gz") as archive:
+                for name in ("atlas", "atlas-cloud-extension", "atlas-icon-extension"):
+                    member = archive.getmember(f"atlas-0.1.5-linux-x86_64/bin/{name}")
+                    self.assertTrue(member.mode & 0o111, name)
+                notice = archive.extractfile("atlas-0.1.5-linux-x86_64/share/doc/atlas/THIRD-PARTY-NOTICES.txt")
+                self.assertEqual(notice.read(), (release.ROOT / "legal/THIRD-PARTY-NOTICES.txt").read_bytes())
 
 
 class InstallerTests(unittest.TestCase):

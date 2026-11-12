@@ -31,6 +31,12 @@ case "$format" in
     desktop-file-validate /usr/share/applications/atlas.desktop ;;
   *) echo 'Unknown package format' >&2; exit 2 ;;
 esac
+for binary in atlas-cloud-extension atlas-icon-extension; do
+  test -x "/usr/bin/$binary"
+  ldd "/usr/bin/$binary" | tee "/logs/$binary-ldd.txt"
+  if grep -q 'not found' "/logs/$binary-ldd.txt"; then exit 1; fi
+done
+test -s /usr/share/doc/atlas/THIRD-PARTY-NOTICES.txt
 ldd /usr/bin/atlas | tee /logs/ldd.txt
 if grep -q 'not found' /logs/ldd.txt; then exit 1; fi
 if ! id atlas-test >/dev/null 2>&1; then useradd --create-home atlas-test; fi

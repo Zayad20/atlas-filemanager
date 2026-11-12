@@ -138,10 +138,15 @@ def packages(version, repo, binary, output, tool_dir, data_dir):
     run("rsvg-convert", "--width", "512", "--height", "512", "--output", icon,
         ROOT / "packaging/icons/atlas.svg")
     output.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, ATLAS_VERSION=version, ATLAS_BINARY=str(binary), ATLAS_PACKAGE_DATA=str(data_dir))
+    companions = [binary.parent / name for name in ("atlas-cloud-extension", "atlas-icon-extension")]
+    for companion in companions:
+        if not companion.is_file():
+            raise FileNotFoundError(f"Missing built companion: {companion}")
+    env = dict(os.environ, ATLAS_VERSION=version, ATLAS_BINARY=str(binary),
+               ATLAS_BINARY_DIR=str(binary.parent), ATLAS_PACKAGE_DATA=str(data_dir))
     # nFPM expands some metadata fields, but not content source paths.
     config = (ROOT / "packaging/linux/nfpm.yaml").read_text()
-    for name in ["ATLAS_VERSION", "ATLAS_BINARY", "ATLAS_PACKAGE_DATA"]:
+    for name in ["ATLAS_VERSION", "ATLAS_BINARY", "ATLAS_BINARY_DIR", "ATLAS_PACKAGE_DATA"]:
         config = config.replace("${" + name + "}", env[name])
     config = re.sub(r"^(\s*- src: )(.+)$", lambda match: match[1] + json.dumps(match[2]), config, flags=re.M)
     resolved_config = data_dir / "nfpm.yaml"
@@ -161,7 +166,9 @@ def packages(version, repo, binary, output, tool_dir, data_dir):
         data_dir / f"{APP_ID}.metainfo.xml": f"share/metainfo/{APP_ID}.metainfo.xml",
         ROOT / "CHANGELOG.md": "share/doc/atlas/CHANGELOG.md",
         ROOT / "LICENSE": "share/licenses/atlas/LICENSE",
+        ROOT / "legal/THIRD-PARTY-NOTICES.txt": "share/doc/atlas/THIRD-PARTY-NOTICES.txt",
     }
+    destinations.update({companion: f"bin/{companion.name}" for companion in companions})
     for source, relative in destinations.items():
         destination = stage / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -200,7 +207,9 @@ options=('!strip')
 source=('{info["release_url"].replace("/tag/", "/download/")}/{tarball.name}')
 sha256sums=('{sha256(tarball)}')
 package() {{
-    install -Dm755 "$srcdir/{name}/bin/atlas" "$pkgdir/usr/bin/atlas"
+    for binary in atlas atlas-cloud-extension atlas-icon-extension; do
+        install -Dm755 "$srcdir/{name}/bin/$binary" "$pkgdir/usr/bin/$binary"
+    done
     mkdir -p "$pkgdir/usr/share"
     cp -a "$srcdir/{name}/share/." "$pkgdir/usr/share/"
 }}
